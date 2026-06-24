@@ -1,0 +1,13 @@
+@API_HostAddress = http://localhost:5191
+
+POST {{API_HostAddress}}/api/auth/register
+Content-Type: application/json
+Accept: application/json
+
+{
+  "email": "seller@example.com",
+  "password": "Password123",
+  "fullName": "APCS Seller"
+}
+
+###
