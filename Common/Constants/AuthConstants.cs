@@ -23,7 +23,7 @@ public static class AuthConstants
     /// <summary>
     /// The default application user role.
     /// </summary>
-    public const string UserRole = "User";
+    public const string UserRole = "Seller";
 
     /// <summary>
     /// The administrative application role.

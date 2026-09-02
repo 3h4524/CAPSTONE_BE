@@ -1,33 +1,58 @@
-# .agent/ — APCS Backend Agent Documentation
+# APCS AI Tooling
 
-This folder contains lightweight documentation for AI coding agents working on the APCS backend.
+`.agent/` contains APCS-specific tools for AI-assisted work. It is not the source of truth for project architecture or coding policy.
+
+## Precedence
+
+1. [`../AGENTS.md`](../AGENTS.md) defines repository-wide agent behavior.
+2. [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) defines architecture, CQRS, dependency, and placement rules.
+3. [`../CONTRIBUTING.md`](../CONTRIBUTING.md) defines coding conventions and feature delivery.
+4. [`../docs/TESTING.md`](../docs/TESTING.md) defines testing.
+5. Files under `.agent/` provide task-specific inputs or execution help and must remain subordinate to those sources.
 
 ## Structure
 
-```
+```text
 .agent/
-├── README.md                          ← You are here
-├── context/
-│   ├── project.md                     ← What APCS is, current phase
-│   └── current-state.md               ← Actual implementation state (scan-based)
-├── rules/
-│   └── backend-rules.md               ← Clean Architecture & coding rules
-├── skills/
-│   ├── dotnet-backend/SKILL.md        ← How to add a backend feature
-│   └── auth-jwt/SKILL.md              ← JWT implementation details
+├── README.md
+├── prompts/
+│   ├── implement-feature.md
+│   ├── review-code.md
+│   └── create-tests.md
 ├── workflows/
-│   ├── scan-before-edit.md            ← Pre-edit checklist
-│   ├── implement-feature.md           ← Feature implementation workflow
-│   └── review-code.md                 ← Code review checklist
-└── prompts/
-    ├── implement-next-use-case.md     ← Reusable prompt for adding use cases
-    └── fix-build-error.md             ← Reusable prompt for fixing build errors
+│   └── feature-development.md
+├── context/                     # stable, non-derivable context only
+└── skills/
+    └── auth-jwt/
+        └── SKILL.md
 ```
 
-## How to Use
+## Folder responsibilities
 
-1. Start with `CLAUDE.md` at the repo root for a quick overview.
-2. Read `context/current-state.md` to understand what is already implemented.
-3. Follow the relevant workflow before making changes.
-4. Use skills as step-by-step guides for specific tasks.
-5. Use prompts as copy-paste starting points for common requests.
+### `prompts/`
+
+Reusable task requests. A prompt may identify required inputs, expected output, and canonical documents to read. It must not copy or redefine project rules.
+
+### `workflows/`
+
+Agent execution sequences with useful checkpoints, tool ordering, stopping conditions, or handoff requirements. A workflow that merely repeats `CONTRIBUTING.md` should be merged into a prompt or removed.
+
+### `context/`
+
+Stable context that materially changes agent decisions and cannot be reliably derived from source. Each context file must state its owner, reason, and review or expiry condition.
+
+Do not store scan dates, implemented-feature inventories, project trees, or planned-technology lists here. The folder is intentionally empty until qualifying context exists; empty directories may be absent from Git.
+
+### `skills/`
+
+Triggerable APCS-specific capabilities with non-obvious operational knowledge. Skills must be narrowly described, reference canonical documentation, and avoid vendoring generic framework manuals.
+
+## Admission checklist
+
+Add an artifact only when all answers are yes:
+
+- Does it solve a repeated APCS-specific agent task?
+- Does it add operational value beyond the canonical docs?
+- Can it link to project policy instead of copying it?
+- Is its owner or maintenance trigger clear?
+- Does it avoid introducing unapproved technology or patterns?

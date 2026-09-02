@@ -5,6 +5,6 @@ namespace APCS.Domain.Enums;
 /// </summary>
 public enum UserRole
 {
-    User = 0,
+    Seller = 0,
     Admin = 1
 }

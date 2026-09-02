@@ -1,9 +1,13 @@
 using System.Text;
-using APCS.Application.Common.Interfaces;
+using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Email;
+using APCS.Application.Abstractions.Persistence;
 using APCS.Common.Constants;
 using APCS.Common.Extensions;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Persistence;
+using APCS.Infrastructure.Persistence.Repositories;
 using APCS.Infrastructure.Services;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Identity;
@@ -43,11 +47,13 @@ public static class DependencyInjection
                     npgsqlOptions => npgsqlOptions.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName))
                 .UseSnakeCaseNamingConvention());
 
-        services.AddScoped<IAppDbContext>(provider => provider.GetRequiredService<AppDbContext>());
+        services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<AppDbContext>());
+        services.AddScoped<IReadDbContext>(provider => provider.GetRequiredService<AppDbContext>());
+        services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 
         services
-            .AddIdentityCore<ApplicationUser>(ConfigureIdentityOptions)
-            .AddRoles<IdentityRole<Guid>>()
+            .AddIdentityCore<Seller>(ConfigureIdentityOptions)
+            .AddRoles<IdentityRole<int>>()
             .AddEntityFrameworkStores<AppDbContext>()
             .AddSignInManager()
             .AddDefaultTokenProviders();

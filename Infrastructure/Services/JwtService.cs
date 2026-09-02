@@ -2,8 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using APCS.Application.Common.Interfaces;
-using APCS.Application.Common.Models;
+using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Authentication.Models;
 using APCS.Common.Helpers;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Options;
@@ -22,7 +22,7 @@ public sealed class JwtService(
     private readonly JwtOptions _options = options.Value;
 
     /// <inheritdoc />
-    public JwtTokenResult GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles)
+    public JwtTokenResult GenerateAccessToken(int userId, string email, IReadOnlyCollection<string> roles)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
         ArgumentNullException.ThrowIfNull(roles);

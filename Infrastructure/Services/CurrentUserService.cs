@@ -1,6 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using APCS.Application.Common.Interfaces;
+using APCS.Application.Abstractions.Authentication;
 using Microsoft.AspNetCore.Http;
 
 namespace APCS.Infrastructure.Services;
@@ -11,14 +11,14 @@ namespace APCS.Infrastructure.Services;
 public sealed class CurrentUserService(IHttpContextAccessor httpContextAccessor) : ICurrentUser
 {
     /// <inheritdoc />
-    public Guid? UserId
+    public int? UserId
     {
         get
         {
             var value = httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
                 ?? httpContextAccessor.HttpContext?.User.FindFirstValue(JwtRegisteredClaimNames.Sub);
 
-            return Guid.TryParse(value, out var userId) ? userId : null;
+            return int.TryParse(value, out var sellerId) ? sellerId : null;
         }
     }
 

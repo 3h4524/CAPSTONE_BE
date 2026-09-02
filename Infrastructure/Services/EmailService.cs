@@ -1,4 +1,4 @@
-using APCS.Application.Common.Interfaces;
+using APCS.Application.Abstractions.Email;
 using Microsoft.Extensions.Logging;
 
 namespace APCS.Infrastructure.Services;

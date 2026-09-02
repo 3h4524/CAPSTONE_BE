@@ -18,9 +18,9 @@ public sealed class RefreshTokenConfiguration : IEntityTypeConfiguration<Refresh
         builder.HasKey(token => token.Id);
 
         builder.Property(token => token.Id)
-            .ValueGeneratedNever();
+            .UseIdentityByDefaultColumn();
 
-        builder.Property(token => token.UserId)
+        builder.Property(token => token.SellerId)
             .IsRequired();
 
         builder.Property(token => token.TokenHash)
@@ -30,12 +30,6 @@ public sealed class RefreshTokenConfiguration : IEntityTypeConfiguration<Refresh
         builder.Property(token => token.JwtId)
             .HasMaxLength(64)
             .IsRequired();
-
-        builder.Property(token => token.CreatedByIp)
-            .HasMaxLength(64);
-
-        builder.Property(token => token.RevokedByIp)
-            .HasMaxLength(64);
 
         builder.Property(token => token.ReplacedByTokenHash)
             .HasMaxLength(128);
@@ -51,13 +45,13 @@ public sealed class RefreshTokenConfiguration : IEntityTypeConfiguration<Refresh
         builder.HasIndex(token => token.TokenHash)
             .IsUnique();
 
-        builder.HasIndex(token => token.UserId);
+        builder.HasIndex(token => token.SellerId);
         builder.HasIndex(token => token.ExpiresAtUtc);
         builder.HasIndex(token => token.RevokedAtUtc);
 
-        builder.HasOne<ApplicationUser>()
+        builder.HasOne<Seller>()
             .WithMany()
-            .HasForeignKey(token => token.UserId)
+            .HasForeignKey(token => token.SellerId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

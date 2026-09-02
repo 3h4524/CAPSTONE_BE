@@ -2,7 +2,7 @@ using System.Text;
 using APCS.Api.Extensions;
 using APCS.Api.Middleware;
 using APCS.Application;
-using APCS.Application.Common.Interfaces;
+using APCS.Application.Abstractions.Caching;
 using APCS.Common.Constants;
 using APCS.Common.Extensions;
 using APCS.Infrastructure;

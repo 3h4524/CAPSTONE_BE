@@ -12,25 +12,23 @@ public sealed class RefreshToken : AggregateRoot
     }
 
     private RefreshToken(
-        Guid userId,
+        int sellerId,
         string tokenHash,
         string jwtId,
         DateTimeOffset expiresAtUtc,
-        DateTimeOffset createdAtUtc,
-        string? createdByIp)
+        DateTimeOffset createdAtUtc)
     {
-        UserId = userId;
+        SellerId = sellerId;
         TokenHash = tokenHash;
         JwtId = jwtId;
         ExpiresAtUtc = expiresAtUtc;
         CreatedAtUtc = createdAtUtc;
-        CreatedByIp = createdByIp;
     }
 
     /// <summary>
-    /// Gets the user identifier that owns the token.
+    /// Gets the seller identifier that owns the token.
     /// </summary>
-    public Guid UserId { get; private set; }
+    public int SellerId { get; private set; }
 
     /// <summary>
     /// Gets the hashed refresh token value.
@@ -53,19 +51,9 @@ public sealed class RefreshToken : AggregateRoot
     public DateTimeOffset CreatedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the IP address that created the token.
-    /// </summary>
-    public string? CreatedByIp { get; private set; }
-
-    /// <summary>
     /// Gets the revocation timestamp.
     /// </summary>
     public DateTimeOffset? RevokedAtUtc { get; private set; }
-
-    /// <summary>
-    /// Gets the IP address that revoked the token.
-    /// </summary>
-    public string? RevokedByIp { get; private set; }
 
     /// <summary>
     /// Gets the hash of the token that replaced this one.
@@ -91,17 +79,18 @@ public sealed class RefreshToken : AggregateRoot
     /// Creates a refresh token entity.
     /// </summary>
     public static RefreshToken Create(
-        Guid userId,
+        int sellerId,
         string tokenHash,
         string jwtId,
         DateTimeOffset expiresAtUtc,
-        DateTimeOffset createdAtUtc,
-        string? createdByIp)
+        DateTimeOffset createdAtUtc)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tokenHash);
         ArgumentException.ThrowIfNullOrWhiteSpace(jwtId);
 
-        return new RefreshToken(userId, tokenHash, jwtId, expiresAtUtc, createdAtUtc, createdByIp);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sellerId);
+
+        return new RefreshToken(sellerId, tokenHash, jwtId, expiresAtUtc, createdAtUtc);
     }
 
     /// <summary>
@@ -119,7 +108,6 @@ public sealed class RefreshToken : AggregateRoot
     /// </summary>
     public void Revoke(
         DateTimeOffset revokedAtUtc,
-        string? revokedByIp,
         string reason,
         string? replacedByTokenHash = null)
     {
@@ -131,7 +119,6 @@ public sealed class RefreshToken : AggregateRoot
         }
 
         RevokedAtUtc = revokedAtUtc;
-        RevokedByIp = revokedByIp;
         ReasonRevoked = reason;
         ReplacedByTokenHash = replacedByTokenHash;
         ConcurrencyStamp = Guid.NewGuid().ToString("N");

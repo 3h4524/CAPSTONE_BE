@@ -1,5 +1,5 @@
 using System.Text.Json;
-using APCS.Application.Common.Interfaces;
+using APCS.Application.Abstractions.Caching;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Options;

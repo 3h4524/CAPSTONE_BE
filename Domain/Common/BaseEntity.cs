@@ -8,5 +8,5 @@ public abstract class BaseEntity
     /// <summary>
     /// Gets the entity identifier.
     /// </summary>
-    public Guid Id { get; protected init; } = Guid.NewGuid();
+    public int Id { get; protected set; }
 }

@@ -1,5 +1,5 @@
-using APCS.Application.Common.Interfaces;
-using APCS.Application.Common.Models;
+using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Authentication.Models;
 using APCS.Common.Constants;
 using APCS.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
@@ -10,9 +10,9 @@ namespace APCS.Infrastructure.Services;
 /// Implements account operations with ASP.NET Core Identity.
 /// </summary>
 public sealed class IdentityService(
-    UserManager<ApplicationUser> userManager,
-    SignInManager<ApplicationUser> signInManager,
-    RoleManager<IdentityRole<Guid>> roleManager,
+    UserManager<Seller> userManager,
+    SignInManager<Seller> signInManager,
+    RoleManager<IdentityRole<int>> roleManager,
     TimeProvider timeProvider)
     : IIdentityService
 {
@@ -27,20 +27,19 @@ public sealed class IdentityService(
     public async Task<IdentityOperationResult> CreateUserAsync(
         string email,
         string password,
-        string? fullName,
+        string fullName,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var user = new ApplicationUser
+        var user = new Seller
         {
-            Id = Guid.NewGuid(),
             UserName = email,
             Email = email,
             FullName = fullName,
             EmailConfirmed = true,
-            IsActive = true,
-            CreatedAtUtc = timeProvider.GetUtcNow()
+            EmailVerifiedAtUtc = timeProvider.GetUtcNow(),
+            AccountStatus = "active"
         };
 
         var createResult = await userManager.CreateAsync(user, password);
@@ -76,7 +75,7 @@ public sealed class IdentityService(
     }
 
     /// <inheritdoc />
-    public async Task<IdentityUserInfo?> FindByIdAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<IdentityUserInfo?> FindByIdAsync(int userId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var user = await userManager.FindByIdAsync(userId.ToString());
@@ -86,7 +85,7 @@ public sealed class IdentityService(
 
     /// <inheritdoc />
     public async Task<CredentialValidationResult> ValidateCredentialsAsync(
-        Guid userId,
+        int userId,
         string password,
         CancellationToken cancellationToken = default)
     {
@@ -104,7 +103,7 @@ public sealed class IdentityService(
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyCollection<string>> GetRolesAsync(Guid userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyCollection<string>> GetRolesAsync(int userId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var user = await userManager.FindByIdAsync(userId.ToString());
@@ -118,7 +117,7 @@ public sealed class IdentityService(
     }
 
     /// <inheritdoc />
-    public async Task TouchLastLoginAsync(Guid userId, DateTimeOffset utcNow, CancellationToken cancellationToken = default)
+    public async Task TouchLastLoginAsync(int userId, DateTimeOffset utcNow, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var user = await userManager.FindByIdAsync(userId.ToString());
@@ -139,10 +138,7 @@ public sealed class IdentityService(
             return IdentityOperationResult.Success();
         }
 
-        var result = await roleManager.CreateAsync(new IdentityRole<Guid>(roleName)
-        {
-            Id = Guid.NewGuid()
-        });
+        var result = await roleManager.CreateAsync(new IdentityRole<int>(roleName));
 
         if (!result.Succeeded && await roleManager.RoleExistsAsync(roleName))
         {
@@ -152,7 +148,7 @@ public sealed class IdentityService(
         return ToOperationResult(result);
     }
 
-    private async Task<IdentityUserInfo> MapUserAsync(ApplicationUser user)
+    private async Task<IdentityUserInfo> MapUserAsync(Seller user)
     {
         var isLockedOut = await userManager.IsLockedOutAsync(user);
         var email = user.Email ?? user.UserName ?? string.Empty;

@@ -1,9 +1,9 @@
 using APCS.Api.Extensions;
-using APCS.Application.UseCases.Auth.UC01_Register;
-using APCS.Application.UseCases.Auth.UC02_Login;
-using APCS.Application.UseCases.Auth.UC02b_RefreshToken;
-using APCS.Application.UseCases.Auth.UC02c_Logout;
-using APCS.Application.UseCases.Auth.UC02d_GetCurrentUser;
+using APCS.Application.Features.Auth.Commands.Login;
+using APCS.Application.Features.Auth.Commands.Logout;
+using APCS.Application.Features.Auth.Commands.RefreshToken;
+using APCS.Application.Features.Auth.Commands.Register;
+using APCS.Application.Features.Auth.Queries.GetCurrentUser;
 using APCS.Common.Constants;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -26,11 +26,9 @@ public sealed class AuthController(ISender sender) : ControllerBase
     [ProducesResponseType(typeof(RegisterResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> Register(RegisterRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Register(RegisterCommand command, CancellationToken cancellationToken)
     {
-        var result = await sender.Send(
-            new RegisterCommand(request.Email, request.Password, request.FullName, GetIpAddress()),
-            cancellationToken);
+        var result = await sender.Send(command, cancellationToken);
 
         if (result.IsFailure)
         {
@@ -50,11 +48,9 @@ public sealed class AuthController(ISender sender) : ControllerBase
     [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
-    public async Task<IActionResult> Login(LoginRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Login(LoginCommand command, CancellationToken cancellationToken)
     {
-        var result = await sender.Send(
-            new LoginCommand(request.Email, request.Password, GetIpAddress()),
-            cancellationToken);
+        var result = await sender.Send(command, cancellationToken);
 
         if (result.IsFailure)
         {
@@ -76,7 +72,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
     {
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
-        var result = await sender.Send(new RefreshTokenCommand(refreshToken, GetIpAddress()), cancellationToken);
+        var result = await sender.Send(new RefreshTokenCommand(refreshToken), cancellationToken);
 
         if (result.IsFailure)
         {
@@ -99,7 +95,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     public async Task<IActionResult> Logout(CancellationToken cancellationToken)
     {
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
-        var result = await sender.Send(new LogoutCommand(refreshToken, GetIpAddress()), cancellationToken);
+        var result = await sender.Send(new LogoutCommand(refreshToken), cancellationToken);
 
         ClearRefreshTokenCookie();
 
@@ -143,16 +139,4 @@ public sealed class AuthController(ISender sender) : ControllerBase
             Path = "/"
         });
     }
-
-    private string? GetIpAddress() => HttpContext.Connection.RemoteIpAddress?.ToString();
 }
-
-/// <summary>
-/// Represents a register request.
-/// </summary>
-public sealed record RegisterRequest(string Email, string Password, string? FullName);
-
-/// <summary>
-/// Represents a login request.
-/// </summary>
-public sealed record LoginRequest(string Email, string Password);
