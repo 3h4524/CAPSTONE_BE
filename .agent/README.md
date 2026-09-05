@@ -22,9 +22,7 @@
 ├── workflows/
 │   └── feature-development.md
 ├── context/                     # stable, non-derivable context only
-└── skills/
-    └── auth-jwt/
-        └── SKILL.md
+└── skills/                      # triggerable capabilities; none defined yet
 ```
 
 ## Folder responsibilities
@@ -46,6 +44,8 @@ Do not store scan dates, implemented-feature inventories, project trees, or plan
 ### `skills/`
 
 Triggerable APCS-specific capabilities with non-obvious operational knowledge. Skills must be narrowly described, reference canonical documentation, and avoid vendoring generic framework manuals.
+
+No skill is defined yet. The folder is created when a qualifying capability exists; empty directories may be absent from Git.
 
 ## Admission checklist
 

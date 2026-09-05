@@ -31,7 +31,7 @@ Read [Architecture](docs/ARCHITECTURE.md) before changing layer boundaries or ad
 
 ## Prerequisites
 
-- .NET SDK `8.0.421` (pinned by `global.json`).
+- .NET 8 SDK. The exact patch version is pinned by [`global.json`](global.json); install that version or a later patch.
 - PostgreSQL reachable through `ConnectionStrings__DefaultConnection`.
 - Redis. The repository's Docker Compose file runs Redis 7 locally.
 - Docker Desktop or another container runtime if using the provided Redis service.
