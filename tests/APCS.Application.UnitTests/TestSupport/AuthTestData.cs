@@ -12,9 +12,9 @@ internal static class AuthTestData
     public static readonly DateTimeOffset UtcNow = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
 
     public static readonly IdentityUserInfo ActiveUser = new(
-        42,
-        "seller@example.com",
-        "Seller Name",
+        Guid.Parse("11111111-1111-1111-1111-111111111111"),
+        "user@example.com",
+        "User Name",
         true,
         false);
 
@@ -22,9 +22,9 @@ internal static class AuthTestData
 
     public static FakeTimeProvider CreateTimeProvider() => new(UtcNow);
 
-    public static RefreshToken CreateRefreshToken(
+    public static AuthToken CreateRefreshToken(
         DateTimeOffset? expiresAtUtc = null,
-        string tokenHash = "presented-token-hash") => RefreshToken.Create(
+        string tokenHash = "presented-token-hash") => AuthToken.CreateRefreshToken(
         ActiveUser.Id,
         tokenHash,
         "old-jwt-id",

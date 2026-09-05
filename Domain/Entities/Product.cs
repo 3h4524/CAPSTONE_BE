@@ -3,14 +3,14 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a seller-owned product being processed by APCS.
+/// Represents a print-on-demand product being generated for a user.
 /// </summary>
 public sealed class Product : SoftDeletableEntity
 {
-    private readonly List<BatchJobProduct> _batchItems = [];
-    private readonly List<AiPrompt> _aiPrompts = [];
+    private readonly List<AiPrompt> _prompts = [];
     private readonly List<DesignImage> _designImages = [];
     private readonly List<MockupImage> _mockupImages = [];
+    private readonly List<ProductMockupTemplate> _mockupTemplates = [];
     private readonly List<PromoVideo> _promoVideos = [];
 
     private Product()
@@ -18,14 +18,14 @@ public sealed class Product : SoftDeletableEntity
     }
 
     /// <summary>
-    /// Gets the identifier of the seller that owns the product.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the source batch job identifier, when applicable.
+    /// Gets the source design template identifier, when one was chosen.
     /// </summary>
-    public int? BatchJobId { get; private set; }
+    public Guid? DesignTemplateId { get; private set; }
 
     /// <summary>
     /// Gets the product name.
@@ -38,52 +38,82 @@ public sealed class Product : SoftDeletableEntity
     public string ProductType { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the product niche category.
+    /// Gets the target niche category.
     /// </summary>
     public string? NicheCategory { get; private set; }
 
     /// <summary>
-    /// Gets the original product description supplied for generation.
+    /// Gets the target audience.
+    /// </summary>
+    public string? TargetAudience { get; private set; }
+
+    /// <summary>
+    /// Gets the seller-provided product description used to drive generation.
     /// </summary>
     public string InputDescription { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the current product processing status.
+    /// Gets the requested on-design text.
+    /// </summary>
+    public string? DesiredDesignText { get; private set; }
+
+    /// <summary>
+    /// Gets the requested style preset.
+    /// </summary>
+    public string? StylePreset { get; private set; }
+
+    /// <summary>
+    /// Gets the primary keywords.
+    /// </summary>
+    public string? MainKeywords { get; private set; }
+
+    /// <summary>
+    /// Gets the colour preference.
+    /// </summary>
+    public string? ColorPreference { get; private set; }
+
+    /// <summary>
+    /// Gets free-form seller notes.
+    /// </summary>
+    public string? Notes { get; private set; }
+
+    /// <summary>
+    /// Gets the pipeline processing status.
     /// </summary>
     public string ProcessingStatus { get; private set; } = "pending";
 
     /// <summary>
-    /// Gets the source batch job, when applicable.
+    /// Gets the source design template, when one was chosen.
     /// </summary>
-    public BatchJob? BatchJob { get; private set; }
+    public DesignTemplate? DesignTemplate { get; private set; }
 
     /// <summary>
-    /// Gets the batch queue items associated with this product.
+    /// Gets the listing content generated for this product.
     /// </summary>
-    public IReadOnlyCollection<BatchJobProduct> BatchItems => _batchItems.AsReadOnly();
+    public ListingContent? ListingContent { get; private set; }
 
     /// <summary>
-    /// Gets the AI prompts generated for this product.
+    /// Gets the prompts generated for this product.
     /// </summary>
-    public IReadOnlyCollection<AiPrompt> AiPrompts => _aiPrompts.AsReadOnly();
+    public IReadOnlyCollection<AiPrompt> Prompts => _prompts.AsReadOnly();
 
     /// <summary>
-    /// Gets the generated design images.
+    /// Gets the design images generated for this product.
     /// </summary>
     public IReadOnlyCollection<DesignImage> DesignImages => _designImages.AsReadOnly();
 
     /// <summary>
-    /// Gets the generated mockup images.
+    /// Gets the mockups rendered for this product.
     /// </summary>
     public IReadOnlyCollection<MockupImage> MockupImages => _mockupImages.AsReadOnly();
 
     /// <summary>
-    /// Gets the generated promotional videos.
+    /// Gets the mockup templates selected for this product.
     /// </summary>
-    public IReadOnlyCollection<PromoVideo> PromoVideos => _promoVideos.AsReadOnly();
+    public IReadOnlyCollection<ProductMockupTemplate> MockupTemplates => _mockupTemplates.AsReadOnly();
 
     /// <summary>
-    /// Gets the generated listing content, when available.
+    /// Gets the promotional videos rendered for this product.
     /// </summary>
-    public ListingContent? ListingContent { get; private set; }
+    public IReadOnlyCollection<PromoVideo> PromoVideos => _promoVideos.AsReadOnly();
 }

@@ -5,7 +5,7 @@ APCS (AI-Powered POD Content Studio) is a graduation-project backend for creatin
 ## Current capabilities
 
 - Register, login, refresh-token rotation, logout, and current-user endpoints.
-- ASP.NET Core Identity backed by PostgreSQL with integer seller identifiers.
+- ASP.NET Core Identity backed by PostgreSQL with GUID user identifiers.
 - Hashed refresh-token storage, revocation, and optimistic concurrency handling.
 - MediatR command/query handlers with FluentValidation and logging pipeline behaviours.
 - Global exception handling and `ProblemDetails` responses.

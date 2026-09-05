@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Moq;
 
 namespace APCS.Infrastructure.UnitTests.TestSupport;
@@ -12,39 +11,39 @@ internal sealed class IdentityManagerMocks
 {
     public IdentityManagerMocks()
     {
-        var userStore = new Mock<IUserStore<Seller>>();
-        UserManager = new Mock<UserManager<Seller>>(
+        var userStore = new Mock<IUserStore<User>>();
+        UserManager = new Mock<UserManager<User>>(
             userStore.Object,
             Microsoft.Extensions.Options.Options.Create(new IdentityOptions()),
-            new PasswordHasher<Seller>(),
-            Array.Empty<IUserValidator<Seller>>(),
-            Array.Empty<IPasswordValidator<Seller>>(),
+            new PasswordHasher<User>(),
+            Array.Empty<IUserValidator<User>>(),
+            Array.Empty<IPasswordValidator<User>>(),
             new UpperInvariantLookupNormalizer(),
             new IdentityErrorDescriber(),
             Mock.Of<IServiceProvider>(),
-            Mock.Of<ILogger<UserManager<Seller>>>());
+            Mock.Of<ILogger<UserManager<User>>>());
 
-        SignInManager = new Mock<SignInManager<Seller>>(
+        SignInManager = new Mock<SignInManager<User>>(
             UserManager.Object,
             Mock.Of<IHttpContextAccessor>(),
-            Mock.Of<IUserClaimsPrincipalFactory<Seller>>(),
+            Mock.Of<IUserClaimsPrincipalFactory<User>>(),
             Microsoft.Extensions.Options.Options.Create(new IdentityOptions()),
-            Mock.Of<ILogger<SignInManager<Seller>>>(),
+            Mock.Of<ILogger<SignInManager<User>>>(),
             Mock.Of<IAuthenticationSchemeProvider>(),
-            Mock.Of<IUserConfirmation<Seller>>());
+            Mock.Of<IUserConfirmation<User>>());
 
-        var roleStore = new Mock<IRoleStore<IdentityRole<int>>>();
-        RoleManager = new Mock<RoleManager<IdentityRole<int>>>(
+        var roleStore = new Mock<IRoleStore<Role>>();
+        RoleManager = new Mock<RoleManager<Role>>(
             roleStore.Object,
-            Array.Empty<IRoleValidator<IdentityRole<int>>>(),
+            Array.Empty<IRoleValidator<Role>>(),
             new UpperInvariantLookupNormalizer(),
             new IdentityErrorDescriber(),
-            Mock.Of<ILogger<RoleManager<IdentityRole<int>>>>());
+            Mock.Of<ILogger<RoleManager<Role>>>());
     }
 
-    public Mock<UserManager<Seller>> UserManager { get; }
+    public Mock<UserManager<User>> UserManager { get; }
 
-    public Mock<SignInManager<Seller>> SignInManager { get; }
+    public Mock<SignInManager<User>> SignInManager { get; }
 
-    public Mock<RoleManager<IdentityRole<int>>> RoleManager { get; }
+    public Mock<RoleManager<Role>> RoleManager { get; }
 }

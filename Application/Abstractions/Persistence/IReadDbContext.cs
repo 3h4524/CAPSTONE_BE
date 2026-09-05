@@ -1,54 +1,20 @@
-using APCS.Domain.Entities;
-
 namespace APCS.Application.Abstractions.Persistence;
 
 /// <summary>
 /// Exposes read-only query roots for application queries.
 /// </summary>
+/// <remarks>
+/// Queries returned here are untracked and always evaluated against the database. They therefore
+/// do not observe writes that have been staged through <see cref="IUnitOfWork"/> but not yet
+/// saved: a handler that adds an entity and reads it back before calling
+/// <see cref="IUnitOfWork.SaveChangesAsync"/> will not find it.
+/// </remarks>
 public interface IReadDbContext
 {
-    IQueryable<SellerProfile> SellerProfiles { get; }
-
-    IQueryable<ApiKey> ApiKeys { get; }
-
-    IQueryable<SubscriptionPlan> SubscriptionPlans { get; }
-
-    IQueryable<Subscription> Subscriptions { get; }
-
-    IQueryable<PaymentMethod> PaymentMethods { get; }
-
-    IQueryable<Invoice> Invoices { get; }
-
-    IQueryable<UsageStatistic> UsageStatistics { get; }
-
-    IQueryable<BatchJob> BatchJobs { get; }
-    IQueryable<BatchJobProduct> BatchJobProducts { get; }
-    IQueryable<BatchJobLog> BatchJobLogs { get; }
-    IQueryable<Product> Products { get; }
-    IQueryable<DesignTemplate> DesignTemplates { get; }
-    IQueryable<AiPrompt> AiPrompts { get; }
-    IQueryable<DesignImage> DesignImages { get; }
-    IQueryable<MockupImage> MockupImages { get; }
-    IQueryable<VideoTemplate> VideoTemplates { get; }
-    IQueryable<MusicTrack> MusicTracks { get; }
-    IQueryable<PromoVideo> PromoVideos { get; }
-    IQueryable<ListingContent> ListingContents { get; }
-    IQueryable<ListingTitle> ListingTitles { get; }
-    IQueryable<ListingTag> ListingTags { get; }
-    IQueryable<ListingDescription> ListingDescriptions { get; }
-    IQueryable<SeoScore> SeoScores { get; }
-    IQueryable<ListingGenerationHistory> ListingGenerationHistory { get; }
-    IQueryable<ExportPackage> ExportPackages { get; }
-    IQueryable<PrintifyIntegration> PrintifyIntegrations { get; }
-    IQueryable<PrintifyUploadLog> PrintifyUploadLogs { get; }
-    IQueryable<EtsyIntegration> EtsyIntegrations { get; }
-    IQueryable<EtsyUploadLog> EtsyUploadLogs { get; }
-    IQueryable<SocialMediaShare> SocialMediaShares { get; }
-    IQueryable<NotificationAlert> NotificationAlerts { get; }
-    IQueryable<SupportTicket> SupportTickets { get; }
-    IQueryable<TicketReply> TicketReplies { get; }
-    IQueryable<Admin> Admins { get; }
-    IQueryable<SystemConfiguration> SystemConfigurations { get; }
-    IQueryable<AuditLog> AuditLogs { get; }
-    IQueryable<SystemMetric> SystemMetrics { get; }
+    /// <summary>
+    /// Starts an untracked query over the given entity type.
+    /// </summary>
+    /// <typeparam name="TEntity">The entity to query.</typeparam>
+    IQueryable<TEntity> Query<TEntity>()
+        where TEntity : class;
 }

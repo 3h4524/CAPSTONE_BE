@@ -23,89 +23,11 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("APCS.Domain.Entities.Admin", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("Email")
-                        .IsRequired()
-                        .HasMaxLength(254)
-                        .HasColumnType("character varying(254)")
-                        .HasColumnName("email");
-
-                    b.Property<string>("FullName")
-                        .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
-                        .HasColumnName("full_name");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("is_active");
-
-                    b.Property<DateTimeOffset?>("LastLoginAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_login_at");
-
-                    b.Property<string>("PasswordHash")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("password_hash");
-
-                    b.Property<string>("Permissions")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("permissions")
-                        .HasDefaultValueSql("'{}'::jsonb");
-
-                    b.Property<string>("Role")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("role");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.HasKey("Id")
-                        .HasName("pk_admins");
-
-                    b.HasIndex("Email")
-                        .IsUnique()
-                        .HasDatabaseName("ix_admins_email");
-
-                    b.HasIndex("Role")
-                        .HasDatabaseName("ix_admins_role");
-
-                    b.ToTable("admins", (string)null);
-                });
-
             modelBuilder.Entity("APCS.Domain.Entities.AiPrompt", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -113,8 +35,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<int?>("DesignTemplateId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("DesignTemplateId")
+                        .HasColumnType("uuid")
                         .HasColumnName("design_template_id");
 
                     b.Property<string>("FewShotExamples")
@@ -137,8 +59,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("original_description");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<string>("SystemPrompt")
@@ -149,7 +71,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_at")
+                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<string>("UserNotes")
@@ -172,23 +94,17 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_ai_prompts_product_id");
 
                     b.HasIndex("ProductId", "VersionNumber")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_ai_prompts_product_id_version_number");
+                        .IsUnique()
+                        .HasDatabaseName("uq_ai_prompts_product_version");
 
-                    b.ToTable("ai_prompts", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_ai_prompts_version", "version_number > 0");
-                        });
+                    b.ToTable("ai_prompts", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ApiKey", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -207,7 +123,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTimeOffset?>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at");
+                        .HasColumnName("expires_at_utc");
 
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
@@ -217,9 +133,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("KeyIdentifier")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("key_identifier");
+
+                    b.Property<string>("KeyLast4")
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)")
+                        .HasColumnName("key_last4");
 
                     b.Property<string>("KeyValueEncrypted")
                         .IsRequired()
@@ -228,16 +149,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTimeOffset?>("LastUsedAtUtc")
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_used_at");
-
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                        .HasColumnName("last_used_at_utc");
 
                     b.Property<string>("ServiceProvider")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("service_provider");
 
                     b.Property<int>("UsageCount")
@@ -250,46 +167,38 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("usage_limit");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_api_keys");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_api_keys_seller_id");
 
                     b.HasIndex("ServiceProvider")
                         .HasDatabaseName("ix_api_keys_service_provider");
 
-                    b.HasIndex("SellerId", "ServiceProvider")
-                        .IsUnique()
-                        .HasDatabaseName("ix_api_keys_seller_id_service_provider")
-                        .HasFilter("is_active = TRUE AND deleted_at IS NULL");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_api_keys_user_id");
 
-                    b.ToTable("api_keys", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_api_keys_usage_count", "usage_count >= 0");
-
-                            t.HasCheckConstraint("ck_api_keys_usage_limit", "usage_limit IS NULL OR usage_limit >= 0");
-                        });
+                    b.ToTable("api_keys", (string)null);
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.AuditLog", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.ApiUsageRecord", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("batch_job_id");
 
-                    b.Property<string>("ActionType")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("action_type");
-
-                    b.Property<int?>("AdminId")
-                        .HasColumnType("integer")
-                        .HasColumnName("admin_id");
+                    b.Property<decimal>("CostUsd")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(12, 6)
+                        .HasColumnType("numeric(12,6)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("cost_usd");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -297,9 +206,114 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("Feature")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("feature");
+
+                    b.Property<int?>("LatencyMs")
+                        .HasColumnType("integer")
+                        .HasColumnName("latency_ms");
+
+                    b.Property<string>("ModelName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("model_name");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderRequestId")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("provider_request_id");
+
+                    b.Property<int>("RequestUnits")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("request_units");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<int?>("TokensInput")
+                        .HasColumnType("integer")
+                        .HasColumnName("tokens_input");
+
+                    b.Property<int?>("TokensOutput")
+                        .HasColumnType("integer")
+                        .HasColumnName("tokens_output");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_api_usage_records");
+
+                    b.HasIndex("BatchJobId")
+                        .HasDatabaseName("ix_api_usage_records_batch_job_id");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_api_usage_records_product_id");
+
+                    b.HasIndex("ProviderRequestId")
+                        .HasDatabaseName("ix_api_usage_records_provider_request_id");
+
+                    b.HasIndex("Provider", "Feature")
+                        .HasDatabaseName("ix_api_usage_records_provider_feature");
+
+                    b.HasIndex("UserId", "CreatedAtUtc")
+                        .HasDatabaseName("ix_api_usage_records_user_id_created_at");
+
+                    b.ToTable("api_usage_records", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_api_usage_feature", "feature IN ('image_generation', 'mockup', 'video', 'listing', 'seo', 'integration')");
+
+                            t.HasCheckConstraint("chk_api_usage_provider", "provider IN ('leonardo', 'stable_diffusion', 'openai', 'gemini', 'printify', 'etsy', 'ffmpeg_local')");
+
+                            t.HasCheckConstraint("chk_api_usage_status", "status IN ('success', 'failed', 'timeout')");
+                        });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.AuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActionType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("action_type");
+
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("deleted_at");
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<IPAddress>("IpAddress")
                         .HasColumnType("inet")
@@ -313,19 +327,15 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("old_value");
 
-                    b.Property<int>("ResourceId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("ResourceId")
+                        .HasColumnType("uuid")
                         .HasColumnName("resource_id");
 
                     b.Property<string>("ResourceType")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("resource_type");
-
-                    b.Property<int?>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
 
                     b.Property<string>("UserAgent")
                         .HasColumnType("text")
@@ -334,15 +344,11 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_audit_logs");
 
-                    b.HasIndex("AdminId")
-                        .HasDatabaseName("ix_audit_logs_admin_id");
+                    b.HasIndex("ActorUserId")
+                        .HasDatabaseName("ix_audit_logs_actor_user_id");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_audit_logs_created_at");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_audit_logs_seller_id");
 
                     b.HasIndex("ResourceType", "ResourceId")
                         .HasDatabaseName("ix_audit_logs_resource_type_resource_id");
@@ -350,19 +356,121 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.ToTable("audit_logs", (string)null);
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.BatchJob", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.AuthToken", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("CreatedByIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)")
+                        .HasColumnName("created_by_ip");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("JwtId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("jwt_id");
+
+                    b.Property<string>("ReasonRevoked")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("reason_revoked");
+
+                    b.Property<string>("ReplacedByTokenHash")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("replaced_by_token_hash");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<string>("RevokedByIp")
+                        .HasMaxLength(45)
+                        .HasColumnType("character varying(45)")
+                        .HasColumnName("revoked_by_ip");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<string>("TokenType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("token_type");
+
+                    b.Property<DateTimeOffset?>("UsedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("used_at_utc");
+
+                    b.Property<string>("UserAgent")
+                        .HasColumnType("text")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_auth_tokens");
+
+                    b.HasIndex("ExpiresAtUtc")
+                        .HasDatabaseName("ix_auth_tokens_expires_at_utc");
+
+                    b.HasIndex("ReplacedByTokenHash")
+                        .HasDatabaseName("ix_auth_tokens_replaced_by_token_hash");
+
+                    b.HasIndex("RevokedAtUtc")
+                        .HasDatabaseName("ix_auth_tokens_revoked_at_utc");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_auth_tokens_token_hash");
+
+                    b.HasIndex("UserId", "TokenType")
+                        .HasDatabaseName("ix_auth_tokens_user_id_token_type");
+
+                    b.ToTable("auth_tokens", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_auth_tokens_refresh_jwt_id", "token_type <> 'refresh' OR jwt_id IS NOT NULL");
+
+                            t.HasCheckConstraint("chk_auth_tokens_revoked_reason", "revoked_at IS NULL OR reason_revoked IS NOT NULL");
+
+                            t.HasCheckConstraint("chk_auth_tokens_type", "token_type IN ('password_reset', 'email_verification', 'refresh')");
+                        });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.BatchJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
 
                     b.Property<decimal>("ActualCostUsd")
                         .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 2)
-                        .HasColumnType("numeric(10,2)")
+                        .HasPrecision(12, 6)
+                        .HasColumnType("numeric(12,6)")
                         .HasDefaultValue(0m)
                         .HasColumnName("actual_cost_usd");
 
@@ -410,15 +518,15 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
 
                     b.Property<string>("Priority")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("normal")
                         .HasColumnName("priority");
 
@@ -435,10 +543,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(0m)
                         .HasColumnName("progress_percentage");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<int>("SkippedProducts")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
@@ -452,8 +556,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("SourceFileType")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("source_file_type");
 
                     b.Property<string>("SourceFileUrl")
@@ -467,8 +571,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("draft")
                         .HasColumnName("status");
 
@@ -484,15 +588,15 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_batch_jobs");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_batch_jobs_created_at");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_batch_jobs_seller_id");
 
                     b.HasIndex("StartedAtUtc")
                         .HasDatabaseName("ix_batch_jobs_started_at");
@@ -500,39 +604,38 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_batch_jobs_status");
 
-                    b.HasIndex("SellerId", "Status")
-                        .HasDatabaseName("ix_batch_jobs_seller_id_status");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_batch_jobs_user_id");
+
+                    b.HasIndex("UserId", "Status")
+                        .HasDatabaseName("ix_batch_jobs_user_id_status");
 
                     b.ToTable("batch_jobs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_batch_jobs_costs", "estimated_cost_usd >= 0 AND actual_cost_usd >= 0");
+                            t.HasCheckConstraint("chk_batch_jobs_priority", "priority IN ('low', 'normal', 'high')");
 
-                            t.HasCheckConstraint("ck_batch_jobs_counts", "total_products >= 0 AND processed_products >= 0 AND failed_products >= 0 AND skipped_products >= 0");
+                            t.HasCheckConstraint("chk_batch_jobs_source_type", "source_file_type IN ('csv', 'xlsx', 'manual')");
 
-                            t.HasCheckConstraint("ck_batch_jobs_progress", "progress_percentage BETWEEN 0 AND 100");
+                            t.HasCheckConstraint("chk_batch_jobs_status", "status IN ('draft', 'validating', 'ready', 'queued', 'running', 'paused', 'cancelling', 'cancelled', 'partially_completed', 'completed', 'failed')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.BatchJobLog", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
-                    b.Property<string>("ApiCallIdentifier")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("api_call_identifier");
-
-                    b.Property<int>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
-                    b.Property<int?>("BatchJobProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_product_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -551,14 +654,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("EventType")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("event_type");
 
                     b.Property<string>("LogLevel")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("log_level");
 
                     b.Property<string>("Message")
@@ -569,6 +672,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_batch_job_logs");
 
+                    b.HasIndex("ApiUsageRecordId")
+                        .HasDatabaseName("ix_batch_job_logs_api_usage_record_id");
+
                     b.HasIndex("BatchJobId")
                         .HasDatabaseName("ix_batch_job_logs_batch_job_id");
 
@@ -576,7 +682,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_batch_job_logs_batch_job_product_id");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_batch_job_logs_created_at");
 
                     b.HasIndex("LogLevel")
@@ -584,21 +689,18 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("batch_job_logs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_batch_job_logs_duration", "duration_ms IS NULL OR duration_ms >= 0");
+                            t.HasCheckConstraint("chk_batch_job_logs_level", "log_level IN ('debug', 'info', 'warning', 'error', 'critical')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.BatchJobProduct", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
@@ -611,6 +713,11 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<string>("CurrentStep")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("current_step");
+
                     b.Property<decimal?>("DurationSeconds")
                         .HasPrecision(10, 2)
                         .HasColumnType("numeric(10,2)")
@@ -620,9 +727,13 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("error_message");
 
-                    b.Property<int?>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
+
+                    b.Property<string>("RawRowData")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("raw_row_data");
 
                     b.Property<int>("RetryCount")
                         .ValueGeneratedOnAdd()
@@ -645,8 +756,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("status");
 
@@ -668,52 +779,43 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_batch_job_products_status");
 
+                    b.HasIndex("BatchJobId", "SequenceOrder")
+                        .IsUnique()
+                        .HasDatabaseName("uq_batch_job_product_order");
+
                     b.HasIndex("BatchJobId", "Status")
                         .HasDatabaseName("ix_batch_job_products_batch_job_id_status");
 
                     b.ToTable("batch_job_products", null, t =>
                         {
-                            t.HasCheckConstraint("ck_batch_job_products_duration", "duration_seconds IS NULL OR duration_seconds >= 0");
-
-                            t.HasCheckConstraint("ck_batch_job_products_retry_count", "retry_count >= 0");
-
-                            t.HasCheckConstraint("ck_batch_job_products_sequence", "sequence_order >= 0");
+                            t.HasCheckConstraint("chk_batch_job_products_status", "status IN ('pending', 'validating', 'queued', 'generating_image', 'image_review_required', 'generating_mockup', 'generating_video', 'generating_listing', 'review_required', 'approved', 'exported', 'published', 'failed', 'skipped', 'cancelled')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.DesignImage", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("AiPromptId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("AiPromptId")
+                        .HasColumnType("uuid")
                         .HasColumnName("ai_prompt_id");
 
-                    b.Property<decimal>("ApiCostUsd")
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
-                        .HasColumnName("api_cost_usd");
-
-                    b.Property<string>("ApiResponseId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("api_response_id");
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
                     b.Property<string>("ApprovalStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("approval_status");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -728,8 +830,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("FileFormat")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
                         .HasColumnName("file_format");
 
                     b.Property<decimal>("FileSizeMb")
@@ -748,18 +850,13 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("ImageGeneratorModel")
                         .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("image_generator_model");
 
                     b.Property<int>("ImageHeightPx")
                         .HasColumnType("integer")
                         .HasColumnName("image_height_px");
-
-                    b.Property<string>("ImageLocalPath")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("image_local_path");
 
                     b.Property<string>("ImageUrl")
                         .IsRequired()
@@ -776,14 +873,28 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(false)
                         .HasColumnName("is_final");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<decimal?>("QualityScore")
                         .HasPrecision(3, 2)
                         .HasColumnType("numeric(3,2)")
                         .HasColumnName("quality_score");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageProvider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("s3")
+                        .HasColumnName("storage_provider");
 
                     b.Property<int?>("UserRating")
                         .HasColumnType("integer")
@@ -801,6 +912,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("AiPromptId")
                         .HasDatabaseName("ix_design_images_ai_prompt_id");
 
+                    b.HasIndex("ApiUsageRecordId")
+                        .HasDatabaseName("ix_design_images_api_usage_record_id");
+
                     b.HasIndex("ApprovalStatus")
                         .HasDatabaseName("ix_design_images_approval_status");
 
@@ -808,7 +922,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_design_images_batch_job_id");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_design_images_created_at");
 
                     b.HasIndex("IsFinal")
@@ -817,36 +930,25 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("ProductId")
                         .HasDatabaseName("ix_design_images_product_id");
 
-                    b.HasIndex("QualityScore")
-                        .IsDescending()
-                        .HasDatabaseName("ix_design_images_quality_score");
-
                     b.ToTable("design_images", null, t =>
                         {
-                            t.HasCheckConstraint("ck_design_images_cost", "generation_time_seconds >= 0 AND api_cost_usd >= 0");
+                            t.HasCheckConstraint("chk_design_images_approval", "approval_status IN ('pending', 'approved', 'rejected')");
 
-                            t.HasCheckConstraint("ck_design_images_dimensions", "image_width_px > 0 AND image_height_px > 0");
+                            t.HasCheckConstraint("chk_design_images_quality_score", "quality_score IS NULL OR quality_score BETWEEN 0 AND 1");
 
-                            t.HasCheckConstraint("ck_design_images_file_size", "file_size_mb >= 0");
-
-                            t.HasCheckConstraint("ck_design_images_quality", "quality_score IS NULL OR quality_score BETWEEN 0 AND 1");
-
-                            t.HasCheckConstraint("ck_design_images_rating", "user_rating IS NULL OR user_rating BETWEEN 1 AND 5");
+                            t.HasCheckConstraint("chk_design_images_rating", "user_rating IS NULL OR user_rating BETWEEN 1 AND 5");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.DesignTemplate", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
                     b.Property<string>("ArtStyle")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("art_style");
 
                     b.Property<string>("BasePrompt")
@@ -877,24 +979,26 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsSystemTemplate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_system_template");
+
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
 
                     b.Property<string>("NicheCategory")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("niche_category");
 
                     b.Property<string>("PreviewImageUrl")
                         .HasColumnType("text")
                         .HasColumnName("preview_image_url");
-
-                    b.Property<int?>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
 
                     b.Property<string>("StyleDescription")
                         .HasColumnType("text")
@@ -902,8 +1006,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("type");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -918,32 +1022,35 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(0)
                         .HasColumnName("usage_count");
 
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_design_templates");
 
                     b.HasIndex("ArtStyle")
                         .HasDatabaseName("ix_design_templates_art_style");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_design_templates_seller_id");
-
                     b.HasIndex("Type")
                         .HasDatabaseName("ix_design_templates_type");
 
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_design_templates_user_id");
+
                     b.ToTable("design_templates", null, t =>
                         {
-                            t.HasCheckConstraint("ck_design_templates_usage_count", "usage_count >= 0");
+                            t.HasCheckConstraint("chk_design_templates_art_style", "art_style IN ('vintage', 'minimalist', 'watercolor', 'bold_typography', 'dark_academia', 'funny_quote', 'floral')");
+
+                            t.HasCheckConstraint("chk_design_templates_system_owner", "(user_id IS NULL) = is_system_template");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.EtsyIntegration", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -960,10 +1067,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("etsy_oauth_token_encrypted");
 
+                    b.Property<string>("EtsyRefreshTokenEncrypted")
+                        .HasColumnType("text")
+                        .HasColumnName("etsy_refresh_token_encrypted");
+
                     b.Property<string>("EtsyShopId")
                         .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("etsy_shop_id");
 
                     b.Property<bool>("IsActive")
@@ -971,6 +1082,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
+
+                    b.Property<bool>("IsDefault")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_default");
 
                     b.Property<DateTimeOffset?>("LastSyncAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -980,14 +1097,10 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("oauth_expires_at");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<string>("ShopName")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("shop_name");
 
                     b.Property<int>("TotalListingsCreated")
@@ -1008,31 +1121,27 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_etsy_integrations");
 
                     b.HasIndex("EtsyShopId")
-                        .IsUnique()
                         .HasDatabaseName("ix_etsy_integrations_etsy_shop_id");
 
-                    b.HasIndex("SellerId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_etsy_integrations_seller_id");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_etsy_integrations_user_id");
 
-                    b.ToTable("etsy_integrations", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_etsy_integrations_totals", "total_listings_created >= 0 AND total_listings_updated >= 0");
-                        });
+                    b.ToTable("etsy_integrations", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.EtsyUploadLog", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ApiResponse")
                         .HasColumnType("jsonb")
@@ -1042,13 +1151,17 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("attempted_at");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset?>("ConfirmedByUserAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_by_user_at");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -1060,17 +1173,31 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("error_message");
 
-                    b.Property<int>("EtsyIntegrationId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("EtsyIntegrationId")
+                        .HasColumnType("uuid")
                         .HasColumnName("etsy_integration_id");
 
                     b.Property<string>("EtsyListingId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("etsy_listing_id");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("ListingState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("draft")
+                        .HasColumnName("listing_state");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<bool>("PublishImmediately")
@@ -1092,8 +1219,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("UploadStatus")
                         .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("upload_status");
 
                     b.HasKey("Id")
@@ -1111,23 +1238,28 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("UploadStatus")
                         .HasDatabaseName("ix_etsy_upload_logs_upload_status");
 
+                    b.HasIndex("EtsyIntegrationId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_etsy_idempotency");
+
                     b.ToTable("etsy_upload_logs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_etsy_upload_logs_retry_count", "retry_count >= 0");
+                            t.HasCheckConstraint("chk_etsy_listing_state", "listing_state IN ('draft', 'active')");
+
+                            t.HasCheckConstraint("chk_etsy_publish_needs_confirmation", "publish_immediately = false OR confirmed_by_user_at IS NOT NULL");
+
+                            t.HasCheckConstraint("chk_etsy_upload_status", "upload_status IN ('pending', 'success', 'failed', 'retrying')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ExportPackage", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -1136,7 +1268,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<decimal>("CreationTimeSeconds")
+                    b.Property<decimal?>("CreationTimeSeconds")
                         .HasPrecision(10, 2)
                         .HasColumnType("numeric(10,2)")
                         .HasColumnName("creation_time_seconds");
@@ -1157,11 +1289,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
 
-                    b.Property<string>("FilePath")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("file_path");
-
                     b.Property<decimal?>("FileSizeMb")
                         .HasPrecision(10, 2)
                         .HasColumnType("numeric(10,2)")
@@ -1169,39 +1296,39 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
-
-                    b.Property<string>("PackageContent")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("package_content")
-                        .HasDefaultValueSql("'{}'::jsonb");
-
-                    b.Property<int[]>("ProductIds")
-                        .IsRequired()
-                        .HasColumnType("integer[]")
-                        .HasColumnName("product_ids");
-
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("preparing")
                         .HasColumnName("status");
 
+                    b.Property<string>("StorageKey")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageProvider")
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("s3")
+                        .HasColumnName("storage_provider");
+
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("Id")
                         .HasName("pk_export_packages");
@@ -1212,28 +1339,105 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("ExpiresAtUtc")
                         .HasDatabaseName("ix_export_packages_expires_at");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_export_packages_seller_id");
-
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_export_packages_status");
 
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_export_packages_user_id");
+
                     b.ToTable("export_packages", null, t =>
                         {
-                            t.HasCheckConstraint("ck_export_packages_creation_time", "creation_time_seconds >= 0");
+                            t.HasCheckConstraint("chk_export_packages_status", "status IN ('preparing', 'ready', 'failed', 'expired')");
 
-                            t.HasCheckConstraint("ck_export_packages_file_size", "file_size_mb IS NULL OR file_size_mb >= 0");
+                            t.HasCheckConstraint("chk_export_packages_type", "type IN ('zip_package', 'listing_csv')");
+                        });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ExportPackageItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("error_message");
+
+                    b.Property<Guid>("ExportPackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("export_package_id");
+
+                    b.Property<string>("FolderPathInZip")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("folder_path_in_zip");
+
+                    b.Property<bool>("IncludeDesignImages")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("include_design_images");
+
+                    b.Property<bool>("IncludeListingContent")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("include_listing_content");
+
+                    b.Property<bool>("IncludeMockupImages")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("include_mockup_images");
+
+                    b.Property<bool>("IncludePromoVideo")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("include_promo_video");
+
+                    b.Property<string>("ItemStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("item_status");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_export_package_items");
+
+                    b.HasIndex("ItemStatus")
+                        .HasDatabaseName("ix_export_package_items_item_status");
+
+                    b.HasIndex("ProductId")
+                        .HasDatabaseName("ix_export_package_items_product_id");
+
+                    b.HasIndex("ExportPackageId", "ProductId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_export_package_product");
+
+                    b.ToTable("export_package_items", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_export_item_status", "item_status IN ('pending', 'packed', 'failed', 'skipped')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.Invoice", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<decimal>("AmountUsd")
                         .HasPrecision(10, 2)
@@ -1256,8 +1460,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("InvoiceNumber")
                         .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("invoice_number");
 
                     b.Property<string>("Items")
@@ -1275,25 +1479,21 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("pdf_url");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("draft")
                         .HasColumnName("status");
 
                     b.Property<string>("StripeInvoiceId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("stripe_invoice_id");
 
-                    b.Property<int>("SubscriptionId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid")
                         .HasColumnName("subscription_id");
 
                     b.Property<decimal>("TaxAmount")
@@ -1314,19 +1514,19 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_invoices");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_invoices_created_at");
 
                     b.HasIndex("InvoiceNumber")
                         .IsUnique()
                         .HasDatabaseName("ix_invoices_invoice_number");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_invoices_seller_id");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_invoices_status");
@@ -1334,44 +1534,47 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("SubscriptionId")
                         .HasDatabaseName("ix_invoices_subscription_id");
 
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_invoices_user_id");
+
                     b.ToTable("invoices", null, t =>
                         {
-                            t.HasCheckConstraint("ck_invoices_amounts", "amount_usd >= 0 AND tax_amount >= 0 AND total_amount >= 0");
+                            t.HasCheckConstraint("chk_invoices_status", "status IN ('draft', 'issued', 'paid', 'overdue', 'void', 'refunded')");
 
-                            t.HasCheckConstraint("ck_invoices_due_date", "due_date >= invoice_date");
+                            t.HasCheckConstraint("chk_invoices_total", "total_amount = amount_usd + tax_amount");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingContent", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("AiModelUsed")
                         .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("ai_model_used");
 
-                    b.Property<decimal>("ApiCostUsd")
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
-                        .HasColumnName("api_cost_usd");
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
                     b.Property<string>("ApprovalStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("approval_status");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<DateTimeOffset?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -1387,12 +1590,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("ModelVersion")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("model_version");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -1416,18 +1619,22 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("listing_contents", null, t =>
                         {
-                            t.HasCheckConstraint("ck_listing_contents_cost", "generation_time_seconds >= 0 AND api_cost_usd >= 0");
+                            t.HasCheckConstraint("chk_listing_contents_approval", "approval_status IN ('pending', 'approved', 'rejected')");
+
+                            t.HasCheckConstraint("chk_listing_contents_approved_at", "approval_status <> 'approved' OR approved_at IS NOT NULL");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingDescription", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("AiGeneratedDescription")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("ai_generated_description");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -1435,22 +1642,24 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<string>("GeneratedDescription")
+                    b.Property<string>("CurrentDescription")
                         .IsRequired()
                         .HasColumnType("text")
-                        .HasColumnName("generated_description");
+                        .HasColumnName("current_description");
+
+                    b.Property<bool>("IsUserEdited")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_user_edited");
 
                     b.Property<bool>("KeywordDensityOptimal")
                         .HasColumnType("boolean")
                         .HasColumnName("keyword_density_optimal");
 
-                    b.Property<int>("ListingContentId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ListingContentId")
+                        .HasColumnType("uuid")
                         .HasColumnName("listing_content_id");
-
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
-                        .HasColumnName("product_id");
 
                     b.Property<decimal>("SeoScore")
                         .ValueGeneratedOnAdd()
@@ -1469,18 +1678,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_at")
+                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<bool>("UserEdited")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("user_edited");
-
-                    b.Property<string>("UserEditedVersion")
-                        .HasColumnType("text")
-                        .HasColumnName("user_edited_version");
 
                     b.Property<int>("VersionNumber")
                         .ValueGeneratedOnAdd()
@@ -1495,40 +1694,26 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_listing_descriptions");
 
-                    b.HasIndex("ListingContentId")
-                        .HasDatabaseName("ix_listing_descriptions_listing_content_id");
+                    b.HasIndex("ListingContentId", "VersionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_descriptions_version");
 
-                    b.ToTable("listing_descriptions", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_listing_descriptions_seo_score", "seo_score BETWEEN 0 AND 100");
-
-                            t.HasCheckConstraint("ck_listing_descriptions_version", "version_number > 0");
-
-                            t.HasCheckConstraint("ck_listing_descriptions_word_count", "word_count BETWEEN 200 AND 500");
-                        });
+                    b.ToTable("listing_descriptions", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingGenerationHistory", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("AdjustmentHint")
+                        .HasColumnType("text")
+                        .HasColumnName("adjustment_hint");
 
-                    b.Property<decimal>("ApiCostUsd")
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
-                        .HasColumnName("api_cost_usd");
-
-                    b.Property<int>("ApiResponseTimeMs")
-                        .HasColumnType("integer")
-                        .HasColumnName("api_response_time_ms");
-
-                    b.Property<int>("ApiTokensUsed")
-                        .HasColumnType("integer")
-                        .HasColumnName("api_tokens_used");
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -1548,13 +1733,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("generation_number");
 
-                    b.Property<int>("ListingContentId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ListingContentId")
+                        .HasColumnType("uuid")
                         .HasColumnName("listing_content_id");
-
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
-                        .HasColumnName("product_id");
 
                     b.Property<string>("PromptUsed")
                         .IsRequired()
@@ -1567,7 +1748,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("raw_ai_response");
 
                     b.Property<string[]>("TagsGenerated")
-                        .HasColumnType("character varying(20)[]")
+                        .HasColumnType("text[]")
                         .HasColumnName("tags_generated");
 
                     b.Property<string>("TitleGenerated")
@@ -1577,36 +1758,31 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("UserAction")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("user_action");
 
                     b.HasKey("Id")
                         .HasName("pk_listing_generation_history");
 
-                    b.HasIndex("ListingContentId")
-                        .HasDatabaseName("ix_listing_generation_history_listing_content_id");
+                    b.HasIndex("ApiUsageRecordId")
+                        .HasDatabaseName("ix_listing_generation_history_api_usage_record_id");
 
                     b.HasIndex("ListingContentId", "GenerationNumber")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_listing_generation_history_listing_content_id_generation_nu");
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_generation_number");
 
                     b.ToTable("listing_generation_history", null, t =>
                         {
-                            t.HasCheckConstraint("ck_listing_generation_history_api", "api_response_time_ms >= 0 AND api_tokens_used >= 0 AND api_cost_usd >= 0");
-
-                            t.HasCheckConstraint("ck_listing_generation_history_number", "generation_number > 0");
+                            t.HasCheckConstraint("chk_listing_history_user_action", "user_action IN ('accepted', 'edited', 'regenerated', 'rejected')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingTag", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -1614,18 +1790,15 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<string[]>("GeneratedTags")
-                        .IsRequired()
-                        .HasColumnType("character varying(20)[]")
-                        .HasColumnName("generated_tags");
+                    b.Property<bool>("IsUserEdited")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_user_edited");
 
-                    b.Property<int>("ListingContentId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ListingContentId")
+                        .HasColumnType("uuid")
                         .HasColumnName("listing_content_id");
-
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
-                        .HasColumnName("product_id");
 
                     b.Property<decimal>("SeoScore")
                         .ValueGeneratedOnAdd()
@@ -1638,28 +1811,18 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("tag_count");
 
-                    b.Property<string>("TagTypes")
+                    b.Property<string>("TagTypeDistribution")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("jsonb")
-                        .HasColumnName("tag_types")
+                        .HasColumnName("tag_type_distribution")
                         .HasDefaultValueSql("'{}'::jsonb");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_at")
+                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<bool>("UserEdited")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("user_edited");
-
-                    b.Property<string[]>("UserEditedVersion")
-                        .HasColumnType("character varying(20)[]")
-                        .HasColumnName("user_edited_version");
 
                     b.Property<int>("VersionNumber")
                         .ValueGeneratedOnAdd()
@@ -1670,27 +1833,94 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_listing_tags");
 
-                    b.HasIndex("ListingContentId")
-                        .HasDatabaseName("ix_listing_tags_listing_content_id");
+                    b.HasIndex("ListingContentId", "VersionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_tags_version");
 
-                    b.ToTable("listing_tags", null, t =>
+                    b.ToTable("listing_tags", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ListingTagItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("ListingTagId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("listing_tag_id");
+
+                    b.Property<string>("NormalizedValue")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("normalized_value");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer")
+                        .HasColumnName("position");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("ai")
+                        .HasColumnName("source");
+
+                    b.Property<string>("TagType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("tag_type");
+
+                    b.Property<string>("TagValue")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("tag_value");
+
+                    b.HasKey("Id")
+                        .HasName("pk_listing_tag_items");
+
+                    b.HasIndex("NormalizedValue")
+                        .HasDatabaseName("ix_listing_tag_items_normalized_value");
+
+                    b.HasIndex("ListingTagId", "NormalizedValue")
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_tag_no_duplicate");
+
+                    b.HasIndex("ListingTagId", "Position")
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_tag_position");
+
+                    b.ToTable("listing_tag_items", null, t =>
                         {
-                            t.HasCheckConstraint("ck_listing_tags_count", "tag_count = 13");
+                            t.HasCheckConstraint("chk_tag_position_range", "position BETWEEN 1 AND 13");
 
-                            t.HasCheckConstraint("ck_listing_tags_seo_score", "seo_score BETWEEN 0 AND 100");
+                            t.HasCheckConstraint("chk_tag_source", "source IN ('ai', 'user')");
 
-                            t.HasCheckConstraint("ck_listing_tags_version", "version_number > 0");
+                            t.HasCheckConstraint("chk_tag_type", "tag_type IN ('primary', 'long_tail', 'niche', 'occasion', 'product_type')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingTitle", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("AiGeneratedTitle")
+                        .IsRequired()
+                        .HasMaxLength(140)
+                        .HasColumnType("character varying(140)")
+                        .HasColumnName("ai_generated_title");
 
                     b.Property<int>("CharacterCount")
                         .HasColumnType("integer")
@@ -1702,23 +1932,25 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<string>("GeneratedTitle")
+                    b.Property<string>("CurrentTitle")
                         .IsRequired()
                         .HasMaxLength(140)
                         .HasColumnType("character varying(140)")
-                        .HasColumnName("generated_title");
+                        .HasColumnName("current_title");
 
                     b.Property<bool>("IncludesPrimaryKeyword")
                         .HasColumnType("boolean")
                         .HasColumnName("includes_primary_keyword");
 
-                    b.Property<int>("ListingContentId")
-                        .HasColumnType("integer")
-                        .HasColumnName("listing_content_id");
+                    b.Property<bool>("IsUserEdited")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_user_edited");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
-                        .HasColumnName("product_id");
+                    b.Property<Guid>("ListingContentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("listing_content_id");
 
                     b.Property<decimal>("SeoScore")
                         .ValueGeneratedOnAdd()
@@ -1730,19 +1962,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_at")
+                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<bool>("UserEdited")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("user_edited");
-
-                    b.Property<string>("UserEditedVersion")
-                        .HasMaxLength(140)
-                        .HasColumnType("character varying(140)")
-                        .HasColumnName("user_edited_version");
 
                     b.Property<int>("VersionNumber")
                         .ValueGeneratedOnAdd()
@@ -1753,32 +1974,35 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_listing_titles");
 
-                    b.HasIndex("ListingContentId")
-                        .HasDatabaseName("ix_listing_titles_listing_content_id");
+                    b.HasIndex("ListingContentId", "VersionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("uq_listing_titles_version");
 
                     b.ToTable("listing_titles", null, t =>
                         {
-                            t.HasCheckConstraint("ck_listing_titles_character_count", "character_count BETWEEN 0 AND 140");
+                            t.HasCheckConstraint("chk_listing_titles_char_count", "character_count = LENGTH(current_title)");
 
-                            t.HasCheckConstraint("ck_listing_titles_seo_score", "seo_score BETWEEN 0 AND 100");
-
-                            t.HasCheckConstraint("ck_listing_titles_version", "version_number > 0");
+                            t.HasCheckConstraint("chk_listing_titles_edited_flag", "is_user_edited = (current_title IS DISTINCT FROM ai_generated_title)");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.MockupImage", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
-                    b.Property<decimal?>("ApiCostUsd")
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
-                        .HasColumnName("api_cost_usd");
+                    b.Property<string>("ApprovalStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("approval_status");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -1790,8 +2014,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
-                    b.Property<int>("DesignImageId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("DesignImageId")
+                        .HasColumnType("uuid")
                         .HasColumnName("design_image_id");
 
                     b.Property<decimal?>("GenerationTimeSeconds")
@@ -1814,55 +2038,150 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("mockup_image_url");
 
-                    b.Property<string>("MockupLocalPath")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("mockup_local_path");
-
-                    b.Property<string>("MockupTemplateType")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("mockup_template_type");
+                    b.Property<Guid>("MockupTemplateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mockup_template_id");
 
                     b.Property<int>("MockupWidthPx")
                         .HasColumnType("integer")
                         .HasColumnName("mockup_width_px");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageProvider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("s3")
+                        .HasColumnName("storage_provider");
 
                     b.HasKey("Id")
                         .HasName("pk_mockup_images");
 
+                    b.HasIndex("ApiUsageRecordId")
+                        .HasDatabaseName("ix_mockup_images_api_usage_record_id");
+
                     b.HasIndex("DesignImageId")
                         .HasDatabaseName("ix_mockup_images_design_image_id");
+
+                    b.HasIndex("MockupTemplateId")
+                        .HasDatabaseName("ix_mockup_images_mockup_template_id");
 
                     b.HasIndex("ProductId")
                         .HasDatabaseName("ix_mockup_images_product_id");
 
                     b.ToTable("mockup_images", null, t =>
                         {
-                            t.HasCheckConstraint("ck_mockup_images_cost", "(generation_time_seconds IS NULL OR generation_time_seconds >= 0) AND (api_cost_usd IS NULL OR api_cost_usd >= 0)");
+                            t.HasCheckConstraint("chk_mockup_images_approval", "approval_status IN ('pending', 'approved', 'rejected')");
+                        });
+                });
 
-                            t.HasCheckConstraint("ck_mockup_images_dimensions", "mockup_width_px > 0 AND mockup_height_px > 0");
+            modelBuilder.Entity("APCS.Domain.Entities.MockupTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BaseImageUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("base_image_url");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsSystemTemplate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_system_template");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("OutputHeightPx")
+                        .HasColumnType("integer")
+                        .HasColumnName("output_height_px");
+
+                    b.Property<int>("OutputWidthPx")
+                        .HasColumnType("integer")
+                        .HasColumnName("output_width_px");
+
+                    b.Property<string>("PreviewImageUrl")
+                        .HasColumnType("text")
+                        .HasColumnName("preview_image_url");
+
+                    b.Property<string>("PrintAreaConfig")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("print_area_config")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
+                    b.Property<string>("ProductType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("product_type");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<int>("UsageCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("usage_count");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mockup_templates");
+
+                    b.HasIndex("IsActive")
+                        .HasDatabaseName("ix_mockup_templates_is_active");
+
+                    b.HasIndex("ProductType")
+                        .HasDatabaseName("ix_mockup_templates_product_type");
+
+                    b.ToTable("mockup_templates", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_mockup_templates_product_type", "product_type IN ('tshirt', 'hoodie', 'mug', 'poster', 'tote_bag', 'phone_case')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.MusicTrack", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ArtistName")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("artist_name");
 
                     b.Property<string>("AudioUrl")
@@ -1886,8 +2205,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Genre")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("genre");
 
                     b.Property<bool>("IsAvailable")
@@ -1896,22 +2215,27 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_available");
 
+                    b.Property<string>("LicenseSource")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("license_source");
+
                     b.Property<string>("LicenseType")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("license_type");
 
                     b.Property<string>("Mood")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("mood");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
 
                     b.Property<string>("PreviewUrl")
@@ -1921,12 +2245,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<bool>("RoyaltyFree")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(true)
+                        .HasDefaultValue(false)
                         .HasColumnName("royalty_free");
-
-                    b.Property<string>("WaveformData")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("waveform_data");
 
                     b.HasKey("Id")
                         .HasName("pk_music_tracks");
@@ -1939,26 +2259,23 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("music_tracks", null, t =>
                         {
-                            t.HasCheckConstraint("ck_music_tracks_duration", "duration_seconds > 0");
+                            t.HasCheckConstraint("chk_music_tracks_license_source", "royalty_free = false OR license_source IS NOT NULL");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.NotificationAlert", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ActionUrl")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)")
                         .HasColumnName("action_url");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -1986,38 +2303,31 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("message");
 
-                    b.Property<string[]>("NotificationChannels")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("character varying(32)[]")
-                        .HasColumnName("notification_channels")
-                        .HasDefaultValueSql("ARRAY['in_app']::character varying(32)[]");
-
                     b.Property<DateTimeOffset?>("ReadAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("read_at");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("severity");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("title");
 
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("Id")
                         .HasName("pk_notification_alerts");
@@ -2026,39 +2336,100 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_notification_alerts_batch_job_id");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_notification_alerts_created_at");
 
                     b.HasIndex("IsRead")
                         .HasDatabaseName("ix_notification_alerts_is_read");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_notification_alerts_seller_id");
-
                     b.HasIndex("Severity")
                         .HasDatabaseName("ix_notification_alerts_severity");
 
-                    b.ToTable("notification_alerts", (string)null);
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_notification_alerts_user_id");
+
+                    b.ToTable("notification_alerts", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_notification_severity", "severity IN ('info', 'warning', 'error', 'critical')");
+                        });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.NotificationDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("DeliveryStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("pending")
+                        .HasColumnName("delivery_status");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("error_message");
+
+                    b.Property<Guid>("NotificationAlertId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("notification_alert_id");
+
+                    b.Property<int>("RetryCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("retry_count");
+
+                    b.Property<DateTimeOffset?>("SentAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_notification_deliveries");
+
+                    b.HasIndex("DeliveryStatus")
+                        .HasDatabaseName("ix_notification_deliveries_delivery_status");
+
+                    b.HasIndex("NotificationAlertId", "Channel")
+                        .IsUnique()
+                        .HasDatabaseName("uq_notification_delivery_channel");
+
+                    b.ToTable("notification_deliveries", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_notification_channel", "channel IN ('in_app', 'email', 'webhook')");
+
+                            t.HasCheckConstraint("chk_notification_delivery_status", "delivery_status IN ('pending', 'sent', 'failed', 'skipped')");
+                        });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PaymentMethod", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
                     b.Property<string>("CardBrand")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("card_brand");
 
                     b.Property<string>("CardLast4Digits")
                         .HasMaxLength(4)
                         .HasColumnType("character varying(4)")
-                        .HasColumnName("card_last_4_digits");
+                        .HasColumnName("card_last4digits");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2084,42 +2455,117 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("PaymentType")
                         .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("payment_type");
 
                     b.Property<string>("PaypalEmailEncrypted")
                         .HasColumnType("text")
                         .HasColumnName("paypal_email_encrypted");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<string>("StripePaymentMethodId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("stripe_payment_method_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("Id")
                         .HasName("pk_payment_methods");
 
-                    b.HasIndex("SellerId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_payment_methods_one_default_per_seller")
-                        .HasFilter("is_default = TRUE AND is_active = TRUE AND deleted_at IS NULL");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_payment_methods_user_id");
 
                     b.ToTable("payment_methods", (string)null);
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.PrintifyIntegration", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.Permission", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("action");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Resource")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("resource");
+
+                    b.HasKey("Id")
+                        .HasName("pk_permissions");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasDatabaseName("ix_permissions_code");
+
+                    b.HasIndex("Resource", "Action")
+                        .HasDatabaseName("ix_permissions_resource_action");
+
+                    b.ToTable("permissions", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.PlanFeature", b =>
+                {
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("plan_id");
+
+                    b.Property<string>("FeatureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("feature_code");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_enabled");
+
+                    b.Property<int?>("LimitValue")
+                        .HasColumnType("integer")
+                        .HasColumnName("limit_value");
+
+                    b.HasKey("PlanId", "FeatureCode")
+                        .HasName("pk_plan_features");
+
+                    b.ToTable("plan_features", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.PrintifyIntegration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2137,6 +2583,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("is_active");
 
+                    b.Property<bool>("IsDefault")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_default");
+
                     b.Property<DateTimeOffset?>("LastSyncAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_sync_at");
@@ -2148,23 +2600,19 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("PrintifyStoreId")
                         .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("printify_store_id");
-
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
 
                     b.Property<string>("ShopName")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("shop_name");
 
                     b.Property<string>("ShopTitle")
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("shop_title");
 
                     b.Property<int>("TotalProductsUploaded")
@@ -2179,31 +2627,27 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_printify_integrations");
 
                     b.HasIndex("PrintifyStoreId")
-                        .IsUnique()
                         .HasDatabaseName("ix_printify_integrations_printify_store_id");
 
-                    b.HasIndex("SellerId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_printify_integrations_seller_id");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_printify_integrations_user_id");
 
-                    b.ToTable("printify_integrations", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_printify_integrations_total_products", "total_products_uploaded >= 0");
-                        });
+                    b.ToTable("printify_integrations", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PrintifyUploadLog", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ApiResponse")
                         .HasColumnType("jsonb")
@@ -2213,8 +2657,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("attempted_at");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
@@ -2231,17 +2675,23 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("error_message");
 
-                    b.Property<int>("PrintifyIntegrationId")
-                        .HasColumnType("integer")
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid>("PrintifyIntegrationId")
+                        .HasColumnType("uuid")
                         .HasColumnName("printify_integration_id");
 
                     b.Property<string>("PrintifyProductId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("printify_product_id");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<int>("RetryCount")
@@ -2252,8 +2702,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("SyncType")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("sync_type");
 
                     b.Property<string>("UploadPayload")
@@ -2263,8 +2713,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("UploadStatus")
                         .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("upload_status");
 
                     b.HasKey("Id")
@@ -2282,24 +2732,28 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("UploadStatus")
                         .HasDatabaseName("ix_printify_upload_logs_upload_status");
 
+                    b.HasIndex("PrintifyIntegrationId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("uq_printify_idempotency");
+
                     b.ToTable("printify_upload_logs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_printify_upload_logs_retry_count", "retry_count >= 0");
+                            t.HasCheckConstraint("chk_printify_sync_type", "sync_type IN ('create', 'update')");
+
+                            t.HasCheckConstraint("chk_printify_upload_status", "upload_status IN ('pending', 'success', 'failed', 'retrying')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.Product", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
-                        .HasColumnName("batch_job_id");
+                    b.Property<string>("ColorPreference")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("color_preference");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2311,39 +2765,62 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
+                    b.Property<Guid?>("DesignTemplateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("design_template_id");
+
+                    b.Property<string>("DesiredDesignText")
+                        .HasColumnType("text")
+                        .HasColumnName("desired_design_text");
+
                     b.Property<string>("InputDescription")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("input_description");
 
+                    b.Property<string>("MainKeywords")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("main_keywords");
+
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
 
                     b.Property<string>("NicheCategory")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("niche_category");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text")
+                        .HasColumnName("notes");
 
                     b.Property<string>("ProcessingStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("processing_status");
 
                     b.Property<string>("ProductType")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("product_type");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                    b.Property<string>("StylePreset")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("style_preset");
+
+                    b.Property<string>("TargetAudience")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("target_audience");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2351,57 +2828,98 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_products");
 
-                    b.HasIndex("BatchJobId")
-                        .HasDatabaseName("ix_products_batch_job_id");
-
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_products_created_at");
+
+                    b.HasIndex("DesignTemplateId")
+                        .HasDatabaseName("ix_products_design_template_id");
 
                     b.HasIndex("ProcessingStatus")
                         .HasDatabaseName("ix_products_processing_status");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_products_seller_id");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_products_user_id");
 
-                    b.ToTable("products", (string)null);
+                    b.ToTable("products", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_products_status", "processing_status IN ('pending', 'validating', 'queued', 'generating_image', 'image_review_required', 'generating_mockup', 'generating_video', 'generating_listing', 'review_required', 'approved', 'exported', 'published', 'failed', 'skipped', 'cancelled')");
+
+                            t.HasCheckConstraint("chk_products_type", "product_type IN ('tshirt', 'hoodie', 'mug', 'poster', 'tote_bag', 'phone_case')");
+                        });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ProductMockupTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("MockupTemplateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mockup_template_id");
+
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("product_id");
+
+                    b.Property<int>("SequenceOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("sequence_order");
+
+                    b.HasKey("Id")
+                        .HasName("pk_product_mockup_templates");
+
+                    b.HasIndex("MockupTemplateId")
+                        .HasDatabaseName("ix_product_mockup_templates_mockup_template_id");
+
+                    b.HasIndex("ProductId", "MockupTemplateId")
+                        .IsUnique()
+                        .HasDatabaseName("uq_product_mockup_template");
+
+                    b.ToTable("product_mockup_templates", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PromoVideo", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("ApiCostUsd")
-                        .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
-                        .HasDefaultValue(0m)
-                        .HasColumnName("api_cost_usd");
+                    b.Property<Guid?>("ApiUsageRecordId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("api_usage_record_id");
 
                     b.Property<string>("ApprovalStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("approval_status");
 
                     b.Property<string>("AspectRatio")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("aspect_ratio");
 
-                    b.Property<int?>("BatchJobId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("BatchJobId")
+                        .HasColumnType("uuid")
                         .HasColumnName("batch_job_id");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -2414,15 +2932,10 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
-                    b.Property<int[]>("DesignImageIds")
-                        .IsRequired()
-                        .HasColumnType("integer[]")
-                        .HasColumnName("design_image_ids");
-
                     b.Property<string>("FileFormat")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
                         .HasColumnName("file_format");
 
                     b.Property<decimal?>("FileSizeMb")
@@ -2441,18 +2954,18 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(false)
                         .HasColumnName("is_final");
 
-                    b.Property<int?>("MusicTrackId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("MusicTrackId")
+                        .HasColumnType("uuid")
                         .HasColumnName("music_track_id");
 
                     b.Property<string>("PlatformTarget")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("platform_target");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
                     b.Property<decimal?>("QualityScore")
@@ -2463,10 +2976,22 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("status");
+
+                    b.Property<string>("StorageKey")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageProvider")
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("s3")
+                        .HasColumnName("storage_provider");
 
                     b.Property<string>("TextOverlayColor")
                         .HasMaxLength(7)
@@ -2478,8 +3003,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("text_overlay_content");
 
                     b.Property<string>("TextOverlayFont")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("text_overlay_font");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -2496,19 +3021,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("video_duration_seconds");
 
-                    b.Property<string>("VideoLocalPath")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("video_local_path");
-
                     b.Property<string>("VideoResolution")
                         .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("video_resolution");
 
-                    b.Property<int>("VideoTemplateId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("VideoTemplateId")
+                        .HasColumnType("uuid")
                         .HasColumnName("video_template_id");
 
                     b.Property<string>("VideoUrl")
@@ -2518,6 +3038,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_promo_videos");
 
+                    b.HasIndex("ApiUsageRecordId")
+                        .HasDatabaseName("ix_promo_videos_api_usage_record_id");
+
                     b.HasIndex("ApprovalStatus")
                         .HasDatabaseName("ix_promo_videos_approval_status");
 
@@ -2525,7 +3048,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_promo_videos_batch_job_id");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_promo_videos_created_at");
 
                     b.HasIndex("MusicTrackId")
@@ -2542,99 +3064,23 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("promo_videos", null, t =>
                         {
-                            t.HasCheckConstraint("ck_promo_videos_cost", "api_cost_usd >= 0");
+                            t.HasCheckConstraint("chk_promo_videos_approval", "approval_status IN ('pending', 'approved', 'rejected')");
 
-                            t.HasCheckConstraint("ck_promo_videos_duration", "video_duration_seconds > 0 AND (generation_time_seconds IS NULL OR generation_time_seconds >= 0)");
+                            t.HasCheckConstraint("chk_promo_videos_duration", "video_duration_seconds BETWEEN 15 AND 30");
 
-                            t.HasCheckConstraint("ck_promo_videos_file_size", "file_size_mb IS NULL OR file_size_mb >= 0");
+                            t.HasCheckConstraint("chk_promo_videos_quality_score", "quality_score IS NULL OR quality_score BETWEEN 0 AND 1");
 
-                            t.HasCheckConstraint("ck_promo_videos_quality", "quality_score IS NULL OR quality_score BETWEEN 0 AND 1");
+                            t.HasCheckConstraint("chk_promo_videos_rating", "user_rating IS NULL OR user_rating BETWEEN 1 AND 5");
 
-                            t.HasCheckConstraint("ck_promo_videos_rating", "user_rating IS NULL OR user_rating BETWEEN 1 AND 5");
+                            t.HasCheckConstraint("chk_promo_videos_status", "status IN ('pending', 'queued', 'rendering', 'completed', 'failed')");
                         });
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.RefreshToken", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.PromoVideoScene", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ConcurrencyStamp")
-                        .IsConcurrencyToken()
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("concurrency_stamp");
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at_utc");
-
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at_utc");
-
-                    b.Property<string>("JwtId")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("jwt_id");
-
-                    b.Property<string>("ReasonRevoked")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("reason_revoked");
-
-                    b.Property<string>("ReplacedByTokenHash")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("replaced_by_token_hash");
-
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("revoked_at_utc");
-
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
-                    b.Property<string>("TokenHash")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("token_hash");
-
-                    b.HasKey("Id")
-                        .HasName("pk_refresh_tokens");
-
-                    b.HasIndex("ExpiresAtUtc")
-                        .HasDatabaseName("ix_refresh_tokens_expires_at_utc");
-
-                    b.HasIndex("RevokedAtUtc")
-                        .HasDatabaseName("ix_refresh_tokens_revoked_at_utc");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_refresh_tokens_seller_id");
-
-                    b.HasIndex("TokenHash")
-                        .IsUnique()
-                        .HasDatabaseName("ix_refresh_tokens_token_hash");
-
-                    b.ToTable("refresh_tokens", (string)null);
-                });
-
-            modelBuilder.Entity("APCS.Domain.Entities.SellerProfile", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2642,95 +3088,91 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<string>("DefaultLanguage")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("en")
-                        .HasColumnName("default_language");
+                    b.Property<Guid?>("DesignImageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("design_image_id");
 
-                    b.Property<string>("DefaultTimeZone")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasDefaultValue("UTC")
-                        .HasColumnName("default_timezone");
-
-                    b.Property<bool>("NewsletterSubscribed")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("newsletter_subscribed");
-
-                    b.Property<bool>("NotificationEmailEnabled")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("notification_email_enabled");
-
-                    b.Property<decimal>("ProfileCompletionPercentage")
+                    b.Property<decimal>("DurationSeconds")
                         .ValueGeneratedOnAdd()
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)")
-                        .HasDefaultValue(0m)
-                        .HasColumnName("profile_completion_percentage");
+                        .HasDefaultValue(3m)
+                        .HasColumnName("duration_seconds");
 
-                    b.Property<int>("SellerId")
+                    b.Property<Guid?>("MockupImageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mockup_image_id");
+
+                    b.Property<Guid>("PromoVideoId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("promo_video_id");
+
+                    b.Property<int>("SceneOrder")
                         .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                        .HasColumnName("scene_order");
 
-                    b.Property<string>("ShopDescription")
+                    b.Property<string>("TextOverlayContent")
                         .HasColumnType("text")
-                        .HasColumnName("shop_description");
+                        .HasColumnName("text_overlay_content");
 
-                    b.Property<string>("ShopName")
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
-                        .HasColumnName("shop_name");
-
-                    b.Property<string>("ThemePreference")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
-                        .HasDefaultValue("light")
-                        .HasColumnName("theme_preference");
-
-                    b.Property<bool>("TwoFactorEnabled")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("two_factor_enabled");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                    b.Property<string>("TransitionEffect")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("transition_effect");
 
                     b.HasKey("Id")
-                        .HasName("pk_seller_profiles");
+                        .HasName("pk_promo_video_scenes");
 
-                    b.HasIndex("SellerId")
+                    b.HasIndex("DesignImageId")
+                        .HasDatabaseName("ix_promo_video_scenes_design_image_id");
+
+                    b.HasIndex("MockupImageId")
+                        .HasDatabaseName("ix_promo_video_scenes_mockup_image_id");
+
+                    b.HasIndex("PromoVideoId", "SceneOrder")
                         .IsUnique()
-                        .HasDatabaseName("ix_seller_profiles_seller_id");
+                        .HasDatabaseName("uq_promo_video_scene_order");
 
-                    b.ToTable("seller_profiles", null, t =>
+                    b.ToTable("promo_video_scenes", null, t =>
                         {
-                            t.HasCheckConstraint("ck_seller_profiles_completion", "profile_completion_percentage BETWEEN 0 AND 100");
+                            t.HasCheckConstraint("chk_scene_exactly_one_asset", "(design_image_id IS NOT NULL) <> (mockup_image_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("chk_scene_order_positive", "scene_order > 0");
+
+                            t.HasCheckConstraint("chk_scene_transition", "transition_effect IS NULL OR transition_effect IN ('fade', 'slide', 'zoom', 'ken_burns', 'none')");
                         });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.RolePermission", b =>
+                {
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.Property<Guid>("PermissionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("permission_id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("RoleId", "PermissionId")
+                        .HasName("pk_role_permissions");
+
+                    b.HasIndex("PermissionId")
+                        .HasDatabaseName("ix_role_permissions_permission_id");
+
+                    b.ToTable("role_permissions", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SeoScore", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<DateTimeOffset>("CalculatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2760,8 +3202,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("keyword_optimization_score");
 
-                    b.Property<int>("ListingContentId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ListingContentId")
+                        .HasColumnType("uuid")
                         .HasColumnName("listing_content_id");
 
                     b.Property<decimal>("OverallSeoScore")
@@ -2769,9 +3211,13 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("overall_seo_score");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
-                        .HasColumnName("product_id");
+                    b.Property<string>("ScoringAlgorithmVersion")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("v1")
+                        .HasColumnName("scoring_algorithm_version");
 
                     b.Property<decimal>("TagRelevanceScore")
                         .HasPrecision(5, 2)
@@ -2798,29 +3244,55 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasName("pk_seo_scores");
 
                     b.HasIndex("ListingContentId")
+                        .IsUnique()
                         .HasDatabaseName("ix_seo_scores_listing_content_id");
 
                     b.HasIndex("OverallSeoScore")
-                        .IsDescending()
                         .HasDatabaseName("ix_seo_scores_overall_seo_score");
-
-                    b.HasIndex("ProductId")
-                        .HasDatabaseName("ix_seo_scores_product_id");
 
                     b.ToTable("seo_scores", null, t =>
                         {
-                            t.HasCheckConstraint("ck_seo_scores_ranges", "overall_seo_score BETWEEN 0 AND 100 AND title_score BETWEEN 0 AND 100 AND tags_score BETWEEN 0 AND 100 AND description_score BETWEEN 0 AND 100 AND keyword_optimization_score BETWEEN 0 AND 100 AND tag_relevance_score BETWEEN 0 AND 100 AND keyword_density BETWEEN 0 AND 100");
+                            t.HasCheckConstraint("chk_seo_scores_components", "title_score BETWEEN 0 AND 100 AND tags_score BETWEEN 0 AND 100 AND description_score BETWEEN 0 AND 100 AND keyword_optimization_score BETWEEN 0 AND 100 AND tag_relevance_score BETWEEN 0 AND 100");
+
+                            t.HasCheckConstraint("chk_seo_scores_range", "overall_seo_score BETWEEN 0 AND 100");
                         });
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ShareHashtag", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Hashtag")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("hashtag");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer")
+                        .HasColumnName("position");
+
+                    b.Property<Guid>("SocialMediaShareId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("social_media_share_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_share_hashtags");
+
+                    b.HasIndex("SocialMediaShareId", "Position")
+                        .IsUnique()
+                        .HasDatabaseName("uq_share_hashtag_position");
+
+                    b.ToTable("share_hashtags", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SocialMediaShare", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("ApiResponse")
                         .HasColumnType("jsonb")
@@ -2845,18 +3317,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("external_platform_url");
 
                     b.Property<string>("ExternalPostId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("external_post_id");
-
-                    b.Property<string[]>("Hashtags")
-                        .HasColumnType("character varying(100)[]")
-                        .HasColumnName("hashtags");
 
                     b.Property<string>("Platform")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("platform");
 
                     b.Property<string>("PostCaption")
@@ -2867,12 +3335,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("posted_time");
 
-                    b.Property<int>("ProductId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("ProductId")
+                        .HasColumnType("uuid")
                         .HasColumnName("product_id");
 
-                    b.Property<int>("PromoVideoId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("PromoVideoId")
+                        .HasColumnType("uuid")
                         .HasColumnName("promo_video_id");
 
                     b.Property<int>("RetryCount")
@@ -2888,8 +3356,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("ShareStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("pending")
                         .HasColumnName("share_status");
 
@@ -2910,18 +3378,15 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("social_media_shares", null, t =>
                         {
-                            t.HasCheckConstraint("ck_social_media_shares_retry_count", "retry_count >= 0");
+                            t.HasCheckConstraint("chk_social_share_status", "share_status IN ('pending', 'scheduled', 'posted', 'failed')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.Subscription", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<decimal?>("AnnualPriceUsd")
                         .HasPrecision(10, 2)
@@ -2936,13 +3401,13 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("BillingCycle")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("billing_cycle");
 
                     b.Property<DateTimeOffset?>("CancelledAtUtc")
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("cancelled_at");
+                        .HasColumnName("cancelled_at_utc");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2959,17 +3424,13 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("numeric(10,2)")
                         .HasColumnName("monthly_price_usd");
 
-                    b.Property<int>("PlanId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uuid")
                         .HasColumnName("plan_id");
 
                     b.Property<DateOnly>("RenewalDate")
                         .HasColumnType("date")
                         .HasColumnName("renewal_date");
-
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
 
                     b.Property<DateOnly>("StartDate")
                         .HasColumnType("date")
@@ -2978,14 +3439,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("active")
                         .HasColumnName("status");
 
                     b.Property<DateTimeOffset?>("TrialEndsAtUtc")
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("trial_ends_at");
+                        .HasColumnName("trial_ends_at_utc");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -2993,11 +3454,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_subscriptions");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_subscriptions_created_at");
 
                     b.HasIndex("PlanId")
@@ -3006,28 +3470,27 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasIndex("RenewalDate")
                         .HasDatabaseName("ix_subscriptions_renewal_date");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_subscriptions_seller_id");
-
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_subscriptions_status");
 
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_subscriptions_user_id");
+
                     b.ToTable("subscriptions", null, t =>
                         {
-                            t.HasCheckConstraint("ck_subscriptions_dates", "renewal_date >= start_date");
+                            t.HasCheckConstraint("chk_subscriptions_billing_cycle", "billing_cycle IN ('monthly', 'annual')");
 
-                            t.HasCheckConstraint("ck_subscriptions_prices", "monthly_price_usd >= 0 AND (annual_price_usd IS NULL OR annual_price_usd >= 0)");
+                            t.HasCheckConstraint("chk_subscriptions_date_order", "renewal_date >= start_date");
+
+                            t.HasCheckConstraint("chk_subscriptions_status", "status IN ('trialing', 'active', 'past_due', 'cancelled', 'expired')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SubscriptionPlan", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<decimal?>("AnnualPriceUsd")
                         .HasPrecision(10, 2)
@@ -3055,13 +3518,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
-
-                    b.Property<string>("Features")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("features")
-                        .HasDefaultValueSql("'{}'::jsonb");
 
                     b.Property<int>("ImageGenerationQuota")
                         .ValueGeneratedOnAdd()
@@ -3102,8 +3558,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("name");
 
                     b.Property<bool>("PrioritySupport")
@@ -3127,8 +3583,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Tier")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("tier");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -3155,35 +3611,28 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("subscription_plans", null, t =>
                         {
-                            t.HasCheckConstraint("ck_subscription_plans_annual_price", "annual_price_usd IS NULL OR annual_price_usd >= 0");
+                            t.HasCheckConstraint("chk_subscription_plans_annual_price", "annual_price_usd IS NULL OR annual_price_usd >= 0");
 
-                            t.HasCheckConstraint("ck_subscription_plans_monthly_price", "monthly_price_usd >= 0");
+                            t.HasCheckConstraint("chk_subscription_plans_monthly_price", "monthly_price_usd >= 0");
 
-                            t.HasCheckConstraint("ck_subscription_plans_quotas", "max_batch_size >= 0 AND max_products_per_month >= 0 AND max_concurrent_jobs >= 0 AND image_generation_quota >= 0 AND video_generation_quota >= 0 AND api_call_quota >= 0 AND storage_quota_gb >= 0");
+                            t.HasCheckConstraint("chk_subscription_plans_quotas", "max_batch_size >= 0 AND max_products_per_month >= 0 AND max_concurrent_jobs >= 0 AND image_generation_quota >= 0 AND video_generation_quota >= 0 AND api_call_quota >= 0 AND storage_quota_gb >= 0");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SupportTicket", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("AssignedToAdminId")
-                        .HasColumnType("integer")
+                    b.Property<Guid?>("AssignedTo")
+                        .HasColumnType("uuid")
                         .HasColumnName("assigned_to");
-
-                    b.Property<string[]>("AttachmentUrls")
-                        .HasColumnType("text[]")
-                        .HasColumnName("attachment_urls");
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("category");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -3200,8 +3649,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("Priority")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("normal")
                         .HasColumnName("priority");
 
@@ -3213,28 +3662,24 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("satisfaction_rating");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("open")
                         .HasColumnName("status");
 
                     b.Property<string>("Subject")
                         .IsRequired()
-                        .HasMaxLength(180)
-                        .HasColumnType("character varying(180)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("subject");
 
                     b.Property<string>("TicketNumber")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("ticket_number");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -3243,21 +3688,21 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
                     b.HasKey("Id")
                         .HasName("pk_support_tickets");
 
-                    b.HasIndex("AssignedToAdminId")
-                        .HasDatabaseName("ix_support_tickets_assigned_to_admin_id");
+                    b.HasIndex("AssignedTo")
+                        .HasDatabaseName("ix_support_tickets_assigned_to");
 
                     b.HasIndex("CreatedAtUtc")
-                        .IsDescending()
                         .HasDatabaseName("ix_support_tickets_created_at");
 
                     b.HasIndex("Priority")
                         .HasDatabaseName("ix_support_tickets_priority");
-
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_support_tickets_seller_id");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_support_tickets_status");
@@ -3266,31 +3711,24 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_support_tickets_ticket_number");
 
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_support_tickets_user_id");
+
                     b.ToTable("support_tickets", null, t =>
                         {
-                            t.HasCheckConstraint("ck_support_tickets_satisfaction", "satisfaction_rating IS NULL OR satisfaction_rating BETWEEN 1 AND 5");
+                            t.HasCheckConstraint("chk_support_tickets_priority", "priority IN ('low', 'normal', 'high', 'urgent')");
+
+                            t.HasCheckConstraint("chk_support_tickets_rating", "satisfaction_rating IS NULL OR satisfaction_rating BETWEEN 1 AND 5");
+
+                            t.HasCheckConstraint("chk_support_tickets_status", "status IN ('open', 'in_progress', 'waiting_customer', 'resolved', 'closed')");
                         });
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.SystemConfiguration", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.TicketAttachment", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ConfigKey")
-                        .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
-                        .HasColumnName("config_key");
-
-                    b.Property<string>("ConfigValue")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("config_value");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -3298,105 +3736,67 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    b.Property<string>("Description")
-                        .HasColumnType("text")
-                        .HasColumnName("description");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true)
-                        .HasColumnName("is_active");
-
-                    b.Property<int?>("LastModifiedByAdminId")
-                        .HasColumnType("integer")
-                        .HasColumnName("last_modified_by");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.HasKey("Id")
-                        .HasName("pk_system_configurations");
-
-                    b.HasIndex("ConfigKey")
-                        .IsUnique()
-                        .HasDatabaseName("ix_system_configurations_config_key");
-
-                    b.HasIndex("LastModifiedByAdminId")
-                        .HasDatabaseName("ix_system_configurations_last_modified_by_admin_id");
-
-                    b.ToTable("system_configurations", (string)null);
-                });
-
-            modelBuilder.Entity("APCS.Domain.Entities.SystemMetric", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("Dimension")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("dimension");
-
-                    b.Property<DateTimeOffset>("MetricTimestampUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("metric_timestamp");
-
-                    b.Property<string>("MetricType")
+                    b.Property<string>("FileName")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("metric_type");
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("file_name");
 
-                    b.Property<decimal>("Value")
-                        .HasPrecision(15, 2)
-                        .HasColumnType("numeric(15,2)")
-                        .HasColumnName("value");
+                    b.Property<decimal>("FileSizeMb")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)")
+                        .HasColumnName("file_size_mb");
+
+                    b.Property<string>("FileUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("file_url");
+
+                    b.Property<string>("MimeType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("mime_type");
+
+                    b.Property<Guid?>("SupportTicketId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("support_ticket_id");
+
+                    b.Property<Guid?>("TicketReplyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ticket_reply_id");
+
+                    b.Property<Guid>("UploadedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("uploaded_by");
 
                     b.HasKey("Id")
-                        .HasName("pk_system_metrics");
+                        .HasName("pk_ticket_attachments");
 
-                    b.HasIndex("MetricType", "MetricTimestampUtc")
-                        .IsDescending(false, true)
-                        .HasDatabaseName("ix_system_metrics_metric_type_metric_timestamp");
+                    b.HasIndex("SupportTicketId")
+                        .HasDatabaseName("ix_ticket_attachments_support_ticket_id");
 
-                    b.ToTable("system_metrics", (string)null);
+                    b.HasIndex("TicketReplyId")
+                        .HasDatabaseName("ix_ticket_attachments_ticket_reply_id");
+
+                    b.HasIndex("UploadedBy")
+                        .HasDatabaseName("ix_ticket_attachments_uploaded_by");
+
+                    b.ToTable("ticket_attachments", null, t =>
+                        {
+                            t.HasCheckConstraint("chk_attachment_single_owner", "(support_ticket_id IS NOT NULL) <> (ticket_reply_id IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.TicketReply", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string[]>("AttachmentUrls")
-                        .HasColumnType("text[]")
-                        .HasColumnName("attachment_urls");
-
-                    b.Property<int>("AuthorId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("AuthorId")
+                        .HasColumnType("uuid")
                         .HasColumnName("author_id");
-
-                    b.Property<string>("AuthorRole")
-                        .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
-                        .HasColumnName("author_role");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
@@ -3415,8 +3815,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reply_text");
 
-                    b.Property<int>("SupportTicketId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("SupportTicketId")
+                        .HasColumnType("uuid")
                         .HasColumnName("support_ticket_id");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -3439,12 +3839,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.UsageStatistic", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<decimal>("AverageProcessingTimeSeconds")
                         .ValueGeneratedOnAdd()
@@ -3485,10 +3882,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(0)
                         .HasColumnName("listings_exported");
 
-                    b.Property<int>("SellerId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
                     b.Property<decimal>("StorageUsedGb")
                         .ValueGeneratedOnAdd()
                         .HasPrecision(10, 2)
@@ -3504,8 +3897,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<decimal>("TotalApiCostUsd")
                         .ValueGeneratedOnAdd()
-                        .HasPrecision(10, 4)
-                        .HasColumnType("numeric(10,4)")
+                        .HasPrecision(12, 6)
+                        .HasColumnType("numeric(12,6)")
                         .HasDefaultValue(0m)
                         .HasColumnName("total_api_cost_usd");
 
@@ -3514,6 +3907,10 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.Property<int>("VideosCreated")
                         .ValueGeneratedOnAdd()
@@ -3524,39 +3921,159 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_usage_statistics");
 
-                    b.HasIndex("SellerId")
-                        .HasDatabaseName("ix_usage_statistics_seller_id");
-
-                    b.HasIndex("BillingPeriodStart", "BillingPeriodEnd")
-                        .HasDatabaseName("ix_usage_statistics_billing_period_start_billing_period_end");
-
-                    b.HasIndex("SellerId", "BillingPeriodStart", "BillingPeriodEnd")
+                    b.HasIndex("UserId", "BillingPeriodStart", "BillingPeriodEnd")
                         .IsUnique()
-                        .HasDatabaseName("ix_usage_statistics_seller_id_billing_period_start_billing_per");
+                        .HasDatabaseName("uq_usage_statistics_period");
 
-                    b.ToTable("usage_statistics", null, t =>
+                    b.ToTable("usage_statistics", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.UserProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasDefaultValue("en")
+                        .HasColumnName("language");
+
+                    b.Property<bool>("NewsletterSubscribed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("newsletter_subscribed");
+
+                    b.Property<bool>("NotificationEmailEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("notification_email_enabled");
+
+                    b.Property<decimal>("ProfileCompletionPercentage")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("profile_completion_percentage");
+
+                    b.Property<string>("ShopDescription")
+                        .HasColumnType("text")
+                        .HasColumnName("shop_description");
+
+                    b.Property<string>("ShopName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("shop_name");
+
+                    b.Property<string>("ThemePreference")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("light")
+                        .HasColumnName("theme_preference");
+
+                    b.Property<string>("TimeZone")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasDefaultValue("UTC")
+                        .HasColumnName("timezone");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_user_profiles");
+
+                    b.HasIndex("UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_user_profiles_user_id");
+
+                    b.ToTable("user_profiles", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.UserRoleHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("action");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<Guid?>("PerformedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("performed_by");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_user_role_history");
+
+                    b.HasIndex("PerformedBy")
+                        .HasDatabaseName("ix_user_role_history_performed_by");
+
+                    b.HasIndex("RoleId")
+                        .HasDatabaseName("ix_user_role_history_role_id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_user_role_history_user_id");
+
+                    b.ToTable("user_role_history", null, t =>
                         {
-                            t.HasCheckConstraint("ck_usage_statistics_costs", "total_api_cost_usd >= 0 AND storage_used_gb >= 0 AND average_processing_time_seconds >= 0");
-
-                            t.HasCheckConstraint("ck_usage_statistics_counters", "images_generated >= 0 AND videos_created >= 0 AND listings_exported >= 0 AND total_api_calls >= 0 AND batch_jobs_completed >= 0");
-
-                            t.HasCheckConstraint("ck_usage_statistics_period", "billing_period_end >= billing_period_start");
+                            t.HasCheckConstraint("chk_user_role_history_action", "action IN ('granted', 'revoked')");
                         });
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.VideoTemplate", b =>
                 {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
                     b.Property<string>("AspectRatio")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
                         .HasColumnName("aspect_ratio");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
@@ -3590,14 +4107,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
 
                     b.Property<string>("Platform")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("platform");
 
                     b.Property<string>("PreviewVideoUrl")
@@ -3606,14 +4123,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Resolution")
                         .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("resolution");
 
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
                         .HasColumnName("type");
 
                     b.Property<DateTimeOffset>("UpdatedAtUtc")
@@ -3633,18 +4150,75 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.ToTable("video_templates", null, t =>
                         {
-                            t.HasCheckConstraint("ck_video_templates_duration", "duration_seconds > 0");
+                            t.HasCheckConstraint("chk_video_templates_duration", "duration_seconds BETWEEN 15 AND 30");
+
+                            t.HasCheckConstraint("chk_video_templates_type", "type IN ('slideshow', 'product_showcase', 'lifestyle_reel', 'story_vertical')");
                         });
                 });
 
-            modelBuilder.Entity("APCS.Infrastructure.Persistence.Seller", b =>
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.Role", b =>
                 {
-                    b.Property<int>("Id")
+                    b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
+                        .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("name");
+
+                    b.Property<bool>("IsSystemRole")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_system_role");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("code");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("normalized_code");
+
+                    b.HasKey("Id")
+                        .HasName("pk_roles");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique()
+                        .HasDatabaseName("ix_roles_normalized_code");
+
+                    b.ToTable("roles", (string)null);
+                });
+
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.User", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
 
                     b.Property<int>("AccessFailedCount")
                         .HasColumnType("integer")
@@ -3653,8 +4227,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Property<string>("AccountStatus")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasDefaultValue("active")
                         .HasColumnName("account_status");
 
@@ -3680,8 +4254,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Email")
                         .IsRequired()
-                        .HasMaxLength(254)
-                        .HasColumnType("character varying(254)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("email");
 
                     b.Property<bool>("EmailConfirmed")
@@ -3696,17 +4270,9 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("FullName")
                         .IsRequired()
-                        .HasMaxLength(150)
-                        .HasColumnType("character varying(150)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("full_name");
-
-                    b.Property<string>("Language")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("en")
-                        .HasColumnName("language");
 
                     b.Property<DateTimeOffset?>("LastLoginAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -3722,14 +4288,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("NormalizedEmail")
                         .IsRequired()
-                        .HasMaxLength(254)
-                        .HasColumnType("character varying(254)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("normalized_email");
 
                     b.Property<string>("NormalizedUserName")
                         .IsRequired()
-                        .HasMaxLength(254)
-                        .HasColumnType("character varying(254)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("normalized_user_name");
 
                     b.Property<string>("OAuthGoogleId")
@@ -3738,12 +4304,11 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("oauth_google_id");
 
                     b.Property<string>("OAuthProvider")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
                         .HasColumnName("oauth_provider");
 
                     b.Property<string>("PasswordHash")
-                        .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("password_hash");
@@ -3762,14 +4327,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("security_stamp");
 
-                    b.Property<string>("TimeZone")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasDefaultValue("UTC")
-                        .HasColumnName("timezone");
-
                     b.Property<bool>("TwoFactorEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("two_factor_enabled");
@@ -3782,75 +4339,75 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("UserName")
                         .IsRequired()
-                        .HasMaxLength(254)
-                        .HasColumnType("character varying(254)")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("user_name");
 
                     b.HasKey("Id")
-                        .HasName("pk_sellers");
+                        .HasName("pk_users");
 
                     b.HasIndex("AccountStatus")
-                        .HasDatabaseName("ix_sellers_account_status");
+                        .HasDatabaseName("ix_users_account_status");
 
                     b.HasIndex("DeletedAtUtc")
-                        .HasDatabaseName("ix_sellers_deleted_at");
-
-                    b.HasIndex("Email")
-                        .IsUnique()
-                        .HasDatabaseName("ix_sellers_email");
+                        .HasDatabaseName("ix_users_deleted_at");
 
                     b.HasIndex("NormalizedEmail")
-                        .HasDatabaseName("EmailIndex");
+                        .IsUnique()
+                        .HasDatabaseName("ix_users_normalized_email")
+                        .HasFilter("deleted_at IS NULL");
 
                     b.HasIndex("NormalizedUserName")
                         .IsUnique()
-                        .HasDatabaseName("UserNameIndex");
+                        .HasDatabaseName("ix_users_normalized_user_name")
+                        .HasFilter("deleted_at IS NULL");
 
                     b.HasIndex("OAuthGoogleId")
                         .IsUnique()
-                        .HasDatabaseName("ix_sellers_oauth_google_id");
+                        .HasDatabaseName("ix_users_oauth_google_id")
+                        .HasFilter("oauth_google_id IS NOT NULL AND deleted_at IS NULL");
 
-                    b.ToTable("sellers", null, t =>
+                    b.ToTable("users", null, t =>
                         {
-                            t.HasCheckConstraint("ck_sellers_account_status", "account_status IN ('active', 'suspended', 'deactivated')");
+                            t.HasCheckConstraint("chk_users_account_status", "account_status IN ('active', 'locked', 'suspended', 'pending_verification')");
+
+                            t.HasCheckConstraint("chk_users_has_credential", "password_hash IS NOT NULL OR oauth_google_id IS NOT NULL");
                         });
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<int>", b =>
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.UserRole", b =>
                 {
-                    b.Property<int>("Id")
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.Property<DateTimeOffset>("GrantedAtUtc")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("granted_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+                    b.Property<Guid?>("GrantedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("granted_by");
 
-                    b.Property<string>("ConcurrencyStamp")
-                        .IsConcurrencyToken()
-                        .HasColumnType("text")
-                        .HasColumnName("concurrency_stamp");
+                    b.HasKey("UserId", "RoleId")
+                        .HasName("pk_user_roles");
 
-                    b.Property<string>("Name")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)")
-                        .HasColumnName("name");
+                    b.HasIndex("GrantedBy")
+                        .HasDatabaseName("ix_user_roles_granted_by");
 
-                    b.Property<string>("NormalizedName")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)")
-                        .HasColumnName("normalized_name");
+                    b.HasIndex("RoleId")
+                        .HasDatabaseName("ix_user_roles_role_id");
 
-                    b.HasKey("Id")
-                        .HasName("pk_roles");
-
-                    b.HasIndex("NormalizedName")
-                        .IsUnique()
-                        .HasDatabaseName("RoleNameIndex");
-
-                    b.ToTable("roles", (string)null);
+                    b.ToTable("user_roles", (string)null);
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -3867,8 +4424,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("claim_value");
 
-                    b.Property<int>("RoleId")
-                        .HasColumnType("integer")
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
                         .HasColumnName("role_id");
 
                     b.HasKey("Id")
@@ -3880,7 +4437,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.ToTable("role_claims", (string)null);
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -3897,77 +4454,62 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("claim_value");
 
-                    b.Property<int>("UserId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("Id")
-                        .HasName("pk_seller_claims");
+                        .HasName("pk_user_claims");
 
                     b.HasIndex("UserId")
-                        .HasDatabaseName("ix_seller_claims_user_id");
+                        .HasDatabaseName("ix_user_claims_user_id");
 
-                    b.ToTable("seller_claims", (string)null);
+                    b.ToTable("user_claims", (string)null);
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
                 {
                     b.Property<string>("LoginProvider")
-                        .HasColumnType("text")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("login_provider");
 
                     b.Property<string>("ProviderKey")
-                        .HasColumnType("text")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("provider_key");
 
                     b.Property<string>("ProviderDisplayName")
                         .HasColumnType("text")
                         .HasColumnName("provider_display_name");
 
-                    b.Property<int>("UserId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.HasKey("LoginProvider", "ProviderKey")
-                        .HasName("pk_seller_logins");
+                        .HasName("pk_user_logins");
 
                     b.HasIndex("UserId")
-                        .HasDatabaseName("ix_seller_logins_user_id");
+                        .HasDatabaseName("ix_user_logins_user_id");
 
-                    b.ToTable("seller_logins", (string)null);
+                    b.ToTable("user_logins", (string)null);
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
                 {
-                    b.Property<int>("UserId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
-
-                    b.Property<int>("RoleId")
-                        .HasColumnType("integer")
-                        .HasColumnName("role_id");
-
-                    b.HasKey("UserId", "RoleId")
-                        .HasName("pk_seller_roles");
-
-                    b.HasIndex("RoleId")
-                        .HasDatabaseName("ix_seller_roles_role_id");
-
-                    b.ToTable("seller_roles", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<int>", b =>
-                {
-                    b.Property<int>("UserId")
-                        .HasColumnType("integer")
-                        .HasColumnName("seller_id");
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
 
                     b.Property<string>("LoginProvider")
-                        .HasColumnType("text")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("login_provider");
 
                     b.Property<string>("Name")
-                        .HasColumnType("text")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("name");
 
                     b.Property<string>("Value")
@@ -3975,21 +4517,21 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasColumnName("value");
 
                     b.HasKey("UserId", "LoginProvider", "Name")
-                        .HasName("pk_seller_tokens");
+                        .HasName("pk_user_tokens");
 
-                    b.ToTable("seller_tokens", (string)null);
+                    b.ToTable("user_tokens", (string)null);
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.AiPrompt", b =>
                 {
                     b.HasOne("APCS.Domain.Entities.DesignTemplate", "DesignTemplate")
-                        .WithMany("AiPrompts")
+                        .WithMany()
                         .HasForeignKey("DesignTemplateId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_ai_prompts_design_templates_design_template_id");
 
                     b.HasOne("APCS.Domain.Entities.Product", "Product")
-                        .WithMany("AiPrompts")
+                        .WithMany("Prompts")
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
@@ -4002,43 +4544,77 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.ApiKey", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany("ApiKeys")
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_api_keys_seller_seller_id");
+                        .HasConstraintName("fk_api_keys_users_user_id");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ApiUsageRecord", b =>
+                {
+                    b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
+                        .WithMany()
+                        .HasForeignKey("BatchJobId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_api_usage_records_batch_jobs_batch_job_id");
+
+                    b.HasOne("APCS.Domain.Entities.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_api_usage_records_products_product_id");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_api_usage_records_asp_net_users_user_id");
+
+                    b.Navigation("BatchJob");
+
+                    b.Navigation("Product");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.AuditLog", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.Admin", "Admin")
-                        .WithMany("AuditLogs")
-                        .HasForeignKey("AdminId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_audit_logs_admins_admin_id");
-
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("ActorUserId")
                         .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_audit_logs_sellers_seller_id");
+                        .HasConstraintName("fk_audit_logs_asp_net_users_actor_user_id");
+                });
 
-                    b.Navigation("Admin");
+            modelBuilder.Entity("APCS.Domain.Entities.AuthToken", b =>
+                {
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_auth_tokens_asp_net_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.BatchJob", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_batch_jobs_sellers_seller_id");
+                        .HasConstraintName("fk_batch_jobs_asp_net_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.BatchJobLog", b =>
                 {
+                    b.HasOne("APCS.Domain.Entities.ApiUsageRecord", "ApiUsageRecord")
+                        .WithMany()
+                        .HasForeignKey("ApiUsageRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_batch_job_logs_api_usage_records_api_usage_record_id");
+
                     b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
                         .WithMany("Logs")
                         .HasForeignKey("BatchJobId")
@@ -4047,10 +4623,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_batch_job_logs_batch_jobs_batch_job_id");
 
                     b.HasOne("APCS.Domain.Entities.BatchJobProduct", "BatchJobProduct")
-                        .WithMany("Logs")
+                        .WithMany()
                         .HasForeignKey("BatchJobProductId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .HasConstraintName("fk_batch_job_logs_batch_job_products_batch_job_product_id");
+
+                    b.Navigation("ApiUsageRecord");
 
                     b.Navigation("BatchJob");
 
@@ -4060,14 +4638,14 @@ namespace APCS.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("APCS.Domain.Entities.BatchJobProduct", b =>
                 {
                     b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
-                        .WithMany("JobProducts")
+                        .WithMany("Products")
                         .HasForeignKey("BatchJobId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_batch_job_products_batch_jobs_batch_job_id");
 
                     b.HasOne("APCS.Domain.Entities.Product", "Product")
-                        .WithMany("BatchItems")
+                        .WithMany()
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_batch_job_products_products_product_id");
@@ -4086,6 +4664,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_design_images_ai_prompts_ai_prompt_id");
 
+                    b.HasOne("APCS.Domain.Entities.ApiUsageRecord", "ApiUsageRecord")
+                        .WithMany()
+                        .HasForeignKey("ApiUsageRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_design_images_api_usage_records_api_usage_record_id");
+
                     b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
                         .WithMany()
                         .HasForeignKey("BatchJobId")
@@ -4101,6 +4685,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Navigation("AiPrompt");
 
+                    b.Navigation("ApiUsageRecord");
+
                     b.Navigation("BatchJob");
 
                     b.Navigation("Product");
@@ -4108,26 +4694,26 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.DesignTemplate", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .HasConstraintName("fk_design_templates_sellers_seller_id");
+                        .HasConstraintName("fk_design_templates_asp_net_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.EtsyIntegration", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithOne()
-                        .HasForeignKey("APCS.Domain.Entities.EtsyIntegration", "SellerId")
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_etsy_integrations_sellers_seller_id");
+                        .HasConstraintName("fk_etsy_integrations_asp_net_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.EtsyUploadLog", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
+                    b.HasOne("APCS.Domain.Entities.BatchJob", null)
                         .WithMany()
                         .HasForeignKey("BatchJobId")
                         .OnDelete(DeleteBehavior.SetNull)
@@ -4147,8 +4733,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_etsy_upload_logs_products_product_id");
 
-                    b.Navigation("BatchJob");
-
                     b.Navigation("EtsyIntegration");
 
                     b.Navigation("Product");
@@ -4159,35 +4743,55 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
                         .WithMany()
                         .HasForeignKey("BatchJobId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
+                        .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_export_packages_batch_jobs_batch_job_id");
 
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_export_packages_sellers_seller_id");
+                        .HasConstraintName("fk_export_packages_asp_net_users_user_id");
 
                     b.Navigation("BatchJob");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.Invoice", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.ExportPackageItem", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithMany("Invoices")
-                        .HasForeignKey("SellerId")
+                    b.HasOne("APCS.Domain.Entities.ExportPackage", "ExportPackage")
+                        .WithMany("Items")
+                        .HasForeignKey("ExportPackageId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_invoices_seller_seller_id");
+                        .HasConstraintName("fk_export_package_items_export_packages_export_package_id");
 
+                    b.HasOne("APCS.Domain.Entities.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_export_package_items_products_product_id");
+
+                    b.Navigation("ExportPackage");
+
+                    b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.Invoice", b =>
+                {
                     b.HasOne("APCS.Domain.Entities.Subscription", "Subscription")
                         .WithMany("Invoices")
                         .HasForeignKey("SubscriptionId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_invoices_subscriptions_subscription_id");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany("Invoices")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_invoices_users_user_id");
 
                     b.Navigation("Subscription");
                 });
@@ -4226,6 +4830,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingGenerationHistory", b =>
                 {
+                    b.HasOne("APCS.Domain.Entities.ApiUsageRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ApiUsageRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_listing_generation_history_api_usage_records_api_usage_reco");
+
                     b.HasOne("APCS.Domain.Entities.ListingContent", "ListingContent")
                         .WithMany("GenerationHistory")
                         .HasForeignKey("ListingContentId")
@@ -4248,6 +4858,18 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Navigation("ListingContent");
                 });
 
+            modelBuilder.Entity("APCS.Domain.Entities.ListingTagItem", b =>
+                {
+                    b.HasOne("APCS.Domain.Entities.ListingTag", "ListingTag")
+                        .WithMany("Items")
+                        .HasForeignKey("ListingTagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_listing_tag_items_listing_tags_listing_tag_id");
+
+                    b.Navigation("ListingTag");
+                });
+
             modelBuilder.Entity("APCS.Domain.Entities.ListingTitle", b =>
                 {
                     b.HasOne("APCS.Domain.Entities.ListingContent", "ListingContent")
@@ -4262,12 +4884,25 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.MockupImage", b =>
                 {
+                    b.HasOne("APCS.Domain.Entities.ApiUsageRecord", "ApiUsageRecord")
+                        .WithMany()
+                        .HasForeignKey("ApiUsageRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_mockup_images_api_usage_records_api_usage_record_id");
+
                     b.HasOne("APCS.Domain.Entities.DesignImage", "DesignImage")
                         .WithMany("MockupImages")
                         .HasForeignKey("DesignImageId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_mockup_images_design_images_design_image_id");
+
+                    b.HasOne("APCS.Domain.Entities.MockupTemplate", "MockupTemplate")
+                        .WithMany("MockupImages")
+                        .HasForeignKey("MockupTemplateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_mockup_images_mockup_templates_mockup_template_id");
 
                     b.HasOne("APCS.Domain.Entities.Product", "Product")
                         .WithMany("MockupImages")
@@ -4276,7 +4911,11 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_mockup_images_products_product_id");
 
+                    b.Navigation("ApiUsageRecord");
+
                     b.Navigation("DesignImage");
+
+                    b.Navigation("MockupTemplate");
 
                     b.Navigation("Product");
                 });
@@ -4289,39 +4928,63 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_notification_alerts_batch_jobs_batch_job_id");
 
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_notification_alerts_sellers_seller_id");
+                        .HasConstraintName("fk_notification_alerts_asp_net_users_user_id");
 
                     b.Navigation("BatchJob");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.PaymentMethod", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.NotificationDelivery", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithMany("PaymentMethods")
-                        .HasForeignKey("SellerId")
+                    b.HasOne("APCS.Domain.Entities.NotificationAlert", "NotificationAlert")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("NotificationAlertId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_payment_methods_seller_seller_id");
+                        .HasConstraintName("fk_notification_deliveries_notification_alerts_notification_al");
+
+                    b.Navigation("NotificationAlert");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.PaymentMethod", b =>
+                {
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany("PaymentMethods")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_payment_methods_users_user_id");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.PlanFeature", b =>
+                {
+                    b.HasOne("APCS.Domain.Entities.SubscriptionPlan", "Plan")
+                        .WithMany("Features")
+                        .HasForeignKey("PlanId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_plan_features_subscription_plans_plan_id");
+
+                    b.Navigation("Plan");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PrintifyIntegration", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithOne()
-                        .HasForeignKey("APCS.Domain.Entities.PrintifyIntegration", "SellerId")
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_printify_integrations_sellers_seller_id");
+                        .HasConstraintName("fk_printify_integrations_asp_net_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PrintifyUploadLog", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
+                    b.HasOne("APCS.Domain.Entities.BatchJob", null)
                         .WithMany()
                         .HasForeignKey("BatchJobId")
                         .OnDelete(DeleteBehavior.SetNull)
@@ -4341,8 +5004,6 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_printify_upload_logs_products_product_id");
 
-                    b.Navigation("BatchJob");
-
                     b.Navigation("PrintifyIntegration");
 
                     b.Navigation("Product");
@@ -4350,24 +5011,51 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.Product", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
-                        .WithMany()
-                        .HasForeignKey("BatchJobId")
+                    b.HasOne("APCS.Domain.Entities.DesignTemplate", "DesignTemplate")
+                        .WithMany("Products")
+                        .HasForeignKey("DesignTemplateId")
                         .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_products_batch_jobs_batch_job_id");
+                        .HasConstraintName("fk_products_design_templates_design_template_id");
 
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_products_sellers_seller_id");
+                        .HasConstraintName("fk_products_asp_net_users_user_id");
 
-                    b.Navigation("BatchJob");
+                    b.Navigation("DesignTemplate");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ProductMockupTemplate", b =>
+                {
+                    b.HasOne("APCS.Domain.Entities.MockupTemplate", "MockupTemplate")
+                        .WithMany()
+                        .HasForeignKey("MockupTemplateId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_product_mockup_templates_mockup_templates_mockup_template_id");
+
+                    b.HasOne("APCS.Domain.Entities.Product", "Product")
+                        .WithMany("MockupTemplates")
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_product_mockup_templates_products_product_id");
+
+                    b.Navigation("MockupTemplate");
+
+                    b.Navigation("Product");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PromoVideo", b =>
                 {
+                    b.HasOne("APCS.Domain.Entities.ApiUsageRecord", "ApiUsageRecord")
+                        .WithMany()
+                        .HasForeignKey("ApiUsageRecordId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_promo_videos_api_usage_records_api_usage_record_id");
+
                     b.HasOne("APCS.Domain.Entities.BatchJob", "BatchJob")
                         .WithMany()
                         .HasForeignKey("BatchJobId")
@@ -4377,7 +5065,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.HasOne("APCS.Domain.Entities.MusicTrack", "MusicTrack")
                         .WithMany("PromoVideos")
                         .HasForeignKey("MusicTrackId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_promo_videos_music_tracks_music_track_id");
 
                     b.HasOne("APCS.Domain.Entities.Product", "Product")
@@ -4394,6 +5082,8 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_promo_videos_video_templates_video_template_id");
 
+                    b.Navigation("ApiUsageRecord");
+
                     b.Navigation("BatchJob");
 
                     b.Navigation("MusicTrack");
@@ -4403,36 +5093,75 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Navigation("VideoTemplate");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.RefreshToken", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.PromoVideoScene", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithMany()
-                        .HasForeignKey("SellerId")
+                    b.HasOne("APCS.Domain.Entities.DesignImage", "DesignImage")
+                        .WithMany("PromoVideoScenes")
+                        .HasForeignKey("DesignImageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_promo_video_scenes_design_images_design_image_id");
+
+                    b.HasOne("APCS.Domain.Entities.MockupImage", "MockupImage")
+                        .WithMany("PromoVideoScenes")
+                        .HasForeignKey("MockupImageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_promo_video_scenes_mockup_images_mockup_image_id");
+
+                    b.HasOne("APCS.Domain.Entities.PromoVideo", "PromoVideo")
+                        .WithMany("Scenes")
+                        .HasForeignKey("PromoVideoId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_refresh_tokens_sellers_seller_id");
+                        .HasConstraintName("fk_promo_video_scenes_promo_videos_promo_video_id");
+
+                    b.Navigation("DesignImage");
+
+                    b.Navigation("MockupImage");
+
+                    b.Navigation("PromoVideo");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.SellerProfile", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.RolePermission", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithOne("Profile")
-                        .HasForeignKey("APCS.Domain.Entities.SellerProfile", "SellerId")
+                    b.HasOne("APCS.Domain.Entities.Permission", "Permission")
+                        .WithMany("RolePermissions")
+                        .HasForeignKey("PermissionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_seller_profiles_seller_seller_id");
+                        .HasConstraintName("fk_role_permissions_permissions_permission_id");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.Role", null)
+                        .WithMany("RolePermissions")
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_role_permissions_roles_role_id");
+
+                    b.Navigation("Permission");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SeoScore", b =>
                 {
                     b.HasOne("APCS.Domain.Entities.ListingContent", "ListingContent")
-                        .WithMany("SeoScores")
-                        .HasForeignKey("ListingContentId")
+                        .WithOne("SeoScore")
+                        .HasForeignKey("APCS.Domain.Entities.SeoScore", "ListingContentId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_seo_scores_listing_contents_listing_content_id");
 
                     b.Navigation("ListingContent");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ShareHashtag", b =>
+                {
+                    b.HasOne("APCS.Domain.Entities.SocialMediaShare", "SocialMediaShare")
+                        .WithMany("Hashtags")
+                        .HasForeignKey("SocialMediaShareId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_share_hashtags_social_media_shares_social_media_share_id");
+
+                    b.Navigation("SocialMediaShare");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SocialMediaShare", b =>
@@ -4445,7 +5174,7 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .HasConstraintName("fk_social_media_shares_products_product_id");
 
                     b.HasOne("APCS.Domain.Entities.PromoVideo", "PromoVideo")
-                        .WithMany()
+                        .WithMany("Shares")
                         .HasForeignKey("PromoVideoId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
@@ -4465,53 +5194,66 @@ namespace APCS.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_subscriptions_subscription_plans_plan_id");
 
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany("Subscriptions")
-                        .HasForeignKey("SellerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
-                        .HasConstraintName("fk_subscriptions_seller_seller_id");
+                        .HasConstraintName("fk_subscriptions_users_user_id");
 
                     b.Navigation("Plan");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SupportTicket", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.Admin", "AssignedToAdmin")
-                        .WithMany("AssignedTickets")
-                        .HasForeignKey("AssignedToAdminId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_support_tickets_admins_assigned_to_admin_id");
-
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
-                        .HasForeignKey("SellerId")
+                        .HasForeignKey("AssignedTo")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_support_tickets_asp_net_users_assigned_to");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_support_tickets_sellers_seller_id");
-
-                    b.Navigation("AssignedToAdmin");
+                        .HasConstraintName("fk_support_tickets_asp_net_users_user_id");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.SystemConfiguration", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.TicketAttachment", b =>
                 {
-                    b.HasOne("APCS.Domain.Entities.Admin", "LastModifiedByAdmin")
-                        .WithMany("ModifiedConfigurations")
-                        .HasForeignKey("LastModifiedByAdminId")
-                        .OnDelete(DeleteBehavior.SetNull)
-                        .HasConstraintName("fk_system_configurations_admins_last_modified_by_admin_id");
+                    b.HasOne("APCS.Domain.Entities.SupportTicket", "SupportTicket")
+                        .WithMany("Attachments")
+                        .HasForeignKey("SupportTicketId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_ticket_attachments_support_tickets_support_ticket_id");
 
-                    b.Navigation("LastModifiedByAdmin");
+                    b.HasOne("APCS.Domain.Entities.TicketReply", "TicketReply")
+                        .WithMany("Attachments")
+                        .HasForeignKey("TicketReplyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_ticket_attachments_ticket_replies_ticket_reply_id");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UploadedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_ticket_attachments_asp_net_users_uploaded_by");
+
+                    b.Navigation("SupportTicket");
+
+                    b.Navigation("TicketReply");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.TicketReply", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
                         .HasForeignKey("AuthorId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
-                        .HasConstraintName("fk_ticket_replies_sellers_author_id");
+                        .HasConstraintName("fk_ticket_replies_asp_net_users_author_id");
 
                     b.HasOne("APCS.Domain.Entities.SupportTicket", "SupportTicket")
                         .WithMany("Replies")
@@ -4525,78 +5267,108 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.UsageStatistic", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany("UsageStatistics")
-                        .HasForeignKey("SellerId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
-                        .HasConstraintName("fk_usage_statistics_seller_seller_id");
+                        .HasConstraintName("fk_usage_statistics_users_user_id");
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<int>", b =>
+            modelBuilder.Entity("APCS.Domain.Entities.UserProfile", b =>
                 {
-                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<int>", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithOne("Profile")
+                        .HasForeignKey("APCS.Domain.Entities.UserProfile", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_profiles_users_user_id");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.UserRoleHistory", b =>
+                {
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("PerformedBy")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_user_role_history_users_performed_by");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.Role", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_role_history_roles_role_id");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_role_history_users_user_id");
+                });
+
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.UserRole", b =>
+                {
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("GrantedBy")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_user_roles_users_granted_by");
+
+                    b.HasOne("APCS.Infrastructure.Persistence.Role", null)
                         .WithMany()
                         .HasForeignKey("RoleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_role_claims_roles_role_id");
-                });
+                        .HasConstraintName("fk_user_roles_roles_role_id");
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<int>", b =>
-                {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_seller_claims_sellers_user_id");
+                        .HasConstraintName("fk_user_roles_users_user_id");
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_seller_logins_sellers_user_id");
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<int>", b =>
-                {
-                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<int>", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.Role", null)
                         .WithMany()
                         .HasForeignKey("RoleId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_seller_roles_roles_role_id");
+                        .HasConstraintName("fk_role_claims_asp_net_roles_role_id");
+                });
 
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
+                {
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_seller_roles_sellers_user_id");
+                        .HasConstraintName("fk_user_claims_asp_net_users_user_id");
                 });
 
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<int>", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
                 {
-                    b.HasOne("APCS.Infrastructure.Persistence.Seller", null)
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_seller_tokens_sellers_user_id");
+                        .HasConstraintName("fk_user_logins_users_user_id");
                 });
 
-            modelBuilder.Entity("APCS.Domain.Entities.Admin", b =>
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
                 {
-                    b.Navigation("AssignedTickets");
-
-                    b.Navigation("AuditLogs");
-
-                    b.Navigation("ModifiedConfigurations");
+                    b.HasOne("APCS.Infrastructure.Persistence.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_user_tokens_users_user_id");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.AiPrompt", b =>
@@ -4606,29 +5378,31 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.BatchJob", b =>
                 {
-                    b.Navigation("JobProducts");
-
                     b.Navigation("Logs");
-                });
 
-            modelBuilder.Entity("APCS.Domain.Entities.BatchJobProduct", b =>
-                {
-                    b.Navigation("Logs");
+                    b.Navigation("Products");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.DesignImage", b =>
                 {
                     b.Navigation("MockupImages");
+
+                    b.Navigation("PromoVideoScenes");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.DesignTemplate", b =>
                 {
-                    b.Navigation("AiPrompts");
+                    b.Navigation("Products");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.EtsyIntegration", b =>
                 {
                     b.Navigation("UploadLogs");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.ExportPackage", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.ListingContent", b =>
@@ -4637,16 +5411,41 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
                     b.Navigation("GenerationHistory");
 
-                    b.Navigation("SeoScores");
+                    b.Navigation("SeoScore");
 
                     b.Navigation("Tags");
 
                     b.Navigation("Titles");
                 });
 
+            modelBuilder.Entity("APCS.Domain.Entities.ListingTag", b =>
+                {
+                    b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.MockupImage", b =>
+                {
+                    b.Navigation("PromoVideoScenes");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.MockupTemplate", b =>
+                {
+                    b.Navigation("MockupImages");
+                });
+
             modelBuilder.Entity("APCS.Domain.Entities.MusicTrack", b =>
                 {
                     b.Navigation("PromoVideos");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.NotificationAlert", b =>
+                {
+                    b.Navigation("Deliveries");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.Permission", b =>
+                {
+                    b.Navigation("RolePermissions");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.PrintifyIntegration", b =>
@@ -4656,17 +5455,29 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.Product", b =>
                 {
-                    b.Navigation("AiPrompts");
-
-                    b.Navigation("BatchItems");
-
                     b.Navigation("DesignImages");
 
                     b.Navigation("ListingContent");
 
                     b.Navigation("MockupImages");
 
+                    b.Navigation("MockupTemplates");
+
                     b.Navigation("PromoVideos");
+
+                    b.Navigation("Prompts");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.PromoVideo", b =>
+                {
+                    b.Navigation("Scenes");
+
+                    b.Navigation("Shares");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.SocialMediaShare", b =>
+                {
+                    b.Navigation("Hashtags");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.Subscription", b =>
@@ -4676,12 +5487,21 @@ namespace APCS.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("APCS.Domain.Entities.SubscriptionPlan", b =>
                 {
+                    b.Navigation("Features");
+
                     b.Navigation("Subscriptions");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.SupportTicket", b =>
                 {
+                    b.Navigation("Attachments");
+
                     b.Navigation("Replies");
+                });
+
+            modelBuilder.Entity("APCS.Domain.Entities.TicketReply", b =>
+                {
+                    b.Navigation("Attachments");
                 });
 
             modelBuilder.Entity("APCS.Domain.Entities.VideoTemplate", b =>
@@ -4689,7 +5509,12 @@ namespace APCS.Infrastructure.Persistence.Migrations
                     b.Navigation("PromoVideos");
                 });
 
-            modelBuilder.Entity("APCS.Infrastructure.Persistence.Seller", b =>
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.Role", b =>
+                {
+                    b.Navigation("RolePermissions");
+                });
+
+            modelBuilder.Entity("APCS.Infrastructure.Persistence.User", b =>
                 {
                     b.Navigation("ApiKeys");
 

@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a subscription billing invoice.
+/// Represents an invoice issued for a subscription.
 /// </summary>
 public sealed class Invoice : AuditableEntity
 {
@@ -14,15 +14,15 @@ public sealed class Invoice : AuditableEntity
     /// <summary>
     /// Gets the billed subscription identifier.
     /// </summary>
-    public int SubscriptionId { get; private set; }
+    public Guid SubscriptionId { get; private set; }
 
     /// <summary>
-    /// Gets the billed seller identifier.
+    /// Gets the billed user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the unique public invoice number.
+    /// Gets the human-readable invoice number.
     /// </summary>
     public string InvoiceNumber { get; private set; } = string.Empty;
 
@@ -32,7 +32,7 @@ public sealed class Invoice : AuditableEntity
     public DateOnly InvoiceDate { get; private set; }
 
     /// <summary>
-    /// Gets the invoice due date.
+    /// Gets the payment due date.
     /// </summary>
     public DateOnly DueDate { get; private set; }
 
@@ -47,7 +47,7 @@ public sealed class Invoice : AuditableEntity
     public decimal TaxAmount { get; private set; }
 
     /// <summary>
-    /// Gets the total amount in USD.
+    /// Gets the total payable amount in USD.
     /// </summary>
     public decimal TotalAmount { get; private set; }
 
@@ -57,17 +57,17 @@ public sealed class Invoice : AuditableEntity
     public string Status { get; private set; } = "draft";
 
     /// <summary>
-    /// Gets the payment date.
+    /// Gets the date the invoice was paid.
     /// </summary>
     public DateOnly? PaymentDate { get; private set; }
 
     /// <summary>
-    /// Gets invoice line items as JSON.
+    /// Gets the invoice line items as JSON.
     /// </summary>
     public string Items { get; private set; } = "[]";
 
     /// <summary>
-    /// Gets the generated invoice PDF URL.
+    /// Gets the generated PDF URL.
     /// </summary>
     public string? PdfUrl { get; private set; }
 

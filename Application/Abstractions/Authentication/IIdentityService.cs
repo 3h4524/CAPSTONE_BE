@@ -13,9 +13,12 @@ public interface IIdentityService
     Task<bool> EmailExistsAsync(string email, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Creates a new application user.
+    /// Creates a new application user and returns it.
     /// </summary>
-    Task<IdentityOperationResult> CreateUserAsync(
+    /// <remarks>
+    /// The created user is returned so callers do not have to read it back.
+    /// </remarks>
+    Task<IdentityCreateUserResult> CreateUserAsync(
         string email,
         string password,
         string fullName,
@@ -29,23 +32,23 @@ public interface IIdentityService
     /// <summary>
     /// Finds a user by identifier.
     /// </summary>
-    Task<IdentityUserInfo?> FindByIdAsync(int userId, CancellationToken cancellationToken = default);
+    Task<IdentityUserInfo?> FindByIdAsync(Guid userId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Validates credentials and applies Identity lockout rules on failure.
     /// </summary>
     Task<CredentialValidationResult> ValidateCredentialsAsync(
-        int userId,
+        Guid userId,
         string password,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets user roles.
     /// </summary>
-    Task<IReadOnlyCollection<string>> GetRolesAsync(int userId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<string>> GetRolesAsync(Guid userId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Updates the user's last-login timestamp.
     /// </summary>
-    Task TouchLastLoginAsync(int userId, DateTimeOffset utcNow, CancellationToken cancellationToken = default);
+    Task TouchLastLoginAsync(Guid userId, DateTimeOffset utcNow, CancellationToken cancellationToken = default);
 }

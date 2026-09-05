@@ -3,23 +3,24 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a support request opened by a seller.
+/// Represents a customer support ticket.
 /// </summary>
 public sealed class SupportTicket : AuditableEntity
 {
     private readonly List<TicketReply> _replies = [];
+    private readonly List<TicketAttachment> _attachments = [];
 
     private SupportTicket()
     {
     }
 
     /// <summary>
-    /// Gets the seller identifier that opened the ticket.
+    /// Gets the reporting user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the public ticket number.
+    /// Gets the human-readable ticket number.
     /// </summary>
     public string TicketNumber { get; private set; } = string.Empty;
 
@@ -34,7 +35,7 @@ public sealed class SupportTicket : AuditableEntity
     public string Description { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the support category.
+    /// Gets the ticket category.
     /// </summary>
     public string Category { get; private set; } = string.Empty;
 
@@ -44,9 +45,9 @@ public sealed class SupportTicket : AuditableEntity
     public string Priority { get; private set; } = "normal";
 
     /// <summary>
-    /// Gets the assigned administrator identifier, when assigned.
+    /// Gets the staff user the ticket is assigned to, when assigned.
     /// </summary>
-    public int? AssignedToAdminId { get; private set; }
+    public Guid? AssignedTo { get; private set; }
 
     /// <summary>
     /// Gets the ticket status.
@@ -54,27 +55,22 @@ public sealed class SupportTicket : AuditableEntity
     public string Status { get; private set; } = "open";
 
     /// <summary>
-    /// Gets attachment URLs.
-    /// </summary>
-    public string[]? AttachmentUrls { get; private set; }
-
-    /// <summary>
-    /// Gets the seller satisfaction rating.
+    /// Gets the seller's satisfaction rating, from one to five.
     /// </summary>
     public int? SatisfactionRating { get; private set; }
 
     /// <summary>
-    /// Gets the UTC ticket resolution timestamp.
+    /// Gets the UTC resolution timestamp.
     /// </summary>
     public DateTimeOffset? ResolvedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the assigned administrator, when assigned.
-    /// </summary>
-    public Admin? AssignedToAdmin { get; private set; }
-
-    /// <summary>
-    /// Gets the ticket replies.
+    /// Gets the replies on this ticket.
     /// </summary>
     public IReadOnlyCollection<TicketReply> Replies => _replies.AsReadOnly();
+
+    /// <summary>
+    /// Gets the files attached directly to the ticket.
+    /// </summary>
+    public IReadOnlyCollection<TicketAttachment> Attachments => _attachments.AsReadOnly();
 }

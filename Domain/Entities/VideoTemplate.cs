@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a reusable template for promotional video generation.
+/// Represents a promotional video layout template.
 /// </summary>
 public sealed class VideoTemplate : AuditableEntity
 {
@@ -24,17 +24,17 @@ public sealed class VideoTemplate : AuditableEntity
     public string Type { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the target platform.
+    /// Gets the target social platform.
     /// </summary>
     public string Platform { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the output duration in seconds.
+    /// Gets the rendered duration in seconds.
     /// </summary>
     public int DurationSeconds { get; private set; }
 
     /// <summary>
-    /// Gets the output aspect ratio.
+    /// Gets the aspect ratio.
     /// </summary>
     public string AspectRatio { get; private set; } = string.Empty;
 
@@ -54,17 +54,17 @@ public sealed class VideoTemplate : AuditableEntity
     public string? PreviewVideoUrl { get; private set; }
 
     /// <summary>
-    /// Gets a value indicating whether this is a system template.
+    /// Gets a value indicating whether the template ships with the system.
     /// </summary>
     public bool IsSystemTemplate { get; private set; } = true;
 
     /// <summary>
-    /// Gets a value indicating whether the template is active.
+    /// Gets a value indicating whether the template is selectable.
     /// </summary>
     public bool IsActive { get; private set; } = true;
 
     /// <summary>
-    /// Gets the videos generated with this template.
+    /// Gets the videos rendered from this template.
     /// </summary>
     public IReadOnlyCollection<PromoVideo> PromoVideos => _promoVideos.AsReadOnly();
 }

@@ -14,102 +14,80 @@ namespace APCS.Infrastructure.Persistence;
 public sealed class AppDbContext(
     DbContextOptions<AppDbContext> options,
     TimeProvider timeProvider)
-    : IdentityDbContext<Seller, IdentityRole<int>, int>(options), IUnitOfWork, IReadDbContext
+    : IdentityDbContext<
+        User,
+        Role,
+        Guid,
+        IdentityUserClaim<Guid>,
+        UserRole,
+        IdentityUserLogin<Guid>,
+        IdentityRoleClaim<Guid>,
+        IdentityUserToken<Guid>>(options),
+      IUnitOfWork,
+      IReadDbContext
 {
-    public DbSet<Seller> Sellers => Set<Seller>();
-
-    /// <inheritdoc />
-    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
-
-    /// <inheritdoc />
-    public DbSet<SellerProfile> SellerProfiles => Set<SellerProfile>();
-
-    /// <inheritdoc />
+    public DbSet<UserProfile> UserProfiles => Set<UserProfile>();
+    public DbSet<UserRoleHistory> UserRoleHistory => Set<UserRoleHistory>();
+    public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<AuthToken> AuthTokens => Set<AuthToken>();
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
 
-    /// <inheritdoc />
     public DbSet<SubscriptionPlan> SubscriptionPlans => Set<SubscriptionPlan>();
-
-    /// <inheritdoc />
+    public DbSet<PlanFeature> PlanFeatures => Set<PlanFeature>();
     public DbSet<Subscription> Subscriptions => Set<Subscription>();
-
-    /// <inheritdoc />
     public DbSet<PaymentMethod> PaymentMethods => Set<PaymentMethod>();
-
-    /// <inheritdoc />
     public DbSet<Invoice> Invoices => Set<Invoice>();
-
-    /// <inheritdoc />
     public DbSet<UsageStatistic> UsageStatistics => Set<UsageStatistic>();
+    public DbSet<ApiUsageRecord> ApiUsageRecords => Set<ApiUsageRecord>();
 
     public DbSet<BatchJob> BatchJobs => Set<BatchJob>();
     public DbSet<BatchJobProduct> BatchJobProducts => Set<BatchJobProduct>();
     public DbSet<BatchJobLog> BatchJobLogs => Set<BatchJobLog>();
+
     public DbSet<Product> Products => Set<Product>();
     public DbSet<DesignTemplate> DesignTemplates => Set<DesignTemplate>();
+    public DbSet<MockupTemplate> MockupTemplates => Set<MockupTemplate>();
+    public DbSet<ProductMockupTemplate> ProductMockupTemplates => Set<ProductMockupTemplate>();
     public DbSet<AiPrompt> AiPrompts => Set<AiPrompt>();
     public DbSet<DesignImage> DesignImages => Set<DesignImage>();
     public DbSet<MockupImage> MockupImages => Set<MockupImage>();
+
     public DbSet<VideoTemplate> VideoTemplates => Set<VideoTemplate>();
     public DbSet<MusicTrack> MusicTracks => Set<MusicTrack>();
     public DbSet<PromoVideo> PromoVideos => Set<PromoVideo>();
+    public DbSet<PromoVideoScene> PromoVideoScenes => Set<PromoVideoScene>();
+
     public DbSet<ListingContent> ListingContents => Set<ListingContent>();
     public DbSet<ListingTitle> ListingTitles => Set<ListingTitle>();
     public DbSet<ListingTag> ListingTags => Set<ListingTag>();
+    public DbSet<ListingTagItem> ListingTagItems => Set<ListingTagItem>();
     public DbSet<ListingDescription> ListingDescriptions => Set<ListingDescription>();
     public DbSet<SeoScore> SeoScores => Set<SeoScore>();
     public DbSet<ListingGenerationHistory> ListingGenerationHistory => Set<ListingGenerationHistory>();
+
     public DbSet<ExportPackage> ExportPackages => Set<ExportPackage>();
+    public DbSet<ExportPackageItem> ExportPackageItems => Set<ExportPackageItem>();
+
     public DbSet<PrintifyIntegration> PrintifyIntegrations => Set<PrintifyIntegration>();
     public DbSet<PrintifyUploadLog> PrintifyUploadLogs => Set<PrintifyUploadLog>();
     public DbSet<EtsyIntegration> EtsyIntegrations => Set<EtsyIntegration>();
     public DbSet<EtsyUploadLog> EtsyUploadLogs => Set<EtsyUploadLog>();
     public DbSet<SocialMediaShare> SocialMediaShares => Set<SocialMediaShare>();
+    public DbSet<ShareHashtag> ShareHashtags => Set<ShareHashtag>();
+
     public DbSet<NotificationAlert> NotificationAlerts => Set<NotificationAlert>();
+    public DbSet<NotificationDelivery> NotificationDeliveries => Set<NotificationDelivery>();
+
     public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
     public DbSet<TicketReply> TicketReplies => Set<TicketReply>();
-    public DbSet<Admin> Admins => Set<Admin>();
-    public DbSet<SystemConfiguration> SystemConfigurations => Set<SystemConfiguration>();
+    public DbSet<TicketAttachment> TicketAttachments => Set<TicketAttachment>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
-    public DbSet<SystemMetric> SystemMetrics => Set<SystemMetric>();
 
-    IQueryable<SellerProfile> IReadDbContext.SellerProfiles => SellerProfiles.AsNoTracking();
-    IQueryable<ApiKey> IReadDbContext.ApiKeys => ApiKeys.AsNoTracking();
-    IQueryable<SubscriptionPlan> IReadDbContext.SubscriptionPlans => SubscriptionPlans.AsNoTracking();
-    IQueryable<Subscription> IReadDbContext.Subscriptions => Subscriptions.AsNoTracking();
-    IQueryable<PaymentMethod> IReadDbContext.PaymentMethods => PaymentMethods.AsNoTracking();
-    IQueryable<Invoice> IReadDbContext.Invoices => Invoices.AsNoTracking();
-    IQueryable<UsageStatistic> IReadDbContext.UsageStatistics => UsageStatistics.AsNoTracking();
-    IQueryable<BatchJob> IReadDbContext.BatchJobs => BatchJobs.AsNoTracking();
-    IQueryable<BatchJobProduct> IReadDbContext.BatchJobProducts => BatchJobProducts.AsNoTracking();
-    IQueryable<BatchJobLog> IReadDbContext.BatchJobLogs => BatchJobLogs.AsNoTracking();
-    IQueryable<Product> IReadDbContext.Products => Products.AsNoTracking();
-    IQueryable<DesignTemplate> IReadDbContext.DesignTemplates => DesignTemplates.AsNoTracking();
-    IQueryable<AiPrompt> IReadDbContext.AiPrompts => AiPrompts.AsNoTracking();
-    IQueryable<DesignImage> IReadDbContext.DesignImages => DesignImages.AsNoTracking();
-    IQueryable<MockupImage> IReadDbContext.MockupImages => MockupImages.AsNoTracking();
-    IQueryable<VideoTemplate> IReadDbContext.VideoTemplates => VideoTemplates.AsNoTracking();
-    IQueryable<MusicTrack> IReadDbContext.MusicTracks => MusicTracks.AsNoTracking();
-    IQueryable<PromoVideo> IReadDbContext.PromoVideos => PromoVideos.AsNoTracking();
-    IQueryable<ListingContent> IReadDbContext.ListingContents => ListingContents.AsNoTracking();
-    IQueryable<ListingTitle> IReadDbContext.ListingTitles => ListingTitles.AsNoTracking();
-    IQueryable<ListingTag> IReadDbContext.ListingTags => ListingTags.AsNoTracking();
-    IQueryable<ListingDescription> IReadDbContext.ListingDescriptions => ListingDescriptions.AsNoTracking();
-    IQueryable<SeoScore> IReadDbContext.SeoScores => SeoScores.AsNoTracking();
-    IQueryable<ListingGenerationHistory> IReadDbContext.ListingGenerationHistory => ListingGenerationHistory.AsNoTracking();
-    IQueryable<ExportPackage> IReadDbContext.ExportPackages => ExportPackages.AsNoTracking();
-    IQueryable<PrintifyIntegration> IReadDbContext.PrintifyIntegrations => PrintifyIntegrations.AsNoTracking();
-    IQueryable<PrintifyUploadLog> IReadDbContext.PrintifyUploadLogs => PrintifyUploadLogs.AsNoTracking();
-    IQueryable<EtsyIntegration> IReadDbContext.EtsyIntegrations => EtsyIntegrations.AsNoTracking();
-    IQueryable<EtsyUploadLog> IReadDbContext.EtsyUploadLogs => EtsyUploadLogs.AsNoTracking();
-    IQueryable<SocialMediaShare> IReadDbContext.SocialMediaShares => SocialMediaShares.AsNoTracking();
-    IQueryable<NotificationAlert> IReadDbContext.NotificationAlerts => NotificationAlerts.AsNoTracking();
-    IQueryable<SupportTicket> IReadDbContext.SupportTickets => SupportTickets.AsNoTracking();
-    IQueryable<TicketReply> IReadDbContext.TicketReplies => TicketReplies.AsNoTracking();
-    IQueryable<Admin> IReadDbContext.Admins => Admins.AsNoTracking();
-    IQueryable<SystemConfiguration> IReadDbContext.SystemConfigurations => SystemConfigurations.AsNoTracking();
-    IQueryable<AuditLog> IReadDbContext.AuditLogs => AuditLogs.AsNoTracking();
-    IQueryable<SystemMetric> IReadDbContext.SystemMetrics => SystemMetrics.AsNoTracking();
+    /// <inheritdoc />
+    public IQueryable<TEntity> Query<TEntity>()
+        where TEntity : class =>
+        Set<TEntity>().AsNoTracking();
 
     /// <inheritdoc />
     public async Task<IUnitOfWorkTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
@@ -138,37 +116,15 @@ public sealed class AppDbContext(
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
-        ConfigureIdentityTableNames(builder);
         builder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
 
-    private static void ConfigureIdentityTableNames(ModelBuilder builder)
-    {
-        builder.Entity<Seller>().ToTable("sellers");
-        builder.Entity<IdentityRole<int>>().ToTable("roles");
-        builder.Entity<IdentityUserRole<int>>().ToTable("seller_roles");
-        builder.Entity<IdentityUserClaim<int>>().ToTable("seller_claims");
-        builder.Entity<IdentityUserLogin<int>>().ToTable("seller_logins");
-        builder.Entity<IdentityRoleClaim<int>>().ToTable("role_claims");
-        builder.Entity<IdentityUserToken<int>>().ToTable("seller_tokens");
-
-        builder.Entity<IdentityUserRole<int>>()
-            .Property(entity => entity.UserId)
-            .HasColumnName("seller_id");
-
-        builder.Entity<IdentityUserClaim<int>>()
-            .Property(entity => entity.UserId)
-            .HasColumnName("seller_id");
-
-        builder.Entity<IdentityUserLogin<int>>()
-            .Property(entity => entity.UserId)
-            .HasColumnName("seller_id");
-
-        builder.Entity<IdentityUserToken<int>>()
-            .Property(entity => entity.UserId)
-            .HasColumnName("seller_id");
-    }
-
+    /// <remarks>
+    /// This stamps every tracked entity that declares a modification time, including
+    /// <see cref="User"/>. Identity writes to the user row for its own bookkeeping — a failed
+    /// sign-in bumping the lockout counter, for instance — so <c>UpdatedAtUtc</c> means
+    /// "the row changed", not "the person edited their profile".
+    /// </remarks>
     private void ApplyAuditTimestamps()
     {
         var utcNow = timeProvider.GetUtcNow();

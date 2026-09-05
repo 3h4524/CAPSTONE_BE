@@ -3,6 +3,9 @@ using APCS.Common.Models;
 
 namespace APCS.Application.Features.Auth.Common;
 
+/// <summary>
+/// Builds every error the Auth feature can return, so wording and codes stay in one place.
+/// </summary>
 internal static class AuthErrors
 {
     public static Error InvalidCredentials() =>
@@ -25,4 +28,18 @@ internal static class AuthErrors
 
     public static Error RefreshTokenReused() =>
         Error.Unauthorized(ErrorCodes.RefreshTokenReused, "Refresh token has already been revoked.");
+
+    public static Error EmailAlreadyExists() =>
+        Error.Conflict(ErrorCodes.EmailAlreadyExists, "Email is already registered.");
+
+    public static Error RegistrationFailed(IReadOnlyCollection<string> reasons) =>
+        Error.Validation(
+            "Could not create the account.",
+            new Dictionary<string, string[]> { ["identity"] = reasons.ToArray() });
+
+    public static Error Unauthenticated() =>
+        Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated.");
+
+    public static Error UserNotFound() =>
+        Error.NotFound(ErrorCodes.UserNotFound, "User was not found.");
 }

@@ -3,86 +3,88 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a downloadable package exported from a batch job.
+/// Represents a downloadable bundle of generated assets.
 /// </summary>
 public sealed class ExportPackage : CreationTrackedEntity
 {
+    private readonly List<ExportPackageItem> _items = [];
+
     private ExportPackage()
     {
     }
 
     /// <summary>
-    /// Gets the source batch job identifier.
+    /// Gets the source batch job identifier, when applicable.
     /// </summary>
-    public int BatchJobId { get; private set; }
+    public Guid? BatchJobId { get; private set; }
 
     /// <summary>
-    /// Gets the identifier of the seller that owns the export.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the identifiers of products included in the package.
-    /// </summary>
-    public int[] ProductIds { get; private set; } = [];
-
-    /// <summary>
-    /// Gets the export package type.
+    /// Gets the package type.
     /// </summary>
     public string Type { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the export package name.
+    /// Gets the package name.
     /// </summary>
     public string Name { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the optional export package description.
+    /// Gets the package description.
     /// </summary>
     public string? Description { get; private set; }
 
     /// <summary>
-    /// Gets package content metadata as JSON.
+    /// Gets the object-storage provider holding the file.
     /// </summary>
-    public string PackageContent { get; private set; } = "{}";
+    public string? StorageProvider { get; private set; } = "s3";
 
     /// <summary>
-    /// Gets the local package file path.
+    /// Gets the object-storage key.
     /// </summary>
-    public string? FilePath { get; private set; }
+    public string? StorageKey { get; private set; }
 
     /// <summary>
-    /// Gets the package download URL.
+    /// Gets the download URL.
     /// </summary>
     public string? DownloadUrl { get; private set; }
 
     /// <summary>
-    /// Gets the package file size in megabytes.
+    /// Gets the package size in megabytes.
     /// </summary>
     public decimal? FileSizeMb { get; private set; }
 
     /// <summary>
-    /// Gets the package creation duration in seconds.
+    /// Gets the packaging duration in seconds.
     /// </summary>
-    public decimal CreationTimeSeconds { get; private set; }
+    public decimal? CreationTimeSeconds { get; private set; }
 
     /// <summary>
-    /// Gets the export preparation status.
+    /// Gets the package status.
     /// </summary>
     public string Status { get; private set; } = "preparing";
 
     /// <summary>
-    /// Gets the UTC download timestamp.
+    /// Gets the UTC timestamp when the package was downloaded.
     /// </summary>
     public DateTimeOffset? DownloadedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the UTC package expiration timestamp.
+    /// Gets the UTC timestamp after which the download link stops working.
     /// </summary>
     public DateTimeOffset ExpiresAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the source batch job.
+    /// Gets the source batch job, when applicable.
     /// </summary>
-    public BatchJob BatchJob { get; private set; } = null!;
+    public BatchJob? BatchJob { get; private set; }
+
+    /// <summary>
+    /// Gets the products included in the package.
+    /// </summary>
+    public IReadOnlyCollection<ExportPackageItem> Items => _items.AsReadOnly();
 }

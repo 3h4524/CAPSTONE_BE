@@ -18,6 +18,10 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class AuthControllerTests
 {
+    // A DefaultHttpContext exposes no remote address and no user agent, so this is what the
+    // controller captures under test.
+    private static readonly RequestContext ExpectedContext = new(null, null);
+
     private static readonly DateTimeOffset AccessExpiresAt =
         new(2026, 8, 31, 8, 15, 0, TimeSpan.Zero);
 
@@ -38,9 +42,10 @@ public sealed class AuthControllerTests
         var action = await controller.Register(command, cancellationToken);
 
         action.Should().BeOfType<OkObjectResult>();
-        sender.Verify(candidate => candidate.Send(
-            command,
-            cancellationToken), Times.Once);
+
+        // The controller stamps the caller's network details onto the command before dispatching.
+        var expected = command with { Context = ExpectedContext };
+        sender.Verify(candidate => candidate.Send(expected, cancellationToken), Times.Once);
         AssertRefreshCookie(controller, "refresh-token");
     }
 
@@ -75,9 +80,8 @@ public sealed class AuthControllerTests
         var action = await controller.Login(command, CancellationToken.None);
 
         action.Should().BeOfType<OkObjectResult>();
-        sender.Verify(candidate => candidate.Send(
-            command,
-            It.IsAny<CancellationToken>()), Times.Once);
+        var expected = command with { Context = ExpectedContext };
+        sender.Verify(candidate => candidate.Send(expected, It.IsAny<CancellationToken>()), Times.Once);
         AssertRefreshCookie(controller, "refresh-token");
     }
 
@@ -193,5 +197,5 @@ public sealed class AuthControllerTests
         "access-token", AccessExpiresAt, "refresh-token", RefreshExpiresAt, CreateUser());
 
     private static AuthenticatedUserResponse CreateUser() =>
-        new(42, "seller@example.com", "Seller Name", ["Seller"]);
+        new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "user@example.com", "User Name", ["Seller"]);
 }

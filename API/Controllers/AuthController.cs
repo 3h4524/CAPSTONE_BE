@@ -3,6 +3,7 @@ using APCS.Application.Features.Auth.Commands.Login;
 using APCS.Application.Features.Auth.Commands.Logout;
 using APCS.Application.Features.Auth.Commands.RefreshToken;
 using APCS.Application.Features.Auth.Commands.Register;
+using APCS.Application.Features.Auth.Common;
 using APCS.Application.Features.Auth.Queries.GetCurrentUser;
 using APCS.Common.Constants;
 using MediatR;
@@ -28,7 +29,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Register(RegisterCommand command, CancellationToken cancellationToken)
     {
-        var result = await sender.Send(command, cancellationToken);
+        var result = await sender.Send(command with { Context = GetRequestContext() }, cancellationToken);
 
         if (result.IsFailure)
         {
@@ -50,7 +51,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Login(LoginCommand command, CancellationToken cancellationToken)
     {
-        var result = await sender.Send(command, cancellationToken);
+        var result = await sender.Send(command with { Context = GetRequestContext() }, cancellationToken);
 
         if (result.IsFailure)
         {
@@ -72,7 +73,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
     {
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
-        var result = await sender.Send(new RefreshTokenCommand(refreshToken), cancellationToken);
+        var result = await sender.Send(new RefreshTokenCommand(refreshToken, GetRequestContext()), cancellationToken);
 
         if (result.IsFailure)
         {
@@ -95,7 +96,7 @@ public sealed class AuthController(ISender sender) : ControllerBase
     public async Task<IActionResult> Logout(CancellationToken cancellationToken)
     {
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
-        var result = await sender.Send(new LogoutCommand(refreshToken), cancellationToken);
+        var result = await sender.Send(new LogoutCommand(refreshToken, GetRequestContext()), cancellationToken);
 
         ClearRefreshTokenCookie();
 
@@ -114,6 +115,18 @@ public sealed class AuthController(ISender sender) : ControllerBase
         var result = await sender.Send(new GetCurrentUserQuery(), cancellationToken);
         return result.ToActionResult(this);
     }
+
+    /// <summary>
+    /// Captures the caller's network details for the audit trail on issued tokens.
+    /// </summary>
+    /// <remarks>
+    /// Always taken from the connection, never from the request body, so a caller cannot choose
+    /// what gets recorded against its own session.
+    /// </remarks>
+    private RequestContext GetRequestContext() =>
+        new(
+            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            Request.Headers.UserAgent.ToString() is { Length: > 0 } userAgent ? userAgent : null);
 
     private void SetRefreshTokenCookie(string refreshToken, DateTimeOffset expiresAtUtc)
     {

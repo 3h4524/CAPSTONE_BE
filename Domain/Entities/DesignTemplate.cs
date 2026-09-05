@@ -3,20 +3,23 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a reusable prompt template for design generation.
+/// Represents a reusable design prompt template.
 /// </summary>
+/// <remarks>
+/// A template is either system-provided (no owner) or user-owned; the two are mutually exclusive.
+/// </remarks>
 public sealed class DesignTemplate : SoftDeletableEntity
 {
-    private readonly List<AiPrompt> _aiPrompts = [];
+    private readonly List<Product> _products = [];
 
     private DesignTemplate()
     {
     }
 
     /// <summary>
-    /// Gets the owning seller identifier, or <see langword="null"/> for a system template.
+    /// Gets the owning user identifier, or <see langword="null"/> for system templates.
     /// </summary>
-    public int? SellerId { get; private set; }
+    public Guid? UserId { get; private set; }
 
     /// <summary>
     /// Gets the template name.
@@ -34,22 +37,22 @@ public sealed class DesignTemplate : SoftDeletableEntity
     public string? NicheCategory { get; private set; }
 
     /// <summary>
-    /// Gets the visual art style.
+    /// Gets the art style.
     /// </summary>
     public string? ArtStyle { get; private set; }
 
     /// <summary>
-    /// Gets the base generation prompt.
+    /// Gets the base prompt.
     /// </summary>
     public string BasePrompt { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets example prompts as JSON.
+    /// Gets few-shot example prompts as JSON.
     /// </summary>
     public string ExamplePrompts { get; private set; } = "[]";
 
     /// <summary>
-    /// Gets the human-readable style description.
+    /// Gets the style description.
     /// </summary>
     public string? StyleDescription { get; private set; }
 
@@ -59,7 +62,12 @@ public sealed class DesignTemplate : SoftDeletableEntity
     public string? PreviewImageUrl { get; private set; }
 
     /// <summary>
-    /// Gets a value indicating whether the template is active.
+    /// Gets a value indicating whether the template ships with the system.
+    /// </summary>
+    public bool IsSystemTemplate { get; private set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the template is selectable.
     /// </summary>
     public bool IsActive { get; private set; } = true;
 
@@ -69,7 +77,7 @@ public sealed class DesignTemplate : SoftDeletableEntity
     public int UsageCount { get; private set; }
 
     /// <summary>
-    /// Gets the prompts generated from this template.
+    /// Gets the products created from this template.
     /// </summary>
-    public IReadOnlyCollection<AiPrompt> AiPrompts => _aiPrompts.AsReadOnly();
+    public IReadOnlyCollection<Product> Products => _products.AsReadOnly();
 }

@@ -3,35 +3,38 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents one product-processing item within a batch job.
+/// Represents one product slot inside a batch job.
 /// </summary>
 public sealed class BatchJobProduct : AuditableEntity
 {
-    private readonly List<BatchJobLog> _logs = [];
-
     private BatchJobProduct()
     {
     }
 
     /// <summary>
-    /// Gets the parent batch job identifier.
+    /// Gets the owning batch job identifier.
     /// </summary>
-    public int BatchJobId { get; private set; }
+    public Guid BatchJobId { get; private set; }
 
     /// <summary>
-    /// Gets the generated product identifier, when available.
+    /// Gets the generated product identifier, once the row has been materialized.
     /// </summary>
-    public int? ProductId { get; private set; }
+    public Guid? ProductId { get; private set; }
 
     /// <summary>
-    /// Gets the item's order within the batch.
+    /// Gets the processing order within the job.
     /// </summary>
     public int SequenceOrder { get; private set; }
 
     /// <summary>
-    /// Gets the original source row index.
+    /// Gets the originating row index in the uploaded file.
     /// </summary>
     public int? SourceRowIndex { get; private set; }
+
+    /// <summary>
+    /// Gets the raw uploaded row as JSON, kept for troubleshooting.
+    /// </summary>
+    public string? RawRowData { get; private set; }
 
     /// <summary>
     /// Gets the processing status.
@@ -39,12 +42,17 @@ public sealed class BatchJobProduct : AuditableEntity
     public string Status { get; private set; } = "pending";
 
     /// <summary>
-    /// Gets the UTC processing start timestamp.
+    /// Gets the pipeline step currently running.
+    /// </summary>
+    public string? CurrentStep { get; private set; }
+
+    /// <summary>
+    /// Gets the UTC timestamp when processing started.
     /// </summary>
     public DateTimeOffset? StartedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the UTC processing completion timestamp.
+    /// Gets the UTC timestamp when processing completed.
     /// </summary>
     public DateTimeOffset? CompletedAtUtc { get; private set; }
 
@@ -54,7 +62,7 @@ public sealed class BatchJobProduct : AuditableEntity
     public decimal? DurationSeconds { get; private set; }
 
     /// <summary>
-    /// Gets the last processing error message.
+    /// Gets the last error message.
     /// </summary>
     public string? ErrorMessage { get; private set; }
 
@@ -64,7 +72,7 @@ public sealed class BatchJobProduct : AuditableEntity
     public int RetryCount { get; private set; }
 
     /// <summary>
-    /// Gets the parent batch job.
+    /// Gets the owning batch job.
     /// </summary>
     public BatchJob BatchJob { get; private set; } = null!;
 
@@ -72,9 +80,4 @@ public sealed class BatchJobProduct : AuditableEntity
     /// Gets the generated product, when available.
     /// </summary>
     public Product? Product { get; private set; }
-
-    /// <summary>
-    /// Gets the log entries associated with this item.
-    /// </summary>
-    public IReadOnlyCollection<BatchJobLog> Logs => _logs.AsReadOnly();
 }

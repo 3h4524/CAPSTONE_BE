@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a seller's connection to an Etsy shop.
+/// Represents a connected Etsy shop.
 /// </summary>
 public sealed class EtsyIntegration : SoftDeletableEntity
 {
@@ -14,9 +14,9 @@ public sealed class EtsyIntegration : SoftDeletableEntity
     }
 
     /// <summary>
-    /// Gets the owning seller identifier.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
     /// Gets the external Etsy shop identifier.
@@ -24,32 +24,42 @@ public sealed class EtsyIntegration : SoftDeletableEntity
     public string EtsyShopId { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the encrypted Etsy OAuth token.
+    /// Gets the encrypted Etsy OAuth access token.
     /// </summary>
     public string EtsyOAuthTokenEncrypted { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the Etsy shop name.
+    /// Gets the encrypted Etsy OAuth refresh token.
+    /// </summary>
+    public string? EtsyRefreshTokenEncrypted { get; private set; }
+
+    /// <summary>
+    /// Gets the shop name.
     /// </summary>
     public string ShopName { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the total number of created listings.
+    /// Gets a value indicating whether this is the default Etsy shop.
+    /// </summary>
+    public bool IsDefault { get; private set; }
+
+    /// <summary>
+    /// Gets the number of listings created in this shop.
     /// </summary>
     public int TotalListingsCreated { get; private set; }
 
     /// <summary>
-    /// Gets the total number of updated listings.
+    /// Gets the number of listings updated in this shop.
     /// </summary>
     public int TotalListingsUpdated { get; private set; }
 
     /// <summary>
-    /// Gets the UTC timestamp of the last synchronization.
+    /// Gets the UTC timestamp of the last successful sync.
     /// </summary>
     public DateTimeOffset? LastSyncAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the UTC OAuth expiration timestamp.
+    /// Gets the UTC timestamp at which the OAuth token expires.
     /// </summary>
     public DateTimeOffset? OAuthExpiresAtUtc { get; private set; }
 
@@ -59,7 +69,7 @@ public sealed class EtsyIntegration : SoftDeletableEntity
     public bool IsActive { get; private set; } = true;
 
     /// <summary>
-    /// Gets upload attempts made through this integration.
+    /// Gets the upload attempts made through this integration.
     /// </summary>
     public IReadOnlyCollection<EtsyUploadLog> UploadLogs => _uploadLogs.AsReadOnly();
 }

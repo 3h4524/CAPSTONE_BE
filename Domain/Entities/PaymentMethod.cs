@@ -3,18 +3,18 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Stores a tokenized seller payment method without sensitive card data.
+/// Stores a tokenized user payment method without sensitive card data.
 /// </summary>
-public sealed class PaymentMethod : CreationTrackedEntity, ISoftDeletable
+public sealed class PaymentMethod : CreationTrackedSoftDeletableEntity
 {
     private PaymentMethod()
     {
     }
 
     /// <summary>
-    /// Gets the owning seller identifier.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
     /// Gets the payment method type.
@@ -50,7 +50,4 @@ public sealed class PaymentMethod : CreationTrackedEntity, ISoftDeletable
     /// Gets a value indicating whether the payment method is active.
     /// </summary>
     public bool IsActive { get; private set; } = true;
-
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
 }

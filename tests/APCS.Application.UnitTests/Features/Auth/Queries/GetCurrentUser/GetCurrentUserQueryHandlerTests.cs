@@ -1,6 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Models;
-using APCS.Application.Features.Auth.Common;
 using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Features.Auth.Queries.GetCurrentUser;
 using APCS.Common.Constants;
@@ -13,16 +12,16 @@ namespace APCS.Application.UnitTests.Features.Auth.Queries.GetCurrentUser;
 public sealed class GetCurrentUserQueryHandlerTests
 {
     [TestMethod]
-    [DataRow(false, null)]
-    [DataRow(true, null)]
-    [DataRow(false, 42)]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
     public async Task Handle_WhenCurrentUserIsInvalid_ReturnsUnauthorized(
         bool isAuthenticated,
-        int? userId)
+        bool hasUserId)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(isAuthenticated);
-        currentUser.SetupGet(user => user.UserId).Returns(userId);
+        currentUser.SetupGet(user => user.UserId).Returns(hasUserId ? AuthTestData.ActiveUser.Id : null);
         var identity = new Mock<IIdentityService>();
         var handler = new GetCurrentUserQueryHandler(currentUser.Object, identity.Object);
 
@@ -30,7 +29,7 @@ public sealed class GetCurrentUserQueryHandlerTests
 
         result.Error.Code.Should().Be(ErrorCodes.Unauthorized);
         identity.Verify(service => service.FindByIdAsync(
-            It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
@@ -38,7 +37,7 @@ public sealed class GetCurrentUserQueryHandlerTests
     {
         var currentUser = CreateAuthenticatedCurrentUser();
         var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.FindByIdAsync(42, It.IsAny<CancellationToken>()))
+        identity.Setup(service => service.FindByIdAsync(AuthTestData.ActiveUser.Id, It.IsAny<CancellationToken>()))
             .ReturnsAsync((IdentityUserInfo?)null);
         var handler = new GetCurrentUserQueryHandler(currentUser.Object, identity.Object);
 
@@ -53,16 +52,16 @@ public sealed class GetCurrentUserQueryHandlerTests
         var cancellationToken = new CancellationTokenSource().Token;
         var currentUser = CreateAuthenticatedCurrentUser();
         var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.FindByIdAsync(42, cancellationToken))
+        identity.Setup(service => service.FindByIdAsync(AuthTestData.ActiveUser.Id, cancellationToken))
             .ReturnsAsync(AuthTestData.ActiveUser);
-        identity.Setup(service => service.GetRolesAsync(42, cancellationToken))
+        identity.Setup(service => service.GetRolesAsync(AuthTestData.ActiveUser.Id, cancellationToken))
             .ReturnsAsync(AuthTestData.Roles);
         var handler = new GetCurrentUserQueryHandler(currentUser.Object, identity.Object);
 
         var result = await handler.Handle(new GetCurrentUserQuery(), cancellationToken);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Id.Should().Be(42);
+        result.Value.Id.Should().Be(AuthTestData.ActiveUser.Id);
         result.Value.Email.Should().Be(AuthTestData.ActiveUser.Email);
         result.Value.FullName.Should().Be(AuthTestData.ActiveUser.FullName);
         result.Value.Roles.Should().Equal(AuthTestData.Roles);
@@ -72,7 +71,7 @@ public sealed class GetCurrentUserQueryHandlerTests
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(true);
-        currentUser.SetupGet(user => user.UserId).Returns(42);
+        currentUser.SetupGet(user => user.UserId).Returns(AuthTestData.ActiveUser.Id);
         return currentUser;
     }
 }

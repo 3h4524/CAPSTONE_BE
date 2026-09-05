@@ -5,9 +5,10 @@ namespace APCS.Domain.Entities;
 /// <summary>
 /// Represents an AI-generated design image.
 /// </summary>
-public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
+public sealed class DesignImage : CreationTrackedSoftDeletableEntity
 {
     private readonly List<MockupImage> _mockupImages = [];
+    private readonly List<PromoVideoScene> _promoVideoScenes = [];
 
     private DesignImage()
     {
@@ -16,17 +17,22 @@ public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
     /// <summary>
     /// Gets the target product identifier.
     /// </summary>
-    public int ProductId { get; private set; }
+    public Guid ProductId { get; private set; }
 
     /// <summary>
     /// Gets the source AI prompt identifier.
     /// </summary>
-    public int AiPromptId { get; private set; }
+    public Guid AiPromptId { get; private set; }
 
     /// <summary>
     /// Gets the source batch job identifier, when applicable.
     /// </summary>
-    public int? BatchJobId { get; private set; }
+    public Guid? BatchJobId { get; private set; }
+
+    /// <summary>
+    /// Gets the provider call that produced this image, when recorded.
+    /// </summary>
+    public Guid? ApiUsageRecordId { get; private set; }
 
     /// <summary>
     /// Gets the image-generation model name.
@@ -34,19 +40,19 @@ public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
     public string ImageGeneratorModel { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the external API response identifier.
+    /// Gets the object-storage provider holding the file.
     /// </summary>
-    public string? ApiResponseId { get; private set; }
+    public string StorageProvider { get; private set; } = "s3";
+
+    /// <summary>
+    /// Gets the object-storage key.
+    /// </summary>
+    public string StorageKey { get; private set; } = string.Empty;
 
     /// <summary>
     /// Gets the generated image URL.
     /// </summary>
     public string ImageUrl { get; private set; } = string.Empty;
-
-    /// <summary>
-    /// Gets the optional local image path.
-    /// </summary>
-    public string? ImageLocalPath { get; private set; }
 
     /// <summary>
     /// Gets the image width in pixels.
@@ -69,12 +75,12 @@ public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
     public decimal FileSizeMb { get; private set; }
 
     /// <summary>
-    /// Gets the computed image quality score.
+    /// Gets the computed image quality score, on a zero-to-one scale.
     /// </summary>
     public decimal? QualityScore { get; private set; }
 
     /// <summary>
-    /// Gets the optional seller rating.
+    /// Gets the optional seller rating, from one to five.
     /// </summary>
     public int? UserRating { get; private set; }
 
@@ -99,17 +105,9 @@ public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
     public decimal GenerationTimeSeconds { get; private set; }
 
     /// <summary>
-    /// Gets the generation API cost in USD.
-    /// </summary>
-    public decimal ApiCostUsd { get; private set; }
-
-    /// <summary>
     /// Gets generation metadata as JSON.
     /// </summary>
     public string? GenerationMetadata { get; private set; }
-
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
 
     /// <summary>
     /// Gets the target product.
@@ -127,7 +125,17 @@ public sealed class DesignImage : CreationTrackedEntity, ISoftDeletable
     public BatchJob? BatchJob { get; private set; }
 
     /// <summary>
+    /// Gets the provider call that produced this image, when recorded.
+    /// </summary>
+    public ApiUsageRecord? ApiUsageRecord { get; private set; }
+
+    /// <summary>
     /// Gets the mockups generated from this design.
     /// </summary>
     public IReadOnlyCollection<MockupImage> MockupImages => _mockupImages.AsReadOnly();
+
+    /// <summary>
+    /// Gets the promotional video scenes using this design.
+    /// </summary>
+    public IReadOnlyCollection<PromoVideoScene> PromoVideoScenes => _promoVideoScenes.AsReadOnly();
 }

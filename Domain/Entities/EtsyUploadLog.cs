@@ -3,8 +3,12 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents one Etsy listing upload attempt.
+/// Records one attempt to push a listing to Etsy.
 /// </summary>
+/// <remarks>
+/// Publishing straight to a live listing requires explicit seller confirmation, recorded in
+/// <see cref="ConfirmedByUserAtUtc"/> and enforced by a database check constraint.
+/// </remarks>
 public sealed class EtsyUploadLog : CreationTrackedEntity
 {
     private EtsyUploadLog()
@@ -12,22 +16,27 @@ public sealed class EtsyUploadLog : CreationTrackedEntity
     }
 
     /// <summary>
-    /// Gets the Etsy integration identifier.
+    /// Gets the integration used for the upload.
     /// </summary>
-    public int EtsyIntegrationId { get; private set; }
+    public Guid EtsyIntegrationId { get; private set; }
 
     /// <summary>
-    /// Gets the source product identifier.
+    /// Gets the uploaded product identifier.
     /// </summary>
-    public int ProductId { get; private set; }
+    public Guid ProductId { get; private set; }
 
     /// <summary>
     /// Gets the source batch job identifier, when applicable.
     /// </summary>
-    public int? BatchJobId { get; private set; }
+    public Guid? BatchJobId { get; private set; }
 
     /// <summary>
-    /// Gets the external Etsy listing identifier.
+    /// Gets the key that makes this upload safe to retry.
+    /// </summary>
+    public string IdempotencyKey { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Gets the resulting Etsy listing identifier.
     /// </summary>
     public string? EtsyListingId { get; private set; }
 
@@ -37,22 +46,32 @@ public sealed class EtsyUploadLog : CreationTrackedEntity
     public string UploadStatus { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets a value indicating whether the listing should be published immediately.
+    /// Gets the resulting listing state on Etsy.
+    /// </summary>
+    public string ListingState { get; private set; } = "draft";
+
+    /// <summary>
+    /// Gets a value indicating whether the listing was published immediately.
     /// </summary>
     public bool PublishImmediately { get; private set; }
 
     /// <summary>
-    /// Gets the submitted upload payload as JSON.
+    /// Gets the UTC timestamp at which the seller confirmed immediate publication.
+    /// </summary>
+    public DateTimeOffset? ConfirmedByUserAtUtc { get; private set; }
+
+    /// <summary>
+    /// Gets the request payload as JSON.
     /// </summary>
     public string UploadPayload { get; private set; } = "{}";
 
     /// <summary>
-    /// Gets the external API response as JSON.
+    /// Gets the provider response as JSON.
     /// </summary>
     public string? ApiResponse { get; private set; }
 
     /// <summary>
-    /// Gets the last upload error message.
+    /// Gets the error message, when the upload failed.
     /// </summary>
     public string? ErrorMessage { get; private set; }
 
@@ -62,27 +81,22 @@ public sealed class EtsyUploadLog : CreationTrackedEntity
     public int RetryCount { get; private set; }
 
     /// <summary>
-    /// Gets the UTC timestamp of the upload attempt.
+    /// Gets the UTC timestamp when the upload was attempted.
     /// </summary>
     public DateTimeOffset AttemptedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the UTC completion timestamp.
+    /// Gets the UTC timestamp when the upload finished.
     /// </summary>
     public DateTimeOffset? CompletedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the Etsy integration.
+    /// Gets the integration used for the upload.
     /// </summary>
     public EtsyIntegration EtsyIntegration { get; private set; } = null!;
 
     /// <summary>
-    /// Gets the source product.
+    /// Gets the uploaded product.
     /// </summary>
     public Product Product { get; private set; } = null!;
-
-    /// <summary>
-    /// Gets the source batch job, when applicable.
-    /// </summary>
-    public BatchJob? BatchJob { get; private set; }
 }

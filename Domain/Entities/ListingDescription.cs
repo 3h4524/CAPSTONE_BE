@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a generated listing description version.
+/// Represents one version of a listing description.
 /// </summary>
 public sealed class ListingDescription : AuditableEntity
 {
@@ -12,57 +12,52 @@ public sealed class ListingDescription : AuditableEntity
     }
 
     /// <summary>
-    /// Gets the parent listing content identifier.
+    /// Gets the owning listing content identifier.
     /// </summary>
-    public int ListingContentId { get; private set; }
+    public Guid ListingContentId { get; private set; }
 
     /// <summary>
-    /// Gets the target product identifier.
+    /// Gets the originally generated description.
     /// </summary>
-    public int ProductId { get; private set; }
+    public string AiGeneratedDescription { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the generated description.
+    /// Gets the current description, after any seller edits.
     /// </summary>
-    public string GeneratedDescription { get; private set; } = string.Empty;
-
-    /// <summary>
-    /// Gets the generated description word count.
-    /// </summary>
-    public int WordCount { get; private set; }
-
-    /// <summary>
-    /// Gets structure-compliance data as JSON.
-    /// </summary>
-    public string StructureFollowed { get; private set; } = "{}";
-
-    /// <summary>
-    /// Gets the description SEO score.
-    /// </summary>
-    public decimal SeoScore { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether keyword density is optimal.
-    /// </summary>
-    public bool KeywordDensityOptimal { get; private set; }
+    public string CurrentDescription { get; private set; } = string.Empty;
 
     /// <summary>
     /// Gets a value indicating whether the seller edited the description.
     /// </summary>
-    public bool UserEdited { get; private set; }
+    public bool IsUserEdited { get; private set; }
 
     /// <summary>
-    /// Gets the seller-edited description.
+    /// Gets the word count of the current description.
     /// </summary>
-    public string? UserEditedVersion { get; private set; }
+    public int WordCount { get; private set; }
 
     /// <summary>
-    /// Gets the description version number.
+    /// Gets which structural sections the description follows, as JSON.
+    /// </summary>
+    public string StructureFollowed { get; private set; } = "{}";
+
+    /// <summary>
+    /// Gets a value indicating whether keyword density is within the target range.
+    /// </summary>
+    public bool KeywordDensityOptimal { get; private set; }
+
+    /// <summary>
+    /// Gets the SEO score for the description.
+    /// </summary>
+    public decimal SeoScore { get; private set; }
+
+    /// <summary>
+    /// Gets the version number within the listing.
     /// </summary>
     public int VersionNumber { get; private set; } = 1;
 
     /// <summary>
-    /// Gets the parent listing content.
+    /// Gets the owning listing content.
     /// </summary>
     public ListingContent ListingContent { get; private set; } = null!;
 }

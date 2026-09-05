@@ -22,8 +22,9 @@ public sealed class RegisterValidator : AbstractValidator<RegisterCommand>
             .MinimumLength(8)
             .MaximumLength(128);
 
+        // Optional: callers that never collected a name still register successfully, and the
+        // handler falls back to the email local part.
         RuleFor(command => command.FullName)
-            .NotEmpty()
-            .MaximumLength(150);
+            .MaximumLength(255);
     }
 }

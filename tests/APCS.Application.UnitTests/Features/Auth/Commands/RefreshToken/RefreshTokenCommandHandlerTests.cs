@@ -8,7 +8,7 @@ using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Moq;
-using RefreshTokenEntity = APCS.Domain.Entities.RefreshToken;
+using RefreshTokenEntity = APCS.Domain.Entities.AuthToken;
 
 namespace APCS.Application.UnitTests.Features.Auth.Commands.RefreshToken;
 
@@ -21,7 +21,7 @@ public sealed class RefreshTokenCommandHandlerTests
     [DataRow("  ")]
     public async Task Handle_WhenTokenIsMissing_ReturnsMissingFailure(string? refreshToken)
     {
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         var jwtService = new Mock<IJwtService>();
 
         var result = await CreateHandler(repository, jwtService: jwtService).Handle(
@@ -196,13 +196,58 @@ public sealed class RefreshTokenCommandHandlerTests
         result.Error.Code.Should().Be(ErrorCodes.RefreshTokenReused);
     }
 
+    [TestMethod]
+    public async Task Handle_WhenRevokedTokenIsReplayed_RevokesTheWholeRotationChain()
+    {
+        // The replayed token was already rotated twice, so the legitimate client is holding the
+        // grandchild. We cannot tell attacker from victim, so the entire family is killed.
+        var replayed = AuthTestData.CreateRefreshToken();
+        replayed.Revoke(AuthTestData.UtcNow.AddMinutes(-10), "Rotated", "child-hash");
+        var child = AuthTestData.CreateRefreshToken(tokenHash: "child-hash");
+        child.Revoke(AuthTestData.UtcNow.AddMinutes(-5), "Rotated", "grandchild-hash");
+        var grandchild = AuthTestData.CreateRefreshToken(tokenHash: "grandchild-hash");
+
+        var (repository, jwtService) = CreateLookup(replayed);
+        repository.Setup(candidate => candidate.GetByHashAsync("child-hash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(child);
+        repository.Setup(candidate => candidate.GetByHashAsync("grandchild-hash", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(grandchild);
+        var dbContext = new Mock<IUnitOfWork>();
+        dbContext.Setup(context => context.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var result = await CreateHandler(repository, dbContext, jwtService: jwtService).Handle(
+            CreateCommand(),
+            CancellationToken.None);
+
+        result.Error.Code.Should().Be(ErrorCodes.RefreshTokenReused);
+        grandchild.IsRevoked.Should().BeTrue();
+        grandchild.ReasonRevoked.Should().Be("ReuseDetected");
+        dbContext.Verify(context => context.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Handle_WhenReplayedTokenHasNoDescendants_DoesNotSave()
+    {
+        var replayed = AuthTestData.CreateRefreshToken();
+        replayed.Revoke(AuthTestData.UtcNow.AddMinutes(-1), "Logout");
+        var (repository, jwtService) = CreateLookup(replayed);
+        var dbContext = new Mock<IUnitOfWork>();
+
+        var result = await CreateHandler(repository, dbContext, jwtService: jwtService).Handle(
+            CreateCommand(),
+            CancellationToken.None);
+
+        result.Error.Code.Should().Be(ErrorCodes.RefreshTokenReused);
+        dbContext.Verify(context => context.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private static RefreshTokenCommand CreateCommand() => new("presented-raw-token");
 
-    private static (Mock<IRefreshTokenRepository> Repository, Mock<IJwtService> JwtService) CreateLookup(
+    private static (Mock<IAuthTokenRepository> Repository, Mock<IJwtService> JwtService) CreateLookup(
         RefreshTokenEntity? token,
         CancellationToken cancellationToken = default)
     {
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         repository.Setup(candidate => candidate.GetByHashAsync("presented-token-hash", cancellationToken))
             .ReturnsAsync(token);
         var jwtService = new Mock<IJwtService>();
@@ -230,7 +275,7 @@ public sealed class RefreshTokenCommandHandlerTests
     }
 
     private static RefreshTokenCommandHandler CreateHandler(
-        Mock<IRefreshTokenRepository> repository,
+        Mock<IAuthTokenRepository> repository,
         Mock<IUnitOfWork>? dbContext = null,
         Mock<IIdentityService>? identity = null,
         Mock<IJwtService>? jwtService = null) => new(

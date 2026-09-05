@@ -14,6 +14,7 @@ namespace APCS.Infrastructure.UnitTests.Services;
 public sealed class JwtServiceTests
 {
     private static readonly DateTimeOffset UtcNow = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
+    private static readonly Guid UserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private const string SigningKey = "unit-test-signing-key-with-at-least-32-bytes";
 
     [TestMethod]
@@ -21,7 +22,7 @@ public sealed class JwtServiceTests
     {
         var service = CreateService();
 
-        var result = service.GenerateAccessToken(42, "seller@example.com", ["user", "admin"]);
+        var result = service.GenerateAccessToken(UserId,"seller@example.com", ["user", "admin"]);
 
         result.JwtId.Should().NotBeNullOrWhiteSpace();
         result.ExpiresAtUtc.Should().Be(UtcNow.AddMinutes(15));
@@ -31,7 +32,7 @@ public sealed class JwtServiceTests
             out var validatedToken);
         validatedToken.Should().BeOfType<JwtSecurityToken>()
             .Which.Header.Alg.Should().Be(SecurityAlgorithms.HmacSha256);
-        principal.FindFirstValue(ClaimTypes.NameIdentifier).Should().Be("42");
+        principal.FindFirstValue(ClaimTypes.NameIdentifier).Should().Be(UserId.ToString());
         principal.FindFirstValue(ClaimTypes.Email).Should().Be("seller@example.com");
         principal.FindAll(ClaimTypes.Role).Select(claim => claim.Value)
             .Should().BeEquivalentTo("user", "admin");
@@ -43,8 +44,8 @@ public sealed class JwtServiceTests
     {
         var service = CreateService();
 
-        var first = service.GenerateAccessToken(42, "seller@example.com", ["user"]);
-        var second = service.GenerateAccessToken(42, "seller@example.com", ["user"]);
+        var first = service.GenerateAccessToken(UserId,"seller@example.com", ["user"]);
+        var second = service.GenerateAccessToken(UserId,"seller@example.com", ["user"]);
 
         first.JwtId.Should().NotBe(second.JwtId);
         first.AccessToken.Should().NotBe(second.AccessToken);
@@ -76,7 +77,7 @@ public sealed class JwtServiceTests
     [TestMethod]
     public void GenerateAccessToken_WithBlankEmail_Throws()
     {
-        var act = () => CreateService().GenerateAccessToken(42, " ", ["user"]);
+        var act = () => CreateService().GenerateAccessToken(UserId," ", ["user"]);
 
         act.Should().Throw<ArgumentException>();
     }
@@ -84,7 +85,7 @@ public sealed class JwtServiceTests
     [TestMethod]
     public void GenerateAccessToken_WithNullRoles_Throws()
     {
-        var act = () => CreateService().GenerateAccessToken(42, "seller@example.com", null!);
+        var act = () => CreateService().GenerateAccessToken(UserId,"seller@example.com", null!);
 
         act.Should().Throw<ArgumentNullException>();
     }

@@ -10,7 +10,7 @@ public interface IJwtService
     /// <summary>
     /// Generates a signed access token.
     /// </summary>
-    JwtTokenResult GenerateAccessToken(int userId, string email, IReadOnlyCollection<string> roles);
+    JwtTokenResult GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles);
 
     /// <summary>
     /// Generates a raw refresh token.

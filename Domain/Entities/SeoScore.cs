@@ -3,8 +3,12 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents an SEO quality assessment for generated listing content.
+/// Holds the computed SEO assessment for a listing.
 /// </summary>
+/// <remarks>
+/// One score per listing. The product is reached through the listing rather than stored again
+/// here, so the two can never disagree.
+/// </remarks>
 public sealed class SeoScore : BaseEntity, IHasModificationTime
 {
     private SeoScore()
@@ -12,32 +16,27 @@ public sealed class SeoScore : BaseEntity, IHasModificationTime
     }
 
     /// <summary>
-    /// Gets the parent listing content identifier.
+    /// Gets the scored listing content identifier.
     /// </summary>
-    public int ListingContentId { get; private set; }
+    public Guid ListingContentId { get; private set; }
 
     /// <summary>
-    /// Gets the target product identifier.
-    /// </summary>
-    public int ProductId { get; private set; }
-
-    /// <summary>
-    /// Gets the overall SEO score.
+    /// Gets the overall score, from zero to one hundred.
     /// </summary>
     public decimal OverallSeoScore { get; private set; }
 
     /// <summary>
-    /// Gets the title SEO score.
+    /// Gets the title component score.
     /// </summary>
     public decimal TitleScore { get; private set; }
 
     /// <summary>
-    /// Gets the tags SEO score.
+    /// Gets the tag component score.
     /// </summary>
     public decimal TagsScore { get; private set; }
 
     /// <summary>
-    /// Gets the description SEO score.
+    /// Gets the description component score.
     /// </summary>
     public decimal DescriptionScore { get; private set; }
 
@@ -57,12 +56,17 @@ public sealed class SeoScore : BaseEntity, IHasModificationTime
     public decimal KeywordDensity { get; private set; }
 
     /// <summary>
-    /// Gets improvement suggestions as JSON.
+    /// Gets the improvement suggestions as JSON.
     /// </summary>
     public string ImprovementSuggestions { get; private set; } = "[]";
 
     /// <summary>
-    /// Gets the UTC score calculation timestamp.
+    /// Gets the version of the scoring algorithm that produced these numbers.
+    /// </summary>
+    public string ScoringAlgorithmVersion { get; private set; } = "v1";
+
+    /// <summary>
+    /// Gets the UTC timestamp when the score was calculated.
     /// </summary>
     public DateTimeOffset CalculatedAtUtc { get; private set; }
 
@@ -70,7 +74,7 @@ public sealed class SeoScore : BaseEntity, IHasModificationTime
     public DateTimeOffset UpdatedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the parent listing content.
+    /// Gets the scored listing content.
     /// </summary>
     public ListingContent ListingContent { get; private set; } = null!;
 }

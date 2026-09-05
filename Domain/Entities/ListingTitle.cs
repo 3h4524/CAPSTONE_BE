@@ -3,8 +3,13 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a generated listing title version.
+/// Represents one version of a listing title.
 /// </summary>
+/// <remarks>
+/// <see cref="CharacterCount"/> and <see cref="IsUserEdited"/> are enforced against
+/// <see cref="CurrentTitle"/> by database check constraints, so both must be recomputed
+/// whenever the title changes.
+/// </remarks>
 public sealed class ListingTitle : AuditableEntity
 {
     private ListingTitle()
@@ -12,52 +17,47 @@ public sealed class ListingTitle : AuditableEntity
     }
 
     /// <summary>
-    /// Gets the parent listing content identifier.
+    /// Gets the owning listing content identifier.
     /// </summary>
-    public int ListingContentId { get; private set; }
+    public Guid ListingContentId { get; private set; }
 
     /// <summary>
-    /// Gets the target product identifier.
+    /// Gets the originally generated title.
     /// </summary>
-    public int ProductId { get; private set; }
+    public string AiGeneratedTitle { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the generated title.
+    /// Gets the current title, after any seller edits.
     /// </summary>
-    public string GeneratedTitle { get; private set; } = string.Empty;
-
-    /// <summary>
-    /// Gets the generated title character count.
-    /// </summary>
-    public int CharacterCount { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether the primary keyword is included.
-    /// </summary>
-    public bool IncludesPrimaryKeyword { get; private set; }
-
-    /// <summary>
-    /// Gets the title SEO score.
-    /// </summary>
-    public decimal SeoScore { get; private set; }
+    public string CurrentTitle { get; private set; } = string.Empty;
 
     /// <summary>
     /// Gets a value indicating whether the seller edited the title.
     /// </summary>
-    public bool UserEdited { get; private set; }
+    public bool IsUserEdited { get; private set; }
 
     /// <summary>
-    /// Gets the seller-edited title version.
+    /// Gets the character count of the current title.
     /// </summary>
-    public string? UserEditedVersion { get; private set; }
+    public int CharacterCount { get; private set; }
 
     /// <summary>
-    /// Gets the title version number.
+    /// Gets a value indicating whether the title contains the primary keyword.
+    /// </summary>
+    public bool IncludesPrimaryKeyword { get; private set; }
+
+    /// <summary>
+    /// Gets the SEO score for the title.
+    /// </summary>
+    public decimal SeoScore { get; private set; }
+
+    /// <summary>
+    /// Gets the version number within the listing.
     /// </summary>
     public int VersionNumber { get; private set; } = 1;
 
     /// <summary>
-    /// Gets the parent listing content.
+    /// Gets the owning listing content.
     /// </summary>
     public ListingContent ListingContent { get; private set; } = null!;
 }

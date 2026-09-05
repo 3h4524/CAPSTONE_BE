@@ -9,12 +9,20 @@ namespace APCS.Infrastructure.Persistence.Configurations;
 /// </summary>
 internal static class EntityConfigurationExtensions
 {
+    /// <summary>
+    /// Configures the primary key for an entity whose identifier is assigned in the domain.
+    /// </summary>
+    /// <remarks>
+    /// Identifiers are generated client-side by <see cref="BaseEntity"/> so object graphs can be
+    /// wired up before saving, hence <c>ValueGeneratedNever</c>: the database must not overwrite
+    /// the value the domain already handed out.
+    /// </remarks>
     public static void ConfigureGeneratedId<TEntity>(this EntityTypeBuilder<TEntity> builder)
         where TEntity : BaseEntity
     {
         builder.HasKey(entity => entity.Id);
         builder.Property(entity => entity.Id)
-            .UseIdentityByDefaultColumn();
+            .ValueGeneratedNever();
     }
 
     public static void ConfigureCreationTime<TEntity>(this EntityTypeBuilder<TEntity> builder)

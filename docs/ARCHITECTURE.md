@@ -8,7 +8,7 @@ This document is the source of truth for architecture, CQRS, dependency directio
 - MediatR for commands, queries, handlers, and pipeline behaviours.
 - FluentValidation for request validation.
 - Entity Framework Core 8 with PostgreSQL and snake-case database naming.
-- ASP.NET Core Identity with integer `Seller` identifiers.
+- ASP.NET Core Identity with GUID `User` identifiers, role codes, and a permission catalogue.
 - Custom JWT access tokens and hashed, rotating refresh tokens.
 - Redis through `IDistributedCache` and the Application `ICacheService` abstraction.
 - MSTest, FluentAssertions, and Moq for the current unit-test suite.
@@ -102,9 +102,11 @@ Common currently owns `Result`, `Error`, `ErrorType`, paging, configuration help
 | Operation uses Identity/JWT/cache/email/external API | Application abstraction grouped by concern | Direct Infrastructure implementation in Application or API |
 | Several writes must be atomic | `IUnitOfWorkTransaction` where the use case truly requires a transaction | A transaction around every handler by default |
 
-`IReadDbContext` exposes no-tracking `IQueryable` roots. Query handlers must filter and project before materializing data. Do not expose the query root beyond the handler or return a Domain/EF entity as the response.
+`IReadDbContext.Query<TEntity>()` returns a no-tracking `IQueryable` root. Query handlers must filter and project before materializing data. Do not expose the query root beyond the handler or return a Domain/EF entity as the response.
 
-Create a command repository only for operations needed by a consistency boundary or lifecycle. `IRefreshTokenRepository` is the current example: it finds a token by hash and adds a new token while `IUnitOfWork` commits the lifecycle change.
+These queries always run against the database, so they do not see writes staged through `IUnitOfWork` that have not been saved yet. A handler that writes and then reads the same data back must call `SaveChangesAsync` in between.
+
+Create a command repository only for operations needed by a consistency boundary or lifecycle. `IAuthTokenRepository` is the current example: it finds a token by hash and adds a new token while `IUnitOfWork` commits the lifecycle change.
 
 ## Type placement
 
@@ -162,7 +164,7 @@ public sealed class CreateProductCommandHandler(
 Good query shape:
 
 ```csharp
-var response = await readDbContext.Products
+var response = await readDbContext.Query<Product>()
     .Where(product => product.Id == request.Id)
     .Select(product => new GetProductResponse(product.Id, product.Name))
     .SingleOrDefaultAsync(cancellationToken);
@@ -171,7 +173,7 @@ var response = await readDbContext.Products
 Bad API shape:
 
 ```csharp
-public Task<Product> Get(AppDbContext dbContext, int id) =>
+public Task<Product> Get(AppDbContext dbContext, Guid id) =>
     dbContext.Products.SingleAsync(product => product.Id == id);
 ```
 
@@ -181,9 +183,10 @@ The examples show dependency and projection shape; they do not claim that the il
 
 These facts are documented so new work does not mistake a target rule for an already-complete implementation:
 
-- `Application/Application.csproj` references Entity Framework Core. `RefreshTokenCommandHandler` catches `DbUpdateConcurrencyException` directly; provider failure translation is not yet fully abstracted.
-- `IReadDbContext` is implemented by `AppDbContext` and exposes no-tracking roots, but no production query currently demonstrates database projection. `GetCurrentUserQueryHandler` reads through `IIdentityService`.
-- The schema model contains many entities with private setters, but most do not yet expose construction or business-transition methods. `Email`, `RefreshToken`, and soft-delete behavior are the clearest current domain-behavior examples.
+- `Application/Application.csproj` references Entity Framework Core. `RefreshTokenCommandHandler` and `LogoutCommandHandler` catch `DbUpdateConcurrencyException` directly; provider failure translation is not yet fully abstracted.
+- `IReadDbContext` is implemented by `AppDbContext`, but no production query uses it yet. `GetCurrentUserQueryHandler` reads through `IIdentityService`.
+- The schema model contains many entities with private setters, but most do not yet expose construction or business-transition methods. `Email`, `AuthToken`, `AuditLog`, and soft-delete behavior are the clearest current domain-behavior examples.
+- The `permissions` and `role_permissions` tables are mapped but nothing seeds them, and no authorization path consults them yet; roles alone drive `[Authorize]`. `IdentityService.EnsureRoleExistsAsync` creates the default role lazily on first registration, and there is no administrator bootstrap.
 - `AggregateRoot` is presently a marker and domain events are not implemented.
 - `EmailService` logs a send request and completes without delivering email.
 - Redis is configured and unit-tested, but the repository has no Redis integration tests.

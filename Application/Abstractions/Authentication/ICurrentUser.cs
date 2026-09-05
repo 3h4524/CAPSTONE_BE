@@ -8,7 +8,7 @@ public interface ICurrentUser
     /// <summary>
     /// Gets the current user identifier.
     /// </summary>
-    int? UserId { get; }
+    Guid? UserId { get; }
 
     /// <summary>
     /// Gets the current user email.

@@ -14,14 +14,18 @@ public sealed class IdentityServiceTests
 {
     private static readonly DateTimeOffset UtcNow = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
 
+    private static readonly Guid UserId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+    private static readonly Guid OtherUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
     [TestMethod]
     public async Task EmailExistsAsync_WhenUserExists_ReturnsTrue()
     {
         var managers = new IdentityManagerMocks();
-        managers.UserManager.Setup(manager => manager.FindByEmailAsync("seller@example.com"))
-            .ReturnsAsync(new Seller());
+        managers.UserManager.Setup(manager => manager.FindByEmailAsync("user@example.com"))
+            .ReturnsAsync(new User());
 
-        var result = await CreateService(managers).EmailExistsAsync("seller@example.com");
+        var result = await CreateService(managers).EmailExistsAsync("user@example.com");
 
         result.Should().BeTrue();
     }
@@ -30,42 +34,63 @@ public sealed class IdentityServiceTests
     public async Task CreateUserAsync_WhenCreateFails_ReturnsIdentityErrors()
     {
         var managers = new IdentityManagerMocks();
-        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<Seller>(), "Password1"))
+        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<User>(), "Password1"))
             .ReturnsAsync(Failed("Create failed"));
 
         var result = await CreateService(managers).CreateUserAsync(
-            "seller@example.com", "Password1", "Seller", CancellationToken.None);
+            "user@example.com", "Password1", "User", CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
         result.Errors.Should().Equal("Create failed");
+        result.User.Should().BeNull();
         managers.RoleManager.Verify(manager => manager.RoleExistsAsync(It.IsAny<string>()), Times.Never);
     }
 
     [TestMethod]
-    public async Task CreateUserAsync_WhenRoleExists_CreatesActiveSellerAndAssignsRole()
+    public async Task CreateUserAsync_WhenRoleExists_CreatesActiveUserAndAssignsRole()
     {
         var managers = new IdentityManagerMocks();
-        Seller? createdUser = null;
-        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<Seller>(), "Password1"))
-            .Callback<Seller, string>((seller, _) => createdUser = seller)
+        User? createdUser = null;
+        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<User>(), "Password1"))
+            .Callback<User, string>((user, _) => createdUser = user)
             .ReturnsAsync(IdentityResult.Success);
         managers.RoleManager.Setup(manager => manager.RoleExistsAsync(AuthConstants.UserRole))
             .ReturnsAsync(true);
         managers.UserManager.Setup(manager => manager.AddToRoleAsync(
-                It.IsAny<Seller>(), AuthConstants.UserRole))
+                It.IsAny<User>(), AuthConstants.UserRole))
             .ReturnsAsync(IdentityResult.Success);
 
         var result = await CreateService(managers).CreateUserAsync(
-            "seller@example.com", "Password1", "Seller Name", CancellationToken.None);
+            "user@example.com", "Password1", "User Name", CancellationToken.None);
 
         result.Succeeded.Should().BeTrue();
         createdUser.Should().NotBeNull();
-        createdUser!.UserName.Should().Be("seller@example.com");
-        createdUser.Email.Should().Be("seller@example.com");
-        createdUser.FullName.Should().Be("Seller Name");
+        createdUser!.UserName.Should().Be("user@example.com");
+        createdUser.Email.Should().Be("user@example.com");
+        createdUser.FullName.Should().Be("User Name");
         createdUser.EmailConfirmed.Should().BeTrue();
         createdUser.EmailVerifiedAtUtc.Should().Be(UtcNow);
-        createdUser.AccountStatus.Should().Be("active");
+        createdUser.AccountStatus.Should().Be(AccountStatuses.Active);
+    }
+
+    [TestMethod]
+    public async Task CreateUserAsync_OnSuccess_ReturnsTheCreatedUserAndItsRoles()
+    {
+        var managers = SetupSuccessfulUserCreation();
+        managers.RoleManager.Setup(manager => manager.RoleExistsAsync(AuthConstants.UserRole))
+            .ReturnsAsync(true);
+        managers.UserManager.Setup(manager => manager.AddToRoleAsync(
+                It.IsAny<User>(), AuthConstants.UserRole))
+            .ReturnsAsync(IdentityResult.Success);
+
+        var result = await CreateService(managers).CreateUserAsync(
+            "user@example.com", "Password1", "User Name", CancellationToken.None);
+
+        result.Succeeded.Should().BeTrue();
+        result.User.Should().NotBeNull();
+        result.User!.Email.Should().Be("user@example.com");
+        result.User.FullName.Should().Be("User Name");
+        result.Roles.Should().Equal(AuthConstants.UserRole);
     }
 
     [TestMethod]
@@ -74,17 +99,17 @@ public sealed class IdentityServiceTests
         var managers = SetupSuccessfulUserCreation();
         managers.RoleManager.Setup(manager => manager.RoleExistsAsync(AuthConstants.UserRole))
             .ReturnsAsync(false);
-        managers.RoleManager.Setup(manager => manager.CreateAsync(It.IsAny<IdentityRole<int>>()))
+        managers.RoleManager.Setup(manager => manager.CreateAsync(It.IsAny<Role>()))
             .ReturnsAsync(Failed("Role failed"));
-        managers.UserManager.Setup(manager => manager.DeleteAsync(It.IsAny<Seller>()))
+        managers.UserManager.Setup(manager => manager.DeleteAsync(It.IsAny<User>()))
             .ReturnsAsync(IdentityResult.Success);
 
         var result = await CreateService(managers).CreateUserAsync(
-            "seller@example.com", "Password1", "Seller", CancellationToken.None);
+            "user@example.com", "Password1", "User", CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
         result.Errors.Should().Equal("Role failed");
-        managers.UserManager.Verify(manager => manager.DeleteAsync(It.IsAny<Seller>()), Times.Once);
+        managers.UserManager.Verify(manager => manager.DeleteAsync(It.IsAny<User>()), Times.Once);
     }
 
     [TestMethod]
@@ -94,14 +119,14 @@ public sealed class IdentityServiceTests
         managers.RoleManager.SetupSequence(manager => manager.RoleExistsAsync(AuthConstants.UserRole))
             .ReturnsAsync(false)
             .ReturnsAsync(true);
-        managers.RoleManager.Setup(manager => manager.CreateAsync(It.IsAny<IdentityRole<int>>()))
+        managers.RoleManager.Setup(manager => manager.CreateAsync(It.IsAny<Role>()))
             .ReturnsAsync(Failed("Duplicate role"));
         managers.UserManager.Setup(manager => manager.AddToRoleAsync(
-                It.IsAny<Seller>(), AuthConstants.UserRole))
+                It.IsAny<User>(), AuthConstants.UserRole))
             .ReturnsAsync(IdentityResult.Success);
 
         var result = await CreateService(managers).CreateUserAsync(
-            "seller@example.com", "Password1", "Seller", CancellationToken.None);
+            "user@example.com", "Password1", "User", CancellationToken.None);
 
         result.Succeeded.Should().BeTrue();
     }
@@ -113,46 +138,66 @@ public sealed class IdentityServiceTests
         managers.RoleManager.Setup(manager => manager.RoleExistsAsync(AuthConstants.UserRole))
             .ReturnsAsync(true);
         managers.UserManager.Setup(manager => manager.AddToRoleAsync(
-                It.IsAny<Seller>(), AuthConstants.UserRole))
+                It.IsAny<User>(), AuthConstants.UserRole))
             .ReturnsAsync(Failed("Assignment failed"));
-        managers.UserManager.Setup(manager => manager.DeleteAsync(It.IsAny<Seller>()))
+        managers.UserManager.Setup(manager => manager.DeleteAsync(It.IsAny<User>()))
             .ReturnsAsync(IdentityResult.Success);
 
         var result = await CreateService(managers).CreateUserAsync(
-            "seller@example.com", "Password1", "Seller", CancellationToken.None);
+            "user@example.com", "Password1", "User", CancellationToken.None);
 
         result.Succeeded.Should().BeFalse();
         result.Errors.Should().Equal("Assignment failed");
-        managers.UserManager.Verify(manager => manager.DeleteAsync(It.IsAny<Seller>()), Times.Once);
+        managers.UserManager.Verify(manager => manager.DeleteAsync(It.IsAny<User>()), Times.Once);
     }
 
     [TestMethod]
     public async Task FindByEmailAsync_WhenUserExists_MapsStatusAndLockout()
     {
         var managers = new IdentityManagerMocks();
-        var seller = CreateSeller();
-        managers.UserManager.Setup(manager => manager.FindByEmailAsync("seller@example.com"))
-            .ReturnsAsync(seller);
-        managers.UserManager.Setup(manager => manager.IsLockedOutAsync(seller)).ReturnsAsync(true);
+        var user = CreateUser();
+        managers.UserManager.Setup(manager => manager.FindByEmailAsync("user@example.com"))
+            .ReturnsAsync(user);
+        managers.UserManager.Setup(manager => manager.IsLockedOutAsync(user)).ReturnsAsync(true);
 
-        var result = await CreateService(managers).FindByEmailAsync("seller@example.com");
+        var result = await CreateService(managers).FindByEmailAsync("user@example.com");
 
         result.Should().NotBeNull();
-        result!.Id.Should().Be(42);
-        result.Email.Should().Be("seller@example.com");
-        result.FullName.Should().Be("Seller Name");
+        result!.Id.Should().Be(UserId);
+        result.Email.Should().Be("user@example.com");
+        result.FullName.Should().Be("User Name");
         result.IsActive.Should().BeTrue();
         result.IsLockedOut.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task LookupsForTheSameUser_HitTheStoreOnlyOnce()
+    {
+        var managers = new IdentityManagerMocks();
+        var user = CreateUser();
+        managers.UserManager.Setup(manager => manager.FindByEmailAsync("user@example.com"))
+            .ReturnsAsync(user);
+        managers.UserManager.Setup(manager => manager.GetRolesAsync(user)).ReturnsAsync(["user"]);
+        managers.UserManager.Setup(manager => manager.UpdateAsync(user)).ReturnsAsync(IdentityResult.Success);
+        var service = CreateService(managers);
+
+        await service.FindByEmailAsync("user@example.com");
+        await service.FindByIdAsync(UserId);
+        await service.GetRolesAsync(UserId);
+        await service.TouchLastLoginAsync(UserId, UtcNow);
+
+        managers.UserManager.Verify(manager => manager.FindByEmailAsync("user@example.com"), Times.Once);
+        managers.UserManager.Verify(manager => manager.FindByIdAsync(It.IsAny<string>()), Times.Never);
     }
 
     [TestMethod]
     public async Task ValidateCredentialsAsync_WhenUserMissing_ReturnsRejectedResult()
     {
         var managers = new IdentityManagerMocks();
-        managers.UserManager.Setup(manager => manager.FindByIdAsync("42"))
-            .ReturnsAsync((Seller?)null);
+        managers.UserManager.Setup(manager => manager.FindByIdAsync(UserId.ToString()))
+            .ReturnsAsync((User?)null);
 
-        var result = await CreateService(managers).ValidateCredentialsAsync(42, "Password1");
+        var result = await CreateService(managers).ValidateCredentialsAsync(UserId, "Password1");
 
         result.Succeeded.Should().BeFalse();
         result.IsLockedOut.Should().BeFalse();
@@ -163,13 +208,13 @@ public sealed class IdentityServiceTests
     public async Task ValidateCredentialsAsync_WhenSignInLocksUser_MapsSignInResult()
     {
         var managers = new IdentityManagerMocks();
-        var seller = CreateSeller();
-        managers.UserManager.Setup(manager => manager.FindByIdAsync("42")).ReturnsAsync(seller);
+        var user = CreateUser();
+        managers.UserManager.Setup(manager => manager.FindByIdAsync(UserId.ToString())).ReturnsAsync(user);
         managers.SignInManager.Setup(manager => manager.CheckPasswordSignInAsync(
-                seller, "Password1", true))
+                user, "Password1", true))
             .ReturnsAsync(SignInResult.LockedOut);
 
-        var result = await CreateService(managers).ValidateCredentialsAsync(42, "Password1");
+        var result = await CreateService(managers).ValidateCredentialsAsync(UserId, "Password1");
 
         result.Succeeded.Should().BeFalse();
         result.IsLockedOut.Should().BeTrue();
@@ -179,30 +224,31 @@ public sealed class IdentityServiceTests
     public async Task GetRolesAsync_ForExistingAndMissingUsers_ReturnsExpectedRoles()
     {
         var managers = new IdentityManagerMocks();
-        var seller = CreateSeller();
-        managers.UserManager.Setup(manager => manager.FindByIdAsync("42")).ReturnsAsync(seller);
-        managers.UserManager.Setup(manager => manager.GetRolesAsync(seller))
+        var user = CreateUser();
+        managers.UserManager.Setup(manager => manager.FindByIdAsync(UserId.ToString())).ReturnsAsync(user);
+        managers.UserManager.Setup(manager => manager.GetRolesAsync(user))
             .ReturnsAsync(["user", "admin"]);
-        managers.UserManager.Setup(manager => manager.FindByIdAsync("7")).ReturnsAsync((Seller?)null);
+        managers.UserManager.Setup(manager => manager.FindByIdAsync(OtherUserId.ToString()))
+            .ReturnsAsync((User?)null);
         var service = CreateService(managers);
 
-        (await service.GetRolesAsync(42)).Should().Equal("user", "admin");
-        (await service.GetRolesAsync(7)).Should().BeEmpty();
+        (await service.GetRolesAsync(UserId)).Should().Equal("user", "admin");
+        (await service.GetRolesAsync(OtherUserId)).Should().BeEmpty();
     }
 
     [TestMethod]
-    public async Task TouchLastLoginAsync_WhenUserExists_UpdatesTimestamps()
+    public async Task TouchLastLoginAsync_WhenUserExists_UpdatesLastLogin()
     {
         var managers = new IdentityManagerMocks();
-        var seller = CreateSeller();
-        managers.UserManager.Setup(manager => manager.FindByIdAsync("42")).ReturnsAsync(seller);
-        managers.UserManager.Setup(manager => manager.UpdateAsync(seller)).ReturnsAsync(IdentityResult.Success);
+        var user = CreateUser();
+        managers.UserManager.Setup(manager => manager.FindByIdAsync(UserId.ToString())).ReturnsAsync(user);
+        managers.UserManager.Setup(manager => manager.UpdateAsync(user)).ReturnsAsync(IdentityResult.Success);
 
-        await CreateService(managers).TouchLastLoginAsync(42, UtcNow);
+        await CreateService(managers).TouchLastLoginAsync(UserId, UtcNow);
 
-        seller.LastLoginAtUtc.Should().Be(UtcNow);
-        seller.UpdatedAtUtc.Should().Be(UtcNow);
-        managers.UserManager.Verify(manager => manager.UpdateAsync(seller), Times.Once);
+        // UpdatedAtUtc is stamped by the persistence layer on save, not here.
+        user.LastLoginAtUtc.Should().Be(UtcNow);
+        managers.UserManager.Verify(manager => manager.UpdateAsync(user), Times.Once);
     }
 
     [TestMethod]
@@ -212,7 +258,7 @@ public sealed class IdentityServiceTests
         using var source = new CancellationTokenSource();
         source.Cancel();
 
-        var act = () => CreateService(managers).EmailExistsAsync("seller@example.com", source.Token);
+        var act = () => CreateService(managers).EmailExistsAsync("user@example.com", source.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         managers.UserManager.Verify(manager => manager.FindByEmailAsync(It.IsAny<string>()), Times.Never);
@@ -227,18 +273,18 @@ public sealed class IdentityServiceTests
     private static IdentityManagerMocks SetupSuccessfulUserCreation()
     {
         var managers = new IdentityManagerMocks();
-        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<Seller>(), "Password1"))
+        managers.UserManager.Setup(manager => manager.CreateAsync(It.IsAny<User>(), "Password1"))
             .ReturnsAsync(IdentityResult.Success);
         return managers;
     }
 
-    private static Seller CreateSeller() => new()
+    private static User CreateUser() => new()
     {
-        Id = 42,
-        UserName = "seller@example.com",
-        Email = "seller@example.com",
-        FullName = "Seller Name",
-        AccountStatus = "active"
+        Id = UserId,
+        UserName = "user@example.com",
+        Email = "user@example.com",
+        FullName = "User Name",
+        AccountStatus = AccountStatuses.Active
     };
 
     private static IdentityResult Failed(string description) => IdentityResult.Failed(

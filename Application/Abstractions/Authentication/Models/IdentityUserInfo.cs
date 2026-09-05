@@ -4,7 +4,7 @@ namespace APCS.Application.Abstractions.Authentication.Models;
 /// Represents user data needed by application use cases.
 /// </summary>
 public sealed record IdentityUserInfo(
-    int Id,
+    Guid Id,
     string Email,
     string FullName,
     bool IsActive,

@@ -1,19 +1,18 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Auth.Common;
-using APCS.Common.Constants;
 using APCS.Common.Models;
 using MediatR;
 
 namespace APCS.Application.Features.Auth.Commands.Register;
 
 /// <summary>
-/// Handles seller registration.
+/// Handles account registration.
 /// </summary>
 public sealed class RegisterCommandHandler(
     IIdentityService identityService,
     IUnitOfWork unitOfWork,
-    IRefreshTokenRepository refreshTokenRepository,
+    IAuthTokenRepository authTokenRepository,
     IJwtService jwtService,
     TimeProvider timeProvider)
     : IRequestHandler<RegisterCommand, Result<RegisterResponse>>
@@ -24,9 +23,14 @@ public sealed class RegisterCommandHandler(
         var email = request.Email.Trim().ToLowerInvariant();
         if (await identityService.EmailExistsAsync(email, cancellationToken))
         {
-            return Result.Failure<RegisterResponse>(
-                Error.Conflict(ErrorCodes.EmailAlreadyExists, "Email is already registered."));
+            return Result.Failure<RegisterResponse>(AuthErrors.EmailAlreadyExists());
         }
+
+        // Optional for callers that never collected one; the local part of the email is a
+        // reasonable display name until the user sets their own.
+        var fullName = string.IsNullOrWhiteSpace(request.FullName)
+            ? email.Split('@')[0]
+            : request.FullName.Trim();
 
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         try
@@ -34,34 +38,26 @@ public sealed class RegisterCommandHandler(
             var createResult = await identityService.CreateUserAsync(
                 email,
                 request.Password,
-                request.FullName.Trim(),
+                fullName,
                 cancellationToken);
 
-            if (!createResult.Succeeded)
+            if (!createResult.Succeeded || createResult.User is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                var details = new Dictionary<string, string[]>
-                {
-                    ["identity"] = createResult.Errors.ToArray()
-                };
-
-                return Result.Failure<RegisterResponse>(
-                    Error.Validation("Could not create the account.", details));
+                return Result.Failure<RegisterResponse>(AuthErrors.RegistrationFailed(createResult.Errors));
             }
 
-            var user = await identityService.FindByEmailAsync(email, cancellationToken);
-            if (user is null)
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure<RegisterResponse>(
-                    Error.Failure(ErrorCodes.Unexpected, "The account was created but could not be loaded."));
-            }
-
-            var roles = await identityService.GetRolesAsync(user.Id, cancellationToken);
+            var user = createResult.User;
+            var roles = createResult.Roles;
             var utcNow = timeProvider.GetUtcNow();
-            var session = AuthSessionFactory.Create(jwtService, user, roles, utcNow);
+            var session = AuthSessionFactory.Create(
+                jwtService,
+                user,
+                roles,
+                utcNow,
+                request.Context ?? RequestContext.None);
 
-            refreshTokenRepository.Add(session.Entity);
+            authTokenRepository.Add(session.Entity);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 

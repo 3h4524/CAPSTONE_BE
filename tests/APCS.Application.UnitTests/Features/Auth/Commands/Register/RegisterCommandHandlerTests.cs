@@ -4,10 +4,9 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Features.Auth.Commands.Register;
 using APCS.Common.Constants;
-using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
-using RefreshTokenEntity = APCS.Domain.Entities.RefreshToken;
+using RefreshTokenEntity = APCS.Domain.Entities.AuthToken;
 
 namespace APCS.Application.UnitTests.Features.Auth.Commands.Register;
 
@@ -18,14 +17,14 @@ public sealed class RegisterCommandHandlerTests
     public async Task Handle_WhenEmailExists_ReturnsConflictWithoutStartingTransaction()
     {
         var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.EmailExistsAsync("seller@example.com", It.IsAny<CancellationToken>()))
+        identity.Setup(service => service.EmailExistsAsync("user@example.com", It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
         var dbContext = new Mock<IUnitOfWork>();
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         var handler = CreateHandler(identity, dbContext, repository, new Mock<IJwtService>());
 
         var result = await handler.Handle(
-            new RegisterCommand("  Seller@Example.com ", "Password1", "Seller"),
+            new RegisterCommand("  User@Example.com ", "Password1", "User"),
             CancellationToken.None);
 
         result.IsFailure.Should().BeTrue();
@@ -41,14 +40,14 @@ public sealed class RegisterCommandHandlerTests
     {
         var cancellationToken = new CancellationTokenSource().Token;
         var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.EmailExistsAsync("seller@example.com", cancellationToken))
+        identity.Setup(service => service.EmailExistsAsync("user@example.com", cancellationToken))
             .ReturnsAsync(false);
         identity.Setup(service => service.CreateUserAsync(
-                "seller@example.com",
+                "user@example.com",
                 "Password1",
-                "Seller Name",
+                "User Name",
                 cancellationToken))
-            .ReturnsAsync(IdentityOperationResult.Failure(["Duplicate user"]));
+            .ReturnsAsync(IdentityCreateUserResult.Failure(["Duplicate user"]));
         var transaction = AuthTestData.CreateTransaction();
         transaction.Setup(candidate => candidate.RollbackAsync(cancellationToken)).Returns(Task.CompletedTask);
         var dbContext = new Mock<IUnitOfWork>();
@@ -57,11 +56,11 @@ public sealed class RegisterCommandHandlerTests
         var handler = CreateHandler(
             identity,
             dbContext,
-            new Mock<IRefreshTokenRepository>(),
+            new Mock<IAuthTokenRepository>(),
             new Mock<IJwtService>());
 
         var result = await handler.Handle(
-            new RegisterCommand(" Seller@Example.com ", "Password1", " Seller Name "),
+            new RegisterCommand(" User@Example.com ", "Password1", " User Name "),
             cancellationToken);
 
         result.IsFailure.Should().BeTrue();
@@ -71,72 +70,42 @@ public sealed class RegisterCommandHandlerTests
     }
 
     [TestMethod]
-    public async Task Handle_WhenCreatedUserCannotBeLoaded_RollsBackAndReturnsFailure()
+    public async Task Handle_WhenFullNameIsOmitted_DerivesItFromTheEmailLocalPart()
     {
-        var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.EmailExistsAsync("seller@example.com", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
-        identity.Setup(service => service.CreateUserAsync(
-                "seller@example.com",
-                "Password1",
-                "Seller",
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(IdentityOperationResult.Success());
-        identity.Setup(service => service.FindByEmailAsync("seller@example.com", It.IsAny<CancellationToken>()))
-            .ReturnsAsync((IdentityUserInfo?)null);
-        var transaction = AuthTestData.CreateTransaction();
-        transaction.Setup(candidate => candidate.RollbackAsync(It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-        var dbContext = new Mock<IUnitOfWork>();
-        dbContext.Setup(context => context.BeginTransactionAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(transaction.Object);
+        var cancellationToken = new CancellationTokenSource().Token;
+        var identity = CreateIdentityForSuccessfulCreation("user", cancellationToken);
+        var (dbContext, transaction) = CreateCommittingUnitOfWork(cancellationToken);
         var handler = CreateHandler(
             identity,
             dbContext,
-            new Mock<IRefreshTokenRepository>(),
-            new Mock<IJwtService>());
+            new Mock<IAuthTokenRepository>(),
+            AuthTestData.CreateJwtService());
 
         var result = await handler.Handle(
-            new RegisterCommand("seller@example.com", "Password1", "Seller"),
-            CancellationToken.None);
+            new RegisterCommand("User@Example.com", "Password1"),
+            cancellationToken);
 
-        result.IsFailure.Should().BeTrue();
-        result.Error.Code.Should().Be(ErrorCodes.Unexpected);
-        transaction.Verify(candidate => candidate.RollbackAsync(It.IsAny<CancellationToken>()), Times.Once);
+        result.IsSuccess.Should().BeTrue();
+        identity.Verify(
+            service => service.CreateUserAsync("user@example.com", "Password1", "user", cancellationToken),
+            Times.Once);
+        transaction.Verify(candidate => candidate.CommitAsync(cancellationToken), Times.Once);
     }
 
     [TestMethod]
     public async Task Handle_WithValidRequest_PersistsSessionCommitsAndReturnsUser()
     {
         var cancellationToken = new CancellationTokenSource().Token;
-        var identity = new Mock<IIdentityService>();
-        identity.Setup(service => service.EmailExistsAsync("seller@example.com", cancellationToken))
-            .ReturnsAsync(false);
-        identity.Setup(service => service.CreateUserAsync(
-                "seller@example.com",
-                "Password1",
-                "Seller Name",
-                cancellationToken))
-            .ReturnsAsync(IdentityOperationResult.Success());
-        identity.Setup(service => service.FindByEmailAsync("seller@example.com", cancellationToken))
-            .ReturnsAsync(AuthTestData.ActiveUser);
-        identity.Setup(service => service.GetRolesAsync(AuthTestData.ActiveUser.Id, cancellationToken))
-            .ReturnsAsync(AuthTestData.Roles);
-        var transaction = AuthTestData.CreateTransaction();
-        transaction.Setup(candidate => candidate.CommitAsync(cancellationToken)).Returns(Task.CompletedTask);
-        var dbContext = new Mock<IUnitOfWork>();
-        dbContext.Setup(context => context.BeginTransactionAsync(cancellationToken))
-            .ReturnsAsync(transaction.Object);
-        dbContext.Setup(context => context.SaveChangesAsync(cancellationToken)).ReturnsAsync(1);
+        var identity = CreateIdentityForSuccessfulCreation("User Name", cancellationToken);
+        var (dbContext, transaction) = CreateCommittingUnitOfWork(cancellationToken);
         RefreshTokenEntity? savedToken = null;
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         repository.Setup(candidate => candidate.Add(It.IsAny<RefreshTokenEntity>()))
             .Callback<RefreshTokenEntity>(token => savedToken = token);
-        var jwtService = AuthTestData.CreateJwtService();
-        var handler = CreateHandler(identity, dbContext, repository, jwtService);
+        var handler = CreateHandler(identity, dbContext, repository, AuthTestData.CreateJwtService());
 
         var result = await handler.Handle(
-            new RegisterCommand(" Seller@Example.com ", "Password1", " Seller Name "),
+            new RegisterCommand(" User@Example.com ", "Password1", " User Name "),
             cancellationToken);
 
         result.IsSuccess.Should().BeTrue();
@@ -148,6 +117,30 @@ public sealed class RegisterCommandHandlerTests
         dbContext.Verify(context => context.SaveChangesAsync(cancellationToken), Times.Once);
         transaction.Verify(candidate => candidate.CommitAsync(cancellationToken), Times.Once);
         transaction.Verify(candidate => candidate.RollbackAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task Handle_WithValidRequest_DoesNotReloadTheUserItJustCreated()
+    {
+        var cancellationToken = new CancellationTokenSource().Token;
+        var identity = CreateIdentityForSuccessfulCreation("User Name", cancellationToken);
+        var (dbContext, _) = CreateCommittingUnitOfWork(cancellationToken);
+        var handler = CreateHandler(
+            identity,
+            dbContext,
+            new Mock<IAuthTokenRepository>(),
+            AuthTestData.CreateJwtService());
+
+        await handler.Handle(
+            new RegisterCommand("user@example.com", "Password1", "User Name"),
+            cancellationToken);
+
+        identity.Verify(
+            service => service.FindByEmailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        identity.Verify(
+            service => service.GetRolesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [TestMethod]
@@ -172,11 +165,11 @@ public sealed class RegisterCommandHandlerTests
         var handler = CreateHandler(
             identity,
             dbContext,
-            new Mock<IRefreshTokenRepository>(),
+            new Mock<IAuthTokenRepository>(),
             new Mock<IJwtService>());
 
         var act = () => handler.Handle(
-            new RegisterCommand("seller@example.com", "Password1", "Seller"),
+            new RegisterCommand("user@example.com", "Password1", "User"),
             CancellationToken.None);
 
         var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
@@ -184,10 +177,38 @@ public sealed class RegisterCommandHandlerTests
         transaction.Verify(candidate => candidate.RollbackAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    private static Mock<IIdentityService> CreateIdentityForSuccessfulCreation(
+        string expectedFullName,
+        CancellationToken cancellationToken)
+    {
+        var identity = new Mock<IIdentityService>();
+        identity.Setup(service => service.EmailExistsAsync("user@example.com", cancellationToken))
+            .ReturnsAsync(false);
+        identity.Setup(service => service.CreateUserAsync(
+                "user@example.com",
+                "Password1",
+                expectedFullName,
+                cancellationToken))
+            .ReturnsAsync(IdentityCreateUserResult.Success(AuthTestData.ActiveUser, AuthTestData.Roles));
+        return identity;
+    }
+
+    private static (Mock<IUnitOfWork> UnitOfWork, Mock<IUnitOfWorkTransaction> Transaction) CreateCommittingUnitOfWork(
+        CancellationToken cancellationToken)
+    {
+        var transaction = AuthTestData.CreateTransaction();
+        transaction.Setup(candidate => candidate.CommitAsync(cancellationToken)).Returns(Task.CompletedTask);
+        var dbContext = new Mock<IUnitOfWork>();
+        dbContext.Setup(context => context.BeginTransactionAsync(cancellationToken))
+            .ReturnsAsync(transaction.Object);
+        dbContext.Setup(context => context.SaveChangesAsync(cancellationToken)).ReturnsAsync(1);
+        return (dbContext, transaction);
+    }
+
     private static RegisterCommandHandler CreateHandler(
         Mock<IIdentityService> identity,
         Mock<IUnitOfWork> dbContext,
-        Mock<IRefreshTokenRepository> repository,
+        Mock<IAuthTokenRepository> repository,
         Mock<IJwtService> jwtService) => new(
         identity.Object,
         dbContext.Object,

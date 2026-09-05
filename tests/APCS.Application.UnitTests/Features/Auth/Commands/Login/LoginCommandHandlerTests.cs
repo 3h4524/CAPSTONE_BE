@@ -7,7 +7,7 @@ using APCS.Common.Constants;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
-using RefreshTokenEntity = APCS.Domain.Entities.RefreshToken;
+using RefreshTokenEntity = APCS.Domain.Entities.AuthToken;
 
 namespace APCS.Application.UnitTests.Features.Auth.Commands.Login;
 
@@ -28,7 +28,7 @@ public sealed class LoginCommandHandlerTests
         AssertFailure(result.Error.Code, ErrorCodes.InvalidCredentials);
         identity.Verify(
             service => service.ValidateCredentialsAsync(
-                It.IsAny<int>(),
+                It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
@@ -96,7 +96,7 @@ public sealed class LoginCommandHandlerTests
         var dbContext = new Mock<IUnitOfWork>();
         dbContext.Setup(context => context.SaveChangesAsync(cancellationToken)).ReturnsAsync(1);
         RefreshTokenEntity? savedToken = null;
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         repository.Setup(candidate => candidate.Add(It.IsAny<RefreshTokenEntity>()))
             .Callback<RefreshTokenEntity>(token => savedToken = token);
         var handler = CreateHandler(identity, dbContext, repository, AuthTestData.CreateJwtService());
@@ -121,18 +121,18 @@ public sealed class LoginCommandHandlerTests
     {
         var identity = CreateIdentityWithUser(AuthTestData.ActiveUser);
         identity.Setup(service => service.ValidateCredentialsAsync(
-                It.IsAny<int>(),
+                It.IsAny<Guid>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CredentialValidationResult(false, false, false));
         var dbContext = new Mock<IUnitOfWork>();
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
 
         await CreateHandler(identity, dbContext, repository).Handle(CreateCommand(), CancellationToken.None);
 
         repository.Verify(candidate => candidate.Add(It.IsAny<RefreshTokenEntity>()), Times.Never);
         identity.Verify(service => service.TouchLastLoginAsync(
-            It.IsAny<int>(),
+            It.IsAny<Guid>(),
             It.IsAny<DateTimeOffset>(),
             It.IsAny<CancellationToken>()), Times.Never);
         dbContext.Verify(context => context.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
@@ -154,11 +154,11 @@ public sealed class LoginCommandHandlerTests
     private static LoginCommandHandler CreateHandler(
         Mock<IIdentityService> identity,
         Mock<IUnitOfWork>? dbContext = null,
-        Mock<IRefreshTokenRepository>? repository = null,
+        Mock<IAuthTokenRepository>? repository = null,
         Mock<IJwtService>? jwtService = null) => new(
         identity.Object,
         (dbContext ?? new Mock<IUnitOfWork>()).Object,
-        (repository ?? new Mock<IRefreshTokenRepository>()).Object,
+        (repository ?? new Mock<IAuthTokenRepository>()).Object,
         (jwtService ?? new Mock<IJwtService>()).Object,
         AuthTestData.CreateTimeProvider());
 

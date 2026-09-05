@@ -5,90 +5,49 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace APCS.Infrastructure.Persistence.Configurations;
 
 /// <summary>
-/// Configures export package persistence.
+/// The outcome states shared by marketplace upload logs.
 /// </summary>
-public sealed class ExportPackageConfiguration : IEntityTypeConfiguration<ExportPackage>
+internal static class UploadStatuses
 {
-    /// <inheritdoc />
-    public void Configure(EntityTypeBuilder<ExportPackage> builder)
-    {
-        builder.ToTable("export_packages", table =>
-        {
-            table.HasCheckConstraint("ck_export_packages_file_size", "file_size_mb IS NULL OR file_size_mb >= 0");
-            table.HasCheckConstraint("ck_export_packages_creation_time", "creation_time_seconds >= 0");
-        });
-
-        builder.ConfigureGeneratedId();
-        builder.ConfigureCreationTime();
-        builder.HasQueryFilter(package => package.BatchJob.DeletedAtUtc == null);
-
-        builder.Property(package => package.ProductIds).HasColumnType("integer[]").IsRequired();
-        builder.Property(package => package.Type).HasMaxLength(32).IsRequired();
-        builder.Property(package => package.Name).HasMaxLength(150).IsRequired();
-        builder.Property(package => package.Description).HasColumnType("text");
-        builder.Property(package => package.PackageContent).HasColumnType("jsonb").HasDefaultValueSql("'{}'::jsonb").IsRequired();
-        builder.Property(package => package.FilePath).HasMaxLength(500);
-        builder.Property(package => package.DownloadUrl).HasColumnType("text");
-        builder.Property(package => package.FileSizeMb).HasPrecision(10, 2);
-        builder.Property(package => package.CreationTimeSeconds).HasPrecision(10, 2).IsRequired();
-        builder.Property(package => package.Status).HasMaxLength(24).HasDefaultValue("preparing").IsRequired();
-        builder.Property(package => package.DownloadedAtUtc).HasColumnName("downloaded_at");
-        builder.Property(package => package.ExpiresAtUtc).HasColumnName("expires_at");
-
-        builder.HasIndex(package => package.BatchJobId);
-        builder.HasIndex(package => package.Status);
-        builder.HasIndex(package => package.ExpiresAtUtc);
-
-        builder.HasOne(package => package.BatchJob)
-            .WithMany()
-            .HasForeignKey(package => package.BatchJobId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne<Seller>()
-            .WithMany()
-            .HasForeignKey(package => package.SellerId)
-            .OnDelete(DeleteBehavior.Cascade);
-    }
+    public const string Sql = "('pending', 'success', 'failed', 'retrying')";
 }
 
 /// <summary>
-/// Configures Printify integration persistence.
+/// Configures connected Printify shops.
 /// </summary>
 public sealed class PrintifyIntegrationConfiguration : IEntityTypeConfiguration<PrintifyIntegration>
 {
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<PrintifyIntegration> builder)
     {
-        builder.ToTable("printify_integrations", table =>
-        {
-            table.HasCheckConstraint("ck_printify_integrations_total_products", "total_products_uploaded >= 0");
-        });
+        builder.ToTable("printify_integrations");
 
         builder.ConfigureGeneratedId();
         builder.ConfigureCreationTime();
         builder.ConfigureModificationTime();
         builder.ConfigureSoftDelete();
 
-        builder.Property(integration => integration.PrintifyStoreId).HasMaxLength(128).IsRequired();
+        builder.Property(integration => integration.PrintifyStoreId).HasMaxLength(ColumnLengths.Name).IsRequired();
         builder.Property(integration => integration.PrintifyApiTokenEncrypted).HasColumnType("text").IsRequired();
-        builder.Property(integration => integration.ShopName).HasMaxLength(150).IsRequired();
-        builder.Property(integration => integration.ShopTitle).HasMaxLength(150);
+        builder.Property(integration => integration.ShopName).HasMaxLength(ColumnLengths.Name).IsRequired();
+        builder.Property(integration => integration.ShopTitle).HasMaxLength(ColumnLengths.Name);
+        builder.Property(integration => integration.IsDefault).HasDefaultValue(false);
         builder.Property(integration => integration.TotalProductsUploaded).HasDefaultValue(0);
         builder.Property(integration => integration.LastSyncAtUtc).HasColumnName("last_sync_at");
         builder.Property(integration => integration.IsActive).HasDefaultValue(true);
 
-        builder.HasIndex(integration => integration.SellerId).IsUnique();
-        builder.HasIndex(integration => integration.PrintifyStoreId).IsUnique();
+        builder.HasIndex(integration => integration.UserId);
+        builder.HasIndex(integration => integration.PrintifyStoreId);
 
-        builder.HasOne<Seller>()
-            .WithOne()
-            .HasForeignKey<PrintifyIntegration>(integration => integration.SellerId)
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(integration => integration.UserId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
 /// <summary>
-/// Configures Printify upload log persistence.
+/// Configures Printify upload attempts.
 /// </summary>
 public sealed class PrintifyUploadLogConfiguration : IEntityTypeConfiguration<PrintifyUploadLog>
 {
@@ -97,25 +56,34 @@ public sealed class PrintifyUploadLogConfiguration : IEntityTypeConfiguration<Pr
     {
         builder.ToTable("printify_upload_logs", table =>
         {
-            table.HasCheckConstraint("ck_printify_upload_logs_retry_count", "retry_count >= 0");
+            table.HasCheckConstraint("chk_printify_sync_type", "sync_type IN ('create', 'update')");
+            table.HasCheckConstraint("chk_printify_upload_status", $"upload_status IN {UploadStatuses.Sql}");
         });
 
         builder.ConfigureGeneratedId();
         builder.ConfigureCreationTime();
-        builder.HasQueryFilter(log => log.PrintifyIntegration.DeletedAtUtc == null && log.Product.DeletedAtUtc == null);
 
-        builder.Property(log => log.PrintifyProductId).HasMaxLength(128);
-        builder.Property(log => log.SyncType).HasMaxLength(32).IsRequired();
+        builder.Property(log => log.IdempotencyKey).HasMaxLength(ColumnLengths.Name).IsRequired();
+        builder.Property(log => log.PrintifyProductId).HasMaxLength(ColumnLengths.Name);
+        builder.Property(log => log.SyncType).HasMaxLength(ColumnLengths.Code).IsRequired();
         builder.Property(log => log.UploadPayload).HasColumnType("jsonb").IsRequired();
         builder.Property(log => log.ApiResponse).HasColumnType("jsonb");
-        builder.Property(log => log.UploadStatus).HasMaxLength(24).IsRequired();
+        builder.Property(log => log.UploadStatus).HasMaxLength(ColumnLengths.Code).IsRequired();
         builder.Property(log => log.ErrorMessage).HasColumnType("text");
         builder.Property(log => log.RetryCount).HasDefaultValue(0);
-        builder.Property(log => log.AttemptedAtUtc).HasColumnName("attempted_at");
+        builder.Property(log => log.AttemptedAtUtc).HasColumnName("attempted_at").IsRequired();
         builder.Property(log => log.CompletedAtUtc).HasColumnName("completed_at");
+
+        // Makes a retried upload safe: the same key cannot create a second marketplace product.
+        builder.HasIndex(log => new { log.PrintifyIntegrationId, log.IdempotencyKey })
+            .HasDatabaseName("uq_printify_idempotency")
+            .IsUnique();
 
         builder.HasIndex(log => log.PrintifyIntegrationId);
         builder.HasIndex(log => log.UploadStatus);
+        builder.HasIndex(log => log.ProductId);
+
+        builder.HasQueryFilter(log => log.PrintifyIntegration.DeletedAtUtc == null);
 
         builder.HasOne(log => log.PrintifyIntegration)
             .WithMany(integration => integration.UploadLogs)
@@ -127,7 +95,7 @@ public sealed class PrintifyUploadLogConfiguration : IEntityTypeConfiguration<Pr
             .HasForeignKey(log => log.ProductId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(log => log.BatchJob)
+        builder.HasOne<BatchJob>()
             .WithMany()
             .HasForeignKey(log => log.BatchJobId)
             .OnDelete(DeleteBehavior.SetNull);
@@ -135,44 +103,46 @@ public sealed class PrintifyUploadLogConfiguration : IEntityTypeConfiguration<Pr
 }
 
 /// <summary>
-/// Configures Etsy integration persistence.
+/// Configures connected Etsy shops.
 /// </summary>
 public sealed class EtsyIntegrationConfiguration : IEntityTypeConfiguration<EtsyIntegration>
 {
     /// <inheritdoc />
     public void Configure(EntityTypeBuilder<EtsyIntegration> builder)
     {
-        builder.ToTable("etsy_integrations", table =>
-        {
-            table.HasCheckConstraint("ck_etsy_integrations_totals", "total_listings_created >= 0 AND total_listings_updated >= 0");
-        });
+        builder.ToTable("etsy_integrations");
 
         builder.ConfigureGeneratedId();
         builder.ConfigureCreationTime();
         builder.ConfigureModificationTime();
         builder.ConfigureSoftDelete();
 
-        builder.Property(integration => integration.EtsyShopId).HasMaxLength(128).IsRequired();
-        builder.Property(integration => integration.EtsyOAuthTokenEncrypted).HasColumnName("etsy_oauth_token_encrypted").HasColumnType("text").IsRequired();
-        builder.Property(integration => integration.ShopName).HasMaxLength(150).IsRequired();
+        builder.Property(integration => integration.EtsyShopId).HasMaxLength(ColumnLengths.Name).IsRequired();
+        builder.Property(integration => integration.EtsyOAuthTokenEncrypted)
+            .HasColumnName("etsy_oauth_token_encrypted")
+            .HasColumnType("text")
+            .IsRequired();
+        builder.Property(integration => integration.EtsyRefreshTokenEncrypted).HasColumnType("text");
+        builder.Property(integration => integration.ShopName).HasMaxLength(ColumnLengths.Name).IsRequired();
+        builder.Property(integration => integration.IsDefault).HasDefaultValue(false);
         builder.Property(integration => integration.TotalListingsCreated).HasDefaultValue(0);
         builder.Property(integration => integration.TotalListingsUpdated).HasDefaultValue(0);
         builder.Property(integration => integration.LastSyncAtUtc).HasColumnName("last_sync_at");
         builder.Property(integration => integration.OAuthExpiresAtUtc).HasColumnName("oauth_expires_at");
         builder.Property(integration => integration.IsActive).HasDefaultValue(true);
 
-        builder.HasIndex(integration => integration.SellerId).IsUnique();
-        builder.HasIndex(integration => integration.EtsyShopId).IsUnique();
+        builder.HasIndex(integration => integration.UserId);
+        builder.HasIndex(integration => integration.EtsyShopId);
 
-        builder.HasOne<Seller>()
-            .WithOne()
-            .HasForeignKey<EtsyIntegration>(integration => integration.SellerId)
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(integration => integration.UserId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
 /// <summary>
-/// Configures Etsy upload log persistence.
+/// Configures Etsy upload attempts.
 /// </summary>
 public sealed class EtsyUploadLogConfiguration : IEntityTypeConfiguration<EtsyUploadLog>
 {
@@ -181,25 +151,40 @@ public sealed class EtsyUploadLogConfiguration : IEntityTypeConfiguration<EtsyUp
     {
         builder.ToTable("etsy_upload_logs", table =>
         {
-            table.HasCheckConstraint("ck_etsy_upload_logs_retry_count", "retry_count >= 0");
+            table.HasCheckConstraint("chk_etsy_upload_status", $"upload_status IN {UploadStatuses.Sql}");
+            table.HasCheckConstraint("chk_etsy_listing_state", "listing_state IN ('draft', 'active')");
+
+            // Going straight to a live listing needs the seller to have said so explicitly.
+            table.HasCheckConstraint(
+                "chk_etsy_publish_needs_confirmation",
+                "publish_immediately = false OR confirmed_by_user_at IS NOT NULL");
         });
 
         builder.ConfigureGeneratedId();
         builder.ConfigureCreationTime();
-        builder.HasQueryFilter(log => log.EtsyIntegration.DeletedAtUtc == null && log.Product.DeletedAtUtc == null);
 
-        builder.Property(log => log.EtsyListingId).HasMaxLength(128);
-        builder.Property(log => log.UploadStatus).HasMaxLength(24).IsRequired();
-        builder.Property(log => log.PublishImmediately).HasDefaultValue(false);
+        builder.Property(log => log.IdempotencyKey).HasMaxLength(ColumnLengths.Name).IsRequired();
+        builder.Property(log => log.EtsyListingId).HasMaxLength(ColumnLengths.Name);
+        builder.Property(log => log.UploadStatus).HasMaxLength(ColumnLengths.Code).IsRequired();
+        builder.Property(log => log.ListingState).HasMaxLength(ColumnLengths.Code).HasDefaultValue("draft").IsRequired();
+        builder.Property(log => log.PublishImmediately).HasDefaultValue(false).IsRequired();
+        builder.Property(log => log.ConfirmedByUserAtUtc).HasColumnName("confirmed_by_user_at");
         builder.Property(log => log.UploadPayload).HasColumnType("jsonb").IsRequired();
         builder.Property(log => log.ApiResponse).HasColumnType("jsonb");
         builder.Property(log => log.ErrorMessage).HasColumnType("text");
         builder.Property(log => log.RetryCount).HasDefaultValue(0);
-        builder.Property(log => log.AttemptedAtUtc).HasColumnName("attempted_at");
+        builder.Property(log => log.AttemptedAtUtc).HasColumnName("attempted_at").IsRequired();
         builder.Property(log => log.CompletedAtUtc).HasColumnName("completed_at");
+
+        builder.HasIndex(log => new { log.EtsyIntegrationId, log.IdempotencyKey })
+            .HasDatabaseName("uq_etsy_idempotency")
+            .IsUnique();
 
         builder.HasIndex(log => log.EtsyIntegrationId);
         builder.HasIndex(log => log.UploadStatus);
+        builder.HasIndex(log => log.ProductId);
+
+        builder.HasQueryFilter(log => log.EtsyIntegration.DeletedAtUtc == null);
 
         builder.HasOne(log => log.EtsyIntegration)
             .WithMany(integration => integration.UploadLogs)
@@ -211,7 +196,7 @@ public sealed class EtsyUploadLogConfiguration : IEntityTypeConfiguration<EtsyUp
             .HasForeignKey(log => log.ProductId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasOne(log => log.BatchJob)
+        builder.HasOne<BatchJob>()
             .WithMany()
             .HasForeignKey(log => log.BatchJobId)
             .OnDelete(DeleteBehavior.SetNull);
@@ -219,7 +204,7 @@ public sealed class EtsyUploadLogConfiguration : IEntityTypeConfiguration<EtsyUp
 }
 
 /// <summary>
-/// Configures social media share persistence.
+/// Configures social media shares.
 /// </summary>
 public sealed class SocialMediaShareConfiguration : IEntityTypeConfiguration<SocialMediaShare>
 {
@@ -228,21 +213,21 @@ public sealed class SocialMediaShareConfiguration : IEntityTypeConfiguration<Soc
     {
         builder.ToTable("social_media_shares", table =>
         {
-            table.HasCheckConstraint("ck_social_media_shares_retry_count", "retry_count >= 0");
+            table.HasCheckConstraint(
+                "chk_social_share_status",
+                "share_status IN ('pending', 'scheduled', 'posted', 'failed')");
         });
 
         builder.ConfigureGeneratedId();
         builder.ConfigureCreationTime();
         builder.ConfigureSoftDelete();
-        builder.HasQueryFilter(share => share.DeletedAtUtc == null && share.Product.DeletedAtUtc == null && share.PromoVideo.DeletedAtUtc == null);
 
-        builder.Property(share => share.Platform).HasMaxLength(32).IsRequired();
-        builder.Property(share => share.ShareStatus).HasMaxLength(24).HasDefaultValue("pending").IsRequired();
+        builder.Property(share => share.Platform).HasMaxLength(ColumnLengths.Code).IsRequired();
+        builder.Property(share => share.ShareStatus).HasMaxLength(ColumnLengths.Code).HasDefaultValue("pending").IsRequired();
         builder.Property(share => share.ScheduledTimeUtc).HasColumnName("scheduled_time");
         builder.Property(share => share.PostedTimeUtc).HasColumnName("posted_time");
         builder.Property(share => share.PostCaption).HasColumnType("text");
-        builder.Property(share => share.Hashtags).HasColumnType("character varying(100)[]");
-        builder.Property(share => share.ExternalPostId).HasMaxLength(128);
+        builder.Property(share => share.ExternalPostId).HasMaxLength(ColumnLengths.Name);
         builder.Property(share => share.ExternalPlatformUrl).HasColumnType("text");
         builder.Property(share => share.ErrorMessage).HasColumnType("text");
         builder.Property(share => share.RetryCount).HasDefaultValue(0);
@@ -258,8 +243,35 @@ public sealed class SocialMediaShareConfiguration : IEntityTypeConfiguration<Soc
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(share => share.PromoVideo)
-            .WithMany()
+            .WithMany(video => video.Shares)
             .HasForeignKey(share => share.PromoVideoId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+/// <summary>
+/// Configures the hashtags attached to a share.
+/// </summary>
+public sealed class ShareHashtagConfiguration : IEntityTypeConfiguration<ShareHashtag>
+{
+    /// <inheritdoc />
+    public void Configure(EntityTypeBuilder<ShareHashtag> builder)
+    {
+        builder.ToTable("share_hashtags");
+
+        builder.ConfigureGeneratedId();
+
+        builder.Property(hashtag => hashtag.Hashtag).HasMaxLength(ColumnLengths.LongCode).IsRequired();
+
+        builder.HasIndex(hashtag => new { hashtag.SocialMediaShareId, hashtag.Position })
+            .HasDatabaseName("uq_share_hashtag_position")
+            .IsUnique();
+
+        builder.HasQueryFilter(hashtag => hashtag.SocialMediaShare.DeletedAtUtc == null);
+
+        builder.HasOne(hashtag => hashtag.SocialMediaShare)
+            .WithMany(share => share.Hashtags)
+            .HasForeignKey(hashtag => hashtag.SocialMediaShareId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

@@ -4,7 +4,7 @@ namespace APCS.Application.Features.Auth.Common;
 /// Represents authenticated user data returned by auth endpoints.
 /// </summary>
 public sealed record AuthenticatedUserResponse(
-    int Id,
+    Guid Id,
     string Email,
     string FullName,
     IReadOnlyCollection<string> Roles);

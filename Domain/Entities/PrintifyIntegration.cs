@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a seller's connection to a Printify store.
+/// Represents a connected Printify shop.
 /// </summary>
 public sealed class PrintifyIntegration : SoftDeletableEntity
 {
@@ -14,12 +14,12 @@ public sealed class PrintifyIntegration : SoftDeletableEntity
     }
 
     /// <summary>
-    /// Gets the owning seller identifier.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the Printify store identifier.
+    /// Gets the external Printify store identifier.
     /// </summary>
     public string PrintifyStoreId { get; private set; } = string.Empty;
 
@@ -29,22 +29,27 @@ public sealed class PrintifyIntegration : SoftDeletableEntity
     public string PrintifyApiTokenEncrypted { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the Printify shop name.
+    /// Gets the shop name.
     /// </summary>
     public string ShopName { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the optional Printify shop title.
+    /// Gets the shop title.
     /// </summary>
     public string? ShopTitle { get; private set; }
 
     /// <summary>
-    /// Gets the total number of uploaded products.
+    /// Gets a value indicating whether this is the default Printify shop.
+    /// </summary>
+    public bool IsDefault { get; private set; }
+
+    /// <summary>
+    /// Gets the number of products uploaded to this shop.
     /// </summary>
     public int TotalProductsUploaded { get; private set; }
 
     /// <summary>
-    /// Gets the UTC timestamp of the last synchronization.
+    /// Gets the UTC timestamp of the last successful sync.
     /// </summary>
     public DateTimeOffset? LastSyncAtUtc { get; private set; }
 
@@ -54,7 +59,7 @@ public sealed class PrintifyIntegration : SoftDeletableEntity
     public bool IsActive { get; private set; } = true;
 
     /// <summary>
-    /// Gets upload attempts made through this integration.
+    /// Gets the upload attempts made through this integration.
     /// </summary>
     public IReadOnlyCollection<PrintifyUploadLog> UploadLogs => _uploadLogs.AsReadOnly();
 }

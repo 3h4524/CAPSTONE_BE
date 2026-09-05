@@ -40,7 +40,7 @@ This guide defines the development workflow and coding conventions. Architecture
 ## API and security checklist
 
 - Use `[Authorize]` for protected endpoints and `[AllowAnonymous]` only for intentionally public endpoints.
-- Validate ownership for seller-scoped resources through the authenticated-user abstraction.
+- Validate ownership for user-scoped resources through the authenticated-user abstraction.
 - Do not return EF or Identity entities from endpoints; map them to response models.
 - Do not log passwords, access tokens, refresh tokens, API keys, signing keys, or encrypted secret values.
 - Keep raw refresh tokens outside persistence and expose them only through the intended secure cookie flow.

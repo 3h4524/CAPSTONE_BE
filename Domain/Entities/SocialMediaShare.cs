@@ -5,8 +5,10 @@ namespace APCS.Domain.Entities;
 /// <summary>
 /// Represents a promotional video share to a social media platform.
 /// </summary>
-public sealed class SocialMediaShare : CreationTrackedEntity, ISoftDeletable
+public sealed class SocialMediaShare : CreationTrackedSoftDeletableEntity
 {
+    private readonly List<ShareHashtag> _hashtags = [];
+
     private SocialMediaShare()
     {
     }
@@ -14,12 +16,12 @@ public sealed class SocialMediaShare : CreationTrackedEntity, ISoftDeletable
     /// <summary>
     /// Gets the source product identifier.
     /// </summary>
-    public int ProductId { get; private set; }
+    public Guid ProductId { get; private set; }
 
     /// <summary>
     /// Gets the source promotional video identifier.
     /// </summary>
-    public int PromoVideoId { get; private set; }
+    public Guid PromoVideoId { get; private set; }
 
     /// <summary>
     /// Gets the target social media platform.
@@ -47,11 +49,6 @@ public sealed class SocialMediaShare : CreationTrackedEntity, ISoftDeletable
     public string? PostCaption { get; private set; }
 
     /// <summary>
-    /// Gets the post hashtags.
-    /// </summary>
-    public string[]? Hashtags { get; private set; }
-
-    /// <summary>
     /// Gets the external post identifier.
     /// </summary>
     public string? ExternalPostId { get; private set; }
@@ -76,9 +73,6 @@ public sealed class SocialMediaShare : CreationTrackedEntity, ISoftDeletable
     /// </summary>
     public string? ApiResponse { get; private set; }
 
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
-
     /// <summary>
     /// Gets the source product.
     /// </summary>
@@ -88,4 +82,9 @@ public sealed class SocialMediaShare : CreationTrackedEntity, ISoftDeletable
     /// Gets the source promotional video.
     /// </summary>
     public PromoVideo PromoVideo { get; private set; } = null!;
+
+    /// <summary>
+    /// Gets the ordered hashtags attached to the post.
+    /// </summary>
+    public IReadOnlyCollection<ShareHashtag> Hashtags => _hashtags.AsReadOnly();
 }

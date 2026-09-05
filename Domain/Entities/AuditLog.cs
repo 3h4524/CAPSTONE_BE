@@ -6,21 +6,19 @@ namespace APCS.Domain.Entities;
 /// <summary>
 /// Represents an immutable audit event for a system resource.
 /// </summary>
-public sealed class AuditLog : CreationTrackedEntity, ISoftDeletable
+/// <remarks>
+/// Audit rows are never edited or soft-deleted; that is the point of keeping them.
+/// </remarks>
+public sealed class AuditLog : CreationTrackedEntity
 {
     private AuditLog()
     {
     }
 
     /// <summary>
-    /// Gets the related seller identifier, when applicable.
+    /// Gets the user who performed the action, when known.
     /// </summary>
-    public int? SellerId { get; private set; }
-
-    /// <summary>
-    /// Gets the related administrator identifier, when applicable.
-    /// </summary>
-    public int? AdminId { get; private set; }
+    public Guid? ActorUserId { get; private set; }
 
     /// <summary>
     /// Gets the performed action type.
@@ -35,7 +33,7 @@ public sealed class AuditLog : CreationTrackedEntity, ISoftDeletable
     /// <summary>
     /// Gets the affected resource identifier.
     /// </summary>
-    public int ResourceId { get; private set; }
+    public Guid? ResourceId { get; private set; }
 
     /// <summary>
     /// Gets the previous resource value as JSON.
@@ -57,11 +55,32 @@ public sealed class AuditLog : CreationTrackedEntity, ISoftDeletable
     /// </summary>
     public string? UserAgent { get; private set; }
 
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
-
     /// <summary>
-    /// Gets the related administrator, when applicable.
+    /// Creates an audit entry.
     /// </summary>
-    public Admin? Admin { get; private set; }
+    public static AuditLog Create(
+        string actionType,
+        string resourceType,
+        Guid? resourceId,
+        Guid? actorUserId,
+        string? oldValue = null,
+        string? newValue = null,
+        IPAddress? ipAddress = null,
+        string? userAgent = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actionType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceType);
+
+        return new AuditLog
+        {
+            ActionType = actionType,
+            ResourceType = resourceType,
+            ResourceId = resourceId,
+            ActorUserId = actorUserId,
+            OldValue = oldValue,
+            NewValue = newValue,
+            IpAddress = ipAddress,
+            UserAgent = userAgent
+        };
+    }
 }

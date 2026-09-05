@@ -5,8 +5,10 @@ namespace APCS.Domain.Entities;
 /// <summary>
 /// Represents a product mockup rendered from a design image.
 /// </summary>
-public sealed class MockupImage : CreationTrackedEntity, ISoftDeletable
+public sealed class MockupImage : CreationTrackedSoftDeletableEntity
 {
+    private readonly List<PromoVideoScene> _promoVideoScenes = [];
+
     private MockupImage()
     {
     }
@@ -14,27 +16,37 @@ public sealed class MockupImage : CreationTrackedEntity, ISoftDeletable
     /// <summary>
     /// Gets the source design image identifier.
     /// </summary>
-    public int DesignImageId { get; private set; }
+    public Guid DesignImageId { get; private set; }
 
     /// <summary>
     /// Gets the target product identifier.
     /// </summary>
-    public int ProductId { get; private set; }
+    public Guid ProductId { get; private set; }
 
     /// <summary>
-    /// Gets the mockup template type.
+    /// Gets the mockup template identifier.
     /// </summary>
-    public string MockupTemplateType { get; private set; } = string.Empty;
+    public Guid MockupTemplateId { get; private set; }
+
+    /// <summary>
+    /// Gets the provider call that produced this mockup, when recorded.
+    /// </summary>
+    public Guid? ApiUsageRecordId { get; private set; }
+
+    /// <summary>
+    /// Gets the object-storage provider holding the file.
+    /// </summary>
+    public string StorageProvider { get; private set; } = "s3";
+
+    /// <summary>
+    /// Gets the object-storage key.
+    /// </summary>
+    public string StorageKey { get; private set; } = string.Empty;
 
     /// <summary>
     /// Gets the mockup image URL.
     /// </summary>
     public string MockupImageUrl { get; private set; } = string.Empty;
-
-    /// <summary>
-    /// Gets the optional local mockup path.
-    /// </summary>
-    public string? MockupLocalPath { get; private set; }
 
     /// <summary>
     /// Gets the mockup width in pixels.
@@ -52,17 +64,14 @@ public sealed class MockupImage : CreationTrackedEntity, ISoftDeletable
     public decimal? GenerationTimeSeconds { get; private set; }
 
     /// <summary>
-    /// Gets the generation API cost in USD.
+    /// Gets the mockup approval status.
     /// </summary>
-    public decimal? ApiCostUsd { get; private set; }
+    public string ApprovalStatus { get; private set; } = "pending";
 
     /// <summary>
     /// Gets a value indicating whether this is the final mockup.
     /// </summary>
     public bool IsFinal { get; private set; } = true;
-
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
 
     /// <summary>
     /// Gets the source design image.
@@ -73,4 +82,19 @@ public sealed class MockupImage : CreationTrackedEntity, ISoftDeletable
     /// Gets the target product.
     /// </summary>
     public Product Product { get; private set; } = null!;
+
+    /// <summary>
+    /// Gets the mockup template used for the render.
+    /// </summary>
+    public MockupTemplate MockupTemplate { get; private set; } = null!;
+
+    /// <summary>
+    /// Gets the provider call that produced this mockup, when recorded.
+    /// </summary>
+    public ApiUsageRecord? ApiUsageRecord { get; private set; }
+
+    /// <summary>
+    /// Gets the promotional video scenes using this mockup.
+    /// </summary>
+    public IReadOnlyCollection<PromoVideoScene> PromoVideoScenes => _promoVideoScenes.AsReadOnly();
 }

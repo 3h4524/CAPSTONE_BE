@@ -10,16 +10,28 @@ public sealed class RegisterValidatorTests
     public void RegisterValidator_WithValidCommand_IsValid()
     {
         var result = new RegisterValidator().Validate(
-            new RegisterCommand("seller@example.com", "Password1", "Seller Name"));
+            new RegisterCommand("user@example.com", "Password1", "User Name"));
 
         result.IsValid.Should().BeTrue();
     }
 
     [TestMethod]
-    [DataRow("", "Password1", "Seller", "Email")]
-    [DataRow("invalid", "Password1", "Seller", "Email")]
-    [DataRow("seller@example.com", "short", "Seller", "Password")]
-    [DataRow("seller@example.com", "Password1", "", "FullName")]
+    [DataRow(null)]
+    [DataRow("")]
+    public void RegisterValidator_WithoutFullName_IsValid(string? fullName)
+    {
+        // Full name is optional so clients that never collected one keep working; the handler
+        // falls back to the email local part.
+        var result = new RegisterValidator().Validate(
+            new RegisterCommand("user@example.com", "Password1", fullName));
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow("", "Password1", "User", "Email")]
+    [DataRow("invalid", "Password1", "User", "Email")]
+    [DataRow("user@example.com", "short", "User", "Password")]
     public void RegisterValidator_WithInvalidCommand_ContainsExpectedProperty(
         string email,
         string password,
@@ -37,7 +49,7 @@ public sealed class RegisterValidatorTests
         var command = new RegisterCommand(
             $"{new string('a', 245)}@example.com",
             new string('P', 129),
-            new string('N', 151));
+            new string('N', 256));
 
         var result = new RegisterValidator().Validate(command);
 

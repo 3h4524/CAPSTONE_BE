@@ -5,7 +5,7 @@ using APCS.Application.Features.Auth.Commands.Logout;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
-using RefreshTokenEntity = APCS.Domain.Entities.RefreshToken;
+using RefreshTokenEntity = APCS.Domain.Entities.AuthToken;
 
 namespace APCS.Application.UnitTests.Features.Auth.Commands.Logout;
 
@@ -18,7 +18,7 @@ public sealed class LogoutCommandHandlerTests
     [DataRow(" ")]
     public async Task Handle_WhenTokenIsMissing_ReturnsSuccessWithoutLookup(string? token)
     {
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         var handler = CreateHandler(repository);
 
         var result = await handler.Handle(new LogoutCommand(token), CancellationToken.None);
@@ -79,11 +79,11 @@ public sealed class LogoutCommandHandlerTests
 
     private static LogoutCommand CreateCommand() => new("presented-raw-token");
 
-    private static (Mock<IRefreshTokenRepository> Repository, Mock<IJwtService> JwtService) CreateLookup(
+    private static (Mock<IAuthTokenRepository> Repository, Mock<IJwtService> JwtService) CreateLookup(
         RefreshTokenEntity? token,
         CancellationToken cancellationToken = default)
     {
-        var repository = new Mock<IRefreshTokenRepository>();
+        var repository = new Mock<IAuthTokenRepository>();
         repository.Setup(candidate => candidate.GetByHashAsync("presented-token-hash", cancellationToken))
             .ReturnsAsync(token);
         var jwtService = new Mock<IJwtService>();
@@ -93,7 +93,7 @@ public sealed class LogoutCommandHandlerTests
     }
 
     private static LogoutCommandHandler CreateHandler(
-        Mock<IRefreshTokenRepository> repository,
+        Mock<IAuthTokenRepository> repository,
         Mock<IUnitOfWork>? dbContext = null,
         Mock<IJwtService>? jwtService = null) => new(
         (dbContext ?? new Mock<IUnitOfWork>()).Object,

@@ -11,14 +11,14 @@ namespace APCS.Infrastructure.Services;
 public sealed class CurrentUserService(IHttpContextAccessor httpContextAccessor) : ICurrentUser
 {
     /// <inheritdoc />
-    public int? UserId
+    public Guid? UserId
     {
         get
         {
             var value = httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
                 ?? httpContextAccessor.HttpContext?.User.FindFirstValue(JwtRegisteredClaimNames.Sub);
 
-            return int.TryParse(value, out var sellerId) ? sellerId : null;
+            return Guid.TryParse(value, out var userId) ? userId : null;
         }
     }
 

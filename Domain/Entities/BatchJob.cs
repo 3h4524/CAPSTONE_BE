@@ -3,11 +3,11 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a seller-owned batch processing job.
+/// Represents a bulk product-generation job submitted by a user.
 /// </summary>
 public sealed class BatchJob : SoftDeletableEntity
 {
-    private readonly List<BatchJobProduct> _jobProducts = [];
+    private readonly List<BatchJobProduct> _products = [];
     private readonly List<BatchJobLog> _logs = [];
 
     private BatchJob()
@@ -15,17 +15,17 @@ public sealed class BatchJob : SoftDeletableEntity
     }
 
     /// <summary>
-    /// Gets the identifier of the seller that owns the batch job.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the batch job name.
+    /// Gets the job name.
     /// </summary>
     public string Name { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the optional batch job description.
+    /// Gets the job description.
     /// </summary>
     public string? Description { get; private set; }
 
@@ -35,17 +35,17 @@ public sealed class BatchJob : SoftDeletableEntity
     public string SourceFileType { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the source file URL.
+    /// Gets the uploaded source file URL.
     /// </summary>
     public string? SourceFileUrl { get; private set; }
 
     /// <summary>
-    /// Gets the source file content hash.
+    /// Gets the source file checksum, used to detect re-uploads of the same file.
     /// </summary>
     public string? SourceFileHash { get; private set; }
 
     /// <summary>
-    /// Gets the current processing status.
+    /// Gets the job status.
     /// </summary>
     public string Status { get; private set; } = "draft";
 
@@ -60,7 +60,7 @@ public sealed class BatchJob : SoftDeletableEntity
     public int TotalProducts { get; private set; }
 
     /// <summary>
-    /// Gets the number of successfully processed products.
+    /// Gets the number of processed products.
     /// </summary>
     public int ProcessedProducts { get; private set; }
 
@@ -75,47 +75,47 @@ public sealed class BatchJob : SoftDeletableEntity
     public int SkippedProducts { get; private set; }
 
     /// <summary>
-    /// Gets the batch configuration as JSON.
+    /// Gets the job configuration as JSON.
     /// </summary>
     public string Config { get; private set; } = "{}";
 
     /// <summary>
-    /// Gets the processing priority.
+    /// Gets the queue priority.
     /// </summary>
     public string Priority { get; private set; } = "normal";
 
     /// <summary>
-    /// Gets the UTC processing start timestamp.
-    /// </summary>
-    public DateTimeOffset? StartedAtUtc { get; private set; }
-
-    /// <summary>
-    /// Gets the UTC processing completion timestamp.
-    /// </summary>
-    public DateTimeOffset? CompletedAtUtc { get; private set; }
-
-    /// <summary>
-    /// Gets the estimated UTC completion timestamp.
-    /// </summary>
-    public DateTimeOffset? EstimatedCompletionTimeUtc { get; private set; }
-
-    /// <summary>
-    /// Gets the estimated processing cost in USD.
+    /// Gets the estimated cost in USD.
     /// </summary>
     public decimal EstimatedCostUsd { get; private set; }
 
     /// <summary>
-    /// Gets the actual processing cost in USD.
+    /// Gets the actual cost in USD.
     /// </summary>
     public decimal ActualCostUsd { get; private set; }
 
     /// <summary>
-    /// Gets the products queued in this batch job.
+    /// Gets the UTC timestamp when processing started.
     /// </summary>
-    public IReadOnlyCollection<BatchJobProduct> JobProducts => _jobProducts.AsReadOnly();
+    public DateTimeOffset? StartedAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets the diagnostic log entries for this batch job.
+    /// Gets the UTC timestamp when processing completed.
+    /// </summary>
+    public DateTimeOffset? CompletedAtUtc { get; private set; }
+
+    /// <summary>
+    /// Gets the projected UTC completion timestamp.
+    /// </summary>
+    public DateTimeOffset? EstimatedCompletionTimeUtc { get; private set; }
+
+    /// <summary>
+    /// Gets the products queued in this job.
+    /// </summary>
+    public IReadOnlyCollection<BatchJobProduct> Products => _products.AsReadOnly();
+
+    /// <summary>
+    /// Gets the job execution log.
     /// </summary>
     public IReadOnlyCollection<BatchJobLog> Logs => _logs.AsReadOnly();
 }

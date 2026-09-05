@@ -22,7 +22,7 @@ public sealed class JwtService(
     private readonly JwtOptions _options = options.Value;
 
     /// <inheritdoc />
-    public JwtTokenResult GenerateAccessToken(int userId, string email, IReadOnlyCollection<string> roles)
+    public JwtTokenResult GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
         ArgumentNullException.ThrowIfNull(roles);

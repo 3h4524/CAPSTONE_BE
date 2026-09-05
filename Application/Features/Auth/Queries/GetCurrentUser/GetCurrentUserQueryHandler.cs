@@ -1,6 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Features.Auth.Common;
-using APCS.Common.Constants;
 using APCS.Common.Models;
 using MediatR;
 
@@ -19,15 +18,13 @@ public sealed class GetCurrentUserQueryHandler(
     {
         if (!currentUser.IsAuthenticated || currentUser.UserId is null)
         {
-            return Result.Failure<AuthenticatedUserResponse>(
-                Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated."));
+            return Result.Failure<AuthenticatedUserResponse>(AuthErrors.Unauthenticated());
         }
 
         var user = await identityService.FindByIdAsync(currentUser.UserId.Value, cancellationToken);
         if (user is null)
         {
-            return Result.Failure<AuthenticatedUserResponse>(
-                Error.NotFound(ErrorCodes.UserNotFound, "User was not found."));
+            return Result.Failure<AuthenticatedUserResponse>(AuthErrors.UserNotFound());
         }
 
         var roles = await identityService.GetRolesAsync(user.Id, cancellationToken);

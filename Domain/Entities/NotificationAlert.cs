@@ -3,23 +3,25 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a notification delivered to a seller.
+/// Represents a notification raised for a user.
 /// </summary>
-public sealed class NotificationAlert : CreationTrackedEntity, ISoftDeletable
+public sealed class NotificationAlert : CreationTrackedSoftDeletableEntity
 {
+    private readonly List<NotificationDelivery> _deliveries = [];
+
     private NotificationAlert()
     {
     }
 
     /// <summary>
-    /// Gets the recipient seller identifier.
+    /// Gets the recipient user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
     /// Gets the related batch job identifier, when applicable.
     /// </summary>
-    public int? BatchJobId { get; private set; }
+    public Guid? BatchJobId { get; private set; }
 
     /// <summary>
     /// Gets the notification type.
@@ -42,11 +44,6 @@ public sealed class NotificationAlert : CreationTrackedEntity, ISoftDeletable
     public string Severity { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the delivery channels.
-    /// </summary>
-    public string[] NotificationChannels { get; private set; } = ["in_app"];
-
-    /// <summary>
     /// Gets a value indicating whether the notification has been read.
     /// </summary>
     public bool IsRead { get; private set; }
@@ -66,11 +63,13 @@ public sealed class NotificationAlert : CreationTrackedEntity, ISoftDeletable
     /// </summary>
     public DateTimeOffset? ExpiresAtUtc { get; private set; }
 
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
-
     /// <summary>
     /// Gets the related batch job, when applicable.
     /// </summary>
     public BatchJob? BatchJob { get; private set; }
+
+    /// <summary>
+    /// Gets the per-channel delivery attempts.
+    /// </summary>
+    public IReadOnlyCollection<NotificationDelivery> Deliveries => _deliveries.AsReadOnly();
 }

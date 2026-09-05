@@ -1,7 +1,9 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.Auth.Common;
 using APCS.Common.Models;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 
 namespace APCS.Application.Features.Auth.Commands.Logout;
 
@@ -10,7 +12,7 @@ namespace APCS.Application.Features.Auth.Commands.Logout;
 /// </summary>
 public sealed class LogoutCommandHandler(
     IUnitOfWork unitOfWork,
-    IRefreshTokenRepository refreshTokenRepository,
+    IAuthTokenRepository authTokenRepository,
     IJwtService jwtService,
     TimeProvider timeProvider)
     : IRequestHandler<LogoutCommand, Result>
@@ -23,13 +25,23 @@ public sealed class LogoutCommandHandler(
             return Result.Success();
         }
 
+        var context = request.Context ?? RequestContext.None;
         var tokenHash = jwtService.HashRefreshToken(request.RefreshToken);
-        var existingToken = await refreshTokenRepository.GetByHashAsync(tokenHash, cancellationToken);
+        var existingToken = await authTokenRepository.GetByHashAsync(tokenHash, cancellationToken);
 
         if (existingToken is not null && !existingToken.IsRevoked)
         {
-            existingToken.Revoke(timeProvider.GetUtcNow(), "Logout");
-            await unitOfWork.SaveChangesAsync(cancellationToken);
+            existingToken.Revoke(timeProvider.GetUtcNow(), "Logout", revokedByIp: context.IpAddress);
+
+            try
+            {
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // A concurrent logout or refresh revoked the same token first. The session is
+                // gone either way, which is all logout promises, so this stays a success.
+            }
         }
 
         return Result.Success();

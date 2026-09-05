@@ -8,4 +8,4 @@ internal sealed record AuthSession(
     string RefreshToken,
     string RefreshTokenHash,
     DateTimeOffset RefreshTokenExpiresAtUtc,
-    RefreshToken Entity);
+    AuthToken Entity);

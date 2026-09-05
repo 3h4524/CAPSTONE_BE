@@ -5,7 +5,7 @@ namespace APCS.Domain.Entities;
 /// <summary>
 /// Represents a licensed music track available for promotional videos.
 /// </summary>
-public sealed class MusicTrack : CreationTrackedEntity, ISoftDeletable
+public sealed class MusicTrack : CreationTrackedSoftDeletableEntity
 {
     private readonly List<PromoVideo> _promoVideos = [];
 
@@ -41,12 +41,17 @@ public sealed class MusicTrack : CreationTrackedEntity, ISoftDeletable
     /// <summary>
     /// Gets a value indicating whether the track is royalty-free.
     /// </summary>
-    public bool RoyaltyFree { get; private set; } = true;
+    public bool RoyaltyFree { get; private set; }
 
     /// <summary>
     /// Gets the track license type.
     /// </summary>
     public string LicenseType { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Gets where the licence was obtained, required for royalty-free tracks.
+    /// </summary>
+    public string? LicenseSource { get; private set; }
 
     /// <summary>
     /// Gets the full audio URL.
@@ -59,17 +64,9 @@ public sealed class MusicTrack : CreationTrackedEntity, ISoftDeletable
     public string? PreviewUrl { get; private set; }
 
     /// <summary>
-    /// Gets waveform data as JSON.
-    /// </summary>
-    public string? WaveformData { get; private set; }
-
-    /// <summary>
     /// Gets a value indicating whether the track is available.
     /// </summary>
     public bool IsAvailable { get; private set; } = true;
-
-    /// <inheritdoc />
-    public DateTimeOffset? DeletedAtUtc { get; private set; }
 
     /// <summary>
     /// Gets the promotional videos using this track.

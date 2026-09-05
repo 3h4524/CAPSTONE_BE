@@ -49,11 +49,11 @@ public static class DependencyInjection
 
         services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<AppDbContext>());
         services.AddScoped<IReadDbContext>(provider => provider.GetRequiredService<AppDbContext>());
-        services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
 
         services
-            .AddIdentityCore<Seller>(ConfigureIdentityOptions)
-            .AddRoles<IdentityRole<int>>()
+            .AddIdentityCore<User>(ConfigureIdentityOptions)
+            .AddRoles<Role>()
             .AddEntityFrameworkStores<AppDbContext>()
             .AddSignInManager()
             .AddDefaultTokenProviders();

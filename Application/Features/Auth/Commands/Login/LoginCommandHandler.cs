@@ -7,12 +7,12 @@ using MediatR;
 namespace APCS.Application.Features.Auth.Commands.Login;
 
 /// <summary>
-/// Handles seller login.
+/// Handles user login.
 /// </summary>
 public sealed class LoginCommandHandler(
     IIdentityService identityService,
     IUnitOfWork unitOfWork,
-    IRefreshTokenRepository refreshTokenRepository,
+    IAuthTokenRepository authTokenRepository,
     IJwtService jwtService,
     TimeProvider timeProvider)
     : IRequestHandler<LoginCommand, Result<LoginResponse>>
@@ -43,21 +43,21 @@ public sealed class LoginCommandHandler(
             return Result.Failure<LoginResponse>(AuthErrors.LockedOut());
         }
 
-        if (credentialResult.IsNotAllowed)
-        {
-            return Result.Failure<LoginResponse>(AuthErrors.InvalidCredentials());
-        }
-
-        if (!credentialResult.Succeeded)
+        if (credentialResult.IsNotAllowed || !credentialResult.Succeeded)
         {
             return Result.Failure<LoginResponse>(AuthErrors.InvalidCredentials());
         }
 
         var roles = await identityService.GetRolesAsync(user.Id, cancellationToken);
         var utcNow = timeProvider.GetUtcNow();
-        var session = AuthSessionFactory.Create(jwtService, user, roles, utcNow);
+        var session = AuthSessionFactory.Create(
+            jwtService,
+            user,
+            roles,
+            utcNow,
+            request.Context ?? RequestContext.None);
 
-        refreshTokenRepository.Add(session.Entity);
+        authTokenRepository.Add(session.Entity);
         await identityService.TouchLastLoginAsync(user.Id, utcNow, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 

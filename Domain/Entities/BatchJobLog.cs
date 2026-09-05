@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a diagnostic event emitted while processing a batch job.
+/// Records a single event raised while a batch job runs.
 /// </summary>
 public sealed class BatchJobLog : CreationTrackedEntity
 {
@@ -12,17 +12,22 @@ public sealed class BatchJobLog : CreationTrackedEntity
     }
 
     /// <summary>
-    /// Gets the parent batch job identifier.
+    /// Gets the owning batch job identifier.
     /// </summary>
-    public int BatchJobId { get; private set; }
+    public Guid BatchJobId { get; private set; }
 
     /// <summary>
-    /// Gets the related batch item identifier, when applicable.
+    /// Gets the related product slot identifier, when the event is product-specific.
     /// </summary>
-    public int? BatchJobProductId { get; private set; }
+    public Guid? BatchJobProductId { get; private set; }
 
     /// <summary>
-    /// Gets the log severity level.
+    /// Gets the related API usage record, when the event describes a provider call.
+    /// </summary>
+    public Guid? ApiUsageRecordId { get; private set; }
+
+    /// <summary>
+    /// Gets the log severity.
     /// </summary>
     public string LogLevel { get; private set; } = string.Empty;
 
@@ -32,7 +37,7 @@ public sealed class BatchJobLog : CreationTrackedEntity
     public string EventType { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the human-readable log message.
+    /// Gets the log message.
     /// </summary>
     public string Message { get; private set; } = string.Empty;
 
@@ -42,22 +47,22 @@ public sealed class BatchJobLog : CreationTrackedEntity
     public string? Details { get; private set; }
 
     /// <summary>
-    /// Gets the measured event duration in milliseconds.
+    /// Gets the event duration in milliseconds.
     /// </summary>
     public int? DurationMs { get; private set; }
 
     /// <summary>
-    /// Gets the external API call identifier.
-    /// </summary>
-    public string? ApiCallIdentifier { get; private set; }
-
-    /// <summary>
-    /// Gets the parent batch job.
+    /// Gets the owning batch job.
     /// </summary>
     public BatchJob BatchJob { get; private set; } = null!;
 
     /// <summary>
-    /// Gets the related batch item, when applicable.
+    /// Gets the related product slot, when applicable.
     /// </summary>
     public BatchJobProduct? BatchJobProduct { get; private set; }
+
+    /// <summary>
+    /// Gets the related API usage record, when applicable.
+    /// </summary>
+    public ApiUsageRecord? ApiUsageRecord { get; private set; }
 }

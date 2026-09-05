@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents one historical listing-generation attempt.
+/// Records one listing generation attempt and what the seller did with the result.
 /// </summary>
 public sealed class ListingGenerationHistory : CreationTrackedEntity
 {
@@ -12,72 +12,62 @@ public sealed class ListingGenerationHistory : CreationTrackedEntity
     }
 
     /// <summary>
-    /// Gets the parent listing content identifier.
+    /// Gets the owning listing content identifier.
     /// </summary>
-    public int ListingContentId { get; private set; }
+    public Guid ListingContentId { get; private set; }
 
     /// <summary>
-    /// Gets the target product identifier.
+    /// Gets the provider call behind this attempt, when recorded.
     /// </summary>
-    public int ProductId { get; private set; }
+    public Guid? ApiUsageRecordId { get; private set; }
 
     /// <summary>
-    /// Gets the generation sequence number.
+    /// Gets the attempt number within the listing.
     /// </summary>
     public int GenerationNumber { get; private set; }
 
     /// <summary>
-    /// Gets the prompt used for generation.
+    /// Gets the prompt sent to the model.
     /// </summary>
     public string PromptUsed { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the raw AI response.
+    /// Gets the seller's adjustment hint for a regeneration.
+    /// </summary>
+    public string? AdjustmentHint { get; private set; }
+
+    /// <summary>
+    /// Gets the raw model response.
     /// </summary>
     public string RawAiResponse { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the generated title, when present.
+    /// Gets the title produced by this attempt.
     /// </summary>
     public string? TitleGenerated { get; private set; }
 
     /// <summary>
-    /// Gets the generated tags, when present.
+    /// Gets the tags produced by this attempt.
     /// </summary>
     public string[]? TagsGenerated { get; private set; }
 
     /// <summary>
-    /// Gets the generated description, when present.
+    /// Gets the description produced by this attempt.
     /// </summary>
     public string? DescriptionGenerated { get; private set; }
 
     /// <summary>
-    /// Gets the API response duration in milliseconds.
-    /// </summary>
-    public int ApiResponseTimeMs { get; private set; }
-
-    /// <summary>
-    /// Gets the number of API tokens used.
-    /// </summary>
-    public int ApiTokensUsed { get; private set; }
-
-    /// <summary>
-    /// Gets the API cost in USD.
-    /// </summary>
-    public decimal ApiCostUsd { get; private set; }
-
-    /// <summary>
-    /// Gets the seller action following generation.
+    /// Gets what the seller did with the result.
     /// </summary>
     public string UserAction { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets optional feedback notes.
+    /// Gets the seller's feedback notes.
     /// </summary>
     public string? FeedbackNotes { get; private set; }
 
     /// <summary>
-    /// Gets the parent listing content.
+    /// Gets the owning listing content.
     /// </summary>
     public ListingContent ListingContent { get; private set; } = null!;
 }

@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Aggregates seller usage for one billing period.
+/// Aggregates a user's resource consumption for one billing period.
 /// </summary>
 public sealed class UsageStatistic : AuditableEntity
 {
@@ -12,47 +12,47 @@ public sealed class UsageStatistic : AuditableEntity
     }
 
     /// <summary>
-    /// Gets the owning seller identifier.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
-    /// Gets the billing period start date.
+    /// Gets the first day of the billing period.
     /// </summary>
     public DateOnly BillingPeriodStart { get; private set; }
 
     /// <summary>
-    /// Gets the billing period end date.
+    /// Gets the last day of the billing period.
     /// </summary>
     public DateOnly BillingPeriodEnd { get; private set; }
 
     /// <summary>
-    /// Gets the number of generated images.
+    /// Gets the number of images generated.
     /// </summary>
     public int ImagesGenerated { get; private set; }
 
     /// <summary>
-    /// Gets the number of created videos.
+    /// Gets the number of videos created.
     /// </summary>
     public int VideosCreated { get; private set; }
 
     /// <summary>
-    /// Gets the number of exported listings.
+    /// Gets the number of listings exported.
     /// </summary>
     public int ListingsExported { get; private set; }
 
     /// <summary>
-    /// Gets the total number of external API calls.
+    /// Gets the total number of API calls.
     /// </summary>
     public int TotalApiCalls { get; private set; }
 
     /// <summary>
-    /// Gets the total external API cost in USD.
+    /// Gets the total API cost in USD.
     /// </summary>
     public decimal TotalApiCostUsd { get; private set; }
 
     /// <summary>
-    /// Gets the used storage in gigabytes.
+    /// Gets the storage consumed in gigabytes.
     /// </summary>
     public decimal StorageUsedGb { get; private set; }
 
@@ -62,7 +62,7 @@ public sealed class UsageStatistic : AuditableEntity
     public int BatchJobsCompleted { get; private set; }
 
     /// <summary>
-    /// Gets the average product processing duration in seconds.
+    /// Gets the average processing duration in seconds.
     /// </summary>
     public decimal AverageProcessingTimeSeconds { get; private set; }
 }

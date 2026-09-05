@@ -3,7 +3,7 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Represents a seller's subscription to a plan.
+/// Represents a user's subscription to a plan.
 /// </summary>
 public sealed class Subscription : SoftDeletableEntity
 {
@@ -14,14 +14,14 @@ public sealed class Subscription : SoftDeletableEntity
     }
 
     /// <summary>
-    /// Gets the subscribing seller identifier.
+    /// Gets the owning user identifier.
     /// </summary>
-    public int SellerId { get; private set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
     /// Gets the subscribed plan identifier.
     /// </summary>
-    public int PlanId { get; private set; }
+    public Guid PlanId { get; private set; }
 
     /// <summary>
     /// Gets the billing cycle.
@@ -29,12 +29,12 @@ public sealed class Subscription : SoftDeletableEntity
     public string BillingCycle { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the captured monthly price in USD.
+    /// Gets the agreed monthly price in USD.
     /// </summary>
     public decimal MonthlyPriceUsd { get; private set; }
 
     /// <summary>
-    /// Gets the captured annual price in USD.
+    /// Gets the agreed annual price in USD.
     /// </summary>
     public decimal? AnnualPriceUsd { get; private set; }
 
@@ -54,7 +54,7 @@ public sealed class Subscription : SoftDeletableEntity
     public DateOnly RenewalDate { get; private set; }
 
     /// <summary>
-    /// Gets the UTC trial expiration timestamp.
+    /// Gets the UTC timestamp at which the trial ends.
     /// </summary>
     public DateTimeOffset? TrialEndsAtUtc { get; private set; }
 
@@ -64,7 +64,7 @@ public sealed class Subscription : SoftDeletableEntity
     public DateTimeOffset? CancelledAtUtc { get; private set; }
 
     /// <summary>
-    /// Gets a value indicating whether automatic renewal is enabled.
+    /// Gets a value indicating whether the subscription renews automatically.
     /// </summary>
     public bool AutoRenew { get; private set; } = true;
 
@@ -74,7 +74,7 @@ public sealed class Subscription : SoftDeletableEntity
     public SubscriptionPlan Plan { get; private set; } = null!;
 
     /// <summary>
-    /// Gets invoices issued for this subscription.
+    /// Gets the invoices issued for this subscription.
     /// </summary>
     public IReadOnlyCollection<Invoice> Invoices => _invoices.AsReadOnly();
 }

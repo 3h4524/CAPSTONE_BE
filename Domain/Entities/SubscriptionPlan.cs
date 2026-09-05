@@ -3,10 +3,11 @@ using APCS.Domain.Common;
 namespace APCS.Domain.Entities;
 
 /// <summary>
-/// Defines a purchasable subscription tier and its quotas.
+/// Represents a purchasable subscription plan.
 /// </summary>
 public sealed class SubscriptionPlan : AuditableEntity
 {
+    private readonly List<PlanFeature> _features = [];
     private readonly List<Subscription> _subscriptions = [];
 
     private SubscriptionPlan()
@@ -19,7 +20,7 @@ public sealed class SubscriptionPlan : AuditableEntity
     public string Name { get; private set; } = string.Empty;
 
     /// <summary>
-    /// Gets the unique plan tier.
+    /// Gets the plan tier.
     /// </summary>
     public string Tier { get; private set; } = string.Empty;
 
@@ -49,57 +50,57 @@ public sealed class SubscriptionPlan : AuditableEntity
     public int MaxProductsPerMonth { get; private set; } = 1_000;
 
     /// <summary>
-    /// Gets the maximum number of concurrent jobs.
+    /// Gets the maximum number of concurrent batch jobs.
     /// </summary>
     public int MaxConcurrentJobs { get; private set; } = 1;
 
     /// <summary>
-    /// Gets the image-generation quota.
+    /// Gets the monthly image-generation quota.
     /// </summary>
     public int ImageGenerationQuota { get; private set; } = 500;
 
     /// <summary>
-    /// Gets the video-generation quota.
+    /// Gets the monthly video-generation quota.
     /// </summary>
     public int VideoGenerationQuota { get; private set; } = 50;
 
     /// <summary>
-    /// Gets the API call quota.
+    /// Gets the monthly API-call quota.
     /// </summary>
     public int ApiCallQuota { get; private set; } = 10_000;
 
     /// <summary>
     /// Gets the storage quota in gigabytes.
     /// </summary>
-    public decimal StorageQuotaGb { get; private set; } = 100;
+    public decimal StorageQuotaGb { get; private set; } = 100m;
 
     /// <summary>
-    /// Gets plan feature metadata as JSON.
-    /// </summary>
-    public string Features { get; private set; } = "{}";
-
-    /// <summary>
-    /// Gets a value indicating whether priority support is included.
+    /// Gets a value indicating whether the plan includes priority support.
     /// </summary>
     public bool PrioritySupport { get; private set; }
 
     /// <summary>
-    /// Gets a value indicating whether custom API keys are allowed.
+    /// Gets a value indicating whether the plan allows custom API keys.
     /// </summary>
     public bool CustomApiKeysAllowed { get; private set; }
 
     /// <summary>
-    /// Gets a value indicating whether the plan is active.
+    /// Gets a value indicating whether the plan is offered.
     /// </summary>
     public bool IsActive { get; private set; } = true;
 
     /// <summary>
-    /// Gets the plan display order.
+    /// Gets the display sort order.
     /// </summary>
     public int SortOrder { get; private set; }
 
     /// <summary>
-    /// Gets subscriptions associated with this plan.
+    /// Gets the feature flags attached to the plan.
+    /// </summary>
+    public IReadOnlyCollection<PlanFeature> Features => _features.AsReadOnly();
+
+    /// <summary>
+    /// Gets the subscriptions sold on this plan.
     /// </summary>
     public IReadOnlyCollection<Subscription> Subscriptions => _subscriptions.AsReadOnly();
 }
