@@ -14,11 +14,7 @@ Use this prompt as a task starter. Replace the placeholders before submitting it
 
 Implement the requirement in the current APCS backend.
 
-Before editing, follow [`../../AGENTS.md`](../../AGENTS.md), inspect the worktree, and read:
-
-- [`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)
-- [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md)
-- [`../../docs/TESTING.md`](../../docs/TESTING.md)
+Before editing, inspect the worktree and follow [`../../AGENTS.md`](../../AGENTS.md), reading every canonical document its task table names for this change.
 
 Inspect the target area and the closest implemented feature before proposing changes. State a short file/layer plan, then implement only the approved requirement while applying the linked architecture and contribution rules. Preserve unrelated changes.
 

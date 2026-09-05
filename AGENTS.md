@@ -13,10 +13,26 @@ These instructions apply to the entire repository.
 
 When source and documentation disagree, do not silently follow either one. Report the discrepancy, preserve current behavior unless the task authorizes a change, and update documentation only when the intended rule is clear.
 
+## What to read for a task
+
+The list above resolves conflicts. This table decides reading order, so a task reads what it needs instead of everything.
+
+| Task | Read before editing |
+|---|---|
+| Add or change a use case, endpoint, handler, or persistence access | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for dependency direction, CQRS, and type placement, then *Adding a new feature* in [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Add or change tests only | [`docs/TESTING.md`](docs/TESTING.md) |
+| Change a layer boundary, a project reference, or add a dependency | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Rename or move types, or apply naming and language conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Change an entity, the schema, or a migration | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *EF Core migrations* in [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Prepare a pull request | *Definition of done* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`.github/pull_request_template.md`](.github/pull_request_template.md) |
+| Use an APCS prompt or workflow | [`.agent/README.md`](.agent/README.md) |
+
+A change that matches more than one row reads every row that applies.
+
 ## Before changing files
 
 - Inspect `git status` and preserve unrelated or user-owned changes.
-- Read the canonical document relevant to the task.
+- Read the canonical documents named by the task table above.
 - Inspect the target code and the closest existing implementation.
 - Confirm actual project references, namespaces, and test framework instead of importing generic .NET patterns.
 - Make the smallest coherent change that satisfies the request.

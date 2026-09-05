@@ -66,7 +66,7 @@ Do not edit or regenerate unrelated migrations as part of another feature.
 
 The repository currently enforces pull-request and `main`-branch builds through GitHub Actions. It does not define a special branch-naming or commit-message convention.
 
-A pull request should explain the changed behavior, important architecture decisions, verification performed, and any intentionally deferred tests or follow-up work.
+A pull request should explain the changed behavior, important architecture decisions, verification performed, and any intentionally deferred tests or follow-up work. GitHub loads [`.github/pull_request_template.md`](.github/pull_request_template.md) into the description; complete its checklist instead of replacing it.
 
 ## Definition of done
 

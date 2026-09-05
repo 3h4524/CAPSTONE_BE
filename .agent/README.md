@@ -4,26 +4,18 @@
 
 ## Precedence
 
-1. [`../AGENTS.md`](../AGENTS.md) defines repository-wide agent behavior.
-2. [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) defines architecture, CQRS, dependency, and placement rules.
-3. [`../CONTRIBUTING.md`](../CONTRIBUTING.md) defines coding conventions and feature delivery.
-4. [`../docs/TESTING.md`](../docs/TESTING.md) defines testing.
-5. Files under `.agent/` provide task-specific inputs or execution help and must remain subordinate to those sources.
+[`../AGENTS.md`](../AGENTS.md) holds the authority order and the table that decides which canonical document applies to a task. Files under `.agent/` provide task-specific inputs or execution help and remain subordinate to every source listed there.
 
-## Structure
+## Artifacts
 
-```text
-.agent/
-├── README.md
-├── prompts/
-│   ├── implement-feature.md
-│   ├── review-code.md
-│   └── create-tests.md
-├── workflows/
-│   └── feature-development.md
-├── context/                     # stable, non-derivable context only
-└── skills/                      # triggerable capabilities; none defined yet
-```
+| Artifact | Use it when |
+|---|---|
+| [`prompts/implement-feature.md`](prompts/implement-feature.md) | Framing a feature or behavior change before editing starts |
+| [`prompts/review-code.md`](prompts/review-code.md) | Reviewing a diff, branch, or commit without modifying files |
+| [`prompts/create-tests.md`](prompts/create-tests.md) | Adding tests for existing behavior, starting from the unit/integration boundary |
+| [`workflows/feature-development.md`](workflows/feature-development.md) | Running a feature end to end with intake, plan, verification, and handoff checkpoints |
+
+`context/` and `skills/` hold no artifact yet. Read the folder responsibilities below before adding one.
 
 ## Folder responsibilities
 

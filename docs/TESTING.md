@@ -61,7 +61,7 @@ For an Application unit test, mock the focused repository, `IUnitOfWork`, or ano
 3. Cover the successful path, each meaningful expected failure, boundary inputs, state changes, and absence of forbidden calls.
 4. Test validators separately when their rule matrix is non-trivial.
 5. Add provider or HTTP integration coverage when mocks cannot prove the behavior.
-6. If a new behavioral namespace or Domain type is added, include it in the behavioral class filter in `scripts/Test-WithCoverage.ps1`.
+6. If a new behavioral namespace or Domain type is added, include it in the behavioral class filter in [`../scripts/Test-WithCoverage.ps1`](../scripts/Test-WithCoverage.ps1).
 7. Run the focused test project, then the solution suite.
 
 ## Commands and coverage
@@ -87,3 +87,9 @@ Run the Release build, full coverage report, and behavioral gate used by CI:
 The behavioral gate requires at least 80% line coverage and 70% branch coverage. `scripts/Test-WithCoverage.ps1` and `.github/workflows/backend-ci.yml` enforce the gate; this document explains how to work with it.
 
 Generated reports belong under `artifacts/coverage` and are not committed.
+
+## Where to go next
+
+- Deliver the production change these tests cover through *Adding a new feature* in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+- Confirm which layer owns the behavior in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+- Close out the change with the checklist in [`../.github/pull_request_template.md`](../.github/pull_request_template.md).

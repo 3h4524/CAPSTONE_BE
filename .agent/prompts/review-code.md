@@ -10,11 +10,7 @@
 
 Review the target without modifying files unless explicitly asked to implement fixes.
 
-Follow [`../../AGENTS.md`](../../AGENTS.md) and evaluate the target against:
-
-- [`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)
-- [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md)
-- [`../../docs/TESTING.md`](../../docs/TESTING.md)
+Follow [`../../AGENTS.md`](../../AGENTS.md) and evaluate the target against every canonical document its task table names for the change under review.
 
 Inspect the actual surrounding implementation and tests; do not review from the diff alone. Prioritize correctness, security, data integrity, behavior regressions, dependency violations, and missing tests over style preferences.
 

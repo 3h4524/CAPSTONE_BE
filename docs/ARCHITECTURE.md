@@ -190,3 +190,9 @@ These facts are documented so new work does not mistake a target rule for an alr
 - No integration-test project currently verifies PostgreSQL mappings, migrations, provider queries, authorization, or the complete HTTP pipeline.
 
 These are not instructions to refactor unrelated code. Address a deviation only through an approved feature or architectural change.
+
+## Where to go next
+
+- Deliver a change against these rules through *Adding a new feature* in [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
+- Choose the test level for that change in [`TESTING.md`](TESTING.md).
+- Add an entry to the deviations section above only when an approved change leaves one, and delete the entry in the same change that closes it.
