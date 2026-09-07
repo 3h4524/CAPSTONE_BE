@@ -26,6 +26,47 @@ public sealed class AuthControllerTests
         new(2026, 9, 7, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public async Task Register_WhenSuccessful_CallsServiceWithoutIssuingASessionCookie()
+    {
+        var cancellationToken = new CancellationTokenSource().Token;
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.RegisterAsync(It.IsAny<RegisterRequestDto>(), cancellationToken))
+            .ReturnsAsync(Result.Success(CreateRegisterResponse()));
+        var controller = CreateController(authService);
+
+        var request = new RegisterRequestDto("seller@example.com", "Password1", "Seller Name");
+
+        var action = await controller.Register(request, cancellationToken);
+
+        action.Should().BeOfType<OkObjectResult>();
+
+        // The controller stamps the caller's network details onto the request before dispatching.
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(candidate => candidate.RegisterAsync(expected, cancellationToken), Times.Once);
+
+        // The account is not usable until it is verified, so registration issues no session.
+        controller.Response.Headers.SetCookie.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task Register_WhenFailed_ReturnsProblemWithoutSettingCookie()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.RegisterAsync(
+                It.IsAny<RegisterRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<RegisterResponseDto>(
+                Error.Conflict(ErrorCodes.EmailAlreadyExists, "Already exists")));
+        var controller = CreateController(authService);
+
+        var action = await controller.Register(
+            new RegisterRequestDto("seller@example.com", "Password1", "Seller"),
+            CancellationToken.None);
+
+        action.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(409);
+        controller.Response.Headers.SetCookie.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task VerifyEmail_WhenSuccessful_ReturnsNoContent()
     {
         var cancellationToken = new CancellationTokenSource().Token;
@@ -179,6 +220,9 @@ public sealed class AuthControllerTests
         normalized.Should().Contain("samesite=lax");
         normalized.Should().Contain("path=/");
     }
+
+    private static RegisterResponseDto CreateRegisterResponse() => new(
+        Guid.Parse("11111111-1111-1111-1111-111111111111"), "user@example.com", true);
 
     private static AuthenticatedUserResponse CreateUser() =>
         new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "user@example.com", "User Name", ["Seller"]);

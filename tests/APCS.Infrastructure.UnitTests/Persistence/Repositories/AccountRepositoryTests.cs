@@ -11,6 +11,55 @@ namespace APCS.Infrastructure.UnitTests.Persistence.Repositories;
 public sealed class AccountRepositoryTests
 {
     [TestMethod]
+    public async Task EmailExistsAsync_WhenEmailExists_ReturnsTrue()
+    {
+        using var context = CreateContext();
+        var repository = new AccountRepository(context);
+        await repository.AddAsync(CreateUser("user@example.com"), saveChange: true);
+
+        var exists = await repository.EmailExistsAsync("user@example.com");
+
+        exists.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task EmailExistsAsync_WhenEmailDoesNotExist_ReturnsFalse()
+    {
+        using var context = CreateContext();
+        var repository = new AccountRepository(context);
+
+        var exists = await repository.EmailExistsAsync("missing@example.com");
+
+        exists.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task FindRoleByCodeAsync_WhenRoleDoesNotExist_ReturnsNull()
+    {
+        using var context = CreateContext();
+        var repository = new AccountRepository(context);
+
+        var role = await repository.FindRoleByCodeAsync(AuthConstants.UserRole);
+
+        role.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task AddRole_ThenFindRoleByCodeAsync_ReturnsTheAddedRole()
+    {
+        using var context = CreateContext();
+        var repository = new AccountRepository(context);
+        var role = CreateRole(AuthConstants.UserRole);
+
+        repository.AddRole(role);
+        await context.SaveChangesAsync();
+
+        var found = await repository.FindRoleByCodeAsync(AuthConstants.UserRole);
+        found.Should().NotBeNull();
+        found!.Id.Should().Be(role.Id);
+    }
+
+    [TestMethod]
     public async Task FindByEmailAsync_WhenSeveralUsersShareAnEmail_ReturnsTheOldest()
     {
         using var context = CreateContext();

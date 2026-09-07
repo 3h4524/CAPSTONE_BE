@@ -23,6 +23,14 @@ internal static class AuthErrors
     public static Error RefreshTokenReused() =>
         Error.Unauthorized(ErrorCodes.RefreshTokenReused, "Refresh token has already been revoked.");
 
+    public static Error EmailAlreadyExists() =>
+        Error.Conflict(ErrorCodes.EmailAlreadyExists, "Email is already registered.");
+
+    public static Error RegistrationFailed(IReadOnlyCollection<string> reasons) =>
+        Error.Validation(
+            "Could not create the account.",
+            new Dictionary<string, string[]> { ["identity"] = reasons.ToArray() });
+
     public static Error VerificationTokenInvalid() =>
         Error.Unauthorized(ErrorCodes.VerificationTokenInvalid, "The verification link is invalid.");
 

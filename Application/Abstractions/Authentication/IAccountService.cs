@@ -7,6 +7,22 @@ namespace APCS.Application.Abstractions.Authentication;
 /// </summary>
 public interface IAccountService
 {
+    Task<bool> EmailExistsAsync(string email, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages a new account and its default role on the current unit of work.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is written until the caller saves. Email uniqueness is owned by the partial unique
+    /// index in PostgreSQL; the duplicate check here only turns the ordinary case into a conflict
+    /// result rather than a constraint violation.
+    /// </remarks>
+    Task<AccountCreationResultDto> CreateUserAsync(
+        string email,
+        string password,
+        string fullName,
+        CancellationToken cancellationToken = default);
+
     Task<AccountInfoDto?> FindByEmailAsync(string email, CancellationToken cancellationToken = default);
 
     Task<AccountInfoDto?> FindByIdAsync(Guid userId, CancellationToken cancellationToken = default);

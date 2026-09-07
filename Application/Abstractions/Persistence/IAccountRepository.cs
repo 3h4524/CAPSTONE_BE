@@ -8,6 +8,11 @@ namespace APCS.Application.Abstractions.Persistence;
 public interface IAccountRepository : IRepository<User>
 {
     /// <summary>
+    /// Checks whether a user with the given normalized email already exists.
+    /// </summary>
+    Task<bool> EmailExistsAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Finds the oldest user registered with the given normalized email.
     /// </summary>
     /// <remarks>
@@ -16,6 +21,21 @@ public interface IAccountRepository : IRepository<User>
     /// in to for good.
     /// </remarks>
     Task<User?> FindByEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds a role by its code.
+    /// </summary>
+    Task<Role?> FindRoleByCodeAsync(string code, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds a role to the current unit of work.
+    /// </summary>
+    void AddRole(Role role);
+
+    /// <summary>
+    /// Adds a user-role assignment to the current unit of work.
+    /// </summary>
+    void AddUserRole(UserRole userRole);
 
     /// <summary>
     /// Gets the codes of every role currently granted to a user.

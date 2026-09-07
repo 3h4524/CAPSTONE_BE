@@ -7,8 +7,10 @@ using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using APCS.Common.Models;
+using APCS.Application.Abstractions.Authentication.Dtos;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Auth;
 
@@ -23,10 +25,74 @@ public sealed class AuthService(
     IEmailService emailService,
     ICurrentUser currentUser,
     TimeProvider timeProvider,
+    ILogger<AuthService> logger,
+    IValidator<RegisterRequestDto> registerValidator,
     IValidator<VerifyEmailRequestDto> verifyEmailValidator,
     IValidator<ResendVerificationEmailRequestDto> resendVerificationEmailValidator)
     : IAuthService
 {
+    /// <inheritdoc />
+    /// <remarks>
+    /// Registration does not issue a session. The account is created pending verification and cannot
+    /// authenticate until the emailed verification link is redeemed.
+    /// </remarks>
+    public async Task<Result<RegisterResponseDto>> RegisterAsync(
+        RegisterRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await registerValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<RegisterResponseDto>(validation.ToValidationError());
+        }
+
+        var email = request.Email.Trim().ToLowerInvariant();
+        if (await accountService.EmailExistsAsync(email, cancellationToken))
+        {
+            return Result.Failure<RegisterResponseDto>(AuthErrors.EmailAlreadyExists());
+        }
+
+        // Optional for callers that never collected one; the local part of the email is a
+        // reasonable display name until the user sets their own.
+        var fullName = string.IsNullOrWhiteSpace(request.FullName)
+            ? email.Split('@')[0]
+            : request.FullName.Trim();
+
+        var creation = await CreateAccountAsync(
+            email,
+            request.Password,
+            fullName,
+            request.Context ?? RequestContext.None,
+            cancellationToken);
+
+        if (creation.IsFailure)
+        {
+            return Result.Failure<RegisterResponseDto>(creation.Error);
+        }
+
+        var (account, verification) = creation.Value;
+
+        // The account exists once the transaction commits, so a delivery failure must not fail
+        // registration: the user is told to check their inbox and can request a new link.
+        try
+        {
+            await emailService.SendEmailVerificationAsync(
+                account.Email,
+                account.FullName,
+                verification.Token,
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(
+                exception,
+                "Could not send the verification email for user {UserId}; the account awaits a resend request",
+                account.Id);
+        }
+
+        return Result.Success(new RegisterResponseDto(account.Id, account.Email, true));
+    }
+
     /// <inheritdoc />
     public async Task<Result> VerifyEmailAsync(
         VerifyEmailRequestDto request,
@@ -252,6 +318,52 @@ public sealed class AuthService(
 
         var roles = await accountService.GetRolesAsync(user.Id, cancellationToken);
         return Result.Success(new AuthenticatedUserResponse(user.Id, user.Email, user.FullName, roles));
+    }
+
+    /// <summary>
+    /// Creates the account and its verification token as one atomic change.
+    /// </summary>
+    private async Task<Result<(AccountInfoDto Account, EmailVerification Verification)>> CreateAccountAsync(
+        string email,
+        string password,
+        string fullName,
+        RequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            var createResult = await accountService.CreateUserAsync(
+                email,
+                password,
+                fullName,
+                cancellationToken);
+
+            if (!createResult.Succeeded || createResult.User is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure<(AccountInfoDto, EmailVerification)>(
+                    AuthErrors.RegistrationFailed(createResult.Errors));
+            }
+
+            var account = createResult.User;
+            var verification = EmailVerificationFactory.Create(
+                jwtService,
+                account.Id,
+                timeProvider.GetUtcNow(),
+                requestContext);
+
+            await authTokenRepository.AddAsync(verification.Entity, cancellationToken: cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            return Result.Success((account, verification));
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     private async Task<bool> TrySaveAsync(CancellationToken cancellationToken)

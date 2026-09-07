@@ -10,6 +10,13 @@ namespace APCS.Infrastructure.Persistence.Repositories;
 public sealed class AccountRepository(AppDbContext dbContext) : Repository<User>(dbContext), IAccountRepository
 {
     /// <inheritdoc />
+    public Task<bool> EmailExistsAsync(string normalizedEmail, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(normalizedEmail);
+        return Query().AnyAsync(user => user.Email == normalizedEmail, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<User?> FindByEmailAsync(string normalizedEmail, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(normalizedEmail);
@@ -17,6 +24,27 @@ public sealed class AccountRepository(AppDbContext dbContext) : Repository<User>
             .Where(user => user.Email == normalizedEmail)
             .OrderBy(user => user.CreatedAt)
             .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<Role?> FindRoleByCodeAsync(string code, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        return dbContext.Roles.SingleOrDefaultAsync(role => role.Code == code, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public void AddRole(Role role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+        dbContext.Roles.Add(role);
+    }
+
+    /// <inheritdoc />
+    public void AddUserRole(UserRole userRole)
+    {
+        ArgumentNullException.ThrowIfNull(userRole);
+        dbContext.UserRoles.Add(userRole);
     }
 
     /// <inheritdoc />

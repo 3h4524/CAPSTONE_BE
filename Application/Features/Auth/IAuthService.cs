@@ -11,6 +11,13 @@ namespace APCS.Application.Features.Auth;
 public interface IAuthService
 {
     /// <summary>
+    /// Registers a new account and emails its verification link.
+    /// </summary>
+    Task<Result<RegisterResponseDto>> RegisterAsync(
+        RegisterRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Redeems an email verification token and activates the account.
     /// </summary>
     Task<Result> VerifyEmailAsync(

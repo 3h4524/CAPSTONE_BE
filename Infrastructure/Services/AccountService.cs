@@ -3,15 +3,89 @@ using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Common.Constants;
 using APCS.Domain.Entities;
+using Microsoft.AspNetCore.Identity;
 
 namespace APCS.Infrastructure.Services;
 
 /// <summary>
 /// Implements account operations against the database-first Neon schema.
 /// </summary>
-public sealed class AccountService(IAccountRepository accountRepository) : IAccountService
+public sealed class AccountService(
+    IAccountRepository accountRepository,
+    IPasswordHasher<User> passwordHasher,
+    TimeProvider timeProvider)
+    : IAccountService
 {
     private User? _cachedUser;
+
+    public Task<bool> EmailExistsAsync(string email, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(email);
+        return accountRepository.EmailExistsAsync(NormalizeEmail(email), cancellationToken);
+    }
+
+    public async Task<AccountCreationResultDto> CreateUserAsync(
+        string email,
+        string password,
+        string fullName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(email);
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fullName);
+
+        var normalizedEmail = NormalizeEmail(email);
+
+        // Answers the ordinary duplicate with a conflict result. A registration that races past
+        // this check is caught by the partial unique index on the address in PostgreSQL.
+        if (await accountRepository.EmailExistsAsync(normalizedEmail, cancellationToken))
+        {
+            return AccountCreationResultDto.Failure("Email is already registered.");
+        }
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+
+        // The account starts unverified and inactive; redeeming the emailed verification token is
+        // what confirms the address and activates it.
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = normalizedEmail,
+            FullName = fullName.Trim(),
+            AccountStatus = AccountStatuses.PendingVerification,
+            EmailVerified = false,
+            EmailVerifiedAt = null,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        user.PasswordHash = passwordHasher.HashPassword(user, password);
+
+        var role = await accountRepository.FindRoleByCodeAsync(AuthConstants.UserRole, cancellationToken);
+
+        if (role is null)
+        {
+            role = new Role
+            {
+                Id = Guid.NewGuid(),
+                Code = AuthConstants.UserRole,
+                Name = AuthConstants.UserRole,
+                IsSystemRole = true,
+                CreatedAt = now
+            };
+            accountRepository.AddRole(role);
+        }
+
+        await accountRepository.AddAsync(user, cancellationToken: cancellationToken);
+        accountRepository.AddUserRole(new UserRole
+        {
+            UserId = user.Id,
+            RoleId = role.Id,
+            GrantedAt = now
+        });
+
+        _cachedUser = user;
+        return AccountCreationResultDto.Success(Map(user), [role.Code]);
+    }
 
     public async Task<AccountInfoDto?> FindByEmailAsync(
         string email,

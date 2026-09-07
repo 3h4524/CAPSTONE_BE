@@ -17,6 +17,25 @@ namespace APCS.Api.Controllers;
 public sealed class AuthController(IAuthService authService) : ControllerBase
 {
     /// <summary>
+    /// Registers a new account and emails its verification link.
+    /// </summary>
+    /// <remarks>
+    /// No session is issued here: the account stays pending verification until the emailed link
+    /// is redeemed through <c>verify-email</c>.
+    /// </remarks>
+    [AllowAnonymous]
+    [HttpPost("register")]
+    [ProducesResponseType(typeof(RegisterResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Register(RegisterRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await authService.RegisterAsync(request with { Context = GetRequestContext() }, cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// Verifies an account email from the token in the verification link.
     /// </summary>
     [AllowAnonymous]

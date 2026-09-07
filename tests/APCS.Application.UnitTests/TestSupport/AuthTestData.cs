@@ -8,6 +8,7 @@ using APCS.Common.Constants;
 using APCS.Domain.Entities;
 using FluentValidation;
 using FluentValidation.Results;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
 
@@ -78,6 +79,13 @@ internal static class AuthTestData
         return service;
     }
 
+    public static Mock<IUnitOfWorkTransaction> CreateTransaction()
+    {
+        var transaction = new Mock<IUnitOfWorkTransaction>();
+        transaction.Setup(candidate => candidate.DisposeAsync()).Returns(ValueTask.CompletedTask);
+        return transaction;
+    }
+
     /// <summary>
     /// Creates a validator mock that reports every request as valid, so tests that exercise
     /// <see cref="AuthService"/> business logic are not also exercising FluentValidation rules
@@ -110,6 +118,8 @@ internal static class AuthTestData
         (emailService ?? new Mock<IEmailService>()).Object,
         (currentUser ?? new Mock<ICurrentUser>()).Object,
         timeProvider ?? CreateTimeProvider(),
+        NullLogger<AuthService>.Instance,
+        CreatePassingValidator<RegisterRequestDto>().Object,
         CreatePassingValidator<VerifyEmailRequestDto>().Object,
         CreatePassingValidator<ResendVerificationEmailRequestDto>().Object);
 }
