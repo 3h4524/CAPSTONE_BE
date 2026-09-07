@@ -5,7 +5,7 @@ namespace APCS.Application.Abstractions.Persistence;
 /// <summary>
 /// Provides persistence operations for issued authentication tokens.
 /// </summary>
-public interface IAuthTokenRepository
+public interface IAuthTokenRepository : IRepository<AuthToken>
 {
     /// <summary>
     /// Finds a token by its persisted hash.
@@ -18,8 +18,18 @@ public interface IAuthTokenRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Adds a token to the current unit of work.
+    /// Finds the tokens of one kind that a user can still redeem.
     /// </summary>
-    /// <param name="authToken">The token to add.</param>
-    void Add(AuthToken authToken);
+    /// <param name="userId">The owning user.</param>
+    /// <param name="tokenType">The token kind to look for.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <remarks>
+    /// The database allows only one unused, unrevoked token per user and kind, so a caller that
+    /// issues a replacement must revoke what it finds here first. Expiry is not part of that
+    /// database rule, so an expired token still occupies the slot and is returned too.
+    /// </remarks>
+    Task<IReadOnlyCollection<AuthToken>> GetRedeemableAsync(
+        Guid userId,
+        string tokenType,
+        CancellationToken cancellationToken = default);
 }

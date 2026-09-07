@@ -8,9 +8,6 @@ namespace APCS.Application.Features.Auth.Common;
 /// </summary>
 internal static class AuthErrors
 {
-    public static Error InvalidCredentials() =>
-        Error.Unauthorized(ErrorCodes.InvalidCredentials, "Email or password is incorrect.");
-
     public static Error Inactive() =>
         Error.Forbidden(ErrorCodes.UserInactive, "The account is inactive.");
 
@@ -25,14 +22,6 @@ internal static class AuthErrors
 
     public static Error RefreshTokenReused() =>
         Error.Unauthorized(ErrorCodes.RefreshTokenReused, "Refresh token has already been revoked.");
-
-    public static Error EmailAlreadyExists() =>
-        Error.Conflict(ErrorCodes.EmailAlreadyExists, "Email is already registered.");
-
-    public static Error RegistrationFailed(IReadOnlyCollection<string> reasons) =>
-        Error.Validation(
-            "Could not create the account.",
-            new Dictionary<string, string[]> { ["identity"] = reasons.ToArray() });
 
     public static Error Unauthenticated() =>
         Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated.");

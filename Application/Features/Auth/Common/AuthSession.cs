@@ -1,10 +1,10 @@
-using APCS.Application.Abstractions.Authentication.Models;
+using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.Auth.Common;
 
 internal sealed record AuthSession(
-    JwtTokenResult AccessToken,
+    JwtTokenResultDto AccessToken,
     string RefreshToken,
     string RefreshTokenHash,
     DateTimeOffset RefreshTokenExpiresAtUtc,

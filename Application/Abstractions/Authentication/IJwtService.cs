@@ -1,4 +1,4 @@
-using APCS.Application.Abstractions.Authentication.Models;
+using APCS.Application.Abstractions.Authentication.Dtos;
 
 namespace APCS.Application.Abstractions.Authentication;
 
@@ -10,7 +10,7 @@ public interface IJwtService
     /// <summary>
     /// Generates a signed access token.
     /// </summary>
-    JwtTokenResult GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles);
+    JwtTokenResultDto GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles);
 
     /// <summary>
     /// Generates a raw refresh token.

@@ -10,7 +10,6 @@ using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using APCS.Infrastructure.Services;
-using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -31,9 +30,6 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var connectionString = configuration.GetRequiredConnectionStringValue(
-            ConfigurationKeys.ConnectionStrings.DefaultConnection);
-
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddOptions<JwtOptions>()
@@ -42,12 +38,34 @@ public static class DependencyInjection
             .Validate(options => Encoding.UTF8.GetByteCount(options.SigningKey) >= 32, "JWT signing key must be at least 32 bytes.")
             .ValidateOnStart();
 
+        var connectionString = configuration.GetRequiredConnectionStringValue(
+            ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
-        services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<AppDbContext>());
-        services.AddScoped<IReadDbContext>(provider => provider.GetRequiredService<AppDbContext>());
-        services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
+        services.AddRepositories();
+        services.AddApplicationServices(configuration);
 
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="IUnitOfWork"/> and every persistence repository.
+    /// </summary>
+    private static IServiceCollection AddRepositories(this IServiceCollection services)
+    {
+        services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<AppDbContext>());
+        services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
+        services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
+        services.AddScoped<IAccountRepository, AccountRepository>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers account, JWT, email, and cache service adapters.
+    /// </summary>
+    private static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
+    {
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUser, CurrentUserService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
@@ -80,5 +98,4 @@ public static class DependencyInjection
 
         return services;
     }
-
 }

@@ -1,7 +1,6 @@
 using System.Reflection;
-using APCS.Application.Common.Behaviours;
+using APCS.Application.Features.Auth;
 using FluentValidation;
-using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace APCS.Application;
@@ -12,16 +11,14 @@ namespace APCS.Application;
 public static class DependencyInjection
 {
     /// <summary>
-    /// Adds application services, validators, and MediatR handlers.
+    /// Adds application services and validators.
     /// </summary>
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         var assembly = Assembly.GetExecutingAssembly();
 
-        services.AddMediatR(configuration => configuration.RegisterServicesFromAssembly(assembly));
         services.AddValidatorsFromAssembly(assembly);
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehaviour<,>));
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehaviour<,>));
+        services.AddScoped<IAuthService, AuthService>();
 
         return services;
     }

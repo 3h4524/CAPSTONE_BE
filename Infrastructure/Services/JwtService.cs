@@ -3,7 +3,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using APCS.Application.Abstractions.Authentication;
-using APCS.Application.Abstractions.Authentication.Models;
+using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Common.Helpers;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Options;
@@ -22,7 +22,7 @@ public sealed class JwtService(
     private readonly JwtOptions _options = options.Value;
 
     /// <inheritdoc />
-    public JwtTokenResult GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles)
+    public JwtTokenResultDto GenerateAccessToken(Guid userId, string email, IReadOnlyCollection<string> roles)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
         ArgumentNullException.ThrowIfNull(roles);
@@ -52,7 +52,7 @@ public sealed class JwtService(
             expires: expiresAtUtc.UtcDateTime,
             signingCredentials: credentials);
 
-        return new JwtTokenResult(new JwtSecurityTokenHandler().WriteToken(token), jwtId, expiresAtUtc);
+        return new JwtTokenResultDto(new JwtSecurityTokenHandler().WriteToken(token), jwtId, expiresAtUtc);
     }
 
     /// <inheritdoc />

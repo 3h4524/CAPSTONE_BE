@@ -10,7 +10,7 @@ The unit-test projects mirror production assemblies:
 |---|---|
 | `APCS.Common.UnitTests` | Result/error primitives, helpers, extensions, and wrappers |
 | `APCS.Domain.UnitTests` | Value objects and domain behavior |
-| `APCS.Application.UnitTests` | Handlers, validators, pipeline behaviours, expected outcomes, and side effects |
+| `APCS.Application.UnitTests` | Feature services, validators, expected outcomes, and side effects |
 | `APCS.Infrastructure.UnitTests` | Isolated adapters, options validation, and service registration behavior |
 | `APCS.Api.UnitTests` | Controllers, result mapping, cookies, and exception middleware in isolation |
 
@@ -21,8 +21,8 @@ The projects use MSTest, FluentAssertions, and Moq. Tests that need a controllab
 Use unit tests when behavior can be verified without a real external system:
 
 - Domain invariants, transitions, and value objects.
-- Application handler decisions, repository/service calls, expected failures, and cancellation propagation.
-- Validators and MediatR pipeline behaviours.
+- Application service decisions, repository/service calls, expected failures, and cancellation propagation.
+- Validators, invoked directly or through the feature service method that calls them.
 - Serialization-independent adapter behavior with a stable abstraction.
 - Controller request mapping, result mapping, cookies, and other isolated HTTP behavior.
 

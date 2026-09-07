@@ -14,9 +14,9 @@ This guide defines the development workflow and coding conventions. Architecture
 
 - Use the `APCS.Api`, `APCS.Application`, `APCS.Domain`, `APCS.Infrastructure`, and `APCS.Common` root namespaces.
 - Use file-scoped namespaces and nullable reference types, matching the current projects.
-- Name use-case types `{UseCase}Command`, `{UseCase}Query`, `{UseCase}CommandHandler`, `{UseCase}QueryHandler`, `{UseCase}Validator`, and `{UseCase}Response`.
+- Name feature types `I{Feature}Service`, `{Feature}Service`, `{UseCase}RequestDto`, `{UseCase}ResponseDto`, and `{UseCase}Validator`.
 - Keep use-case identifiers such as `UC01` in requirements, documentation, or remarks—not folder, namespace, or type names.
-- Suffix asynchronous methods with `Async` unless implementing a framework contract such as MediatR's `Handle`.
+- Suffix asynchronous methods with `Async` unless implementing a framework contract that names its own method.
 - Pass the supplied `CancellationToken` through every asynchronous dependency.
 - Prefer `DateTimeOffset` for application/domain timestamps and use an `Utc` suffix for UTC properties. Database-first generated POCOs keep the `DateTime` types and names inferred from PostgreSQL; convert application timestamps with `UtcDateTime` at that boundary.
 - Prefer sealed classes and records when inheritance is not intended. Use primary constructors when they make dependency injection clearer, not as a mandatory rewrite rule.
@@ -25,17 +25,16 @@ This guide defines the development workflow and coding conventions. Architecture
 
 ## Adding a new feature
 
-1. **Identify the feature.** Reuse an existing feature area or create `Application/Features/{Feature}`.
-2. **Choose Command or Query.** A Command changes state; a Query reads without changing state.
-3. **Create the use-case folder.** Use `Commands/{UseCase}` or `Queries/{UseCase}` beneath the feature.
-4. **Define the Application contract.** Add the command/query, response, handler, and a FluentValidation validator when the input has validation rules.
-5. **Place related types deliberately.** Keep a response in its use-case folder. Put a model reused by multiple use cases under `Application/Features/{Feature}/Common`. Put external contracts under `Application/Abstractions/{Concern}`.
-6. **Change Domain only for domain needs.** Add behavior, invariants, value objects, or entities when the business model requires them; do not create an aggregate or repository merely because a table exists.
-7. **Choose persistence access.** Commands that persist an aggregate or lifecycle use a focused repository plus `IUnitOfWork`. Database-backed queries use `IReadDbContext` and project to response models. Do not create a generic repository or one repository per table.
-8. **Implement adapters in Infrastructure.** Add custom partial mappings, repositories, service adapters, options, and DI registration there. When an approved change alters PostgreSQL, change Neon first and run the database-first scaffold script; do not generate a migration.
-9. **Add the API endpoint.** Bind and dispatch the Application command/query directly when its contract exactly matches the HTTP body. Introduce an API request model only when the HTTP contract differs or needs transport-specific mapping. Keep cookies, status codes, authentication, authorization, and `ProblemDetails` in API; do not inject Infrastructure into controllers.
-10. **Add tests.** Mirror the production namespace in the appropriate unit-test project. Add integration coverage when behavior depends on PostgreSQL, Redis, reverse-engineered mappings, authorization, DI wiring, or the complete HTTP pipeline.
-11. **Verify and review.** Build, test, inspect the diff, and update documentation only when a durable contract or rule changed.
+1. **Identify the feature.** Reuse an existing feature area or create `Application/Features/{Feature}` with `I{Feature}Service`/`{Feature}Service`.
+2. **Add a use case as a service method.** Add one `{UseCase}Async` method to the feature's service interface and implementation; a use case that changes state and one that only reads are both just methods on the same service.
+3. **Define the Application contract.** Add a `{UseCase}RequestDto` under `Dtos/Request/` when the use case takes input beyond primitives, a `{UseCase}ResponseDto` under `Dtos/Response/` when it returns data, and a `{UseCase}Validator` under `Validators/` when the input has validation rules; call the validator explicitly at the top of the service method.
+4. **Place related types deliberately.** Keep request DTOs under the feature's `Dtos/Request/` and response DTOs under `Dtos/Response/`. Put a model reused by multiple use cases under `Application/Features/{Feature}/Common`. Put external contracts under `Application/Abstractions/{Concern}`.
+5. **Change Domain only for domain needs.** Add behavior, invariants, value objects, or entities when the business model requires them; do not create an aggregate or repository merely because a table exists.
+6. **Choose persistence access.** Use `IRepository<T>` for common CRUD; add a focused repository only when a use case needs a lifecycle query or lookup shape `IRepository<T>.Query()` can't express cleanly. Pass `saveChange: true` on a repository write for a single, self-contained change, or leave the default `false` and commit through `IUnitOfWork.SaveChangesAsync` when several writes belong to one use case.
+7. **Implement adapters in Infrastructure.** Add custom partial mappings, repositories, service adapters, options, and DI registration there. When an approved change alters PostgreSQL, change Neon first and run the database-first scaffold script; do not generate a migration.
+8. **Add the API endpoint.** Bind the Application request directly in the controller and pass it to the feature service when its contract exactly matches the HTTP body. Introduce an API request model only when the HTTP contract differs or needs transport-specific mapping. Keep cookies, status codes, authentication, authorization, and `ProblemDetails` in API; do not inject Infrastructure into controllers.
+9. **Add tests.** Mirror the production namespace in the appropriate unit-test project. Add integration coverage when behavior depends on PostgreSQL, Redis, reverse-engineered mappings, authorization, DI wiring, or the complete HTTP pipeline.
+10. **Verify and review.** Build, test, inspect the diff, and update documentation only when a durable contract or rule changed.
 
 ## API and security checklist
 

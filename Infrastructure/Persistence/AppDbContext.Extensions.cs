@@ -8,12 +8,8 @@ namespace APCS.Infrastructure.Persistence;
 /// <summary>
 /// Keeps application persistence contracts and custom mappings outside generated code.
 /// </summary>
-public partial class AppDbContext : IUnitOfWork, IReadDbContext
+public partial class AppDbContext : IUnitOfWork
 {
-    public IQueryable<TEntity> Query<TEntity>()
-        where TEntity : class =>
-        Set<TEntity>().AsNoTracking();
-
     public async Task<IUnitOfWorkTransaction> BeginTransactionAsync(
         CancellationToken cancellationToken = default)
     {

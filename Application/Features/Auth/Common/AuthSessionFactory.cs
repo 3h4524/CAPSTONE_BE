@@ -1,5 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
-using APCS.Application.Abstractions.Authentication.Models;
+using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.Auth.Common;
@@ -15,7 +15,7 @@ internal static class AuthSessionFactory
     /// </remarks>
     public static AuthSession Create(
         IJwtService jwtService,
-        AccountInfo user,
+        AccountInfoDto user,
         IReadOnlyCollection<string> roles,
         DateTimeOffset utcNow,
         RequestContext requestContext)

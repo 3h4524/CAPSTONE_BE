@@ -9,8 +9,6 @@ public static class ErrorCodes
     public const string Unexpected = "system.unexpected";
     public const string Unauthorized = "auth.unauthorized";
     public const string Forbidden = "auth.forbidden";
-    public const string EmailAlreadyExists = "auth.email_already_exists";
-    public const string InvalidCredentials = "auth.invalid_credentials";
     public const string UserInactive = "auth.user_inactive";
     public const string RefreshTokenMissing = "auth.refresh_token_missing";
     public const string RefreshTokenInvalid = "auth.refresh_token_invalid";

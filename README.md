@@ -1,19 +1,19 @@
 # APCS Backend
 
-APCS (AI-Powered POD Content Studio) is a graduation-project backend for creating and managing Print-on-Demand content. The backend is an ASP.NET Core 8 Web API organized with Clean Architecture, MediatR CQRS, database-first Entity Framework Core, PostgreSQL on Neon, custom JWT authentication, and Redis caching.
+APCS (AI-Powered POD Content Studio) is a graduation-project backend for creating and managing Print-on-Demand content. The backend is an ASP.NET Core 8 Web API organized with Clean Architecture, feature services backed by a generic repository, database-first Entity Framework Core, PostgreSQL on Neon, custom JWT authentication, and Redis caching.
 
 ## Current capabilities
 
-- Register, login, refresh-token rotation, logout, and current-user endpoints.
+- Register, email verification, login, refresh-token rotation, logout, and current-user endpoints.
 - Direct EF account storage with GUID user identifiers and ASP.NET Core password hashing.
 - Hashed refresh-token storage, revocation, and optimistic concurrency handling.
-- MediatR command/query handlers with FluentValidation and logging pipeline behaviours.
+- Feature services (`I{Feature}Service`) backed by `IRepository<T>` and focused repositories, with FluentValidation invoked directly by each service method.
 - Global exception handling and `ProblemDetails` responses.
 - Fifty database-first EF Core entities reverse-engineered from Neon schema `public`.
 - Redis-backed `ICacheService`, Swagger/OpenAPI, CORS, and a health endpoint.
 - Five MSTest unit-test projects with a behavioral coverage gate in CI.
 
-The business data model is broader than the implemented use cases. Most non-authentication features do not yet have Application handlers or API endpoints. `EmailService` is currently a development logging adapter, and the repository does not yet contain integration-test infrastructure for PostgreSQL writes, Redis, authorization, or the complete HTTP pipeline.
+The business data model is broader than the implemented use cases. Most non-authentication features do not yet have an Application service or API endpoints. `EmailService` is currently a development logging adapter, and the repository does not yet contain integration-test infrastructure for PostgreSQL writes, Redis, authorization, or the complete HTTP pipeline.
 
 ## Repository map
 
@@ -81,7 +81,7 @@ Coverage reports are generated under the ignored `artifacts/coverage` directory.
 
 ## Documentation
 
-- [Architecture and CQRS rules](docs/ARCHITECTURE.md)
+- [Architecture and Service/Repository rules](docs/ARCHITECTURE.md)
 - [Contributing and adding a feature](CONTRIBUTING.md)
 - [Testing strategy](docs/TESTING.md)
 - [AI-agent instructions](AGENTS.md)
