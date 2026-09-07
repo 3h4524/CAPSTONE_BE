@@ -38,6 +38,11 @@ public static class DependencyInjection
             .Validate(options => Encoding.UTF8.GetByteCount(options.SigningKey) >= 32, "JWT signing key must be at least 32 bytes.")
             .ValidateOnStart();
 
+        services.AddOptions<AppOptions>()
+            .Bind(configuration.GetRequiredConfigurationSection(ConfigurationSections.App))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));

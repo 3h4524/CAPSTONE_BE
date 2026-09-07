@@ -19,4 +19,17 @@ public interface IAccountService
         Guid userId,
         DateTimeOffset utcNow,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Marks the account email as verified and activates an account awaiting verification.
+    /// </summary>
+    /// <remarks>
+    /// Stages the change on the current unit of work, so the caller commits it together with
+    /// spending the verification token.
+    /// </remarks>
+    /// <returns><see langword="true"/> when the account was found and updated.</returns>
+    Task<bool> ConfirmEmailAsync(
+        Guid userId,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default);
 }

@@ -1,6 +1,7 @@
 using APCS.Api.Extensions;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using Microsoft.AspNetCore.Authorization;
@@ -15,6 +16,43 @@ namespace APCS.Api.Controllers;
 [Route("api/auth")]
 public sealed class AuthController(IAuthService authService) : ControllerBase
 {
+    /// <summary>
+    /// Verifies an account email from the token in the verification link.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("verify-email")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> VerifyEmail(VerifyEmailRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await authService.VerifyEmailAsync(request, cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Sends a replacement verification email.
+    /// </summary>
+    /// <remarks>
+    /// Answers the same way whether or not the address is registered, so it cannot be used to
+    /// discover accounts.
+    /// </remarks>
+    [AllowAnonymous]
+    [HttpPost("resend-verification")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ResendVerification(
+        ResendVerificationEmailRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.ResendVerificationEmailAsync(
+            request with { Context = GetRequestContext() },
+            cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
     /// <summary>
     /// Refreshes the current access token.
     /// </summary>

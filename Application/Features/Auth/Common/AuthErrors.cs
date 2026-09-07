@@ -23,6 +23,14 @@ internal static class AuthErrors
     public static Error RefreshTokenReused() =>
         Error.Unauthorized(ErrorCodes.RefreshTokenReused, "Refresh token has already been revoked.");
 
+    public static Error VerificationTokenInvalid() =>
+        Error.Unauthorized(ErrorCodes.VerificationTokenInvalid, "The verification link is invalid.");
+
+    public static Error VerificationTokenExpired() =>
+        Error.Unauthorized(
+            ErrorCodes.VerificationTokenExpired,
+            "The verification link has expired. Request a new verification email.");
+
     public static Error Unauthenticated() =>
         Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated.");
 

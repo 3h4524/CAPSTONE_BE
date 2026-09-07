@@ -21,6 +21,11 @@ public static class AuthConstants
     public const int DefaultRefreshTokenDays = 14;
 
     /// <summary>
+    /// The default email verification link lifetime in hours.
+    /// </summary>
+    public const int DefaultEmailVerificationHours = 24;
+
+    /// <summary>
     /// The default application user role.
     /// </summary>
     public const string UserRole = "Seller";

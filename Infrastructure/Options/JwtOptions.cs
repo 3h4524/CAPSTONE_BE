@@ -43,4 +43,10 @@ public sealed class JwtOptions
     /// </summary>
     [Range(1, 365)]
     public int RefreshTokenDays { get; set; } = AuthConstants.DefaultRefreshTokenDays;
+
+    /// <summary>
+    /// Gets or sets the email verification link lifetime in hours.
+    /// </summary>
+    [Range(1, 168)]
+    public int EmailVerificationHours { get; set; } = AuthConstants.DefaultEmailVerificationHours;
 }

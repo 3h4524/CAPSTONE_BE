@@ -26,4 +26,23 @@ public interface IJwtService
     /// Gets the refresh token expiration based on the supplied clock value.
     /// </summary>
     DateTimeOffset GetRefreshTokenExpiresAt(DateTimeOffset utcNow);
+
+    /// <summary>
+    /// Generates a raw, single-use email verification token.
+    /// </summary>
+    /// <remarks>
+    /// Opaque and random rather than a JWT: the token travels in an emailed link, is stored only
+    /// as a hash, and is redeemed against that stored row so it can be expired and revoked.
+    /// </remarks>
+    string GenerateEmailVerificationToken();
+
+    /// <summary>
+    /// Hashes a raw email verification token for persistence and lookup.
+    /// </summary>
+    string HashEmailVerificationToken(string verificationToken);
+
+    /// <summary>
+    /// Gets the email verification token expiration based on the supplied clock value.
+    /// </summary>
+    DateTimeOffset GetEmailVerificationExpiresAt(DateTimeOffset utcNow);
 }

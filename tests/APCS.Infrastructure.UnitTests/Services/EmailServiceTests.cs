@@ -1,3 +1,4 @@
+using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -7,11 +8,13 @@ namespace APCS.Infrastructure.UnitTests.Services;
 [TestClass]
 public sealed class EmailServiceTests
 {
+    private const string VerificationToken = "raw-verification-token";
+
     [TestMethod]
     public async Task SendAsync_WhenCalled_CompletesAndDoesNotLogBody()
     {
         var logger = new TestLogger<EmailService>();
-        var service = new EmailService(logger);
+        var service = CreateService(logger);
 
         await service.SendAsync(
             "seller@example.com",
@@ -24,19 +27,64 @@ public sealed class EmailServiceTests
         logger.Messages.Should().NotContain(message => message.Contains("sensitive-body"));
     }
 
-    private sealed class TestLogger<T> : ILogger<T>
+    [TestMethod]
+    public async Task SendEmailVerificationAsync_WhenCalled_DoesNotLogTheTokenAboveDebug()
+    {
+        var logger = new TestLogger<EmailService>(LogLevel.Information);
+        var service = CreateService(logger);
+
+        await service.SendEmailVerificationAsync(
+            "seller@example.com",
+            "Seller Name",
+            VerificationToken,
+            CancellationToken.None);
+
+        logger.Messages.Should().NotContain(message => message.Contains(VerificationToken));
+    }
+
+    [TestMethod]
+    public async Task SendEmailVerificationAsync_WhenDebugIsEnabled_LogsTheConfiguredClientLink()
+    {
+        var logger = new TestLogger<EmailService>();
+        var service = CreateService(logger);
+
+        await service.SendEmailVerificationAsync(
+            "seller@example.com",
+            "Seller Name",
+            VerificationToken,
+            CancellationToken.None);
+
+        logger.Messages.Should().Contain(message =>
+            message.Contains($"http://localhost:3000/verify-email?token={VerificationToken}"));
+    }
+
+    private static EmailService CreateService(ILogger<EmailService> logger) => new(
+        Microsoft.Extensions.Options.Options.Create(new AppOptions
+        {
+            BaseUrl = "http://localhost:3000",
+            VerifyEmailPath = "/verify-email"
+        }),
+        logger);
+
+    private sealed class TestLogger<T>(LogLevel minimumLevel = LogLevel.Trace) : ILogger<T>
     {
         public List<string> Messages { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= minimumLevel;
 
         public void Log<TState>(
             LogLevel logLevel,
             EventId eventId,
             TState state,
             Exception? exception,
-            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                Messages.Add(formatter(state, exception));
+            }
+        }
     }
 }

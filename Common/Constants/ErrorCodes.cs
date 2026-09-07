@@ -14,5 +14,8 @@ public static class ErrorCodes
     public const string RefreshTokenInvalid = "auth.refresh_token_invalid";
     public const string RefreshTokenExpired = "auth.refresh_token_expired";
     public const string RefreshTokenReused = "auth.refresh_token_reused";
+    public const string EmailNotVerified = "auth.email_not_verified";
+    public const string VerificationTokenInvalid = "auth.verification_token_invalid";
+    public const string VerificationTokenExpired = "auth.verification_token_expired";
     public const string UserNotFound = "users.not_found";
 }

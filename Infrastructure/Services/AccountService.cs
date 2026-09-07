@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Common.Constants;
 using APCS.Domain.Entities;
 
 namespace APCS.Infrastructure.Services;
@@ -61,6 +62,36 @@ public sealed class AccountService(IAccountRepository accountRepository) : IAcco
             _cachedUser.LastLoginAt = timestamp;
             _cachedUser.UpdatedAt = timestamp;
         }
+    }
+
+    public async Task<bool> ConfirmEmailAsync(
+        Guid userId,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default)
+    {
+        // Tracked on purpose: the change is staged so the caller commits it together with
+        // spending the verification token, unlike the cached no-tracking lookups above.
+        var user = await accountRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null)
+        {
+            return false;
+        }
+
+        var timestamp = utcNow.UtcDateTime;
+        user.EmailVerified = true;
+        user.EmailVerifiedAt = timestamp;
+        user.UpdatedAt = timestamp;
+
+        // Only an account held back for verification is promoted; a deliberate administrative
+        // lock or suspension survives the email being confirmed.
+        if (string.Equals(user.AccountStatus, AccountStatuses.PendingVerification, StringComparison.OrdinalIgnoreCase))
+        {
+            user.AccountStatus = AccountStatuses.Active;
+        }
+
+        _cachedUser = user;
+        return true;
     }
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();

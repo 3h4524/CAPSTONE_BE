@@ -1,6 +1,7 @@
 using APCS.Api.Controllers;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using APCS.Common.Models;
@@ -14,11 +15,70 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class AuthControllerTests
 {
+    // A DefaultHttpContext exposes no remote address and no user agent, so this is what the
+    // controller captures under test.
+    private static readonly RequestContext ExpectedContext = new(null, null);
+
     private static readonly DateTimeOffset AccessExpiresAt =
         new(2026, 8, 31, 8, 15, 0, TimeSpan.Zero);
 
     private static readonly DateTimeOffset RefreshExpiresAt =
         new(2026, 9, 7, 8, 0, 0, TimeSpan.Zero);
+
+    [TestMethod]
+    public async Task VerifyEmail_WhenSuccessful_ReturnsNoContent()
+    {
+        var cancellationToken = new CancellationTokenSource().Token;
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.VerifyEmailAsync(It.IsAny<VerifyEmailRequestDto>(), cancellationToken))
+            .ReturnsAsync(Result.Success());
+        var controller = CreateController(authService);
+
+        var request = new VerifyEmailRequestDto("raw-verification-token");
+
+        var action = await controller.VerifyEmail(request, cancellationToken);
+
+        action.Should().BeOfType<NoContentResult>();
+        authService.Verify(candidate => candidate.VerifyEmailAsync(request, cancellationToken), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task VerifyEmail_WhenTokenIsRejected_ReturnsProblem()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.VerifyEmailAsync(
+                It.IsAny<VerifyEmailRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(
+                Error.Unauthorized(ErrorCodes.VerificationTokenExpired, "Expired")));
+        var controller = CreateController(authService);
+
+        var action = await controller.VerifyEmail(
+            new VerifyEmailRequestDto("raw-verification-token"),
+            CancellationToken.None);
+
+        action.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(401);
+    }
+
+    [TestMethod]
+    public async Task ResendVerification_WhenSuccessful_StampsContextAndReturnsNoContent()
+    {
+        var cancellationToken = new CancellationTokenSource().Token;
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.ResendVerificationEmailAsync(
+                It.IsAny<ResendVerificationEmailRequestDto>(), cancellationToken))
+            .ReturnsAsync(Result.Success());
+        var controller = CreateController(authService);
+
+        var request = new ResendVerificationEmailRequestDto("seller@example.com");
+
+        var action = await controller.ResendVerification(request, cancellationToken);
+
+        action.Should().BeOfType<NoContentResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.ResendVerificationEmailAsync(expected, cancellationToken),
+            Times.Once);
+    }
 
     [TestMethod]
     public async Task Refresh_WhenSuccessful_ReadsOldCookieAndSetsRotatedCookie()

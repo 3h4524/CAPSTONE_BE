@@ -1,4 +1,5 @@
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Models;
 
@@ -9,6 +10,20 @@ namespace APCS.Application.Features.Auth;
 /// </summary>
 public interface IAuthService
 {
+    /// <summary>
+    /// Redeems an email verification token and activates the account.
+    /// </summary>
+    Task<Result> VerifyEmailAsync(
+        VerifyEmailRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Issues a fresh verification email for an account that is still pending verification.
+    /// </summary>
+    Task<Result> ResendVerificationEmailAsync(
+        ResendVerificationEmailRequestDto request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Refreshes an access token using a refresh token and rotates it.
     /// </summary>
