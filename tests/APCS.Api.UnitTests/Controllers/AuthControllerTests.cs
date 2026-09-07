@@ -1,6 +1,7 @@
 using APCS.Api.Controllers;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using APCS.Common.Models;
@@ -14,11 +15,35 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class AuthControllerTests
 {
+    // A DefaultHttpContext exposes no remote address and no user agent, so this is what the
+    // controller captures under test.
+    private static readonly RequestContext ExpectedContext = new(null, null);
+
     private static readonly DateTimeOffset AccessExpiresAt =
         new(2026, 8, 31, 8, 15, 0, TimeSpan.Zero);
 
     private static readonly DateTimeOffset RefreshExpiresAt =
         new(2026, 9, 7, 8, 0, 0, TimeSpan.Zero);
+
+    [TestMethod]
+    public async Task Login_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.LoginAsync(It.IsAny<LoginRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new LoginRequestDto("seller@example.com", "Password1");
+
+        var action = await controller.Login(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.LoginAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+        AssertRefreshCookie(controller, "refresh-token");
+    }
 
     [TestMethod]
     public async Task Refresh_WhenSuccessful_ReadsOldCookieAndSetsRotatedCookie()
@@ -119,6 +144,9 @@ public sealed class AuthControllerTests
         normalized.Should().Contain("samesite=lax");
         normalized.Should().Contain("path=/");
     }
+
+    private static LoginResponseDto CreateLoginResponse() => new(
+        "access-token", AccessExpiresAt, "refresh-token", RefreshExpiresAt, CreateUser());
 
     private static AuthenticatedUserResponse CreateUser() =>
         new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "user@example.com", "User Name", ["Seller"]);

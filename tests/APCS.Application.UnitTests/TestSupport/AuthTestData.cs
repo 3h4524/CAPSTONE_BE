@@ -2,7 +2,10 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Auth;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Domain.Entities;
+using FluentValidation;
+using FluentValidation.Results;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
 
@@ -18,6 +21,15 @@ internal static class AuthTestData
         "User Name",
         true,
         true);
+
+    /// <summary>
+    /// An account whose email is not verified yet, so it cannot authenticate.
+    /// </summary>
+    public static readonly AccountInfoDto UnverifiedUser = ActiveUser with
+    {
+        IsActive = false,
+        IsEmailVerified = false
+    };
 
     public static readonly IReadOnlyCollection<string> Roles = new[] { "user" };
 
@@ -48,8 +60,21 @@ internal static class AuthTestData
     }
 
     /// <summary>
+    /// Creates a validator mock that reports every request as valid, so tests that exercise
+    /// <see cref="AuthService"/> business logic are not also exercising FluentValidation rules
+    /// covered separately by the feature's validator tests.
+    /// </summary>
+    public static Mock<IValidator<T>> CreatePassingValidator<T>()
+    {
+        var validator = new Mock<IValidator<T>>();
+        validator.Setup(candidate => candidate.ValidateAsync(It.IsAny<T>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ValidationResult());
+        return validator;
+    }
+
+    /// <summary>
     /// Builds an <see cref="AuthService"/> with loose mocks for every dependency a test does not
-    /// override.
+    /// override, including validators that always pass.
     /// </summary>
     public static AuthService CreateService(
         Mock<IAccountService>? accountService = null,
@@ -63,5 +88,6 @@ internal static class AuthTestData
         (authTokenRepository ?? new Mock<IAuthTokenRepository>()).Object,
         (jwtService ?? CreateJwtService()).Object,
         (currentUser ?? new Mock<ICurrentUser>()).Object,
-        timeProvider ?? CreateTimeProvider());
+        timeProvider ?? CreateTimeProvider(),
+        CreatePassingValidator<LoginRequestDto>().Object);
 }

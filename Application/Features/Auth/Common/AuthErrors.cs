@@ -8,6 +8,14 @@ namespace APCS.Application.Features.Auth.Common;
 /// </summary>
 internal static class AuthErrors
 {
+    public static Error InvalidCredentials() =>
+        Error.Unauthorized(ErrorCodes.InvalidCredentials, "Email or password is incorrect.");
+
+    public static Error EmailNotVerified() =>
+        Error.Forbidden(
+            ErrorCodes.EmailNotVerified,
+            "The account email has not been verified. Check your inbox or request a new verification link.");
+
     public static Error Inactive() =>
         Error.Forbidden(ErrorCodes.UserInactive, "The account is inactive.");
 

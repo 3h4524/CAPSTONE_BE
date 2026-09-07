@@ -2,13 +2,17 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Domain.Entities;
+using Microsoft.AspNetCore.Identity;
 
 namespace APCS.Infrastructure.Services;
 
 /// <summary>
 /// Implements account operations against the database-first Neon schema.
 /// </summary>
-public sealed class AccountService(IAccountRepository accountRepository) : IAccountService
+public sealed class AccountService(
+    IAccountRepository accountRepository,
+    IPasswordHasher<User> passwordHasher)
+    : IAccountService
 {
     private User? _cachedUser;
 
@@ -41,6 +45,28 @@ public sealed class AccountService(IAccountRepository accountRepository) : IAcco
         _cachedUser = await accountRepository.GetByIdAsync(userId, cancellationToken);
 
         return _cachedUser is null ? null : Map(_cachedUser);
+    }
+
+    public async Task<bool> ValidateCredentialsAsync(
+        Guid userId,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var user = _cachedUser is not null && _cachedUser.Id == userId
+            ? _cachedUser
+            : await accountRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user?.PasswordHash is null)
+        {
+            return false;
+        }
+
+        _cachedUser = user;
+        return passwordHasher.VerifyHashedPassword(user, user.PasswordHash, password)
+            != PasswordVerificationResult.Failed;
     }
 
     public Task<IReadOnlyCollection<string>> GetRolesAsync(

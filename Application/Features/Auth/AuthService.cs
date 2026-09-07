@@ -1,8 +1,11 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Common.Validation;
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Models;
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 
 namespace APCS.Application.Features.Auth;
@@ -16,9 +19,69 @@ public sealed class AuthService(
     IAuthTokenRepository authTokenRepository,
     IJwtService jwtService,
     ICurrentUser currentUser,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IValidator<LoginRequestDto> loginValidator)
     : IAuthService
 {
+    /// <inheritdoc />
+    public async Task<Result<LoginResponseDto>> LoginAsync(
+        LoginRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await loginValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<LoginResponseDto>(validation.ToValidationError());
+        }
+
+        var email = request.Email.Trim().ToLowerInvariant();
+        var user = await accountService.FindByEmailAsync(email, cancellationToken);
+        if (user is null)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.InvalidCredentials());
+        }
+
+        // Checked before the generic inactive result: an account pending verification is inactive
+        // for the same reason every time, and only this answer tells the caller it can resend the
+        // verification link instead of contacting support.
+        if (!user.IsEmailVerified)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.EmailNotVerified());
+        }
+
+        if (!user.IsActive)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+        }
+
+        if (!await accountService.ValidateCredentialsAsync(user.Id, request.Password, cancellationToken))
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.InvalidCredentials());
+        }
+
+        var roles = await accountService.GetRolesAsync(user.Id, cancellationToken);
+        var utcNow = timeProvider.GetUtcNow();
+        var session = AuthSessionFactory.Create(
+            jwtService,
+            user,
+            roles,
+            utcNow,
+            request.Context ?? RequestContext.None);
+
+        await authTokenRepository.AddAsync(session.Entity, cancellationToken: cancellationToken);
+        await accountService.TouchLastLoginAsync(user.Id, utcNow, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        var response = new LoginResponseDto(
+            session.AccessToken.AccessToken,
+            session.AccessToken.ExpiresAtUtc,
+            session.RefreshToken,
+            session.RefreshTokenExpiresAtUtc,
+            new AuthenticatedUserResponse(user.Id, user.Email, user.FullName, roles));
+
+        return Result.Success(response);
+    }
+
     /// <inheritdoc />
     public async Task<Result<RefreshTokenResponseDto>> RefreshTokenAsync(
         string? refreshToken,

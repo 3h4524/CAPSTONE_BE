@@ -1,4 +1,5 @@
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Models;
 
@@ -9,6 +10,13 @@ namespace APCS.Application.Features.Auth;
 /// </summary>
 public interface IAuthService
 {
+    /// <summary>
+    /// Logs in with email and password.
+    /// </summary>
+    Task<Result<LoginResponseDto>> LoginAsync(
+        LoginRequestDto request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Refreshes an access token using a refresh token and rotates it.
     /// </summary>

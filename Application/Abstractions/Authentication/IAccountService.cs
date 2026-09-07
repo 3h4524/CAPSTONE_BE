@@ -11,6 +11,11 @@ public interface IAccountService
 
     Task<AccountInfoDto?> FindByIdAsync(Guid userId, CancellationToken cancellationToken = default);
 
+    Task<bool> ValidateCredentialsAsync(
+        Guid userId,
+        string password,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyCollection<string>> GetRolesAsync(
         Guid userId,
         CancellationToken cancellationToken = default);

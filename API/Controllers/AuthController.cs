@@ -1,6 +1,7 @@
 using APCS.Api.Extensions;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using Microsoft.AspNetCore.Authorization;
@@ -15,6 +16,28 @@ namespace APCS.Api.Controllers;
 [Route("api/auth")]
 public sealed class AuthController(IAuthService authService) : ControllerBase
 {
+    /// <summary>
+    /// Logs in with email and password.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("login")]
+    [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Login(LoginRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await authService.LoginAsync(request with { Context = GetRequestContext() }, cancellationToken);
+
+        if (result.IsFailure)
+        {
+            return result.ToActionResult(this);
+        }
+
+        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+
+        return Ok(result.Value);
+    }
+
     /// <summary>
     /// Refreshes the current access token.
     /// </summary>
