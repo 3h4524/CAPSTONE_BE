@@ -81,13 +81,16 @@ internal static class AuthTestData
         Mock<IUnitOfWork>? unitOfWork = null,
         Mock<IAuthTokenRepository>? authTokenRepository = null,
         Mock<IJwtService>? jwtService = null,
+        Mock<IGoogleAuthService>? googleAuthService = null,
         Mock<ICurrentUser>? currentUser = null,
         TimeProvider? timeProvider = null) => new(
         (accountService ?? new Mock<IAccountService>()).Object,
         (unitOfWork ?? new Mock<IUnitOfWork>()).Object,
         (authTokenRepository ?? new Mock<IAuthTokenRepository>()).Object,
         (jwtService ?? CreateJwtService()).Object,
+        (googleAuthService ?? new Mock<IGoogleAuthService>()).Object,
         (currentUser ?? new Mock<ICurrentUser>()).Object,
         timeProvider ?? CreateTimeProvider(),
-        CreatePassingValidator<LoginRequestDto>().Object);
+        CreatePassingValidator<LoginRequestDto>().Object,
+        CreatePassingValidator<GoogleLoginRequestDto>().Object);
 }

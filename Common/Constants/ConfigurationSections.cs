@@ -29,4 +29,9 @@ public static class ConfigurationSections
     /// The Redis cache section.
     /// </summary>
     public const string Redis = "Redis";
+
+    /// <summary>
+    /// The Google sign-in options section.
+    /// </summary>
+    public const string GoogleAuth = "Authentication:Google";
 }

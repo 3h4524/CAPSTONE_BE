@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.Auth.Common;
@@ -18,9 +19,11 @@ public sealed class AuthService(
     IUnitOfWork unitOfWork,
     IAuthTokenRepository authTokenRepository,
     IJwtService jwtService,
+    IGoogleAuthService googleAuthService,
     ICurrentUser currentUser,
     TimeProvider timeProvider,
-    IValidator<LoginRequestDto> loginValidator)
+    IValidator<LoginRequestDto> loginValidator,
+    IValidator<GoogleLoginRequestDto> googleLoginValidator)
     : IAuthService
 {
     /// <inheritdoc />
@@ -80,6 +83,120 @@ public sealed class AuthService(
             new AuthenticatedUserResponse(user.Id, user.Email, user.FullName, roles));
 
         return Result.Success(response);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<LoginResponseDto>> GoogleLoginAsync(
+        GoogleLoginRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await googleLoginValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<LoginResponseDto>(validation.ToValidationError());
+        }
+
+        var googleUser = await googleAuthService.VerifyIdTokenAsync(request.IdToken, cancellationToken);
+        if (googleUser is null)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.GoogleTokenInvalid());
+        }
+
+        if (!googleUser.EmailVerified)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.GoogleEmailNotVerified());
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+        var resolved = await ResolveGoogleAccountAsync(googleUser, utcNow, cancellationToken);
+        if (resolved.IsFailure)
+        {
+            return Result.Failure<LoginResponseDto>(resolved.Error);
+        }
+
+        var account = resolved.Value;
+        if (!account.IsActive)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+        }
+
+        var roles = await accountService.GetRolesAsync(account.Id, cancellationToken);
+        var session = AuthSessionFactory.Create(
+            jwtService,
+            account,
+            roles,
+            utcNow,
+            request.Context ?? RequestContext.None);
+
+        await authTokenRepository.AddAsync(session.Entity, cancellationToken: cancellationToken);
+        await accountService.TouchLastLoginAsync(account.Id, utcNow, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        var response = new LoginResponseDto(
+            session.AccessToken.AccessToken,
+            session.AccessToken.ExpiresAtUtc,
+            session.RefreshToken,
+            session.RefreshTokenExpiresAtUtc,
+            new AuthenticatedUserResponse(account.Id, account.Email, account.FullName, roles));
+
+        return Result.Success(response);
+    }
+
+    /// <summary>
+    /// Finds the account a verified Google identity belongs to, linking it to a matching
+    /// password account on first Google sign-in or registering a brand-new one.
+    /// </summary>
+    private async Task<Result<AccountInfoDto>> ResolveGoogleAccountAsync(
+        GoogleUserInfoDto googleUser,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken)
+    {
+        var byGoogleId = await accountService.FindByGoogleIdAsync(googleUser.GoogleId, cancellationToken);
+        if (byGoogleId is not null)
+        {
+            return Result.Success(byGoogleId);
+        }
+
+        var email = googleUser.Email.Trim().ToLowerInvariant();
+        var byEmail = await accountService.FindByEmailAsync(email, cancellationToken);
+        if (byEmail is not null)
+        {
+            // The address already belongs to a password account: Google has now vouched for the
+            // same email, so the identities are linked instead of creating a duplicate account.
+            var linked = await accountService.LinkGoogleIdentityAsync(
+                byEmail.Id,
+                googleUser.GoogleId,
+                googleUser.AvatarUrl,
+                utcNow,
+                cancellationToken);
+
+            if (linked is null)
+            {
+                return Result.Failure<AccountInfoDto>(AuthErrors.UserNotFound());
+            }
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return Result.Success(linked);
+        }
+
+        var fullName = string.IsNullOrWhiteSpace(googleUser.FullName)
+            ? email.Split('@')[0]
+            : googleUser.FullName.Trim();
+
+        var creation = await accountService.CreateGoogleUserAsync(
+            email,
+            fullName,
+            googleUser.GoogleId,
+            googleUser.AvatarUrl,
+            cancellationToken);
+
+        if (!creation.Succeeded || creation.User is null)
+        {
+            return Result.Failure<AccountInfoDto>(AuthErrors.RegistrationFailed(creation.Errors));
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return Result.Success(creation.User);
     }
 
     /// <inheritdoc />

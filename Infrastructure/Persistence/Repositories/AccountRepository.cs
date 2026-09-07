@@ -20,6 +20,41 @@ public sealed class AccountRepository(AppDbContext dbContext) : Repository<User>
     }
 
     /// <inheritdoc />
+    public Task<bool> EmailExistsAsync(string normalizedEmail, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(normalizedEmail);
+        return Query().AnyAsync(user => user.Email == normalizedEmail, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<User?> FindByGoogleIdAsync(string googleId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(googleId);
+        return Query().SingleOrDefaultAsync(user => user.OauthGoogleId == googleId, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<Role?> FindRoleByCodeAsync(string code, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        return dbContext.Roles.SingleOrDefaultAsync(role => role.Code == code, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public void AddRole(Role role)
+    {
+        ArgumentNullException.ThrowIfNull(role);
+        dbContext.Roles.Add(role);
+    }
+
+    /// <inheritdoc />
+    public void AddUserRole(UserRole userRole)
+    {
+        ArgumentNullException.ThrowIfNull(userRole);
+        dbContext.UserRoles.Add(userRole);
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyCollection<string>> GetActiveRoleCodesAsync(
         Guid userId,
         CancellationToken cancellationToken = default) =>

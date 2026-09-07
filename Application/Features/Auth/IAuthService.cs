@@ -18,6 +18,14 @@ public interface IAuthService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Logs in with a verified Google identity, registering a new account on first sign-in or
+    /// linking the identity to an existing account with the same email.
+    /// </summary>
+    Task<Result<LoginResponseDto>> GoogleLoginAsync(
+        GoogleLoginRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Refreshes an access token using a refresh token and rotates it.
     /// </summary>
     Task<Result<RefreshTokenResponseDto>> RefreshTokenAsync(

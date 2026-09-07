@@ -39,6 +39,31 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     }
 
     /// <summary>
+    /// Logs in (or registers, on first sign-in) using a Google ID token minted by the client.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("google")]
+    [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> Google(GoogleLoginRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await authService.GoogleLoginAsync(
+            request with { Context = GetRequestContext() },
+            cancellationToken);
+
+        if (result.IsFailure)
+        {
+            return result.ToActionResult(this);
+        }
+
+        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
     /// Refreshes the current access token.
     /// </summary>
     [AllowAnonymous]

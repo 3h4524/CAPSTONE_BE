@@ -29,4 +29,9 @@ public static class AuthConstants
     /// The administrative application role.
     /// </summary>
     public const string AdminRole = "Admin";
+
+    /// <summary>
+    /// The OAuth provider value recorded for accounts created or linked through Google Sign-In.
+    /// </summary>
+    public const string GoogleProvider = "google";
 }

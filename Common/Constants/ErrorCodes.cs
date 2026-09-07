@@ -17,4 +17,6 @@ public static class ErrorCodes
     public const string RefreshTokenExpired = "auth.refresh_token_expired";
     public const string RefreshTokenReused = "auth.refresh_token_reused";
     public const string UserNotFound = "users.not_found";
+    public const string GoogleTokenInvalid = "auth.google_token_invalid";
+    public const string GoogleEmailNotVerified = "auth.google_email_not_verified";
 }
