@@ -45,7 +45,7 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(ConfigurationSections.GoogleAuth));
 
         services.AddOptions<AppOptions>()
-            .Bind(configuration.GetSection(ConfigurationSections.App))
+            .Bind(configuration.GetRequiredConfigurationSection(ConfigurationSections.App))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
