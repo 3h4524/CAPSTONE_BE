@@ -8,6 +8,14 @@ namespace APCS.Application.Features.Auth.Common;
 /// </summary>
 internal static class AuthErrors
 {
+    public static Error InvalidCredentials() =>
+        Error.Unauthorized(ErrorCodes.InvalidCredentials, "Email or password is incorrect.");
+
+    public static Error EmailNotVerified() =>
+        Error.Forbidden(
+            ErrorCodes.EmailNotVerified,
+            "The account email has not been verified. Check your inbox or request a new verification link.");
+
     public static Error Inactive() =>
         Error.Forbidden(ErrorCodes.UserInactive, "The account is inactive.");
 
@@ -44,4 +52,12 @@ internal static class AuthErrors
 
     public static Error UserNotFound() =>
         Error.NotFound(ErrorCodes.UserNotFound, "User was not found.");
+
+    public static Error GoogleTokenInvalid() =>
+        Error.Unauthorized(ErrorCodes.GoogleTokenInvalid, "The Google sign-in could not be verified.");
+
+    public static Error GoogleEmailNotVerified() =>
+        Error.Forbidden(
+            ErrorCodes.GoogleEmailNotVerified,
+            "The Google account's email address is not verified.");
 }

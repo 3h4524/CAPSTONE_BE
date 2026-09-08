@@ -122,6 +122,26 @@ public sealed class AuthControllerTests
     }
 
     [TestMethod]
+    public async Task Login_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.LoginAsync(It.IsAny<LoginRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new LoginRequestDto("seller@example.com", "Password1");
+
+        var action = await controller.Login(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.LoginAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+        AssertRefreshCookie(controller, "refresh-token");
+    }
+
+    [TestMethod]
     public async Task Refresh_WhenSuccessful_ReadsOldCookieAndSetsRotatedCookie()
     {
         var authService = new Mock<IAuthService>();
@@ -220,6 +240,9 @@ public sealed class AuthControllerTests
         normalized.Should().Contain("samesite=lax");
         normalized.Should().Contain("path=/");
     }
+
+    private static LoginResponseDto CreateLoginResponse() => new(
+        "access-token", AccessExpiresAt, "refresh-token", RefreshExpiresAt, CreateUser());
 
     private static RegisterResponseDto CreateRegisterResponse() => new(
         Guid.Parse("11111111-1111-1111-1111-111111111111"), "user@example.com", true);

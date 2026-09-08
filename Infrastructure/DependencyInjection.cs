@@ -38,6 +38,12 @@ public static class DependencyInjection
             .Validate(options => Encoding.UTF8.GetByteCount(options.SigningKey) >= 32, "JWT signing key must be at least 32 bytes.")
             .ValidateOnStart();
 
+        // Not required/ValidateOnStart: Google Sign-In is optional, and an environment that
+        // hasn't set up OAuth credentials yet should still boot. GoogleAuthService rejects every
+        // token instead when the client ID is missing.
+        services.AddOptions<GoogleAuthOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.GoogleAuth));
+
         services.AddOptions<AppOptions>()
             .Bind(configuration.GetRequiredConfigurationSection(ConfigurationSections.App))
             .ValidateDataAnnotations()
@@ -76,6 +82,7 @@ public static class DependencyInjection
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IJwtService, JwtService>();
+        services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
 
         // ── Redis cache ──────────────────────────────────────────

@@ -99,6 +99,7 @@ internal static class AuthTestData
         return validator;
     }
 
+
     /// <summary>
     /// Builds an <see cref="AuthService"/> with loose mocks for every dependency a test does not
     /// override, including validators that always pass.
@@ -108,18 +109,24 @@ internal static class AuthTestData
         Mock<IUnitOfWork>? unitOfWork = null,
         Mock<IAuthTokenRepository>? authTokenRepository = null,
         Mock<IJwtService>? jwtService = null,
+        Mock<IGoogleAuthService>? googleAuthService = null,
         Mock<IEmailService>? emailService = null,
         Mock<ICurrentUser>? currentUser = null,
-        TimeProvider? timeProvider = null) => new(
-        (accountService ?? new Mock<IAccountService>()).Object,
-        (unitOfWork ?? new Mock<IUnitOfWork>()).Object,
-        (authTokenRepository ?? new Mock<IAuthTokenRepository>()).Object,
-        (jwtService ?? CreateJwtService()).Object,
-        (emailService ?? new Mock<IEmailService>()).Object,
-        (currentUser ?? new Mock<ICurrentUser>()).Object,
-        timeProvider ?? CreateTimeProvider(),
-        NullLogger<AuthService>.Instance,
-        CreatePassingValidator<RegisterRequestDto>().Object,
-        CreatePassingValidator<VerifyEmailRequestDto>().Object,
-        CreatePassingValidator<ResendVerificationEmailRequestDto>().Object);
+        TimeProvider? timeProvider = null) =>
+        new(
+            (accountService ?? new Mock<IAccountService>()).Object,
+            (unitOfWork ?? new Mock<IUnitOfWork>()).Object,
+            (authTokenRepository ?? new Mock<IAuthTokenRepository>()).Object,
+            (jwtService ?? CreateJwtService()).Object,
+            (googleAuthService ?? new Mock<IGoogleAuthService>()).Object,
+            (emailService ?? new Mock<IEmailService>()).Object,
+            (currentUser ?? new Mock<ICurrentUser>()).Object,
+            timeProvider ?? CreateTimeProvider(),
+
+            CreatePassingValidator<LoginRequestDto>().Object,
+            CreatePassingValidator<GoogleLoginRequestDto>().Object,
+            NullLogger<AuthService>.Instance,
+            CreatePassingValidator<RegisterRequestDto>().Object,
+            CreatePassingValidator<VerifyEmailRequestDto>().Object,
+            CreatePassingValidator<ResendVerificationEmailRequestDto>().Object);
 }
