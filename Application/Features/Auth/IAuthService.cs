@@ -11,6 +11,21 @@ namespace APCS.Application.Features.Auth;
 public interface IAuthService
 {
     /// <summary>
+    /// Logs in with email and password.
+    /// </summary>
+    Task<Result<LoginResponseDto>> LoginAsync(
+        LoginRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Logs in with a verified Google identity, registering a new account on first sign-in or
+    /// linking the identity to an existing account with the same email.
+    /// </summary>
+    Task<Result<LoginResponseDto>> GoogleLoginAsync(
+        GoogleLoginRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Registers a new account and emails its verification link.
     /// </summary>
     Task<Result<RegisterResponseDto>> RegisterAsync(

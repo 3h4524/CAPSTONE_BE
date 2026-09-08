@@ -31,6 +31,11 @@ public static class ConfigurationSections
     public const string Redis = "Redis";
 
     /// <summary>
+    /// The Google sign-in options section.
+    /// </summary>
+    public const string GoogleAuth = "Authentication:Google";
+
+    /// <summary>
     /// The client application section, holding the addresses used to build emailed links.
     /// </summary>
     public const string App = "App";

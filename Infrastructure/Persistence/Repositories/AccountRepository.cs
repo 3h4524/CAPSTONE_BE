@@ -27,6 +27,13 @@ public sealed class AccountRepository(AppDbContext dbContext) : Repository<User>
     }
 
     /// <inheritdoc />
+    public Task<User?> FindByGoogleIdAsync(string googleId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(googleId);
+        return Query().SingleOrDefaultAsync(user => user.OauthGoogleId == googleId, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<Role?> FindRoleByCodeAsync(string code, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(code);
