@@ -18,6 +18,8 @@ internal static class AuthTestData
 {
     public const string RawVerificationToken = "raw-verification-token";
     public const string VerificationTokenHash = "verification-token-hash";
+    public const string RawResetToken = "raw-reset-token";
+    public const string ResetTokenHash = "reset-token-hash";
 
     public static readonly DateTimeOffset UtcNow = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
 
@@ -58,6 +60,15 @@ internal static class AuthTestData
         expiresAtUtc ?? UtcNow.AddHours(24),
         UtcNow);
 
+    public static AuthToken CreatePasswordResetToken(
+        DateTimeOffset? expiresAtUtc = null,
+        string tokenHash = ResetTokenHash) => AuthToken.CreateSingleUseToken(
+        ActiveUser.Id,
+        AuthTokenTypes.PasswordReset,
+        tokenHash,
+        expiresAtUtc ?? UtcNow.AddMinutes(10),
+        UtcNow);
+
     public static Mock<IJwtService> CreateJwtService()
     {
         var service = new Mock<IJwtService>();
@@ -66,6 +77,11 @@ internal static class AuthTestData
             .Returns(VerificationTokenHash);
         service.Setup(candidate => candidate.GetEmailVerificationExpiresAt(UtcNow))
             .Returns(UtcNow.AddHours(24));
+        service.Setup(candidate => candidate.GeneratePasswordResetToken()).Returns(RawResetToken);
+        service.Setup(candidate => candidate.HashPasswordResetToken(RawResetToken))
+            .Returns(ResetTokenHash);
+        service.Setup(candidate => candidate.GetPasswordResetExpiresAt(UtcNow))
+            .Returns(UtcNow.AddMinutes(10));
         service.Setup(candidate => candidate.GenerateAccessToken(
                 ActiveUser.Id,
                 ActiveUser.Email,
@@ -128,5 +144,8 @@ internal static class AuthTestData
             NullLogger<AuthService>.Instance,
             CreatePassingValidator<RegisterRequestDto>().Object,
             CreatePassingValidator<VerifyEmailRequestDto>().Object,
-            CreatePassingValidator<ResendVerificationEmailRequestDto>().Object);
+            CreatePassingValidator<ResendVerificationEmailRequestDto>().Object,
+            CreatePassingValidator<ForgotPasswordRequestDto>().Object,
+            CreatePassingValidator<ResetPasswordRequestDto>().Object,
+            CreatePassingValidator<ChangePasswordRequestDto>().Object);
 }

@@ -49,4 +49,10 @@ public sealed class JwtOptions
     /// </summary>
     [Range(1, 168)]
     public int EmailVerificationHours { get; set; } = AuthConstants.DefaultEmailVerificationHours;
+
+    /// <summary>
+    /// Gets or sets the password reset link lifetime in minutes.
+    /// </summary>
+    [Range(1, 1440)]
+    public int PasswordResetMinutes { get; set; } = AuthConstants.DefaultPasswordResetMinutes;
 }

@@ -31,7 +31,10 @@ public sealed class AuthService(
     ILogger<AuthService> logger,
     IValidator<RegisterRequestDto> registerValidator,
     IValidator<VerifyEmailRequestDto> verifyEmailValidator,
-    IValidator<ResendVerificationEmailRequestDto> resendVerificationEmailValidator)
+    IValidator<ResendVerificationEmailRequestDto> resendVerificationEmailValidator,
+    IValidator<ForgotPasswordRequestDto> forgotPasswordValidator,
+    IValidator<ResetPasswordRequestDto> resetPasswordValidator,
+    IValidator<ChangePasswordRequestDto> changePasswordValidator)
     : IAuthService
 {
     /// <inheritdoc />
@@ -553,5 +556,153 @@ public sealed class AuthService(
         {
             return false;
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Always reports success. An unknown address and an unverified account are both answered
+    /// the same way as a genuine request, so the endpoint cannot be used to discover which
+    /// addresses are registered.
+    /// </remarks>
+    public async Task<Result> ForgotPasswordAsync(
+        ForgotPasswordRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await forgotPasswordValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure(validation.ToValidationError());
+        }
+
+        var email = request.Email.Trim().ToLowerInvariant();
+        var account = await accountService.FindByEmailAsync(email, cancellationToken);
+
+        // No account, unverified email, or inactive account status (locked, suspended, deleted) — silently succeed.
+        if (account is null || !account.IsEmailVerified || !account.IsActive)
+        {
+            return Result.Success();
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+
+        // The database keeps at most one redeemable token per user and kind, and expiry does not
+        // release that slot. The existing token is therefore revoked before its replacement is
+        // issued, which also stops an old link from still working after a new request.
+        var outstanding = await authTokenRepository.GetRedeemableAsync(
+            account.Id,
+            AuthTokenTypes.PasswordReset,
+            cancellationToken);
+
+        foreach (var token in outstanding)
+        {
+            token.Revoke(utcNow);
+        }
+
+        var reset = PasswordResetFactory.Create(
+            jwtService, account.Id, utcNow, request.Context ?? RequestContext.None);
+
+        await authTokenRepository.AddAsync(reset.Entity, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // The token is already persisted, so a delivery failure must not fail the use case:
+        // the user can request a new link.
+        try
+        {
+            await emailService.SendPasswordResetAsync(
+                account.Email, account.FullName, reset.Token, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(
+                exception,
+                "Could not send the password reset email for user {UserId}; the user may request a new link",
+                account.Id);
+        }
+
+        return Result.Success();
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> ResetPasswordAsync(
+        ResetPasswordRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await resetPasswordValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure(validation.ToValidationError());
+        }
+
+        var tokenHash = jwtService.HashPasswordResetToken(request.Token);
+        var token = await authTokenRepository.GetByHashAsync(tokenHash, cancellationToken);
+
+        // A verification token would also resolve by hash, so the kind is checked before anything
+        // is redeemed: only a password_reset token may change a password.
+        if (token is null || token.TokenType != AuthTokenTypes.PasswordReset)
+        {
+            return Result.Failure(AuthErrors.PasswordResetTokenInvalid());
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+
+        if (token.IsExpired(utcNow))
+        {
+            return Result.Failure(AuthErrors.PasswordResetTokenExpired());
+        }
+
+        if (!token.IsActive(utcNow))
+        {
+            return Result.Failure(AuthErrors.PasswordResetTokenInvalid());
+        }
+
+        var account = await accountService.FindByIdAsync(token.UserId, cancellationToken);
+        if (account is null || !account.IsActive)
+        {
+            return Result.Failure(AuthErrors.PasswordResetTokenInvalid());
+        }
+
+        if (!await accountService.UpdatePasswordAsync(account.Id, request.NewPassword, cancellationToken))
+        {
+            return Result.Failure(AuthErrors.PasswordResetTokenInvalid());
+        }
+
+        // Spend the token so it cannot be replayed.
+        token.MarkUsed(utcNow);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success();
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> ChangePasswordAsync(
+        ChangePasswordRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await changePasswordValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure(validation.ToValidationError());
+        }
+
+        if (!currentUser.IsAuthenticated || currentUser.UserId is null)
+        {
+            return Result.Failure(AuthErrors.Unauthenticated());
+        }
+
+        var userId = currentUser.UserId.Value;
+
+        if (!await accountService.VerifyPasswordAsync(userId, request.CurrentPassword, cancellationToken))
+        {
+            return Result.Failure(AuthErrors.PasswordIncorrect());
+        }
+
+        if (!await accountService.UpdatePasswordAsync(userId, request.NewPassword, cancellationToken))
+        {
+            return Result.Failure(AuthErrors.UserNotFound());
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success();
     }
 }

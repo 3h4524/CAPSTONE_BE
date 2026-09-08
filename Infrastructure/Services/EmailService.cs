@@ -58,4 +58,39 @@ public sealed class EmailService(
 
         return $"{path}?token={Uri.EscapeDataString(verificationToken)}";
     }
+
+    /// <inheritdoc />
+    public Task SendPasswordResetAsync(
+        string to,
+        string fullName,
+        string resetToken,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(to);
+        ArgumentException.ThrowIfNullOrWhiteSpace(resetToken);
+
+        var link = BuildPasswordResetLink(resetToken);
+        var body =
+            $"""
+             Hi {fullName},
+
+             You requested a password reset for your APCS account. Open the link below to set a new password:
+
+             {link}
+
+             The link expires in 1 hour. If you did not request this, ignore this email — your password will not change.
+             """;
+
+        logger.LogDebug("Password reset link for {Recipient}: {ResetLink}", to, link);
+
+        return SendAsync(to, "Reset your APCS password", body, cancellationToken);
+    }
+
+    private string BuildPasswordResetLink(string resetToken)
+    {
+        var baseAddress = new Uri(_appOptions.BaseUrl, UriKind.Absolute);
+        var path = new Uri(baseAddress, _appOptions.ResetPasswordPath);
+
+        return $"{path}?token={Uri.EscapeDataString(resetToken)}";
+    }
 }

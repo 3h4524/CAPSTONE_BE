@@ -83,6 +83,21 @@ public sealed class JwtService(
     public DateTimeOffset GetEmailVerificationExpiresAt(DateTimeOffset utcNow) =>
         utcNow.AddHours(_options.EmailVerificationHours);
 
+    /// <inheritdoc />
+    public string GeneratePasswordResetToken()
+    {
+        var bytes = RandomNumberGenerator.GetBytes(64);
+        return Base64UrlEncode(bytes);
+    }
+
+    /// <inheritdoc />
+    public string HashPasswordResetToken(string resetToken) =>
+        HashHelper.ComputeSha256Hash(resetToken);
+
+    /// <inheritdoc />
+    public DateTimeOffset GetPasswordResetExpiresAt(DateTimeOffset utcNow) =>
+        utcNow.AddMinutes(_options.PasswordResetMinutes);
+
     private static string Base64UrlEncode(byte[] bytes)
     {
         return Convert.ToBase64String(bytes)

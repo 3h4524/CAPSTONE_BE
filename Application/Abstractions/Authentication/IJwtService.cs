@@ -45,4 +45,23 @@ public interface IJwtService
     /// Gets the email verification token expiration based on the supplied clock value.
     /// </summary>
     DateTimeOffset GetEmailVerificationExpiresAt(DateTimeOffset utcNow);
+
+    /// <summary>
+    /// Generates a raw, single-use password reset token.
+    /// </summary>
+    /// <remarks>
+    /// Opaque and random rather than a JWT: the token travels in an emailed link, is stored only
+    /// as a hash, and is redeemed against that stored row so it can be expired and revoked.
+    /// </remarks>
+    string GeneratePasswordResetToken();
+
+    /// <summary>
+    /// Hashes a raw password reset token for persistence and lookup.
+    /// </summary>
+    string HashPasswordResetToken(string resetToken);
+
+    /// <summary>
+    /// Gets the password reset token expiration based on the supplied clock value.
+    /// </summary>
+    DateTimeOffset GetPasswordResetExpiresAt(DateTimeOffset utcNow);
 }

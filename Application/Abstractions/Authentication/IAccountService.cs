@@ -87,4 +87,24 @@ public interface IAccountService
         Guid userId,
         DateTimeOffset utcNow,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates the account's password hash.
+    /// </summary>
+    /// <remarks>
+    /// Stages the change on the current unit of work; the caller must save.
+    /// </remarks>
+    /// <returns><see langword="true"/> when the user was found and updated.</returns>
+    Task<bool> UpdatePasswordAsync(
+        Guid userId,
+        string newPassword,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Verifies whether the supplied plain-text password matches the stored hash.
+    /// </summary>
+    Task<bool> VerifyPasswordAsync(
+        Guid userId,
+        string candidatePassword,
+        CancellationToken cancellationToken = default);
 }

@@ -26,6 +26,11 @@ public static class AuthConstants
     public const int DefaultEmailVerificationHours = 24;
 
     /// <summary>
+    /// The default password reset link lifetime in minutes.
+    /// </summary>
+    public const int DefaultPasswordResetMinutes = 10;
+
+    /// <summary>
     /// The default application user role.
     /// </summary>
     public const string UserRole = "Seller";

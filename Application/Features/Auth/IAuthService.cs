@@ -67,4 +67,26 @@ public interface IAuthService
     /// </summary>
     Task<Result<AuthenticatedUserResponse>> GetCurrentUserAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends a password reset email if the address is registered.
+    /// Always reports success so the endpoint cannot discover accounts.
+    /// </summary>
+    Task<Result> ForgotPasswordAsync(
+        ForgotPasswordRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Redeems a password reset token and sets a new password.
+    /// </summary>
+    Task<Result> ResetPasswordAsync(
+        ResetPasswordRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Changes the authenticated user's password after verifying the current one.
+    /// </summary>
+    Task<Result> ChangePasswordAsync(
+        ChangePasswordRequestDto request,
+        CancellationToken cancellationToken = default);
 }

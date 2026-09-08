@@ -18,6 +18,9 @@ public static class ErrorCodes
     public const string EmailNotVerified = "auth.email_not_verified";
     public const string VerificationTokenInvalid = "auth.verification_token_invalid";
     public const string VerificationTokenExpired = "auth.verification_token_expired";
+    public const string PasswordResetTokenInvalid = "auth.password_reset_token_invalid";
+    public const string PasswordResetTokenExpired = "auth.password_reset_token_expired";
+    public const string PasswordIncorrect = "auth.password_incorrect";
     public const string UserNotFound = "users.not_found";
     public const string InvalidCredentials = "auth.invalid_credentials";
     public const string GoogleTokenInvalid = "auth.google_token_invalid";

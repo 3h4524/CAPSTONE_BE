@@ -173,6 +173,61 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     }
 
     /// <summary>
+    /// Sends a password reset email.
+    /// </summary>
+    /// <remarks>
+    /// Always responds 204 whether or not the address is registered, so it cannot be used to
+    /// discover accounts.
+    /// </remarks>
+    [AllowAnonymous]
+    [HttpPost("forgot-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ForgotPassword(
+        ForgotPasswordRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.ForgotPasswordAsync(
+            request with { Context = GetRequestContext() }, cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Resets the account password using a token from the reset email.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("reset-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ResetPassword(
+        ResetPasswordRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.ResetPasswordAsync(request, cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Changes the authenticated user's password.
+    /// </summary>
+    [Authorize]
+    [HttpPost("change-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ChangePassword(
+        ChangePasswordRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.ChangePasswordAsync(request, cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// Captures the caller's network details for the audit trail on issued tokens.
     /// </summary>
     /// <remarks>
