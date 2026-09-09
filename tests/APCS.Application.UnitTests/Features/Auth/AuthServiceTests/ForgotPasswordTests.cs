@@ -94,7 +94,7 @@ public sealed class ForgotPasswordTests
         var unitOfWork = new Mock<IUnitOfWork>();
         var email = new Mock<IEmailService>();
         var jwtService = AuthTestData.CreateJwtService();
-        var service = AuthTestData.CreateService(account, unitOfWork, repository, jwtService, email);
+        var service = AuthTestData.CreateService(account, unitOfWork, repository, jwtService, emailService: email);
 
         var result = await service.ForgotPasswordAsync(
             new ForgotPasswordRequestDto(AuthTestData.ActiveUser.Email),
