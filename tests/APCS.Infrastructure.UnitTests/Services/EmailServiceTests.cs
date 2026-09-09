@@ -58,12 +58,33 @@ public sealed class EmailServiceTests
             message.Contains($"http://localhost:3000/verify-email?token={VerificationToken}"));
     }
 
+    [TestMethod]
+    public void SmtpOptions_WithoutAHost_IsNotConsideredConfigured()
+    {
+        new SmtpOptions().IsConfigured.Should().BeFalse();
+        new SmtpOptions { Host = "smtp.gmail.com" }.IsConfigured.Should().BeFalse("a from address is also required");
+        new SmtpOptions { Host = "smtp.gmail.com", FromAddress = "apcs@example.com" }
+            .IsConfigured.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void SmtpOptions_UsesImplicitTls_OnlyOnPort465()
+    {
+        new SmtpOptions { Port = 465 }.UsesImplicitTls.Should().BeTrue();
+        new SmtpOptions { Port = 587 }.UsesImplicitTls.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Builds the service with no mail server configured, which is what local development and
+    /// these tests run against: the message is logged instead of being sent over the network.
+    /// </summary>
     private static EmailService CreateService(ILogger<EmailService> logger) => new(
         Microsoft.Extensions.Options.Options.Create(new AppOptions
         {
             BaseUrl = "http://localhost:3000",
             VerifyEmailPath = "/verify-email"
         }),
+        Microsoft.Extensions.Options.Options.Create(new SmtpOptions()),
         logger);
 
     private sealed class TestLogger<T>(LogLevel minimumLevel = LogLevel.Trace) : ILogger<T>
