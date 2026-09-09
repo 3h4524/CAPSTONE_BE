@@ -39,4 +39,9 @@ public static class ConfigurationSections
     /// The client application section, holding the addresses used to build emailed links.
     /// </summary>
     public const string App = "App";
+
+    /// <summary>
+    /// The outgoing mail server section.
+    /// </summary>
+    public const string Smtp = "Smtp";
 }

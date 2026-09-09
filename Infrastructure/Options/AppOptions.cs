@@ -29,4 +29,10 @@ public sealed class AppOptions
     /// </summary>
     [Required]
     public string VerifyEmailPath { get; set; } = "/verify-email";
+
+    /// <summary>
+    /// Gets or sets the client path that redeems a password reset token.
+    /// </summary>
+    [Required]
+    public string ResetPasswordPath { get; set; } = "/reset-password";
 }

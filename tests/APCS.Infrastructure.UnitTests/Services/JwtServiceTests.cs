@@ -72,6 +72,7 @@ public sealed class JwtServiceTests
         service.HashRefreshToken("abc")
             .Should().Be("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=");
         service.GetRefreshTokenExpiresAt(UtcNow).Should().Be(UtcNow.AddDays(7));
+        service.GetPasswordResetExpiresAt(UtcNow).Should().Be(UtcNow.AddMinutes(10));
     }
 
     [TestMethod]
@@ -97,7 +98,8 @@ public sealed class JwtServiceTests
             Audience = "APCS.UnitTests.Client",
             SigningKey = SigningKey,
             AccessTokenMinutes = 15,
-            RefreshTokenDays = 7
+            RefreshTokenDays = 7,
+            PasswordResetMinutes = 10
         }),
         new FakeTimeProvider(UtcNow));
 

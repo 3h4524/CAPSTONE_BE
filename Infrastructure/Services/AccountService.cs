@@ -311,6 +311,47 @@ public sealed class AccountService(
         return true;
     }
 
+    public async Task<bool> UpdatePasswordAsync(
+        Guid userId,
+        string newPassword,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPassword);
+
+        // Tracked load so EF Core stages the mutation; the caller saves.
+        var user = await accountRepository.GetByIdAsync(userId, cancellationToken);
+        if (user is null)
+        {
+            return false;
+        }
+
+        user.PasswordHash = passwordHasher.HashPassword(user, newPassword);
+        user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+        _cachedUser = user;
+        return true;
+    }
+
+    public async Task<bool> VerifyPasswordAsync(
+        Guid userId,
+        string candidatePassword,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidatePassword);
+
+        // Prefer the scoped cache; fall back to a tracked load only when not already loaded.
+        var user = (_cachedUser is not null && _cachedUser.Id == userId)
+            ? _cachedUser
+            : await accountRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null || string.IsNullOrWhiteSpace(user.PasswordHash))
+        {
+            return false;
+        }
+
+        var result = passwordHasher.VerifyHashedPassword(user, user.PasswordHash, candidatePassword);
+        return result != PasswordVerificationResult.Failed;
+    }
+
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 
     private static AccountInfoDto Map(User user) =>

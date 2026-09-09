@@ -47,6 +47,17 @@ internal static class AuthErrors
             ErrorCodes.VerificationTokenExpired,
             "The verification link has expired. Request a new verification email.");
 
+    public static Error PasswordResetTokenInvalid() =>
+        Error.Unauthorized(ErrorCodes.PasswordResetTokenInvalid, "The password reset link is invalid.");
+
+    public static Error PasswordResetTokenExpired() =>
+        Error.Unauthorized(
+            ErrorCodes.PasswordResetTokenExpired,
+            "The password reset link has expired. Request a new one.");
+
+    public static Error PasswordIncorrect() =>
+        Error.Unauthorized(ErrorCodes.PasswordIncorrect, "The current password is incorrect.");
+
     public static Error Unauthenticated() =>
         Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated.");
 

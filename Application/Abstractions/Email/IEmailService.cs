@@ -26,4 +26,21 @@ public interface IEmailService
         string fullName,
         string verificationToken,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends the password reset email carrying a single-use reset link.
+    /// </summary>
+    /// <param name="to">The recipient address.</param>
+    /// <param name="fullName">The recipient's display name.</param>
+    /// <param name="resetToken">The raw reset token to embed in the link.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <remarks>
+    /// The subject, body, and link address are composed by the implementation so the client
+    /// address stays in configuration instead of leaking into use cases.
+    /// </remarks>
+    Task SendPasswordResetAsync(
+        string to,
+        string fullName,
+        string resetToken,
+        CancellationToken cancellationToken = default);
 }

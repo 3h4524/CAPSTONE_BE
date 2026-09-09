@@ -49,6 +49,11 @@ public static class DependencyInjection
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Not required/ValidateOnStart: an environment with no mail server should still boot,
+        // and EmailService logs the message instead of sending it when the host is missing.
+        services.AddOptions<SmtpOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Smtp));
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
