@@ -83,6 +83,25 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromMinutes(1)
         };
+
+        // The access token never reaches client-side JS: it travels only in the HttpOnly
+        // __Host-apcs_access cookie, so it is read from there instead of an Authorization
+        // header. Falling through when the cookie is absent keeps the Authorization header
+        // path available for non-browser callers (Swagger, future mobile clients).
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                if (context.Request.Cookies.TryGetValue(
+                        AuthConstants.AccessTokenCookieName, out var accessToken)
+                    && !string.IsNullOrEmpty(accessToken))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
