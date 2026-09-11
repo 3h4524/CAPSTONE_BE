@@ -62,8 +62,18 @@ public sealed class EmailServiceTests
     public void SmtpOptions_WithoutAHost_IsNotConsideredConfigured()
     {
         new SmtpOptions().IsConfigured.Should().BeFalse();
-        new SmtpOptions { Host = "smtp.gmail.com" }.IsConfigured.Should().BeFalse("a from address is also required");
-        new SmtpOptions { Host = "smtp.gmail.com", FromAddress = "apcs@example.com" }
+        new SmtpOptions
+        {
+            Host = "smtp.gmail.com",
+            FromAddress = "apcs@example.com"
+        }.IsConfigured.Should().BeFalse("SMTP credentials are also required");
+        new SmtpOptions
+        {
+            Host = "smtp.gmail.com",
+            Username = "apcs@example.com",
+            Password = "app-password",
+            FromAddress = "apcs@example.com"
+        }
             .IsConfigured.Should().BeTrue();
     }
 

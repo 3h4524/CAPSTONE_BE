@@ -61,9 +61,13 @@ public sealed class SmtpOptions
     public string FromName { get; set; } = "APCS";
 
     /// <summary>
-    /// Gets a value indicating whether enough is configured to actually send mail.
+    /// Gets a value indicating whether enough is configured to send authenticated SMTP mail.
     /// </summary>
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(Host) && !string.IsNullOrWhiteSpace(FromAddress);
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Host)
+        && !string.IsNullOrWhiteSpace(Username)
+        && !string.IsNullOrWhiteSpace(Password)
+        && !string.IsNullOrWhiteSpace(FromAddress);
 
     /// <summary>
     /// Gets a value indicating whether the port expects TLS on connect instead of STARTTLS.

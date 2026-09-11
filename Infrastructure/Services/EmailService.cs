@@ -12,8 +12,8 @@ namespace APCS.Infrastructure.Services;
 /// Sends application email through the configured SMTP server.
 /// </summary>
 /// <remarks>
-/// An environment with no mail server configured logs the message instead of sending it, so
-/// local development and tests need no transport.
+/// Production must provide an authenticated SMTP provider such as Gmail SMTP. When SMTP is not
+/// configured, local tests can still run and the requested recipient and subject are logged.
 /// </remarks>
 public sealed class EmailService(
     IOptions<AppOptions> appOptions,

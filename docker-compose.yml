@@ -8,12 +8,5 @@ services:
       - apcs_redis_data:/data
     command: ["redis-server", "--appendonly", "yes"]
 
-  mailpit:
-    image: axllent/mailpit:latest
-    container_name: apcs-mailpit
-    ports:
-      - "1025:1025"
-      - "8025:8025"
-
 volumes:
   apcs_redis_data:
