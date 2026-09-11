@@ -1,5 +1,6 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Dtos;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Features.Auth;
@@ -127,6 +128,7 @@ internal static class AuthTestData
         Mock<IJwtService>? jwtService = null,
         Mock<IGoogleAuthService>? googleAuthService = null,
         Mock<IEmailService>? emailService = null,
+        Mock<ICacheService>? cacheService = null,
         Mock<ICurrentUser>? currentUser = null,
         TimeProvider? timeProvider = null) =>
         new(
@@ -136,6 +138,7 @@ internal static class AuthTestData
             (jwtService ?? CreateJwtService()).Object,
             (googleAuthService ?? new Mock<IGoogleAuthService>()).Object,
             (emailService ?? new Mock<IEmailService>()).Object,
+            (cacheService ?? new Mock<ICacheService>()).Object,
             (currentUser ?? new Mock<ICurrentUser>()).Object,
             timeProvider ?? CreateTimeProvider(),
 
@@ -147,5 +150,7 @@ internal static class AuthTestData
             CreatePassingValidator<ResendVerificationEmailRequestDto>().Object,
             CreatePassingValidator<ForgotPasswordRequestDto>().Object,
             CreatePassingValidator<ResetPasswordRequestDto>().Object,
-            CreatePassingValidator<ChangePasswordRequestDto>().Object);
+            CreatePassingValidator<ChangePasswordRequestDto>().Object,
+            CreatePassingValidator<AdminVerifyTwoFactorRequestDto>().Object,
+            CreatePassingValidator<AdminResendTwoFactorRequestDto>().Object);
 }

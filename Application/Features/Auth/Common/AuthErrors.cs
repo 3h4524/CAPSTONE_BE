@@ -78,4 +78,10 @@ internal static class AuthErrors
         Error.Forbidden(
             ErrorCodes.GoogleEmailNotVerified,
             "The Google account's email address is not verified.");
+
+    public static Error AdminTwoFactorInvalid() =>
+        Error.Unauthorized(ErrorCodes.AdminTwoFactorInvalid, "The administrator verification code is invalid.");
+
+    public static Error AdminTwoFactorExpired() =>
+        Error.Unauthorized(ErrorCodes.AdminTwoFactorExpired, "The administrator verification code has expired.");
 }

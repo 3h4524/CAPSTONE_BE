@@ -104,7 +104,7 @@ public sealed class LoginTests
         result.IsSuccess.Should().BeTrue();
         result.Value.AccessToken.Should().Be("access-token");
         result.Value.RefreshToken.Should().Be("new-raw-refresh-token");
-        result.Value.User.Roles.Should().Equal(AuthTestData.Roles);
+        result.Value.User!.Roles.Should().Equal(AuthTestData.Roles);
         savedToken.Should().NotBeNull();
         savedToken!.TokenHash.Should().Be("new-refresh-token-hash");
         account.Verify(service => service.FindByEmailAsync("seller@example.com", cancellationToken), Times.Once);

@@ -53,7 +53,9 @@ public sealed class EmailService(
         // 465 expects TLS from the first byte; 587 opens in the clear and upgrades with STARTTLS.
         var socketOptions = _smtpOptions.UsesImplicitTls
             ? SecureSocketOptions.SslOnConnect
-            : SecureSocketOptions.StartTls;
+            : _smtpOptions.UseStartTls
+                ? SecureSocketOptions.StartTls
+                : SecureSocketOptions.None;
 
         await client.ConnectAsync(_smtpOptions.Host, _smtpOptions.Port, socketOptions, cancellationToken);
 

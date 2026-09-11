@@ -18,6 +18,20 @@ public interface IAuthService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Verifies an administrator's email OTP and issues the authenticated session.
+    /// </summary>
+    Task<Result<LoginResponseDto>> VerifyAdminTwoFactorAsync(
+        AdminVerifyTwoFactorRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces an expired or pending administrator email OTP.
+    /// </summary>
+    Task<Result<AdminTwoFactorResponseDto>> ResendAdminTwoFactorAsync(
+        AdminResendTwoFactorRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Logs in with a verified Google identity, registering a new account on first sign-in or
     /// linking the identity to an existing account with the same email.
     /// </summary>

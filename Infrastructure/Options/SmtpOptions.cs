@@ -32,6 +32,12 @@ public sealed class SmtpOptions
     public int Port { get; set; } = 587;
 
     /// <summary>
+    /// Gets or sets whether STARTTLS should be negotiated on non-465 ports.
+    /// Disable only for a local SMTP sink such as Mailpit; keep enabled for real mail providers.
+    /// </summary>
+    public bool UseStartTls { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the account used to authenticate. Leave empty for a relay that accepts
     /// anonymous submissions.
     /// </summary>
