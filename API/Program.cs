@@ -136,6 +136,17 @@ if (app.Environment.IsDevelopment())
 
         return Results.Ok(cached);
     });
+
+    // One-time (or on-ngrok-restart) dev setup: registers the webhook URL PayOS should call.
+    // Example: curl -X POST "http://localhost:5191/api/dev/confirm-payos-webhook?url=https://<id>.ngrok-free.app/api/subscriptions/webhooks/payos"
+    app.MapPost("/api/dev/confirm-payos-webhook", async (
+        string url,
+        APCS.Application.Features.Subscriptions.Common.IPaymentGatewayClient paymentGateway,
+        CancellationToken cancellationToken) =>
+    {
+        await paymentGateway.ConfirmWebhookAsync(url, cancellationToken);
+        return Results.Ok(new { confirmed = url });
+    });
 }
 
 app.UseHttpsRedirection();

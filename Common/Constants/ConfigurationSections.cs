@@ -44,4 +44,9 @@ public static class ConfigurationSections
     /// The outgoing mail server section.
     /// </summary>
     public const string Smtp = "Smtp";
+
+    /// <summary>
+    /// The PayOS payment gateway options section.
+    /// </summary>
+    public const string PayOs = "PayOS";
 }
