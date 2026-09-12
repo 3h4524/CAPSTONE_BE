@@ -1,6 +1,8 @@
 using System.Reflection;
 using APCS.Application.Features.Auth;
+using APCS.Application.Features.Profile;
 using APCS.Application.Features.Subscriptions;
+using APCS.Application.Features.SupportTickets;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -21,6 +23,8 @@ public static class DependencyInjection
         services.AddValidatorsFromAssembly(assembly);
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ISubscriptionService, SubscriptionService>();
+        services.AddScoped<IProfileService, ProfileService>();
+        services.AddScoped<ISupportTicketService, SupportTicketService>();
 
         return services;
     }

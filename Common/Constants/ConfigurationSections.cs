@@ -49,4 +49,7 @@ public static class ConfigurationSections
     /// The PayOS payment gateway options section.
     /// </summary>
     public const string PayOs = "PayOS";
+
+    /// <summary>The private asset storage section.</summary>
+    public const string Cloudinary = "Cloudinary";
 }

@@ -3,6 +3,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
@@ -71,6 +72,9 @@ public static class DependencyInjection
                 new PaymentGatewaySettings(payOsOptions.UsdToVndRate, payOsOptions.TestAmountVnd));
         });
 
+        services.AddOptions<CloudinaryOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
@@ -94,6 +98,7 @@ public static class DependencyInjection
         services.AddScoped<IPlanRepository, PlanRepository>();
         services.AddScoped<IInvoiceRepository, InvoiceRepository>();
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
+        services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
 
         return services;
     }
@@ -111,6 +116,7 @@ public static class DependencyInjection
         services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
         services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
+        services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()
