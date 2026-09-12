@@ -943,6 +943,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("items");
             entity.Property(e => e.PaymentDate).HasColumnName("payment_date");
+            entity.Property(e => e.PayosOrderCode).HasColumnName("payos_order_code");
+            entity.Property(e => e.PayosPaymentLinkId).HasColumnName("payos_payment_link_id");
+            entity.Property(e => e.PayosQrCode).HasColumnName("payos_qr_code");
             entity.Property(e => e.PdfUrl).HasColumnName("pdf_url");
             entity.Property(e => e.Status)
                 .HasMaxLength(50)

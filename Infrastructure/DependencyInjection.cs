@@ -4,6 +4,8 @@ using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.Subscriptions;
+using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
 using APCS.Common.Extensions;
 using APCS.Domain.Entities;
@@ -16,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure;
 
@@ -55,6 +58,20 @@ public static class DependencyInjection
         services.AddOptions<SmtpOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Smtp));
 
+        // Not required/ValidateOnStart: a dev box without a PayOS payment channel yet should
+        // still boot. PayOsGatewayClient is only usable once real keys are set.
+        services.AddOptions<PayOsOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.PayOs));
+
+        // Projects PayOsOptions down to the narrow settings shape SubscriptionService (Application)
+        // is allowed to depend on, so Application never references an Infrastructure options type.
+        services.AddSingleton<IOptions<PaymentGatewaySettings>>(provider =>
+        {
+            var payOsOptions = provider.GetRequiredService<IOptions<PayOsOptions>>().Value;
+            return Microsoft.Extensions.Options.Options.Create(
+                new PaymentGatewaySettings(payOsOptions.UsdToVndRate, payOsOptions.TestAmountVnd));
+        });
+
         services.AddOptions<CloudinaryOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
 
@@ -77,6 +94,10 @@ public static class DependencyInjection
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
         services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
+        services.AddScoped<IPlanRepository, PlanRepository>();
+        services.AddScoped<IInvoiceRepository, InvoiceRepository>();
+        services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
 
         return services;
@@ -94,6 +115,7 @@ public static class DependencyInjection
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
+        services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
 
         // ── Redis cache ──────────────────────────────────────────
