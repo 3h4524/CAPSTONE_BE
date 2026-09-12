@@ -129,6 +129,14 @@ public sealed class AccountService(
             user.EmailVerified = true;
             user.EmailVerifiedAt = timestamp;
 
+            // Nobody has ever proven ownership of this address for the password on file: an
+            // attacker can pre-register the victim's email with a password only the attacker
+            // knows, then wait for the real owner to arrive through Google (classic federated
+            // "pre-hijacking"). Clearing the hash keeps the pre-registered password from ever
+            // signing in; the rightful owner already has full access through Google and can set
+            // a new password later through the forgot-password flow if they want one.
+            user.PasswordHash = null;
+
             if (string.Equals(user.AccountStatus, AccountStatuses.PendingVerification, StringComparison.OrdinalIgnoreCase))
             {
                 user.AccountStatus = AccountStatuses.Active;

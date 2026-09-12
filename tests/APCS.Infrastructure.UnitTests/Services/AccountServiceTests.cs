@@ -205,6 +205,10 @@ public sealed class AccountServiceTests
         user.OauthGoogleId.Should().Be(GoogleId);
         user.OauthProvider.Should().Be(AuthConstants.GoogleProvider);
         user.AvatarUrl.Should().Be("https://avatar");
+        // Only a first-time confirmation clears the password (see the pre-hijacking test below);
+        // an already-verified owner's existing password must survive linking a second sign-in
+        // method.
+        user.PasswordHash.Should().NotBeNull();
     }
 
     [TestMethod]
@@ -232,6 +236,7 @@ public sealed class AccountServiceTests
         user.EmailVerified.Should().BeTrue();
         user.EmailVerifiedAt.Should().Be(UtcNow.UtcDateTime);
         user.AccountStatus.Should().Be(AccountStatuses.Active);
+        user.PasswordHash.Should().BeNull();
     }
 
     [TestMethod]
@@ -245,6 +250,24 @@ public sealed class AccountServiceTests
 
         user.EmailVerified.Should().BeTrue();
         user.AccountStatus.Should().Be(AccountStatuses.Locked);
+    }
+
+    [TestMethod]
+    public async Task LinkGoogleIdentityAsync_WhenAccountWasNeverVerified_ClearsAnyPreRegisteredPassword()
+    {
+        // Regression test for a pre-hijacking gap: an attacker who registers the victim's email
+        // with an attacker-known password, then never verifies it, must not retain sign-in access
+        // once the real owner claims the account through Google.
+        var (service, repository, _) = CreateService();
+        var user = CreateUser(
+            accountStatus: AccountStatuses.PendingVerification,
+            emailVerified: false,
+            passwordHash: "attacker-chosen-hash");
+        repository.Setup(r => r.GetByIdAsync(UserId, It.IsAny<CancellationToken>())).ReturnsAsync(user);
+
+        await service.LinkGoogleIdentityAsync(UserId, GoogleId, null, UtcNow);
+
+        user.PasswordHash.Should().BeNull();
     }
 
     [TestMethod]
