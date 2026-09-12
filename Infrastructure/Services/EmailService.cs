@@ -141,4 +141,35 @@ public sealed class EmailService(
 
         return $"{path}?token={Uri.EscapeDataString(resetToken)}";
     }
+
+    /// <inheritdoc />
+    public Task SendSupportTicketCreatedAsync(
+        string to,
+        string fullName,
+        Guid ticketId,
+        string ticketNumber,
+        string category,
+        string priority,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(to);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ticketNumber);
+
+        var link = new Uri(new Uri(_appOptions.BaseUrl, UriKind.Absolute), $"/admin/support-tickets/{ticketId}");
+        var body =
+            $"""
+             Hi {fullName},
+
+             A new support ticket needs attention.
+
+             Ticket: {ticketNumber}
+             Category: {category}
+             Priority: {priority}
+             Open ticket: {link}
+
+             The ticket description and attachments are intentionally omitted from this email.
+             """;
+
+        return SendAsync(to, $"New support ticket {ticketNumber}", body, cancellationToken);
+    }
 }

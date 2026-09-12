@@ -50,6 +50,21 @@ public interface IAccountRepository : IRepository<User>
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets every active account with a current grant for the requested role.
+    /// </summary>
+    Task<IReadOnlyList<User>> GetActiveUsersByRoleAsync(
+        string roleCode,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks whether an active account currently has the requested role.
+    /// </summary>
+    Task<bool> IsActiveUserInRoleAsync(
+        Guid userId,
+        string roleCode,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Updates a user's last-login timestamp immediately, without staging it on the unit of work.
     /// </summary>
     Task TouchLastLoginAsync(Guid userId, DateTimeOffset lastLoginAtUtc, CancellationToken cancellationToken = default);

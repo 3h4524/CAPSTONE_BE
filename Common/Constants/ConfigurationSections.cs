@@ -44,4 +44,7 @@ public static class ConfigurationSections
     /// The outgoing mail server section.
     /// </summary>
     public const string Smtp = "Smtp";
+
+    /// <summary>The private asset storage section.</summary>
+    public const string Cloudinary = "Cloudinary";
 }
