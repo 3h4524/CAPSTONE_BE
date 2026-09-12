@@ -47,7 +47,7 @@ public sealed class PayOsGatewayClient : IPaymentGatewayClient, IDisposable
     {
         // Redirects only matter if the Seller opens the hosted checkoutUrl separately; the
         // embedded-QR flow this app uses never navigates the Seller away in the first place.
-        var redirectUrl = $"{appOptions.BaseUrl.TrimEnd('/')}/subscription";
+        var redirectUrl = BuildRedirectUrl(appOptions.BaseUrl);
 
         var request = new CreatePaymentLinkRequest
         {
@@ -99,11 +99,21 @@ public sealed class PayOsGatewayClient : IPaymentGatewayClient, IDisposable
             orderCode,
             new RequestOptions { CancellationToken = cancellationToken });
 
-        var isFailed = link.Status is PaymentLinkStatus.Cancelled
-            or PaymentLinkStatus.Expired
-            or PaymentLinkStatus.Failed;
+        return MapStatus(link.Status);
+    }
 
-        return new PaymentLinkStatusResult(link.Status == PaymentLinkStatus.Paid, isFailed);
+    /// <summary>
+    /// Builds the return/cancel URL PayOS redirects to after a hosted-checkout page interaction.
+    /// </summary>
+    public static string BuildRedirectUrl(string baseUrl) => $"{baseUrl.TrimEnd('/')}/subscription";
+
+    /// <summary>
+    /// Maps a PayOS payment link status to this app's simplified paid/failed/pending vocabulary.
+    /// </summary>
+    public static PaymentLinkStatusResult MapStatus(PaymentLinkStatus status)
+    {
+        var isFailed = status is PaymentLinkStatus.Cancelled or PaymentLinkStatus.Expired or PaymentLinkStatus.Failed;
+        return new PaymentLinkStatusResult(status == PaymentLinkStatus.Paid, isFailed);
     }
 
     /// <inheritdoc />
