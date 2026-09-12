@@ -3,6 +3,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
 using APCS.Common.Constants;
 using APCS.Common.Extensions;
 using APCS.Domain.Entities;
@@ -54,6 +55,9 @@ public static class DependencyInjection
         services.AddOptions<SmtpOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Smtp));
 
+        services.AddOptions<CloudinaryOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
@@ -73,6 +77,7 @@ public static class DependencyInjection
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
         services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
 
         return services;
     }
@@ -89,6 +94,7 @@ public static class DependencyInjection
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
+        services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()
