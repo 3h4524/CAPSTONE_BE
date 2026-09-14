@@ -89,8 +89,11 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        if (!result.Value.RequiresTwoFactor)
+        {
+            SetAccessTokenCookie(result.Value.AccessToken!, result.Value.ExpiresAtUtc!.Value);
+            SetRefreshTokenCookie(result.Value.RefreshToken!, result.Value.RefreshTokenExpiresAtUtc!.Value);
+        }
 
         return Ok(result.Value);
     }
@@ -163,8 +166,8 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        SetAccessTokenCookie(result.Value.AccessToken!, result.Value.ExpiresAtUtc!.Value);
+        SetRefreshTokenCookie(result.Value.RefreshToken!, result.Value.RefreshTokenExpiresAtUtc!.Value);
 
         return Ok(result.Value);
     }

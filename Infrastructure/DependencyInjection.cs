@@ -14,6 +14,7 @@ using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using APCS.Infrastructure.Services;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -98,6 +99,7 @@ public static class DependencyInjection
         services.AddScoped<IPlanRepository, PlanRepository>();
         services.AddScoped<IInvoiceRepository, InvoiceRepository>();
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
+        services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
 
         return services;
@@ -109,6 +111,13 @@ public static class DependencyInjection
     private static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddHttpContextAccessor();
+        var keyProtection = services.AddDataProtection().SetApplicationName("APCS");
+        if (configuration["ApiKeys:KeyRingPath"] is { Length: > 0 } keyRingPath)
+            keyProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+        services.AddScoped<IApiKeyCredentials, ApiKeyCredentials>();
+        services.AddHttpClient("ApiKeyValidation", client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+            .RedactLoggedHeaders(new[] { "Authorization" });
         services.AddScoped<ICurrentUser, CurrentUserService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();

@@ -9,9 +9,9 @@ namespace APCS.Application.Features.Auth.Dtos.Response;
 public sealed record LoginResponseDto(
 
     [property: JsonIgnore] string AccessToken,
-    [property: JsonIgnore] DateTimeOffset ExpiresAtUtc,
-    [property: JsonIgnore] string RefreshToken,
-    [property: JsonIgnore] DateTimeOffset RefreshTokenExpiresAtUtc,
+    [property: JsonIgnore] DateTimeOffset? ExpiresAtUtc,
+    [property: JsonIgnore] string? RefreshToken,
+    [property: JsonIgnore] DateTimeOffset? RefreshTokenExpiresAtUtc,
     AuthenticatedUserResponse? User,
     bool RequiresTwoFactor = false,
     string? TempToken = null,
