@@ -27,4 +27,9 @@ public static class ErrorCodes
     public const string GoogleEmailNotVerified = "auth.google_email_not_verified";
     public const string AdminTwoFactorInvalid = "auth.admin_2fa_invalid";
     public const string AdminTwoFactorExpired = "auth.admin_2fa_expired";
+    public const string SubscriptionPlanNotFound = "subscriptions.plan_not_found";
+    public const string SubscriptionAnnualNotAvailable = "subscriptions.annual_not_available";
+    public const string SubscriptionAlreadySubscribed = "subscriptions.already_subscribed";
+    public const string SubscriptionInvoiceNotFound = "subscriptions.invoice_not_found";
+    public const string PaymentGatewayUnavailable = "payments.gateway_unavailable";
 }

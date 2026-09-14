@@ -43,4 +43,14 @@ public interface IEmailService
         string fullName,
         string resetToken,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Sends an administrator a notification about a newly created support ticket.</summary>
+    Task SendSupportTicketCreatedAsync(
+        string to,
+        string fullName,
+        Guid ticketId,
+        string ticketNumber,
+        string category,
+        string priority,
+        CancellationToken cancellationToken = default);
 }

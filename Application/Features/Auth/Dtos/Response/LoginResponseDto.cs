@@ -7,10 +7,11 @@ namespace APCS.Application.Features.Auth.Dtos.Response;
 /// Represents a successful login response.
 /// </summary>
 public sealed record LoginResponseDto(
-    string? AccessToken,
-    DateTimeOffset? ExpiresAtUtc,
-    [property: JsonIgnore] string? RefreshToken,
-    [property: JsonIgnore] DateTimeOffset? RefreshTokenExpiresAtUtc,
+
+    [property: JsonIgnore] string AccessToken,
+    [property: JsonIgnore] DateTimeOffset ExpiresAtUtc,
+    [property: JsonIgnore] string RefreshToken,
+    [property: JsonIgnore] DateTimeOffset RefreshTokenExpiresAtUtc,
     AuthenticatedUserResponse? User,
     bool RequiresTwoFactor = false,
     string? TempToken = null,

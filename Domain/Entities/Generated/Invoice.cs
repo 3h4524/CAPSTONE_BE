@@ -37,6 +37,12 @@ public partial class Invoice
 
     public DateTime? UpdatedAt { get; set; }
 
+    public long? PayosOrderCode { get; set; }
+
+    public string? PayosPaymentLinkId { get; set; }
+
+    public string? PayosQrCode { get; set; }
+
     public virtual Subscription Subscription { get; set; } = null!;
 
     public virtual User User { get; set; } = null!;
