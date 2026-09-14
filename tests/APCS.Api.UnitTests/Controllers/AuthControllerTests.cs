@@ -142,6 +142,66 @@ public sealed class AuthControllerTests
     }
 
     [TestMethod]
+    public async Task VerifyAdminTwoFactor_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.VerifyAdminTwoFactorAsync(It.IsAny<AdminVerifyTwoFactorRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new AdminVerifyTwoFactorRequestDto("temp", "123456");
+
+        var action = await controller.VerifyAdminTwoFactor(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.VerifyAdminTwoFactorAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+        AssertRefreshCookie(controller, "refresh-token");
+    }
+
+    [TestMethod]
+    public async Task ResendAdminTwoFactor_WhenSuccessful_ReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        var responseDto = new AdminTwoFactorResponseDto("temp", AccessExpiresAt);
+        authService.Setup(candidate => candidate.ResendAdminTwoFactorAsync(It.IsAny<AdminResendTwoFactorRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(responseDto));
+        var controller = CreateController(authService);
+
+        var request = new AdminResendTwoFactorRequestDto("temp");
+
+        var action = await controller.ResendAdminTwoFactor(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(responseDto);
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.ResendAdminTwoFactorAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Google_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.GoogleLoginAsync(It.IsAny<GoogleLoginRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new GoogleLoginRequestDto("google-id-token");
+
+        var action = await controller.Google(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.GoogleLoginAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+        AssertRefreshCookie(controller, "refresh-token");
+    }
+
+    [TestMethod]
     public async Task Refresh_WhenSuccessful_ReadsOldCookieAndSetsRotatedCookie()
     {
         var authService = new Mock<IAuthService>();

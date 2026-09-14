@@ -130,7 +130,17 @@ internal static class AuthTestData
         Mock<IEmailService>? emailService = null,
         Mock<ICacheService>? cacheService = null,
         Mock<ICurrentUser>? currentUser = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        IValidator<LoginRequestDto>? loginValidator = null,
+        IValidator<GoogleLoginRequestDto>? googleLoginValidator = null,
+        IValidator<RegisterRequestDto>? registerValidator = null,
+        IValidator<VerifyEmailRequestDto>? verifyEmailValidator = null,
+        IValidator<ResendVerificationEmailRequestDto>? resendVerificationEmailValidator = null,
+        IValidator<ForgotPasswordRequestDto>? forgotPasswordValidator = null,
+        IValidator<ResetPasswordRequestDto>? resetPasswordValidator = null,
+        IValidator<ChangePasswordRequestDto>? changePasswordValidator = null,
+        IValidator<AdminVerifyTwoFactorRequestDto>? adminVerifyTwoFactorValidator = null,
+        IValidator<AdminResendTwoFactorRequestDto>? adminResendTwoFactorValidator = null) =>
         new(
             (accountService ?? new Mock<IAccountService>()).Object,
             (unitOfWork ?? new Mock<IUnitOfWork>()).Object,
@@ -142,15 +152,15 @@ internal static class AuthTestData
             (currentUser ?? new Mock<ICurrentUser>()).Object,
             timeProvider ?? CreateTimeProvider(),
 
-            CreatePassingValidator<LoginRequestDto>().Object,
-            CreatePassingValidator<GoogleLoginRequestDto>().Object,
+            loginValidator ?? CreatePassingValidator<LoginRequestDto>().Object,
+            googleLoginValidator ?? CreatePassingValidator<GoogleLoginRequestDto>().Object,
             NullLogger<AuthService>.Instance,
-            CreatePassingValidator<RegisterRequestDto>().Object,
-            CreatePassingValidator<VerifyEmailRequestDto>().Object,
-            CreatePassingValidator<ResendVerificationEmailRequestDto>().Object,
-            CreatePassingValidator<ForgotPasswordRequestDto>().Object,
-            CreatePassingValidator<ResetPasswordRequestDto>().Object,
-            CreatePassingValidator<ChangePasswordRequestDto>().Object,
-            CreatePassingValidator<AdminVerifyTwoFactorRequestDto>().Object,
-            CreatePassingValidator<AdminResendTwoFactorRequestDto>().Object);
+            registerValidator ?? CreatePassingValidator<RegisterRequestDto>().Object,
+            verifyEmailValidator ?? CreatePassingValidator<VerifyEmailRequestDto>().Object,
+            resendVerificationEmailValidator ?? CreatePassingValidator<ResendVerificationEmailRequestDto>().Object,
+            forgotPasswordValidator ?? CreatePassingValidator<ForgotPasswordRequestDto>().Object,
+            resetPasswordValidator ?? CreatePassingValidator<ResetPasswordRequestDto>().Object,
+            changePasswordValidator ?? CreatePassingValidator<ChangePasswordRequestDto>().Object,
+            adminVerifyTwoFactorValidator ?? CreatePassingValidator<AdminVerifyTwoFactorRequestDto>().Object,
+            adminResendTwoFactorValidator ?? CreatePassingValidator<AdminResendTwoFactorRequestDto>().Object);
 }
