@@ -83,6 +83,25 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromMinutes(1)
         };
+
+        // The access token never reaches client-side JS: it travels only in the HttpOnly
+        // __Host-apcs_access cookie, so it is read from there instead of an Authorization
+        // header. Falling through when the cookie is absent keeps the Authorization header
+        // path available for non-browser callers (Swagger, future mobile clients).
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                if (context.Request.Cookies.TryGetValue(
+                        AuthConstants.AccessTokenCookieName, out var accessToken)
+                    && !string.IsNullOrEmpty(accessToken))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
@@ -116,6 +135,17 @@ if (app.Environment.IsDevelopment())
         var cached = await cache.GetAsync<object>(key, cancellationToken);
 
         return Results.Ok(cached);
+    });
+
+    // One-time (or on-ngrok-restart) dev setup: registers the webhook URL PayOS should call.
+    // Example: curl -X POST "http://localhost:5191/api/dev/confirm-payos-webhook?url=https://<id>.ngrok-free.app/api/subscriptions/webhooks/payos"
+    app.MapPost("/api/dev/confirm-payos-webhook", async (
+        string url,
+        APCS.Application.Features.Subscriptions.Common.IPaymentGatewayClient paymentGateway,
+        CancellationToken cancellationToken) =>
+    {
+        await paymentGateway.ConfirmWebhookAsync(url, cancellationToken);
+        return Results.Ok(new { confirmed = url });
     });
 }
 

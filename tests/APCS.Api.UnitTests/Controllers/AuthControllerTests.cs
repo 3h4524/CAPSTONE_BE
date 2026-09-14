@@ -1,3 +1,4 @@
+using System.Linq;
 using APCS.Api.Controllers;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
@@ -138,6 +139,7 @@ public sealed class AuthControllerTests
         authService.Verify(
             candidate => candidate.LoginAsync(expected, It.IsAny<CancellationToken>()),
             Times.Once);
+        AssertAccessCookie(controller, "access-token");
         AssertRefreshCookie(controller, "refresh-token");
     }
 
@@ -156,6 +158,7 @@ public sealed class AuthControllerTests
         action.Should().BeOfType<OkObjectResult>();
         authService.Verify(candidate => candidate.RefreshTokenAsync(
             "old-refresh", It.IsAny<RequestContext?>(), It.IsAny<CancellationToken>()), Times.Once);
+        AssertAccessCookie(controller, "new-access");
         AssertRefreshCookie(controller, "new-refresh");
     }
 
@@ -172,7 +175,8 @@ public sealed class AuthControllerTests
         var action = await controller.Refresh(CancellationToken.None);
 
         action.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(401);
-        AssertCookieWasCleared(controller);
+        AssertCookieWasCleared(controller, AuthConstants.AccessTokenCookieName);
+        AssertCookieWasCleared(controller, AuthConstants.RefreshTokenCookieName);
     }
 
     [TestMethod]
@@ -189,7 +193,8 @@ public sealed class AuthControllerTests
         action.Should().BeOfType<NoContentResult>();
         authService.Verify(candidate => candidate.LogoutAsync(
             "refresh-token", It.IsAny<RequestContext?>(), It.IsAny<CancellationToken>()), Times.Once);
-        AssertCookieWasCleared(controller);
+        AssertCookieWasCleared(controller, AuthConstants.AccessTokenCookieName);
+        AssertCookieWasCleared(controller, AuthConstants.RefreshTokenCookieName);
     }
 
     [TestMethod]
@@ -219,10 +224,16 @@ public sealed class AuthControllerTests
         };
     }
 
-    private static void AssertRefreshCookie(AuthController controller, string value)
+    private static void AssertAccessCookie(AuthController controller, string value) =>
+        AssertCookieWasSet(controller, AuthConstants.AccessTokenCookieName, value);
+
+    private static void AssertRefreshCookie(AuthController controller, string value) =>
+        AssertCookieWasSet(controller, AuthConstants.RefreshTokenCookieName, value);
+
+    private static void AssertCookieWasSet(AuthController controller, string cookieName, string value)
     {
-        var header = controller.Response.Headers.SetCookie.ToString();
-        header.Should().Contain($"{AuthConstants.RefreshTokenCookieName}={value}");
+        var header = FindCookieHeader(controller, cookieName);
+        header.Should().Contain($"{cookieName}={value}");
         var normalized = header.ToLowerInvariant();
         normalized.Should().Contain("httponly", Exactly.Once());
         normalized.Should().Contain("secure", Exactly.Once());
@@ -230,15 +241,27 @@ public sealed class AuthControllerTests
         normalized.Should().Contain("path=/", Exactly.Once());
     }
 
-    private static void AssertCookieWasCleared(AuthController controller)
+    private static void AssertCookieWasCleared(AuthController controller, string cookieName)
     {
-        var header = controller.Response.Headers.SetCookie.ToString();
-        header.Should().Contain($"{AuthConstants.RefreshTokenCookieName}=");
+        var header = FindCookieHeader(controller, cookieName);
+        header.Should().Contain($"{cookieName}=");
         var normalized = header.ToLowerInvariant();
         normalized.Should().Contain("expires=");
         normalized.Should().Contain("secure");
         normalized.Should().Contain("samesite=lax");
         normalized.Should().Contain("path=/");
+    }
+
+    // Login/Refresh now set two cookies at once, so the combined Set-Cookie header carries two
+    // entries: pick out the one belonging to the cookie under test before asserting on it.
+    private static string FindCookieHeader(AuthController controller, string cookieName)
+    {
+        var header = controller.Response.Headers.SetCookie
+            .SingleOrDefault(candidate => candidate is not null
+                && candidate.StartsWith($"{cookieName}=", StringComparison.Ordinal));
+
+        header.Should().NotBeNull($"a Set-Cookie header for '{cookieName}' should have been written");
+        return header!;
     }
 
     private static LoginResponseDto CreateLoginResponse() => new(

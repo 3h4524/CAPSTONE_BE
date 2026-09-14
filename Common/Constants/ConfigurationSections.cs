@@ -45,6 +45,11 @@ public static class ConfigurationSections
     /// </summary>
     public const string Smtp = "Smtp";
 
+    /// <summary>
+    /// The PayOS payment gateway options section.
+    /// </summary>
+    public const string PayOs = "PayOS";
+
     /// <summary>The private asset storage section.</summary>
     public const string Cloudinary = "Cloudinary";
 }

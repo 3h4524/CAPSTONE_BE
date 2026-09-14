@@ -11,6 +11,11 @@ public static class AuthConstants
     public const string RefreshTokenCookieName = "__Host-apcs_refresh";
 
     /// <summary>
+    /// The access token cookie name.
+    /// </summary>
+    public const string AccessTokenCookieName = "__Host-apcs_access";
+
+    /// <summary>
     /// The default access token lifetime in minutes.
     /// </summary>
     public const int DefaultAccessTokenMinutes = 15;

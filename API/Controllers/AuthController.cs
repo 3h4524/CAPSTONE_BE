@@ -89,6 +89,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
+        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
         SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
 
         return Ok(result.Value);
@@ -114,6 +115,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
+        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
         SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
 
         return Ok(result.Value);
@@ -133,10 +135,12 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
 
         if (result.IsFailure)
         {
+            ClearAccessTokenCookie();
             ClearRefreshTokenCookie();
             return result.ToActionResult(this);
         }
 
+        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
         SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
 
         return Ok(result.Value);
@@ -154,6 +158,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
         var result = await authService.LogoutAsync(refreshToken, GetRequestContext(), cancellationToken);
 
+        ClearAccessTokenCookie();
         ClearRefreshTokenCookie();
 
         return result.IsSuccess ? NoContent() : result.ToActionResult(this);
@@ -238,6 +243,31 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
         new(
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             Request.Headers.UserAgent.ToString() is { Length: > 0 } userAgent ? userAgent : null);
+
+    private void SetAccessTokenCookie(string accessToken, DateTimeOffset expiresAtUtc)
+    {
+        Response.Cookies.Append(
+            AuthConstants.AccessTokenCookieName,
+            accessToken,
+            new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Lax,
+                Expires = expiresAtUtc,
+                Path = "/"
+            });
+    }
+
+    private void ClearAccessTokenCookie()
+    {
+        Response.Cookies.Delete(AuthConstants.AccessTokenCookieName, new CookieOptions
+        {
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            Path = "/"
+        });
+    }
 
     private void SetRefreshTokenCookie(string refreshToken, DateTimeOffset expiresAtUtc)
     {
