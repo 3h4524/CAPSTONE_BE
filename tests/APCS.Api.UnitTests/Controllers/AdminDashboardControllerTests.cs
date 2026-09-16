@@ -28,10 +28,10 @@ public sealed class AdminDashboardControllerTests
             new List<SupportTicketDto>(),
             new List<BatchJobDto>()
         );
-        _serviceMock.Setup(s => s.GetMetricsAsync(It.IsAny<CancellationToken>()))
+        _serviceMock.Setup(s => s.GetMetricsAsync(It.IsAny<string>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(metrics));
 
-        var result = await _controller.GetMetricsAsync(CancellationToken.None);
+        var result = await _controller.GetMetricsAsync(cancellationToken: CancellationToken.None);
 
         var okResult = result as OkObjectResult;
         okResult.Should().NotBeNull();
@@ -42,10 +42,10 @@ public sealed class AdminDashboardControllerTests
     public async Task GetMetricsAsync_WhenFails_ReturnsProblemDetails()
     {
         var error = new Error("Code", "Message", ErrorType.Failure);
-        _serviceMock.Setup(s => s.GetMetricsAsync(It.IsAny<CancellationToken>()))
+        _serviceMock.Setup(s => s.GetMetricsAsync(It.IsAny<string>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure<AdminDashboardMetricsDto>(error));
 
-        var result = await _controller.GetMetricsAsync(CancellationToken.None);
+        var result = await _controller.GetMetricsAsync(cancellationToken: CancellationToken.None);
 
         var objectResult = result as ObjectResult;
         objectResult.Should().NotBeNull();
