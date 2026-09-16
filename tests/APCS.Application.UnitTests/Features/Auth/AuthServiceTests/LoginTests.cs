@@ -148,8 +148,8 @@ public sealed class LoginTests
         result.Value.RequiresTwoFactor.Should().BeTrue();
         result.Value.TempToken.Should().NotBeNullOrWhiteSpace();
         result.Value.TwoFactorExpiresAtUtc.Should().NotBeNull();
-        result.Value.AccessToken.Should().BeEmpty();
-        result.Value.RefreshToken.Should().BeEmpty();
+        result.Value.AccessToken.Should().BeNull();
+        result.Value.RefreshToken.Should().BeNull();
 
         account.Verify(service => service.TouchLastLoginAsync(
             It.IsAny<Guid>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);

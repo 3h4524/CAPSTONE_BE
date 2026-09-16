@@ -89,10 +89,15 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        if (!result.Value.RequiresTwoFactor)
+        // An administrator login stops here awaiting the OTP, so no token exists yet.
+        if (result.Value.AccessToken is not null && result.Value.ExpiresAtUtc is not null)
         {
-            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc.Value);
+        }
+
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
         }
 
         return Ok(result.Value);
@@ -119,8 +124,10 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
+        }
 
         return Ok(result.Value);
     }
@@ -164,10 +171,15 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        if (!result.Value.RequiresTwoFactor)
+        // An administrator login stops here awaiting the OTP, so no token exists yet.
+        if (result.Value.AccessToken is not null && result.Value.ExpiresAtUtc is not null)
         {
-            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc.Value);
+        }
+
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
         }
 
         return Ok(result.Value);
