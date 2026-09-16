@@ -89,8 +89,11 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        if (!result.Value.RequiresTwoFactor)
+        {
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        }
 
         return Ok(result.Value);
     }
@@ -116,10 +119,8 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
-        {
-            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
-        }
+        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
+        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
 
         return Ok(result.Value);
     }
@@ -163,8 +164,11 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        if (!result.Value.RequiresTwoFactor)
+        {
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        }
 
         return Ok(result.Value);
     }
