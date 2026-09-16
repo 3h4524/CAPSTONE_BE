@@ -1,46 +1,9 @@
-﻿Test Parallelization enabled for C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll (Workers: 16, Scope: ClassLevel)
-failed GoogleLoginAsync_WhenValidationFails_ReturnsValidationError (114ms)
-  Test method APCS.Application.UnitTests.Features.Auth.AuthServiceTests.GoogleLoginTests.GoogleLoginAsync_WhenValidationFails_ReturnsValidationError threw exception:
-  System.NullReferenceException: Object reference not set to an instance of an object.
-    at APCS.Application.Features.Auth.AuthService.GoogleLoginAsync(GoogleLoginRequestDto request, CancellationToken cancellationToken) in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Application\Features\Auth\AuthService.cs:292
-    at APCS.Application.UnitTests.Features.Auth.AuthServiceTests.GoogleLoginTests.GoogleLoginAsync_WhenValidationFails_ReturnsValidationError() in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\Features\Auth\AuthServiceTests\GoogleLoginTests.cs:30
-    at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)
-    
-failed ResendAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError (54ms)
-  Test method APCS.Application.UnitTests.Features.Auth.AuthServiceTests.ResendAdminTwoFactorTests.ResendAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError threw exception:
-  System.NullReferenceException: Object reference not set to an instance of an object.
-    at APCS.Application.Features.Auth.AuthService.ResendAdminTwoFactorAsync(AdminResendTwoFactorRequestDto request, CancellationToken cancellationToken) in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Application\Features\Auth\AuthService.cs:162
-    at APCS.Application.UnitTests.Features.Auth.AuthServiceTests.ResendAdminTwoFactorTests.ResendAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError() in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\Features\Auth\AuthServiceTests\ResendAdminTwoFactorTests.cs:21
-    at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)
-    
-failed VerifyAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError (53ms)
-  Test method APCS.Application.UnitTests.Features.Auth.AuthServiceTests.VerifyAdminTwoFactorTests.VerifyAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError threw exception:
-  System.NullReferenceException: Object reference not set to an instance of an object.
-    at APCS.Application.Features.Auth.AuthService.VerifyAdminTwoFactorAsync(AdminVerifyTwoFactorRequestDto request, CancellationToken cancellationToken) in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Application\Features\Auth\AuthService.cs:111
-    at APCS.Application.UnitTests.Features.Auth.AuthServiceTests.VerifyAdminTwoFactorTests.VerifyAdminTwoFactorAsync_WhenValidationFails_ReturnsValidationError() in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\Features\Auth\AuthServiceTests\VerifyAdminTwoFactorTests.cs:24
-    at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)
-    
-failed ResendAdminTwoFactorAsync_WhenValid_SendsNewOtpAndUpdatesChallenge (56ms)
-  Test method APCS.Application.UnitTests.Features.Auth.AuthServiceTests.ResendAdminTwoFactorTests.ResendAdminTwoFactorAsync_WhenValid_SendsNewOtpAndUpdatesChallenge threw exception:
-  FluentAssertions.Execution.AssertionFailedException: Did not expect result.Value.ExpiresAtUtc to represent the same point in time as <2026-08-31 08:05:00 +0h>, but it did.
-    at FluentAssertions.Execution.FallbackTestFramework.Throw(String message)
-    at FluentAssertions.Execution.TestFrameworkProvider.Throw(String message)
-    at FluentAssertions.Execution.DefaultAssertionStrategy.HandleFailure(String message)
-    at FluentAssertions.Execution.AssertionScope.FailWith(Func`1 failReasonFunc)
-    at FluentAssertions.Execution.AssertionScope.FailWith(Func`1 failReasonFunc)
-    at FluentAssertions.Execution.AssertionScope.FailWith(String message, Object[] args)
-    at FluentAssertions.Primitives.DateTimeOffsetAssertions`1.NotBe(DateTimeOffset unexpected, String because, Object[] becauseArgs)
-    at APCS.Application.UnitTests.Features.Auth.AuthServiceTests.ResendAdminTwoFactorTests.ResendAdminTwoFactorAsync_WhenValid_SendsNewOtpAndUpdatesChallenge() in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\Features\Auth\AuthServiceTests\ResendAdminTwoFactorTests.cs:103
-    at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)
-    
-
-Test run summary: Failed! - C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll (net8.0|x64)
-  total: 139
-  failed: 4
-  succeeded: 135
-  skipped: 0
-  duration: 337ms
-
-=== COMMAND LINE ===
-C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.exe --internal-msbuild-node testingplatform.pipe.ac45b19e2cd0415d92b7bf8d0a12990a 
-
+﻿  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Common -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Common\bin\Debug\net8.0\APCS.Common.dll
+  Domain -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Domain\bin\Debug\net8.0\APCS.Domain.dll
+  Application -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Application\bin\Debug\net8.0\APCS.Application.dll
+  APCS.Application.UnitTests -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll
+  Run tests: 'C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll' [net8.0|x64]
+  Failed! - Failed: 1, Passed: 140, Skipped: 0, Total: 141, Duration: 330ms - APCS.Application.UnitTests.dll (net8.0|x64)
+C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll : error run failed: Tests failed: 'C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\TestResults\APCS.Application.UnitTests_net8.0_x64.log' [net8.0|x64] [C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\APCS.Application.UnitTests.csproj]
