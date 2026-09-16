@@ -112,7 +112,7 @@ public sealed class GoogleLoginTests
         result.Value.RequiresTwoFactor.Should().BeTrue();
         result.Value.TempToken.Should().NotBeNullOrWhiteSpace();
         result.Value.TwoFactorExpiresAtUtc.Should().NotBeNull();
-        result.Value.AccessToken.Should().BeNull();
+        result.Value.AccessToken.Should().BeEmpty();
         
         emailService.Verify(service => service.SendAsync(
             AuthTestData.ActiveUser.Email,
