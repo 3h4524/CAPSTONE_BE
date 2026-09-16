@@ -69,6 +69,7 @@ try {
         "+APCS.Api.Middleware.*",
         "+APCS.Application.Common.Behaviours.*",
         "+APCS.Application.Features.Auth.*",
+        "+APCS.Application.Features.ApiKeys.*",
         "+APCS.Common.*",
         "+APCS.Domain.Common.SoftDeletableEntity",
         "+APCS.Domain.Entities.AuthToken",
