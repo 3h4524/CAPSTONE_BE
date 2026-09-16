@@ -8,7 +8,7 @@ namespace APCS.Application.Features.Auth.Dtos.Response;
 /// </summary>
 public sealed record LoginResponseDto(
 
-    [property: JsonIgnore] string AccessToken,
+    [property: JsonIgnore] string? AccessToken,
     [property: JsonIgnore] DateTimeOffset? ExpiresAtUtc,
     [property: JsonIgnore] string? RefreshToken,
     [property: JsonIgnore] DateTimeOffset? RefreshTokenExpiresAtUtc,
