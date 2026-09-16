@@ -195,7 +195,7 @@ These facts are documented so new work does not mistake a target rule for an alr
 - `AggregateRoot` is presently a marker and domain events are not implemented.
 - `EmailService` logs a send request and completes without delivering email.
 - Redis is configured and unit-tested, but the repository has no Redis integration tests.
-- Model tests verify the reverse-engineered table count and `xmin` concurrency metadata, but no integration-test project currently verifies PostgreSQL writes, provider query behavior, authorization, or the complete HTTP pipeline.
+- Model tests verify the reverse-engineered table count and `xmin` concurrency metadata. The opt-in APCS.Infrastructure.IntegrationTests project verifies API-key PostgreSQL projection, ownership, transaction-locked writes and soft deletion with session-local temporary tables. The complete HTTP authentication/authorization pipeline does not yet have integration coverage.
 
 These are not instructions to refactor unrelated code. Address a deviation only through an approved feature or architectural change.
 

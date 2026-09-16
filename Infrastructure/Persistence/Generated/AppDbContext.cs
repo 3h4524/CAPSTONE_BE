@@ -174,6 +174,13 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.AuthType)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'api_key'::character varying")
+                .HasColumnName("auth_type");
+            entity.Property(e => e.ConnectedAccountName)
+                .HasMaxLength(200)
+                .HasColumnName("connected_account_name");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -181,6 +188,9 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(45)
                 .HasColumnName("created_by_ip");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.Environment)
+                .HasMaxLength(50)
+                .HasColumnName("environment");
             entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
@@ -192,6 +202,10 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(4)
                 .HasColumnName("key_last_4");
             entity.Property(e => e.KeyValueEncrypted).HasColumnName("key_value_encrypted");
+            entity.Property(e => e.LastCheckSucceeded)
+                .HasComment("NULL means no recorded connectivity result; written by the credential validation flow.")
+                .HasColumnName("last_check_succeeded");
+            entity.Property(e => e.LastCheckedAt).HasColumnName("last_checked_at");
             entity.Property(e => e.LastUsedAt).HasColumnName("last_used_at");
             entity.Property(e => e.ServiceProvider)
                 .HasMaxLength(50)

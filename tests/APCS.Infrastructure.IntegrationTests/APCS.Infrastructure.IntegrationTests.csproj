@@ -1,0 +1,9 @@
+<Project Sdk="MSTest.Sdk">
+  <PropertyGroup>
+    <AssemblyName>APCS.Infrastructure.IntegrationTests</AssemblyName>
+    <RootNamespace>APCS.Infrastructure.IntegrationTests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../Infrastructure/Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

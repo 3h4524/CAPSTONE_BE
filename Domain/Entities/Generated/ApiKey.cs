@@ -33,5 +33,18 @@ public partial class ApiKey
 
     public DateTime? DeletedAt { get; set; }
 
+    public string AuthType { get; set; } = null!;
+
+    public string? Environment { get; set; }
+
+    public string? ConnectedAccountName { get; set; }
+
+    public DateTime? LastCheckedAt { get; set; }
+
+    /// <summary>
+    /// NULL means no recorded connectivity result; written by the credential validation flow.
+    /// </summary>
+    public bool? LastCheckSucceeded { get; set; }
+
     public virtual User User { get; set; } = null!;
 }

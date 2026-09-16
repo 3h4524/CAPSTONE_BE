@@ -34,7 +34,7 @@ Use integration tests when correctness depends on framework/provider behavior:
 - Dependency injection across the full host.
 - Authentication, authorization, middleware ordering, routing, and complete HTTP request/response behavior.
 
-No integration-test project exists yet. Do not label a mock-based test as integration coverage. Introduce integration infrastructure only as part of an approved change and use disposable real PostgreSQL/Redis services appropriate to the test.
+The opt-in APCS.Infrastructure.IntegrationTests project verifies API-key ownership, soft-delete filtering and safe projection against PostgreSQL using a session-local temporary table and rollback. It is run separately from the unit-test solution with APCS_TEST_CONNECTION_STRING configured. No public table rows are changed. Do not label mock-based tests as integration coverage; use isolated real services for provider-dependent behavior.
 
 ## Test conventions
 
