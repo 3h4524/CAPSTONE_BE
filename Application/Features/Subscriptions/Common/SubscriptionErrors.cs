@@ -47,4 +47,51 @@ internal static class SubscriptionErrors
     /// </summary>
     public static Error GatewayUnavailable() =>
         Error.Failure(ErrorCodes.PaymentGatewayUnavailable, "Could not start the payment. Please try again.");
+
+    /// <summary>
+    /// BR107/BR113 precondition: Upgrade/Downgrade require an active paid plan. The SRS models
+    /// this as a UI precondition rather than a numbered abnormal-flow message, so this wording is
+    /// APCS's own rather than a verbatim MSG entry.
+    /// </summary>
+    public static Error NoActivePlanToChange() =>
+        new(
+            ErrorCodes.SubscriptionNoActivePlan,
+            "You do not have an active paid plan to change. Please choose a plan to buy instead.",
+            ErrorType.Validation);
+
+    /// <summary>MSG59's verbatim text.</summary>
+    public static Error TargetNotHigherTier() =>
+        new(
+            ErrorCodes.SubscriptionTargetNotHigherTier,
+            "The selected plan is not an upgrade. Please choose a higher-tier plan.",
+            ErrorType.Validation);
+
+    /// <summary>MSG61's verbatim text.</summary>
+    public static Error TargetNotLowerTier() =>
+        new(
+            ErrorCodes.SubscriptionTargetNotLowerTier,
+            "The selected plan is not a downgrade. Please choose a lower-tier plan.",
+            ErrorType.Validation);
+
+    /// <summary>
+    /// Cancelling a scheduled downgrade (BR118) when none is pending. Not a numbered SRS message
+    /// either — the SRS only describes cancelling an existing schedule.
+    /// </summary>
+    public static Error NoScheduledDowngrade() =>
+        new(
+            ErrorCodes.SubscriptionNoScheduledDowngrade,
+            "There is no scheduled downgrade to cancel.",
+            ErrorType.Validation);
+
+    /// <summary>MSG65's verbatim text — Download Invoice's own "not found" wording.</summary>
+    public static Error InvoicePdfNotFound() =>
+        Error.NotFound(
+            ErrorCodes.SubscriptionInvoiceNotFound,
+            "This invoice could not be found. Please refresh and try again.");
+
+    /// <summary>MSG66's verbatim text.</summary>
+    public static Error InvoicePdfGenerationFailed() =>
+        Error.Failure(
+            ErrorCodes.SubscriptionInvoicePdfGenerationFailed,
+            "Unable to generate the invoice PDF. Please try again.");
 }

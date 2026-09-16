@@ -116,6 +116,7 @@ public static class DependencyInjection
         services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
         services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
+        services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
 
         // ── Redis cache ──────────────────────────────────────────

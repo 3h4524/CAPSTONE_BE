@@ -15,6 +15,7 @@ public sealed class SubscriptionRepository(AppDbContext dbContext)
         dbContext.Subscriptions
             .AsNoTracking()
             .Include(subscription => subscription.Plan)
+            .Include(subscription => subscription.ScheduledPlan)
             .Where(subscription => subscription.UserId == userId
                 && subscription.Status == "active"
                 && subscription.DeletedAt == null)

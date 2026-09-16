@@ -170,9 +170,12 @@ internal static class SubscriptionTestData
         Mock<IUnitOfWork>? unitOfWork = null,
         Mock<ICurrentUser>? currentUser = null,
         Mock<IPaymentGatewayClient>? paymentGateway = null,
+        Mock<IInvoicePdfRenderer>? invoicePdfRenderer = null,
         IOptions<PaymentGatewaySettings>? gatewaySettings = null,
         TimeProvider? timeProvider = null,
-        Mock<IValidator<CheckoutRequestDto>>? checkoutValidator = null) =>
+        Mock<IValidator<CheckoutRequestDto>>? checkoutValidator = null,
+        Mock<IValidator<UpgradeRequestDto>>? upgradeValidator = null,
+        Mock<IValidator<DowngradeRequestDto>>? downgradeValidator = null) =>
         new(
             (subscriptions ?? new Mock<ISubscriptionRepository>()).Object,
             (plans ?? new Mock<IPlanRepository>()).Object,
@@ -181,9 +184,20 @@ internal static class SubscriptionTestData
             (unitOfWork ?? new Mock<IUnitOfWork>()).Object,
             (currentUser ?? CreateAuthenticatedUser()).Object,
             (paymentGateway ?? DefaultApprovingGateway()).Object,
+            (invoicePdfRenderer ?? DefaultInvoicePdfRenderer()).Object,
             gatewaySettings ?? CreateGatewaySettings(),
             timeProvider ?? CreateTimeProvider(),
-            (checkoutValidator ?? CreatePassingValidator<CheckoutRequestDto>()).Object);
+            (checkoutValidator ?? CreatePassingValidator<CheckoutRequestDto>()).Object,
+            (upgradeValidator ?? CreatePassingValidator<UpgradeRequestDto>()).Object,
+            (downgradeValidator ?? CreatePassingValidator<DowngradeRequestDto>()).Object);
+
+    private static Mock<IInvoicePdfRenderer> DefaultInvoicePdfRenderer()
+    {
+        var renderer = new Mock<IInvoicePdfRenderer>();
+        renderer.Setup(candidate => candidate.Render(It.IsAny<InvoicePdfModel>()))
+            .Returns([1, 2, 3]);
+        return renderer;
+    }
 
     private static Mock<IPaymentGatewayClient> DefaultApprovingGateway()
     {
