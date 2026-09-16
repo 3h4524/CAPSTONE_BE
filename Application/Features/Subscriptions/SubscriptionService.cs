@@ -408,9 +408,9 @@ public sealed class SubscriptionService(
                 InvoiceNumber = GenerateInvoiceNumber(utcNow),
                 InvoiceDate = today,
                 DueDate = today,
-                AmountUsd = newPlanPrice,
+                AmountUsd = dueToday,
                 TaxAmount = 0m,
-                TotalAmount = 0m,
+                TotalAmount = dueToday,
                 Status = InvoiceStatuses.Paid,
                 PaymentDate = today,
                 Items = itemsJson,
@@ -478,7 +478,10 @@ public sealed class SubscriptionService(
                 InvoiceNumber = GenerateInvoiceNumber(utcNow),
                 InvoiceDate = today,
                 DueDate = today,
-                AmountUsd = newPlanPrice,
+                // chk_invoices_total requires TotalAmount == AmountUsd + TaxAmount; the invoiced
+                // amount is what's actually charged today (post-credit), not the plan's full
+                // price — that full price and the credit are still visible in Items above.
+                AmountUsd = dueToday,
                 TaxAmount = 0m,
                 TotalAmount = dueToday,
                 Status = InvoiceStatuses.AwaitingPayment,
