@@ -89,10 +89,10 @@ public sealed class AuthService(
                 cancellationToken);
 
             return Result.Success(new LoginResponseDto(
-                null,
-                null,
-                null,
-                null,
+                string.Empty,
+                default,
+                string.Empty,
+                default,
                 null,
                 RequiresTwoFactor: true,
                 TempToken: challenge.TempToken,
@@ -328,10 +328,10 @@ public sealed class AuthService(
                 cancellationToken);
 
             return Result.Success(new LoginResponseDto(
-                null,
-                null,
-                null,
-                null,
+                string.Empty,
+                default,
+                string.Empty,
+                default,
                 null,
                 RequiresTwoFactor: true,
                 TempToken: challenge.TempToken,
