@@ -35,9 +35,15 @@ public partial class Subscription
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid? ScheduledPlanId { get; set; }
+
+    public DateOnly? ScheduledPlanEffectiveDate { get; set; }
+
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
 
     public virtual SubscriptionPlan Plan { get; set; } = null!;
+
+    public virtual SubscriptionPlan? ScheduledPlan { get; set; }
 
     public virtual User User { get; set; } = null!;
 }
