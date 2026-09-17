@@ -16,7 +16,8 @@ public interface IInvoiceRepository : IRepository<Invoice>
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Finds one invoice by id, scoped to its owner, with its subscription and plan loaded.
+    /// Finds one invoice by id, scoped to its owner, with its subscription, plan, and billed-to
+    /// user loaded (the PDF's "Billed To" section needs the Seller's name and email).
     /// </summary>
     Task<Invoice?> GetByIdForUserAsync(
         Guid invoiceId,

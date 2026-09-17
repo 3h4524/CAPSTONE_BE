@@ -47,4 +47,46 @@ internal static class SubscriptionErrors
     /// </summary>
     public static Error GatewayUnavailable() =>
         Error.Failure(ErrorCodes.PaymentGatewayUnavailable, "Could not start the payment. Please try again.");
+
+    /// <summary>
+    /// Upgrade/Downgrade require an active paid plan. This case is modeled as a UI precondition
+    /// rather than a specification message, so this wording is APCS's own.
+    /// </summary>
+    public static Error NoActivePlanToChange() =>
+        new(
+            ErrorCodes.SubscriptionNoActivePlan,
+            "You do not have an active paid plan to change. Please choose a plan to buy instead.",
+            ErrorType.Validation);
+
+    public static Error TargetNotHigherTier() =>
+        new(
+            ErrorCodes.SubscriptionTargetNotHigherTier,
+            "The selected plan is not an upgrade. Please choose a higher-tier plan.",
+            ErrorType.Validation);
+
+    public static Error TargetNotLowerTier() =>
+        new(
+            ErrorCodes.SubscriptionTargetNotLowerTier,
+            "The selected plan is not a downgrade. Please choose a lower-tier plan.",
+            ErrorType.Validation);
+
+    /// <summary>
+    /// Cancelling a scheduled downgrade when none is pending. The specification only describes
+    /// cancelling an existing schedule, so this wording is APCS's own.
+    /// </summary>
+    public static Error NoScheduledDowngrade() =>
+        new(
+            ErrorCodes.SubscriptionNoScheduledDowngrade,
+            "There is no scheduled downgrade to cancel.",
+            ErrorType.Validation);
+
+    public static Error InvoicePdfNotFound() =>
+        Error.NotFound(
+            ErrorCodes.SubscriptionInvoiceNotFound,
+            "This invoice could not be found. Please refresh and try again.");
+
+    public static Error InvoicePdfGenerationFailed() =>
+        Error.Failure(
+            ErrorCodes.SubscriptionInvoicePdfGenerationFailed,
+            "Unable to generate the invoice PDF. Please try again.");
 }

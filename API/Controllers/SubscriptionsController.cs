@@ -73,4 +73,66 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
 
         return result.IsSuccess ? NoContent() : result.ToActionResult(this);
     }
+
+    /// <summary>
+    /// Upgrades the active subscription to a higher-tier plan, applying a prorated credit.
+    /// </summary>
+    [HttpPost("upgrade")]
+    [ProducesResponseType(typeof(UpgradeResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Upgrade(UpgradeRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.UpgradeAsync(request, cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Schedules the active subscription to move to a lower-tier plan at the next billing cycle.
+    /// </summary>
+    [HttpPost("downgrade")]
+    [ProducesResponseType(typeof(DowngradeResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Downgrade(DowngradeRequestDto request, CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.DowngradeAsync(request, cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Cancels a previously scheduled downgrade, keeping the Seller on the current plan.
+    /// </summary>
+    [HttpPost("downgrade/cancel")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> CancelDowngrade(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.CancelScheduledDowngradeAsync(cancellationToken);
+
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Downloads an existing invoice as a PDF. Never creates or edits an
+    /// invoice — read/export-only.
+    /// </summary>
+    [HttpGet("invoices/{invoiceId:guid}/download")]
+    [Produces("application/pdf")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DownloadInvoice(Guid invoiceId, CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.DownloadInvoiceAsync(invoiceId, cancellationToken);
+
+        return result.IsSuccess
+            ? File(result.Value.Content, "application/pdf", result.Value.FileName)
+            : result.ToActionResult(this);
+    }
 }

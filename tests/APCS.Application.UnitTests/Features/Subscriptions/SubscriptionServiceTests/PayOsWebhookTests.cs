@@ -98,6 +98,47 @@ public sealed class PayOsWebhookTests
     }
 
     [TestMethod]
+    public async Task HandlePayOsWebhookAsync_OnSuccess_RetiresAnUpgradesOldStillActivePlan()
+    {
+        // An Upgrade leaves the previous plan Active while its own payment is pending, unlike
+        // Buy (which cancels the old one immediately). Once the new plan is actually paid, there
+        // must be only one Active subscription left.
+        var starter = SubscriptionTestData.CreateStarterPlan();
+        var pro = SubscriptionTestData.CreateProPlan();
+        var previousActive = SubscriptionTestData.CreateActiveSubscription(starter);
+        var pendingUpgrade = SubscriptionTestData.CreateActiveSubscription(pro);
+        pendingUpgrade.Status = "trialing";
+        var invoice = SubscriptionTestData.CreatePendingInvoice(pendingUpgrade, 123);
+
+        var invoices = new Mock<IInvoiceRepository>();
+        invoices.Setup(candidate => candidate.GetByPayosOrderCodeAsync(123, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(invoice);
+        var subscriptions = new Mock<ISubscriptionRepository>();
+        subscriptions.Setup(candidate => candidate.GetActiveWithPlanAsync(SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(previousActive);
+        var paymentGateway = new Mock<IPaymentGatewayClient>();
+        paymentGateway.Setup(candidate => candidate.VerifyWebhookAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WebhookVerificationResult(true, 123, true));
+        var service = SubscriptionTestData.CreateService(
+            subscriptions, invoices: invoices, paymentGateway: paymentGateway);
+
+        await service.HandlePayOsWebhookAsync("{}", CancellationToken.None);
+
+        subscriptions.Verify(
+            candidate => candidate.UpdateAsync(
+                It.Is<Subscription>(sub => sub.Id == pendingUpgrade.Id && sub.Status == "active"),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        subscriptions.Verify(
+            candidate => candidate.UpdateAsync(
+                It.Is<Subscription>(sub => sub.Id == previousActive.Id && sub.Status == "cancelled"),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
     public async Task HandlePayOsWebhookAsync_OnFailure_ExpiresTheSubscriptionAndMarksTheInvoiceFailed()
     {
         var starter = SubscriptionTestData.CreateStarterPlan();

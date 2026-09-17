@@ -32,4 +32,9 @@ public static class ErrorCodes
     public const string SubscriptionAlreadySubscribed = "subscriptions.already_subscribed";
     public const string SubscriptionInvoiceNotFound = "subscriptions.invoice_not_found";
     public const string PaymentGatewayUnavailable = "payments.gateway_unavailable";
+    public const string SubscriptionNoActivePlan = "subscriptions.no_active_plan";
+    public const string SubscriptionTargetNotHigherTier = "subscriptions.target_not_higher_tier";
+    public const string SubscriptionTargetNotLowerTier = "subscriptions.target_not_lower_tier";
+    public const string SubscriptionNoScheduledDowngrade = "subscriptions.no_scheduled_downgrade";
+    public const string SubscriptionInvoicePdfGenerationFailed = "subscriptions.invoice_pdf_generation_failed";
 }

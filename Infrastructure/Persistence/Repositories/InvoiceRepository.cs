@@ -38,6 +38,7 @@ public sealed class InvoiceRepository(AppDbContext dbContext)
             .AsNoTracking()
             .Include(invoice => invoice.Subscription)
             .ThenInclude(subscription => subscription.Plan)
+            .Include(invoice => invoice.User)
             .Where(invoice => invoice.Id == invoiceId && invoice.UserId == userId)
             .SingleOrDefaultAsync(cancellationToken);
 

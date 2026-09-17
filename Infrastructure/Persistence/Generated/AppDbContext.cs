@@ -2148,6 +2148,8 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("monthly_price_usd");
             entity.Property(e => e.PlanId).HasColumnName("plan_id");
             entity.Property(e => e.RenewalDate).HasColumnName("renewal_date");
+            entity.Property(e => e.ScheduledPlanEffectiveDate).HasColumnName("scheduled_plan_effective_date");
+            entity.Property(e => e.ScheduledPlanId).HasColumnName("scheduled_plan_id");
             entity.Property(e => e.StartDate).HasColumnName("start_date");
             entity.Property(e => e.Status)
                 .HasMaxLength(50)
@@ -2159,10 +2161,15 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("updated_at");
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
-            entity.HasOne(d => d.Plan).WithMany(p => p.Subscriptions)
+            entity.HasOne(d => d.Plan).WithMany(p => p.SubscriptionPlans)
                 .HasForeignKey(d => d.PlanId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("subscriptions_plan_id_fkey");
+
+            entity.HasOne(d => d.ScheduledPlan).WithMany(p => p.SubscriptionScheduledPlans)
+                .HasForeignKey(d => d.ScheduledPlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("subscriptions_scheduled_plan_id_fkey");
 
             entity.HasOne(d => d.User).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.UserId)
