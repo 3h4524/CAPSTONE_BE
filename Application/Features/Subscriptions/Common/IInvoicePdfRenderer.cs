@@ -1,7 +1,7 @@
 namespace APCS.Application.Features.Subscriptions.Common;
 
 /// <summary>
-/// Renders an invoice as a downloadable PDF (UC61 Download Invoice).
+/// Renders an invoice as a downloadable PDF.
 /// </summary>
 /// <remarks>
 /// An Application-owned abstraction over the PDF rendering library, the same way
@@ -17,7 +17,7 @@ public interface IInvoicePdfRenderer
 }
 
 /// <summary>
-/// The invoice detail needed to render an Invoice Detail PDF (BR122): invoice number, issued
+/// The invoice detail needed to render an Invoice Detail PDF: invoice number, issued
 /// date, billing period, plan line item, total paid, status, and who it was billed to.
 /// </summary>
 public sealed record InvoicePdfModel(

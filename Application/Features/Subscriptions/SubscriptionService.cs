@@ -338,7 +338,7 @@ public sealed class SubscriptionService(
 
         var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
 
-        // BR107 precondition.
+        // Upgrading requires an active paid plan.
         if (!IsActivePaidPlan(current))
         {
             return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.NoActivePlanToChange());
@@ -350,8 +350,8 @@ public sealed class SubscriptionService(
             return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.PlanNotFound());
         }
 
-        // BR107: strictly higher tier than the current plan. Tier level is modeled as monthly
-        // price ordering throughout this feature (see GetComparisonPlansAsync, BR93).
+        // The target must be a strictly higher tier than the current plan. Tier level is modeled
+        // as monthly price ordering throughout this feature (see GetComparisonPlansAsync).
         if (targetPlan.MonthlyPriceUsd <= current!.Plan.MonthlyPriceUsd)
         {
             return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.TargetNotHigherTier());
@@ -373,11 +373,11 @@ public sealed class SubscriptionService(
             ? current.AnnualPriceUsd ?? current.MonthlyPriceUsd
             : current.MonthlyPriceUsd;
 
-        // BR108: only the remaining days of the current cycle are charged at the new plan's rate;
+        // Only the remaining days of the current cycle are charged at the new plan's rate;
         // the current plan's own unused-day value is credited against that same remaining
         // period, so Due today is the prorated *difference*, not the new plan's full price. This
         // is what makes Due today reach exactly $0.00 when an upgrade happens on the renewal date
-        // itself (remainingDays == 0), matching BR111's "credit fully offsets the difference".
+        // itself (remainingDays == 0), so the amount due reaches exactly $0.00 on the renewal date itself.
         var totalCycleDays = Math.Max(1, current.RenewalDate.DayNumber - current.StartDate.DayNumber);
         var remainingDays = Math.Clamp(current.RenewalDate.DayNumber - today.DayNumber, 0, totalCycleDays);
         var proratedNewCharge = newPlanPrice * remainingDays / totalCycleDays;
@@ -390,7 +390,7 @@ public sealed class SubscriptionService(
             new { description = "Prorated credit from current plan", amountVnd = -(int)Math.Round(creditApplied * settings.UsdToVndRate) }
         });
 
-        // BR111: Due today of $0.00 activates immediately with no new payment charge.
+        // Due today of $0.00 activates immediately with no new payment charge.
         if (dueToday <= 0m)
         {
             current.PlanId = targetPlan.Id;
@@ -431,7 +431,7 @@ public sealed class SubscriptionService(
                 AmountVnd: null));
         }
 
-        // BR111: an amount is due — proceed through Payment (UC60) before activating. The current
+        // An amount is due — proceed through the payment flow before activating. The current
         // plan is left untouched and Active (unlike Buy, which cancels the old one immediately)
         // so the Seller keeps full access if this payment never completes; FinalizeCheckoutAsync
         // retires the old subscription once this one is actually paid.
@@ -464,7 +464,7 @@ public sealed class SubscriptionService(
                 AnnualPriceUsd = targetPlan.AnnualPriceUsd,
                 Status = SubscriptionStatuses.AwaitingPayment,
                 StartDate = today,
-                RenewalDate = current.RenewalDate, // BR110: unchanged from the existing cycle.
+                RenewalDate = current.RenewalDate, // Unchanged from the existing cycle.
                 AutoRenew = true,
                 CreatedAt = utcNow.UtcDateTime
             };
@@ -532,7 +532,7 @@ public sealed class SubscriptionService(
 
         var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
 
-        // BR113 precondition.
+        // Downgrading requires an active paid plan.
         if (!IsActivePaidPlan(current))
         {
             return Result.Failure<DowngradeResponseDto>(SubscriptionErrors.NoActivePlanToChange());
@@ -544,15 +544,14 @@ public sealed class SubscriptionService(
             return Result.Failure<DowngradeResponseDto>(SubscriptionErrors.PlanNotFound());
         }
 
-        // BR113: strictly lower tier than the current plan.
+        // The target must be a strictly lower tier than the current plan.
         if (targetPlan.MonthlyPriceUsd >= current!.Plan.MonthlyPriceUsd)
         {
             return Result.Failure<DowngradeResponseDto>(SubscriptionErrors.TargetNotLowerTier());
         }
 
-        // BR114/BR119: scheduled for the start of the next cycle; a new selection replaces any
-        // previously scheduled downgrade. BR115/BR116: no payment, no proration, current plan and
-        // its limits are untouched until the effective date.
+        // Scheduled for the start of the next cycle; a new selection replaces any previously scheduled downgrade.
+        // No payment, no proration: the current plan and its limits stay untouched until the effective date.
         current.ScheduledPlanId = targetPlan.Id;
         current.ScheduledPlan = targetPlan;
         current.ScheduledPlanEffectiveDate = current.RenewalDate;
@@ -575,8 +574,8 @@ public sealed class SubscriptionService(
 
         var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
 
-        // BR118 precondition: nothing to cancel once the effective date already passed and
-        // GetActiveSubscriptionApplyingDueDowngradeAsync applied it (ScheduledPlanId is cleared).
+        // Nothing to cancel once the effective date already passed and the lazy-apply already
+        // promoted the scheduled plan (ScheduledPlanId is cleared).
         if (current is null || current.ScheduledPlanId is null)
         {
             return Result.Failure(SubscriptionErrors.NoScheduledDowngrade());
@@ -606,7 +605,7 @@ public sealed class SubscriptionService(
         var invoice = await invoices.GetByIdForUserAsync(invoiceId, userId, cancellationToken);
         if (invoice is null)
         {
-            // MSG65 (BR34 also keeps this scoped to the requesting Seller's own invoices).
+            // Invoices stay scoped to the requesting Seller's own invoices.
             return Result.Failure<InvoiceFileDto>(SubscriptionErrors.InvoicePdfNotFound());
         }
 
@@ -627,7 +626,7 @@ public sealed class SubscriptionService(
         byte[] pdfBytes;
         try
         {
-            // BR120/BR124: read/export-only — nothing about the invoice is written here.
+            // Read/export-only — nothing about the invoice is written here.
             pdfBytes = invoicePdfRenderer.Render(model);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -640,7 +639,7 @@ public sealed class SubscriptionService(
 
     /// <summary>
     /// Gets the Seller's active subscription, applying a scheduled downgrade in place first if
-    /// its effective date has already arrived (BR117). There is no background job scheduler in
+    /// its effective date has already arrived. There is no background job scheduler in
     /// this project, so the transition is applied lazily the next time anything reads the
     /// subscription instead of exactly at midnight on the effective date.
     /// </summary>

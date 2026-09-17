@@ -5,5 +5,4 @@ namespace APCS.Application.Features.Subscriptions.Dtos.Request;
 /// the next billing cycle.
 /// </summary>
 /// <param name="PlanId">The lower-tier target plan.</param>
-/// <remarks>Use case mapping: UC63 Downgrade Subscription.</remarks>
 public sealed record DowngradeRequestDto(Guid PlanId);

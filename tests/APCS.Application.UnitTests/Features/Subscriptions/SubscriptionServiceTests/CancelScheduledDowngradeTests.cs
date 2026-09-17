@@ -43,7 +43,7 @@ public sealed class CancelScheduledDowngradeTests
     [TestMethod]
     public async Task CancelScheduledDowngradeAsync_WhenOneIsScheduled_ClearsItAndKeepsTheCurrentPlan()
     {
-        // BR118: cancelling reverts to "no scheduled change"; the current plan is untouched.
+        // Cancelling reverts to "no scheduled change"; the current plan is untouched.
         var pro = SubscriptionTestData.CreateProPlan();
         var starter = SubscriptionTestData.CreateStarterPlan();
         var current = SubscriptionTestData.CreateActiveSubscription(pro);

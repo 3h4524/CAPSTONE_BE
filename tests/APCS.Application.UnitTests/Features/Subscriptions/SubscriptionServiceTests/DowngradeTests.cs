@@ -85,7 +85,7 @@ public sealed class DowngradeTests
     }
 
     [TestMethod]
-    public async Task DowngradeAsync_WhenTargetIsNotLowerTier_ReturnsMsg61Text()
+    public async Task DowngradeAsync_WhenTargetIsNotLowerTier_ReturnsTargetNotLowerTierError()
     {
         var starter = SubscriptionTestData.CreateStarterPlan();
         var current = SubscriptionTestData.CreateActiveSubscription(starter);
@@ -120,7 +120,7 @@ public sealed class DowngradeTests
             candidate => candidate.UpdateAsync(
                 It.Is<Subscription>(sub =>
                     sub.Id == current.Id
-                    // BR115: the current plan itself is untouched.
+                    // The current plan itself is untouched.
                     && sub.PlanId == pro.Id
                     && sub.Status == "active"
                     && sub.ScheduledPlanId == starter.Id
@@ -133,7 +133,7 @@ public sealed class DowngradeTests
     [TestMethod]
     public async Task DowngradeAsync_WhenADowngradeIsAlreadyScheduled_ReplacesItWithTheNewSelection()
     {
-        // BR119: only one pending downgrade at a time; a new selection replaces the old one.
+        // Only one pending downgrade at a time; a new selection replaces the old one.
         var pro = SubscriptionTestData.CreateProPlan();
         var starter = SubscriptionTestData.CreateStarterPlan();
         var free = SubscriptionTestData.CreateFreePlan();
@@ -158,7 +158,7 @@ public sealed class DowngradeTests
     [TestMethod]
     public async Task DowngradeAsync_WhenTheScheduledEffectiveDateHasAlreadyArrived_AppliesItFirstBeforeValidating()
     {
-        // BR117 lazy-apply: reading the subscription past its scheduled effective date promotes
+        // Lazy-apply: reading the subscription past its scheduled effective date promotes
         // it to the Target Plan first. This changes what "current plan" means for the *new*
         // downgrade request being evaluated in the same call.
         var pro = SubscriptionTestData.CreateProPlan();

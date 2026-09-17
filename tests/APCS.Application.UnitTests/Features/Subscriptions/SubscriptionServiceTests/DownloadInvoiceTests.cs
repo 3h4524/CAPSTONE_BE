@@ -42,7 +42,7 @@ public sealed class DownloadInvoiceTests
     }
 
     [TestMethod]
-    public async Task DownloadInvoiceAsync_WhenTheInvoiceCannotBeFound_ReturnsMsg65Text()
+    public async Task DownloadInvoiceAsync_WhenTheInvoiceCannotBeFound_ReturnsInvoiceNotFoundError()
     {
         var invoices = new Mock<IInvoiceRepository>();
         invoices.Setup(candidate => candidate.GetByIdForUserAsync(
@@ -87,7 +87,7 @@ public sealed class DownloadInvoiceTests
     }
 
     [TestMethod]
-    public async Task DownloadInvoiceAsync_WhenRenderingFails_ReturnsMsg66Text()
+    public async Task DownloadInvoiceAsync_WhenRenderingFails_ReturnsPdfGenerationFailedError()
     {
         var invoice = CreatePaidInvoiceWithUser();
         var invoices = new Mock<IInvoiceRepository>();

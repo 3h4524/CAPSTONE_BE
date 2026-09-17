@@ -6,7 +6,7 @@ using QuestPDF.Infrastructure;
 namespace APCS.Infrastructure.Services;
 
 /// <summary>
-/// Renders invoices as PDFs with QuestPDF (UC61 Download Invoice).
+/// Renders invoices as PDFs with QuestPDF.
 /// </summary>
 public sealed class QuestPdfInvoiceRenderer : IInvoicePdfRenderer
 {

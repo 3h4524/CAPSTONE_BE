@@ -17,7 +17,7 @@ public interface IInvoiceRepository : IRepository<Invoice>
 
     /// <summary>
     /// Finds one invoice by id, scoped to its owner, with its subscription, plan, and billed-to
-    /// user loaded (BR122's "Billed To" needs the Seller's name and email).
+    /// user loaded (the PDF's "Billed To" section needs the Seller's name and email).
     /// </summary>
     Task<Invoice?> GetByIdForUserAsync(
         Guid invoiceId,

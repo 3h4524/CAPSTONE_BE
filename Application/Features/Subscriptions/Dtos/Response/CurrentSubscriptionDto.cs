@@ -4,7 +4,7 @@ namespace APCS.Application.Features.Subscriptions.Dtos.Response;
 /// The Seller's currently active subscription, for the Current Plan summary card.
 /// </summary>
 /// <param name="ScheduledPlanName">
-/// Set when a downgrade is scheduled (BR114) — "Downgrading to [ScheduledPlanName] on
+/// Set when a downgrade is scheduled — "Downgrading to [ScheduledPlanName] on
 /// [ScheduledPlanEffectiveDate]". Null when nothing is scheduled.
 /// </param>
 public sealed record CurrentSubscriptionDto(

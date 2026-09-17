@@ -13,7 +13,7 @@ public sealed class UpgradeValidator : AbstractValidator<UpgradeRequestDto>
     /// </summary>
     public UpgradeValidator()
     {
-        // MSG54: "Please select a plan before continuing."
+        // A plan must be selected before continuing.
         RuleFor(request => request.PlanId)
             .NotEmpty();
     }

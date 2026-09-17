@@ -52,12 +52,12 @@ public interface ISubscriptionService
 
     /// <summary>
     /// Upgrades the Seller's active paid subscription to a higher-tier plan, applying a prorated
-    /// credit for the unused days of the current cycle (UC62).
+    /// credit for the unused days of the current cycle.
     /// </summary>
     /// <remarks>
     /// Activates immediately when the prorated credit fully covers the new plan's price;
-    /// otherwise the response carries a PayOS checkout the client completes via UC60, exactly
-    /// like <see cref="InitiateCheckoutAsync"/>.
+    /// otherwise the response carries a PayOS checkout the client completes via the payment flow,
+    /// exactly like <see cref="InitiateCheckoutAsync"/>.
     /// </remarks>
     Task<Result<UpgradeResponseDto>> UpgradeAsync(
         UpgradeRequestDto request,
@@ -65,22 +65,22 @@ public interface ISubscriptionService
 
     /// <summary>
     /// Schedules the Seller's active paid subscription to move to a lower-tier plan at the start
-    /// of the next billing cycle (UC63). No payment is collected and the current plan's limits
-    /// stay in force until the effective date (BR114-BR116).
+    /// of the next billing cycle. No payment is collected and the current plan's limits
+    /// stay in force until the effective date.
     /// </summary>
     Task<Result<DowngradeResponseDto>> DowngradeAsync(
         DowngradeRequestDto request,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Cancels a previously scheduled downgrade (BR118), keeping the Seller on the current plan
+    /// Cancels a previously scheduled downgrade, keeping the Seller on the current plan
     /// indefinitely.
     /// </summary>
     Task<Result> CancelScheduledDowngradeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Renders an existing invoice as a downloadable PDF (UC61). Never creates or edits an
-    /// invoice (BR120, BR124) — read/export-only.
+    /// Renders an existing invoice as a downloadable PDF. Never creates or edits an
+    /// invoice — read/export-only.
     /// </summary>
     Task<Result<InvoiceFileDto>> DownloadInvoiceAsync(
         Guid invoiceId,

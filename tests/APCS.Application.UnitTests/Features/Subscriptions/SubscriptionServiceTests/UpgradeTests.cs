@@ -113,7 +113,7 @@ public sealed class UpgradeTests
     }
 
     [TestMethod]
-    public async Task UpgradeAsync_WhenTargetIsNotHigherTier_ReturnsMsg59Text()
+    public async Task UpgradeAsync_WhenTargetIsNotHigherTier_ReturnsTargetNotHigherTierError()
     {
         var pro = SubscriptionTestData.CreateProPlan();
         var current = CreatePartWayThroughCycleSubscription(pro);
@@ -184,11 +184,11 @@ public sealed class UpgradeTests
                 It.Is<Subscription>(sub =>
                     sub.PlanId == pro.Id
                     && sub.Status == "trialing"
-                    && sub.RenewalDate == current.RenewalDate), // BR110: unchanged.
+                    && sub.RenewalDate == current.RenewalDate), // Unchanged renewal date.
                 It.IsAny<bool>(),
                 It.IsAny<CancellationToken>()),
             Times.Once);
-        // BR109/postcondition: the previous plan is untouched until payment actually succeeds.
+        // The previous plan stays untouched until payment actually succeeds.
         subscriptions.Verify(
             candidate => candidate.UpdateAsync(It.IsAny<Subscription>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
             Times.Never);
@@ -198,7 +198,7 @@ public sealed class UpgradeTests
     public async Task UpgradeAsync_OnTheRenewalDateItself_ActivatesImmediatelyWithNoPaymentDue()
     {
         // remainingDays == 0 on the renewal date itself, so both the prorated charge and the
-        // credit are zero — Due today is exactly $0.00 (BR111).
+        // credit are zero — nothing is due today.
         var starter = SubscriptionTestData.CreateStarterPlan();
         var pro = SubscriptionTestData.CreateProPlan();
         var current = SubscriptionTestData.CreateActiveSubscription(starter);
@@ -218,7 +218,7 @@ public sealed class UpgradeTests
             candidate => candidate.CreatePaymentLinkAsync(
                 It.IsAny<long>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        // BR109: the Subscription record is updated to the Target Plan and remains Active.
+        // The Subscription record is updated to the Target Plan and remains Active.
         subscriptions.Verify(
             candidate => candidate.UpdateAsync(
                 It.Is<Subscription>(sub => sub.Id == current.Id && sub.PlanId == pro.Id && sub.Status == "active"),

@@ -75,8 +75,7 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     }
 
     /// <summary>
-    /// Upgrades the active subscription to a higher-tier plan, applying a prorated credit
-    /// (UC62 Upgrade Subscription).
+    /// Upgrades the active subscription to a higher-tier plan, applying a prorated credit.
     /// </summary>
     [HttpPost("upgrade")]
     [ProducesResponseType(typeof(UpgradeResponseDto), StatusCodes.Status200OK)]
@@ -91,8 +90,7 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     }
 
     /// <summary>
-    /// Schedules the active subscription to move to a lower-tier plan at the next billing cycle
-    /// (UC63 Downgrade Subscription).
+    /// Schedules the active subscription to move to a lower-tier plan at the next billing cycle.
     /// </summary>
     [HttpPost("downgrade")]
     [ProducesResponseType(typeof(DowngradeResponseDto), StatusCodes.Status200OK)]
@@ -121,7 +119,7 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     }
 
     /// <summary>
-    /// Downloads an existing invoice as a PDF (UC61 Download Invoice). Never creates or edits an
+    /// Downloads an existing invoice as a PDF. Never creates or edits an
     /// invoice — read/export-only.
     /// </summary>
     [HttpGet("invoices/{invoiceId:guid}/download")]
