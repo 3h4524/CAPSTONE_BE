@@ -1,0 +1,9 @@
+﻿  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Common -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Common\bin\Debug\net8.0\APCS.Common.dll
+  Domain -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Domain\bin\Debug\net8.0\APCS.Domain.dll
+  Application -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\Application\bin\Debug\net8.0\APCS.Application.dll
+  APCS.Application.UnitTests -> C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll
+  Run tests: 'C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll' [net8.0|x64]
+  Failed! - Failed: 1, Passed: 140, Skipped: 0, Total: 141, Duration: 330ms - APCS.Application.UnitTests.dll (net8.0|x64)
+C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll : error run failed: Tests failed: 'C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\TestResults\APCS.Application.UnitTests_net8.0_x64.log' [net8.0|x64] [C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\APCS.Application.UnitTests.csproj]

@@ -3,6 +3,9 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.Subscriptions;
+using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
 using APCS.Common.Extensions;
 using APCS.Domain.Entities;
@@ -11,10 +14,12 @@ using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using APCS.Infrastructure.Services;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure;
 
@@ -54,6 +59,23 @@ public static class DependencyInjection
         services.AddOptions<SmtpOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Smtp));
 
+        // Not required/ValidateOnStart: a dev box without a PayOS payment channel yet should
+        // still boot. PayOsGatewayClient is only usable once real keys are set.
+        services.AddOptions<PayOsOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.PayOs));
+
+        // Projects PayOsOptions down to the narrow settings shape SubscriptionService (Application)
+        // is allowed to depend on, so Application never references an Infrastructure options type.
+        services.AddSingleton<IOptions<PaymentGatewaySettings>>(provider =>
+        {
+            var payOsOptions = provider.GetRequiredService<IOptions<PayOsOptions>>().Value;
+            return Microsoft.Extensions.Options.Options.Create(
+                new PaymentGatewaySettings(payOsOptions.UsdToVndRate, payOsOptions.TestAmountVnd));
+        });
+
+        services.AddOptions<CloudinaryOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
@@ -73,6 +95,12 @@ public static class DependencyInjection
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped<IAuthTokenRepository, AuthTokenRepository>();
         services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
+        services.AddScoped<IPlanRepository, PlanRepository>();
+        services.AddScoped<IInvoiceRepository, InvoiceRepository>();
+        services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
+        services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
+        services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
 
         return services;
     }
@@ -83,12 +111,22 @@ public static class DependencyInjection
     private static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddHttpContextAccessor();
+        var keyProtection = services.AddDataProtection().SetApplicationName("APCS");
+        if (configuration["ApiKeys:KeyRingPath"] is { Length: > 0 } keyRingPath)
+            keyProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+        services.AddScoped<IApiKeyCredentials, ApiKeyCredentials>();
+        services.AddHttpClient("ApiKeyValidation", client => client.Timeout = TimeSpan.FromSeconds(15))
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+            .RedactLoggedHeaders(new[] { "Authorization" });
         services.AddScoped<ICurrentUser, CurrentUserService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IGoogleAuthService, GoogleAuthService>();
         services.AddTransient<IEmailService, EmailService>();
+        services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
+        services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
+        services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

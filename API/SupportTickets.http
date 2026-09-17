@@ -1,0 +1,20 @@
+@baseUrl = http://localhost:5191/api
+@token = replace-with-access-token
+@ticketId = 00000000-0000-0000-0000-000000000000
+
+### List my support tickets
+GET {{baseUrl}}/support-tickets?pageNumber=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### Get one support ticket
+GET {{baseUrl}}/support-tickets/{{ticketId}}
+Authorization: Bearer {{token}}
+
+### Rate a resolved ticket
+PUT {{baseUrl}}/support-tickets/{{ticketId}}/satisfaction-rating
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "rating": 5
+}

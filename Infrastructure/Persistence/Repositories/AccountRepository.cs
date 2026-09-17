@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Persistence;
+using APCS.Common.Constants;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -63,6 +64,42 @@ public sealed class AccountRepository(AppDbContext dbContext) : Repository<User>
             .Where(userRole => userRole.UserId == userId && userRole.RevokedAt == null)
             .Select(userRole => userRole.Role.Code)
             .ToArrayAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<User>> GetActiveUsersByRoleAsync(
+        string roleCode,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(roleCode);
+        return await dbContext.UserRoles
+            .AsNoTracking()
+            .Where(userRole =>
+                userRole.Role.Code == roleCode &&
+                userRole.RevokedAt == null &&
+                userRole.User.AccountStatus == AccountStatuses.Active &&
+                userRole.User.DeletedAt == null)
+            .Select(userRole => userRole.User)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task<bool> IsActiveUserInRoleAsync(
+        Guid userId,
+        string roleCode,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(roleCode);
+        return dbContext.UserRoles
+            .AsNoTracking()
+            .AnyAsync(userRole =>
+                userRole.UserId == userId &&
+                userRole.Role.Code == roleCode &&
+                userRole.RevokedAt == null &&
+                userRole.User.AccountStatus == AccountStatuses.Active &&
+                userRole.User.DeletedAt == null,
+                cancellationToken);
+    }
 
     /// <inheritdoc />
     public Task TouchLastLoginAsync(

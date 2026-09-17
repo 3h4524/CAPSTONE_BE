@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
@@ -6,6 +8,7 @@ using APCS.Application.Features.Auth.Common;
 using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
+using APCS.Common.Helpers;
 using APCS.Common.Models;
 using APCS.Application.Abstractions.Authentication.Dtos;
 using FluentValidation;
@@ -24,6 +27,7 @@ public sealed class AuthService(
     IJwtService jwtService,
     IGoogleAuthService googleAuthService,
     IEmailService emailService,
+    ICacheService cacheService,
     ICurrentUser currentUser,
     TimeProvider timeProvider,
     IValidator<LoginRequestDto> loginValidator,
@@ -34,7 +38,9 @@ public sealed class AuthService(
     IValidator<ResendVerificationEmailRequestDto> resendVerificationEmailValidator,
     IValidator<ForgotPasswordRequestDto> forgotPasswordValidator,
     IValidator<ResetPasswordRequestDto> resetPasswordValidator,
-    IValidator<ChangePasswordRequestDto> changePasswordValidator)
+    IValidator<ChangePasswordRequestDto> changePasswordValidator,
+    IValidator<AdminVerifyTwoFactorRequestDto> adminVerifyTwoFactorValidator,
+    IValidator<AdminResendTwoFactorRequestDto> adminResendTwoFactorValidator)
     : IAuthService
 {
     /// <inheritdoc />
@@ -74,13 +80,144 @@ public sealed class AuthService(
         }
 
         var roles = await accountService.GetRolesAsync(user.Id, cancellationToken);
+
+        if (roles.Any(role => string.Equals(role, AuthConstants.AdminRole, StringComparison.OrdinalIgnoreCase)))
+        {
+            var challenge = await CreateAdminTwoFactorChallengeAsync(
+                user,
+                request.Context ?? RequestContext.None,
+                cancellationToken);
+
+            return Result.Success(new LoginResponseDto(
+                null,
+                null,
+                null,
+                null,
+                null,
+                RequiresTwoFactor: true,
+                TempToken: challenge.TempToken,
+                TwoFactorExpiresAtUtc: challenge.ExpiresAtUtc));
+        }
+
+        return await IssueSessionAsync(user, roles, request.Context, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<LoginResponseDto>> VerifyAdminTwoFactorAsync(
+        AdminVerifyTwoFactorRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await adminVerifyTwoFactorValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<LoginResponseDto>(validation.ToValidationError());
+        }
+
+        var cacheKey = BuildAdminTwoFactorCacheKey(request.TempToken);
+        var challenge = await cacheService.GetAsync<AdminTwoFactorChallenge>(cacheKey, cancellationToken);
+        if (challenge is null || !string.Equals(challenge.Status, "pending", StringComparison.Ordinal))
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+        if (challenge.ExpiresAtUtc <= utcNow)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.AdminTwoFactorExpired());
+        }
+
+        var presentedHash = HashHelper.ComputeSha256Hash($"{request.TempToken}:{request.OtpCode}");
+        if (!HashHelper.FixedTimeEquals(challenge.OtpHash, presentedHash))
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        await cacheService.RemoveAsync(cacheKey, cancellationToken);
+
+        var account = await accountService.FindByIdAsync(challenge.UserId, cancellationToken);
+        if (account is null || !account.IsActive || !account.IsEmailVerified)
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        var roles = await accountService.GetRolesAsync(account.Id, cancellationToken);
+        if (!roles.Any(role => string.Equals(role, AuthConstants.AdminRole, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Result.Failure<LoginResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        return await IssueSessionAsync(
+            account,
+            roles,
+            request.Context ?? challenge.RequestContext,
+            cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<AdminTwoFactorResponseDto>> ResendAdminTwoFactorAsync(
+        AdminResendTwoFactorRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = await adminResendTwoFactorValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<AdminTwoFactorResponseDto>(validation.ToValidationError());
+        }
+
+        var cacheKey = BuildAdminTwoFactorCacheKey(request.TempToken);
+        var current = await cacheService.GetAsync<AdminTwoFactorChallenge>(cacheKey, cancellationToken);
+        if (current is null || !string.Equals(current.Status, "pending", StringComparison.Ordinal))
+        {
+            return Result.Failure<AdminTwoFactorResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        var account = await accountService.FindByIdAsync(current.UserId, cancellationToken);
+        var roles = account is null
+            ? Array.Empty<string>()
+            : await accountService.GetRolesAsync(account.Id, cancellationToken);
+        if (account is null
+            || !account.IsActive
+            || !account.IsEmailVerified
+            || !roles.Any(role => string.Equals(role, AuthConstants.AdminRole, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Result.Failure<AdminTwoFactorResponseDto>(AuthErrors.AdminTwoFactorInvalid());
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+        var expiresAtUtc = utcNow.AddMinutes(AuthConstants.AdminTwoFactorCodeMinutes);
+        var otpCode = GenerateOtpCode();
+        var replacement = current with
+        {
+            Email = account.Email,
+            FullName = account.FullName,
+            OtpHash = HashHelper.ComputeSha256Hash($"{request.TempToken}:{otpCode}"),
+            ExpiresAtUtc = expiresAtUtc,
+            RequestContext = request.Context ?? current.RequestContext
+        };
+
+        await cacheService.SetAsync(
+            cacheKey,
+            replacement,
+            TimeSpan.FromMinutes(AuthConstants.AdminTwoFactorChallengeRetentionMinutes),
+            cancellationToken);
+        await SendAdminOtpAsync(account.Email, account.FullName, otpCode, cancellationToken);
+
+        return Result.Success(new AdminTwoFactorResponseDto(request.TempToken, expiresAtUtc));
+    }
+
+    private async Task<Result<LoginResponseDto>> IssueSessionAsync(
+        AccountInfoDto user,
+        IReadOnlyCollection<string> roles,
+        RequestContext? requestContext,
+        CancellationToken cancellationToken)
+    {
         var utcNow = timeProvider.GetUtcNow();
         var session = AuthSessionFactory.Create(
             jwtService,
             user,
             roles,
             utcNow,
-            request.Context ?? RequestContext.None);
+            requestContext ?? RequestContext.None);
 
         await authTokenRepository.AddAsync(session.Entity, cancellationToken: cancellationToken);
         await accountService.TouchLastLoginAsync(user.Id, utcNow, cancellationToken);
@@ -95,6 +232,56 @@ public sealed class AuthService(
 
         return Result.Success(response);
     }
+
+    private async Task<AdminTwoFactorResponseDto> CreateAdminTwoFactorChallengeAsync(
+        AccountInfoDto account,
+        RequestContext requestContext,
+        CancellationToken cancellationToken)
+    {
+        var tempToken = GenerateOpaqueToken();
+        var otpCode = GenerateOtpCode();
+        var expiresAtUtc = timeProvider.GetUtcNow().AddMinutes(AuthConstants.AdminTwoFactorCodeMinutes);
+        var challenge = new AdminTwoFactorChallenge(
+            account.Id,
+            account.Email,
+            account.FullName,
+            HashHelper.ComputeSha256Hash($"{tempToken}:{otpCode}"),
+            "pending",
+            expiresAtUtc,
+            requestContext);
+
+        await cacheService.SetAsync(
+            BuildAdminTwoFactorCacheKey(tempToken),
+            challenge,
+            TimeSpan.FromMinutes(AuthConstants.AdminTwoFactorChallengeRetentionMinutes),
+            cancellationToken);
+        await SendAdminOtpAsync(account.Email, account.FullName, otpCode, cancellationToken);
+
+        return new AdminTwoFactorResponseDto(tempToken, expiresAtUtc);
+    }
+
+    private Task SendAdminOtpAsync(
+        string email,
+        string fullName,
+        string otpCode,
+        CancellationToken cancellationToken) =>
+        emailService.SendAsync(
+            email,
+            "Your APCS administrator verification code",
+            $"Hi {fullName},\n\nYour administrator verification code is: {otpCode}\n\nThis code expires in {AuthConstants.AdminTwoFactorCodeMinutes} minutes. If you did not try to sign in, contact support.",
+            cancellationToken);
+
+    private static string BuildAdminTwoFactorCacheKey(string tempToken) =>
+        $"{AuthConstants.AdminTwoFactorCacheKeyPrefix}{HashHelper.ComputeSha256Hash(tempToken)}";
+
+    private static string GenerateOtpCode() =>
+        RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+
+    private static string GenerateOpaqueToken() =>
+        Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     /// <inheritdoc />
     public async Task<Result<LoginResponseDto>> GoogleLoginAsync(
@@ -132,6 +319,25 @@ public sealed class AuthService(
         }
 
         var roles = await accountService.GetRolesAsync(account.Id, cancellationToken);
+
+        if (roles.Any(role => string.Equals(role, AuthConstants.AdminRole, StringComparison.OrdinalIgnoreCase)))
+        {
+            var challenge = await CreateAdminTwoFactorChallengeAsync(
+                account,
+                request.Context ?? RequestContext.None,
+                cancellationToken);
+
+            return Result.Success(new LoginResponseDto(
+                null,
+                null,
+                null,
+                null,
+                null,
+                RequiresTwoFactor: true,
+                TempToken: challenge.TempToken,
+                TwoFactorExpiresAtUtc: challenge.ExpiresAtUtc));
+        }
+
         var session = AuthSessionFactory.Create(
             jwtService,
             account,

@@ -56,7 +56,14 @@ internal static class AuthErrors
             "The password reset link has expired. Request a new one.");
 
     public static Error PasswordIncorrect() =>
-        Error.Unauthorized(ErrorCodes.PasswordIncorrect, "The current password is incorrect.");
+        // Validation (400), not Unauthorized (401): this is a bad input value, not an
+        // authentication failure, so it must not collide with the client's 401-triggered
+        // token-refresh retry logic.
+        new(
+            ErrorCodes.PasswordIncorrect,
+            "The current password is incorrect.",
+            ErrorType.Validation,
+            new Dictionary<string, string[]> { ["currentPassword"] = ["The current password is incorrect."] });
 
     public static Error Unauthenticated() =>
         Error.Unauthorized(ErrorCodes.Unauthorized, "The request is not authenticated.");
@@ -71,4 +78,10 @@ internal static class AuthErrors
         Error.Forbidden(
             ErrorCodes.GoogleEmailNotVerified,
             "The Google account's email address is not verified.");
+
+    public static Error AdminTwoFactorInvalid() =>
+        Error.Unauthorized(ErrorCodes.AdminTwoFactorInvalid, "The administrator verification code is invalid.");
+
+    public static Error AdminTwoFactorExpired() =>
+        Error.Unauthorized(ErrorCodes.AdminTwoFactorExpired, "The administrator verification code has expired.");
 }

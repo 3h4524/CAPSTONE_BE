@@ -89,9 +89,66 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        // An administrator login stops here awaiting the OTP, so no token exists yet.
+        if (result.Value.AccessToken is not null && result.Value.ExpiresAtUtc is not null)
+        {
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc.Value);
+        }
+
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
+        }
 
         return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Verifies the email OTP required for an administrator login.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("admin/verify-2fa")]
+    [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> VerifyAdminTwoFactor(
+        AdminVerifyTwoFactorRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.VerifyAdminTwoFactorAsync(
+            request with { Context = GetRequestContext() },
+            cancellationToken);
+
+        if (result.IsFailure)
+        {
+            return result.ToActionResult(this);
+        }
+
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
+        }
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Sends a replacement email OTP for a pending administrator login.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("admin/resend-otp")]
+    [ProducesResponseType(typeof(AdminTwoFactorResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> ResendAdminTwoFactor(
+        AdminResendTwoFactorRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await authService.ResendAdminTwoFactorAsync(
+            request with { Context = GetRequestContext() },
+            cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
     }
 
     /// <summary>
@@ -114,7 +171,16 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
             return result.ToActionResult(this);
         }
 
-        SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
+        // An administrator login stops here awaiting the OTP, so no token exists yet.
+        if (result.Value.AccessToken is not null && result.Value.ExpiresAtUtc is not null)
+        {
+            SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc.Value);
+        }
+
+        if (result.Value.RefreshToken is not null && result.Value.RefreshTokenExpiresAtUtc is not null)
+        {
+            SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc.Value);
+        }
 
         return Ok(result.Value);
     }
@@ -133,10 +199,12 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
 
         if (result.IsFailure)
         {
+            ClearAccessTokenCookie();
             ClearRefreshTokenCookie();
             return result.ToActionResult(this);
         }
 
+        SetAccessTokenCookie(result.Value.AccessToken, result.Value.ExpiresAtUtc);
         SetRefreshTokenCookie(result.Value.RefreshToken, result.Value.RefreshTokenExpiresAtUtc);
 
         return Ok(result.Value);
@@ -154,6 +222,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
         var refreshToken = Request.Cookies[AuthConstants.RefreshTokenCookieName];
         var result = await authService.LogoutAsync(refreshToken, GetRequestContext(), cancellationToken);
 
+        ClearAccessTokenCookie();
         ClearRefreshTokenCookie();
 
         return result.IsSuccess ? NoContent() : result.ToActionResult(this);
@@ -238,6 +307,31 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
         new(
             HttpContext.Connection.RemoteIpAddress?.ToString(),
             Request.Headers.UserAgent.ToString() is { Length: > 0 } userAgent ? userAgent : null);
+
+    private void SetAccessTokenCookie(string accessToken, DateTimeOffset expiresAtUtc)
+    {
+        Response.Cookies.Append(
+            AuthConstants.AccessTokenCookieName,
+            accessToken,
+            new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = true,
+                SameSite = SameSiteMode.Lax,
+                Expires = expiresAtUtc,
+                Path = "/"
+            });
+    }
+
+    private void ClearAccessTokenCookie()
+    {
+        Response.Cookies.Delete(AuthConstants.AccessTokenCookieName, new CookieOptions
+        {
+            Secure = true,
+            SameSite = SameSiteMode.Lax,
+            Path = "/"
+        });
+    }
 
     private void SetRefreshTokenCookie(string refreshToken, DateTimeOffset expiresAtUtc)
     {

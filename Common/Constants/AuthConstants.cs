@@ -11,6 +11,11 @@ public static class AuthConstants
     public const string RefreshTokenCookieName = "__Host-apcs_refresh";
 
     /// <summary>
+    /// The access token cookie name.
+    /// </summary>
+    public const string AccessTokenCookieName = "__Host-apcs_access";
+
+    /// <summary>
     /// The default access token lifetime in minutes.
     /// </summary>
     public const int DefaultAccessTokenMinutes = 15;
@@ -44,4 +49,19 @@ public static class AuthConstants
     /// The OAuth provider value recorded for accounts created or linked through Google Sign-In.
     /// </summary>
     public const string GoogleProvider = "google";
+
+    /// <summary>
+    /// The Redis key prefix for pending administrator two-factor challenges.
+    /// </summary>
+    public const string AdminTwoFactorCacheKeyPrefix = "auth:admin-2fa:";
+
+    /// <summary>
+    /// The lifetime of an administrator email OTP.
+    /// </summary>
+    public const int AdminTwoFactorCodeMinutes = 5;
+
+    /// <summary>
+    /// How long a challenge key remains available for resend after its code expires.
+    /// </summary>
+    public const int AdminTwoFactorChallengeRetentionMinutes = 30;
 }

@@ -12,8 +12,8 @@ namespace APCS.Infrastructure.Services;
 /// Sends application email through the configured SMTP server.
 /// </summary>
 /// <remarks>
-/// An environment with no mail server configured logs the message instead of sending it, so
-/// local development and tests need no transport.
+/// Production must provide an authenticated SMTP provider such as Gmail SMTP. When SMTP is not
+/// configured, local tests can still run and the requested recipient and subject are logged.
 /// </remarks>
 public sealed class EmailService(
     IOptions<AppOptions> appOptions,
@@ -53,7 +53,9 @@ public sealed class EmailService(
         // 465 expects TLS from the first byte; 587 opens in the clear and upgrades with STARTTLS.
         var socketOptions = _smtpOptions.UsesImplicitTls
             ? SecureSocketOptions.SslOnConnect
-            : SecureSocketOptions.StartTls;
+            : _smtpOptions.UseStartTls
+                ? SecureSocketOptions.StartTls
+                : SecureSocketOptions.None;
 
         await client.ConnectAsync(_smtpOptions.Host, _smtpOptions.Port, socketOptions, cancellationToken);
 
@@ -140,5 +142,36 @@ public sealed class EmailService(
         var path = new Uri(baseAddress, _appOptions.ResetPasswordPath);
 
         return $"{path}?token={Uri.EscapeDataString(resetToken)}";
+    }
+
+    /// <inheritdoc />
+    public Task SendSupportTicketCreatedAsync(
+        string to,
+        string fullName,
+        Guid ticketId,
+        string ticketNumber,
+        string category,
+        string priority,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(to);
+        ArgumentException.ThrowIfNullOrWhiteSpace(ticketNumber);
+
+        var link = new Uri(new Uri(_appOptions.BaseUrl, UriKind.Absolute), $"/admin/support-tickets/{ticketId}");
+        var body =
+            $"""
+             Hi {fullName},
+
+             A new support ticket needs attention.
+
+             Ticket: {ticketNumber}
+             Category: {category}
+             Priority: {priority}
+             Open ticket: {link}
+
+             The ticket description and attachments are intentionally omitted from this email.
+             """;
+
+        return SendAsync(to, $"New support ticket {ticketNumber}", body, cancellationToken);
     }
 }

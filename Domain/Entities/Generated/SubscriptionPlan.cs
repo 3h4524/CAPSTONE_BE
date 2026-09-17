@@ -45,5 +45,7 @@ public partial class SubscriptionPlan
 
     public virtual ICollection<PlanFeature> PlanFeatures { get; set; } = new List<PlanFeature>();
 
-    public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
+    public virtual ICollection<Subscription> SubscriptionPlans { get; set; } = new List<Subscription>();
+
+    public virtual ICollection<Subscription> SubscriptionScheduledPlans { get; set; } = new List<Subscription>();
 }

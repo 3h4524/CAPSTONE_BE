@@ -1,0 +1,25 @@
+﻿Test Parallelization enabled for C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll (Workers: 16, Scope: ClassLevel)
+failed GetMetricsAsync_WhenCalled_ReturnsCalculatedMetrics (140ms)
+  Test method APCS.Application.UnitTests.Features.Admin.AdminDashboardServiceTests.GetMetricsAsync_WhenCalled_ReturnsCalculatedMetrics threw exception:
+  FluentAssertions.Execution.AssertionFailedException: Expected result.IsSuccess to be True, but found False.
+    at FluentAssertions.Execution.FallbackTestFramework.Throw(String message)
+    at FluentAssertions.Execution.TestFrameworkProvider.Throw(String message)
+    at FluentAssertions.Execution.DefaultAssertionStrategy.HandleFailure(String message)
+    at FluentAssertions.Execution.AssertionScope.FailWith(Func`1 failReasonFunc)
+    at FluentAssertions.Execution.AssertionScope.FailWith(Func`1 failReasonFunc)
+    at FluentAssertions.Execution.AssertionScope.FailWith(String message, Object[] args)
+    at FluentAssertions.Primitives.BooleanAssertions`1.BeTrue(String because, Object[] becauseArgs)
+    at APCS.Application.UnitTests.Features.Admin.AdminDashboardServiceTests.GetMetricsAsync_WhenCalled_ReturnsCalculatedMetrics() in C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\Features\Admin\AdminDashboardServiceTests.cs:88
+    at Microsoft.VisualStudio.TestPlatform.MSTest.TestAdapter.Execution.TestMethodInfo.ExecuteInternalAsync(Object[] arguments, CancellationTokenSource timeoutTokenSource)
+    
+
+Test run summary: Failed! - C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.dll (net8.0|x64)
+  total: 141
+  failed: 1
+  succeeded: 140
+  skipped: 0
+  duration: 347ms
+
+=== COMMAND LINE ===
+C:\Users\LENOVO\Desktop\APCS\CAPSTONE_BE\tests\APCS.Application.UnitTests\bin\Debug\net8.0\APCS.Application.UnitTests.exe --internal-msbuild-node testingplatform.pipe.e2b034f67cf2465180b00a4b12f0425d 
+

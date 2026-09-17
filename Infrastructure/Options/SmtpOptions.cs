@@ -32,6 +32,12 @@ public sealed class SmtpOptions
     public int Port { get; set; } = 587;
 
     /// <summary>
+    /// Gets or sets whether STARTTLS should be negotiated on non-465 ports.
+    /// Disable only for a local SMTP sink such as Mailpit; keep enabled for real mail providers.
+    /// </summary>
+    public bool UseStartTls { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the account used to authenticate. Leave empty for a relay that accepts
     /// anonymous submissions.
     /// </summary>
@@ -55,9 +61,13 @@ public sealed class SmtpOptions
     public string FromName { get; set; } = "APCS";
 
     /// <summary>
-    /// Gets a value indicating whether enough is configured to actually send mail.
+    /// Gets a value indicating whether enough is configured to send authenticated SMTP mail.
     /// </summary>
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(Host) && !string.IsNullOrWhiteSpace(FromAddress);
+    public bool IsConfigured =>
+        !string.IsNullOrWhiteSpace(Host)
+        && !string.IsNullOrWhiteSpace(Username)
+        && !string.IsNullOrWhiteSpace(Password)
+        && !string.IsNullOrWhiteSpace(FromAddress);
 
     /// <summary>
     /// Gets a value indicating whether the port expects TLS on connect instead of STARTTLS.

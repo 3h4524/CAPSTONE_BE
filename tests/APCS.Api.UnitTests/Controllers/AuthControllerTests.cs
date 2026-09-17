@@ -1,3 +1,4 @@
+using System.Linq;
 using APCS.Api.Controllers;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Common;
@@ -138,6 +139,67 @@ public sealed class AuthControllerTests
         authService.Verify(
             candidate => candidate.LoginAsync(expected, It.IsAny<CancellationToken>()),
             Times.Once);
+        AssertAccessCookie(controller, "access-token");
+        AssertRefreshCookie(controller, "refresh-token");
+    }
+
+    [TestMethod]
+    public async Task VerifyAdminTwoFactor_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.VerifyAdminTwoFactorAsync(It.IsAny<AdminVerifyTwoFactorRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new AdminVerifyTwoFactorRequestDto("temp", "123456");
+
+        var action = await controller.VerifyAdminTwoFactor(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.VerifyAdminTwoFactorAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+        AssertRefreshCookie(controller, "refresh-token");
+    }
+
+    [TestMethod]
+    public async Task ResendAdminTwoFactor_WhenSuccessful_ReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        var responseDto = new AdminTwoFactorResponseDto("temp", AccessExpiresAt);
+        authService.Setup(candidate => candidate.ResendAdminTwoFactorAsync(It.IsAny<AdminResendTwoFactorRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(responseDto));
+        var controller = CreateController(authService);
+
+        var request = new AdminResendTwoFactorRequestDto("temp");
+
+        var action = await controller.ResendAdminTwoFactor(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(responseDto);
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.ResendAdminTwoFactorAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task Google_WhenSuccessful_SetsCookieAndReturnsResponse()
+    {
+        var authService = new Mock<IAuthService>();
+        authService.Setup(candidate => candidate.GoogleLoginAsync(It.IsAny<GoogleLoginRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(CreateLoginResponse()));
+        var controller = CreateController(authService);
+
+        var request = new GoogleLoginRequestDto("google-id-token");
+
+        var action = await controller.Google(request, CancellationToken.None);
+
+        action.Should().BeOfType<OkObjectResult>();
+        var expected = request with { Context = ExpectedContext };
+        authService.Verify(
+            candidate => candidate.GoogleLoginAsync(expected, It.IsAny<CancellationToken>()),
+            Times.Once);
         AssertRefreshCookie(controller, "refresh-token");
     }
 
@@ -156,6 +218,7 @@ public sealed class AuthControllerTests
         action.Should().BeOfType<OkObjectResult>();
         authService.Verify(candidate => candidate.RefreshTokenAsync(
             "old-refresh", It.IsAny<RequestContext?>(), It.IsAny<CancellationToken>()), Times.Once);
+        AssertAccessCookie(controller, "new-access");
         AssertRefreshCookie(controller, "new-refresh");
     }
 
@@ -172,7 +235,8 @@ public sealed class AuthControllerTests
         var action = await controller.Refresh(CancellationToken.None);
 
         action.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(401);
-        AssertCookieWasCleared(controller);
+        AssertCookieWasCleared(controller, AuthConstants.AccessTokenCookieName);
+        AssertCookieWasCleared(controller, AuthConstants.RefreshTokenCookieName);
     }
 
     [TestMethod]
@@ -189,7 +253,8 @@ public sealed class AuthControllerTests
         action.Should().BeOfType<NoContentResult>();
         authService.Verify(candidate => candidate.LogoutAsync(
             "refresh-token", It.IsAny<RequestContext?>(), It.IsAny<CancellationToken>()), Times.Once);
-        AssertCookieWasCleared(controller);
+        AssertCookieWasCleared(controller, AuthConstants.AccessTokenCookieName);
+        AssertCookieWasCleared(controller, AuthConstants.RefreshTokenCookieName);
     }
 
     [TestMethod]
@@ -219,10 +284,16 @@ public sealed class AuthControllerTests
         };
     }
 
-    private static void AssertRefreshCookie(AuthController controller, string value)
+    private static void AssertAccessCookie(AuthController controller, string value) =>
+        AssertCookieWasSet(controller, AuthConstants.AccessTokenCookieName, value);
+
+    private static void AssertRefreshCookie(AuthController controller, string value) =>
+        AssertCookieWasSet(controller, AuthConstants.RefreshTokenCookieName, value);
+
+    private static void AssertCookieWasSet(AuthController controller, string cookieName, string value)
     {
-        var header = controller.Response.Headers.SetCookie.ToString();
-        header.Should().Contain($"{AuthConstants.RefreshTokenCookieName}={value}");
+        var header = FindCookieHeader(controller, cookieName);
+        header.Should().Contain($"{cookieName}={value}");
         var normalized = header.ToLowerInvariant();
         normalized.Should().Contain("httponly", Exactly.Once());
         normalized.Should().Contain("secure", Exactly.Once());
@@ -230,15 +301,27 @@ public sealed class AuthControllerTests
         normalized.Should().Contain("path=/", Exactly.Once());
     }
 
-    private static void AssertCookieWasCleared(AuthController controller)
+    private static void AssertCookieWasCleared(AuthController controller, string cookieName)
     {
-        var header = controller.Response.Headers.SetCookie.ToString();
-        header.Should().Contain($"{AuthConstants.RefreshTokenCookieName}=");
+        var header = FindCookieHeader(controller, cookieName);
+        header.Should().Contain($"{cookieName}=");
         var normalized = header.ToLowerInvariant();
         normalized.Should().Contain("expires=");
         normalized.Should().Contain("secure");
         normalized.Should().Contain("samesite=lax");
         normalized.Should().Contain("path=/");
+    }
+
+    // Login/Refresh now set two cookies at once, so the combined Set-Cookie header carries two
+    // entries: pick out the one belonging to the cookie under test before asserting on it.
+    private static string FindCookieHeader(AuthController controller, string cookieName)
+    {
+        var header = controller.Response.Headers.SetCookie
+            .SingleOrDefault(candidate => candidate is not null
+                && candidate.StartsWith($"{cookieName}=", StringComparison.Ordinal));
+
+        header.Should().NotBeNull($"a Set-Cookie header for '{cookieName}' should have been written");
+        return header!;
     }
 
     private static LoginResponseDto CreateLoginResponse() => new(
