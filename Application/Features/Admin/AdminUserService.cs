@@ -11,6 +11,8 @@ namespace APCS.Application.Features.Admin;
 public sealed class AdminUserService(
     IRepository<User> userRepository,
     IRepository<SubscriptionPlan> planRepository,
+    IRepository<Role> roleRepository,
+    IRepository<AuthToken> authTokenRepository,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     ILogger<AdminUserService> logger)
@@ -89,6 +91,7 @@ public sealed class AdminUserService(
             Plan: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: u.BatchJobs.Count,
             MonthlyApiCost: u.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: u.Birthday,
             CreatedAt: u.CreatedAt
         )).ToList();
 
@@ -134,6 +137,7 @@ public sealed class AdminUserService(
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
             MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );
 
@@ -170,5 +174,107 @@ public sealed class AdminUserService(
 
         logger.LogInformation("User {UserId} unlocked by admin.", id);
         return Result<bool>.Success(true);
+    }
+
+    public async Task<Result<bool>> SendResetPasswordLinkAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.GetByIdAsync(id, cancellationToken);
+        if (user is null)
+            return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
+
+        // Giả lập gửi link qua email. Trong thực tế sẽ gọi EmailService.
+        logger.LogInformation("Sent reset password link to {Email}", user.Email);
+        
+        return Result<bool>.Success(true);
+    }
+
+    public async Task<Result<AdminUserDto>> UpdateUserAsync(Guid id, UpdateAdminUserDto request, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.Query()
+            .Include(u => u.UserRoleUsers)
+            .Include(u => u.Subscriptions)
+                .ThenInclude(s => s.Plan)
+            .Include(u => u.BatchJobs)
+            .Include(u => u.Invoices)
+            .FirstOrDefaultAsync(u => u.Id == id, cancellationToken);
+
+        if (user is null)
+            return Result<AdminUserDto>.Failure(Error.NotFound("User.NotFound", "User not found."));
+
+        // Validate Email uniqueness
+        if (!string.Equals(user.Email, request.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var emailExists = await userRepository.Query().AnyAsync(u => u.Email == request.Email, cancellationToken);
+            if (emailExists)
+                return Result<AdminUserDto>.Failure(Error.Conflict("User.EmailExists", "Email address already in use."));
+        }
+
+        user.FullName = request.FullName;
+        user.Email = request.Email;
+        user.Birthday = request.Birthday;
+        user.AvatarUrl = request.AvatarUrl;
+        
+        // Cập nhật roles
+        var existingRoleNames = user.UserRoleUsers.Select(ur => ur.Role.Name).ToList();
+        var newRoleNames = request.Roles.ToList();
+        
+        // Remove roles not in request
+        var rolesToRemove = user.UserRoleUsers.Where(ur => !newRoleNames.Contains(ur.Role.Name)).ToList();
+        foreach (var roleToRemove in rolesToRemove)
+        {
+            user.UserRoleUsers.Remove(roleToRemove);
+        }
+
+        var allRoles = await roleRepository.Query().ToListAsync(cancellationToken);
+
+        foreach (var roleName in newRoleNames)
+        {
+            if (!existingRoleNames.Contains(roleName))
+            {
+                var role = allRoles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+                if (role != null)
+                {
+                    user.UserRoleUsers.Add(new UserRole { UserId = user.Id, RoleId = role.Id });
+                }
+            }
+        }
+
+        // Account status and Auth tokens
+        if (request.AccountStatus.Equals("Suspended", StringComparison.OrdinalIgnoreCase) && !user.AccountStatus.Equals("Suspended", StringComparison.OrdinalIgnoreCase))
+        {
+            // Trạng thái mới là Suspended, cắt toàn bộ session
+            var tokens = await authTokenRepository.Query().Where(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().DateTime && t.RevokedAt == null).ToListAsync(cancellationToken);
+            foreach (var token in tokens)
+            {
+                token.Revoke(timeProvider.GetUtcNow());
+                await authTokenRepository.UpdateAsync(token, false, cancellationToken);
+            }
+        }
+        
+        user.AccountStatus = request.AccountStatus;
+        user.UpdatedAt = timeProvider.GetUtcNow().DateTime;
+
+        await userRepository.UpdateAsync(user, false, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        // Return updated DTO
+        var now = timeProvider.GetUtcNow().DateTime;
+        var startOfMonth = new DateOnly(now.Year, now.Month, 1);
+        
+        var dto = new AdminUserDto(
+            Id: user.Id,
+            FullName: user.FullName,
+            Email: user.Email,
+            AvatarUrl: user.AvatarUrl,
+            AccountStatus: user.AccountStatus,
+            Roles: user.UserRoleUsers.Select(ur => ur.Role.Name).ToList(),
+            Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
+            TotalJobs: user.BatchJobs.Count,
+            MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: user.Birthday,
+            CreatedAt: user.CreatedAt
+        );
+
+        return Result<AdminUserDto>.Success(dto);
     }
 }

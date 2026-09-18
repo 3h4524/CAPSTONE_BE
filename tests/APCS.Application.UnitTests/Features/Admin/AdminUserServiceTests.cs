@@ -15,17 +15,23 @@ public sealed class AdminUserServiceTests
     private static AdminUserService CreateService(
         Mock<IRepository<User>>? userRepository = null,
         Mock<IRepository<SubscriptionPlan>>? planRepository = null,
+        Mock<IRepository<Role>>? roleRepository = null,
+        Mock<IRepository<AuthToken>>? authTokenRepository = null,
         Mock<IUnitOfWork>? unitOfWork = null,
         TimeProvider? timeProvider = null)
     {
         userRepository ??= new Mock<IRepository<User>>();
         planRepository ??= new Mock<IRepository<SubscriptionPlan>>();
+        roleRepository ??= new Mock<IRepository<Role>>();
+        authTokenRepository ??= new Mock<IRepository<AuthToken>>();
         unitOfWork ??= new Mock<IUnitOfWork>();
         timeProvider ??= TimeProvider.System;
 
         return new AdminUserService(
             userRepository.Object,
             planRepository.Object,
+            roleRepository.Object,
+            authTokenRepository.Object,
             unitOfWork.Object,
             timeProvider,
             NullLogger<AdminUserService>.Instance);

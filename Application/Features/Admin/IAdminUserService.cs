@@ -11,4 +11,6 @@ public interface IAdminUserService
     Task<Result<AdminUserDto>> GetUserByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Result<bool>> SuspendUserAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Result<bool>> UnlockUserAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<Result<AdminUserDto>> UpdateUserAsync(Guid id, UpdateAdminUserDto request, CancellationToken cancellationToken = default);
+    Task<Result<bool>> SendResetPasswordLinkAsync(Guid id, CancellationToken cancellationToken = default);
 }
