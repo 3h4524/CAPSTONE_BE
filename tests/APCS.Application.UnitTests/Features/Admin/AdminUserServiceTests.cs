@@ -1,6 +1,8 @@
+using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Admin.Dtos.Request;
+using APCS.Application.Features.Auth;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -19,6 +21,8 @@ public sealed class AdminUserServiceTests
         Mock<IRepository<UserRole>>? userRoleRepository = null,
         Mock<IRepository<AuthToken>>? authTokenRepository = null,
         Mock<IUnitOfWork>? unitOfWork = null,
+        Mock<ICurrentUser>? currentUser = null,
+        Mock<IAuthService>? authService = null,
         TimeProvider? timeProvider = null)
     {
         userRepository ??= new Mock<IRepository<User>>();
@@ -27,6 +31,8 @@ public sealed class AdminUserServiceTests
         userRoleRepository ??= new Mock<IRepository<UserRole>>();
         authTokenRepository ??= new Mock<IRepository<AuthToken>>();
         unitOfWork ??= new Mock<IUnitOfWork>();
+        currentUser ??= new Mock<ICurrentUser>();
+        authService ??= new Mock<IAuthService>();
         timeProvider ??= TimeProvider.System;
 
         return new AdminUserService(
@@ -36,6 +42,8 @@ public sealed class AdminUserServiceTests
             userRoleRepository.Object,
             authTokenRepository.Object,
             unitOfWork.Object,
+            currentUser.Object,
+            authService.Object,
             timeProvider,
             NullLogger<AdminUserService>.Instance);
     }
@@ -165,5 +173,80 @@ public sealed class AdminUserServiceTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error.Code.Should().Be("User.NotFound");
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_UserNotFound_ReturnsError()
+    {
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User>().AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+
+        var service = CreateService(userRepository: userRepository);
+        var request = new UpdateAdminUserDto("Name", "test@test.com", null, null, "Active", new List<string>());
+        var result = await service.UpdateUserAsync(Guid.NewGuid(), request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("User.NotFound");
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_AdminCannotRemoveOwnRole_ReturnsError()
+    {
+        var adminId = Guid.NewGuid();
+        var role = new Role { Id = Guid.NewGuid(), Name = "Admin" };
+        var user = new User
+        {
+            Id = adminId,
+            Email = "admin@test.com",
+            AccountStatus = "Active",
+            UserRoleUsers = new List<UserRole> { new() { Role = role } }
+        };
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+
+        var currentUser = new Mock<ICurrentUser>();
+        currentUser.Setup(x => x.UserId).Returns(adminId);
+
+        var service = CreateService(userRepository: userRepository, currentUser: currentUser);
+        
+        // Attempt to change roles to just "Seller" (removing "Admin")
+        var request = new UpdateAdminUserDto("Admin User", "admin@test.com", null, null, "Active", new List<string> { "Seller" });
+        var result = await service.UpdateUserAsync(adminId, request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("Validation");
+        result.Error.Message.Should().Be("You cannot remove your own Admin role.");
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_AdminCannotChangeOwnStatus_ReturnsError()
+    {
+        var adminId = Guid.NewGuid();
+        var user = new User
+        {
+            Id = adminId,
+            Email = "admin@test.com",
+            AccountStatus = "Active"
+        };
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+
+        var currentUser = new Mock<ICurrentUser>();
+        currentUser.Setup(x => x.UserId).Returns(adminId);
+
+        var service = CreateService(userRepository: userRepository, currentUser: currentUser);
+        
+        // Attempt to change status to "Suspended"
+        var request = new UpdateAdminUserDto("Admin User", "admin@test.com", null, null, "Suspended", new List<string>());
+        var result = await service.UpdateUserAsync(adminId, request, CancellationToken.None);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("Validation");
+        result.Error.Message.Should().Be("You cannot change your own account status.");
     }
 }
