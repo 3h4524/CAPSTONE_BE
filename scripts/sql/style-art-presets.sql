@@ -4,7 +4,8 @@
 
 CREATE TABLE IF NOT EXISTS public.style_art_presets (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id uuid NULL,
+    -- Owner: null means a system preset, otherwise the seller who created it.
+    user_id uuid NULL REFERENCES public.users (id) ON DELETE CASCADE,
     name varchar NOT NULL,
     description text NOT NULL,
     style_modifiers text NOT NULL,
@@ -16,22 +17,6 @@ CREATE TABLE IF NOT EXISTS public.style_art_presets (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
-
--- Owner: null means a system preset, otherwise the seller who created it.
--- The ALTER below is a no-op on fresh databases (the column is in CREATE TABLE
--- above) and upgrades databases created from the earlier script version.
-ALTER TABLE public.style_art_presets ADD COLUMN IF NOT EXISTS user_id uuid NULL;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'style_art_presets_user_id_fkey'
-    ) THEN
-        ALTER TABLE public.style_art_presets
-            ADD CONSTRAINT style_art_presets_user_id_fkey
-            FOREIGN KEY (user_id) REFERENCES public.users (id) ON DELETE CASCADE;
-    END IF;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_style_art_presets_user_id
     ON public.style_art_presets (user_id);
