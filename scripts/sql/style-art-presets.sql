@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS public.style_art_presets (
 );
 
 -- Owner: null means a system preset, otherwise the seller who created it.
+-- The ALTER below is a no-op on fresh databases (the column is in CREATE TABLE
+-- above) and upgrades databases created from the earlier script version.
+ALTER TABLE public.style_art_presets ADD COLUMN IF NOT EXISTS user_id uuid NULL;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
