@@ -217,7 +217,7 @@ public sealed class AdminUserServiceTests
         var result = await service.UpdateUserAsync(adminId, request, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
-        result.Error.Code.Should().Be("Validation");
+        result.Error.Code.Should().Be("validation.failed");
         result.Error.Message.Should().Be("You cannot remove your own Admin role.");
     }
 
@@ -246,7 +246,7 @@ public sealed class AdminUserServiceTests
         var result = await service.UpdateUserAsync(adminId, request, CancellationToken.None);
 
         result.IsSuccess.Should().BeFalse();
-        result.Error.Code.Should().Be("Validation");
+        result.Error.Code.Should().Be("validation.failed");
         result.Error.Message.Should().Be("You cannot change your own account status.");
     }
 }
