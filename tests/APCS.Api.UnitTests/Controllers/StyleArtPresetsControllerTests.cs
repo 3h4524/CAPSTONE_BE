@@ -20,7 +20,7 @@ public sealed class StyleArtPresetsControllerTests
         using var cancellation = new CancellationTokenSource();
         IReadOnlyList<StyleArtPresetResponseDto> response =
         [
-            new(Guid.NewGuid(), "Vintage", "Retro", "vintage", null, ["Apparel"], true, false)
+            new(Guid.NewGuid(), "Vintage", "Retro", "vintage", null, ["Apparel"], true, false, 0)
         ];
         var service = new Mock<IStyleArtPresetService>();
         service.Setup(x => x.ListMineAsync(cancellation.Token)).ReturnsAsync(Result.Success(response));
@@ -48,7 +48,7 @@ public sealed class StyleArtPresetsControllerTests
     public async Task Create_Success_ReturnsCreatedWithLocation()
     {
         var form = new CreateStyleArtPresetForm { Name = "Neon", Description = "Glow", StyleModifiers = "neon" };
-        var created = new StyleArtPresetResponseDto(Guid.NewGuid(), "Neon", "Glow", "neon", null, [], false, true);
+        var created = new StyleArtPresetResponseDto(Guid.NewGuid(), "Neon", "Glow", "neon", null, [], false, true, 0);
         var service = new Mock<IStyleArtPresetService>();
         service.Setup(x => x.CreateAsync(It.IsAny<CreateStyleArtPresetRequestDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(created));
@@ -63,7 +63,7 @@ public sealed class StyleArtPresetsControllerTests
     public async Task Get_Found_ReturnsPreset()
     {
         var id = Guid.NewGuid();
-        var response = new StyleArtPresetResponseDto(id, "Vintage", "Retro", "vintage", null, [], true, false);
+        var response = new StyleArtPresetResponseDto(id, "Vintage", "Retro", "vintage", null, [], true, false, 0);
         var service = new Mock<IStyleArtPresetService>();
         service.Setup(x => x.GetMineAsync(id, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
 
@@ -89,7 +89,7 @@ public sealed class StyleArtPresetsControllerTests
     {
         var id = Guid.NewGuid();
         var form = new UpdateStyleArtPresetForm { Name = "Mine+", Description = "New description", StyleModifiers = "new" };
-        var response = new StyleArtPresetResponseDto(id, "Mine+", "New description", "new", null, [], false, true);
+        var response = new StyleArtPresetResponseDto(id, "Mine+", "New description", "new", null, [], false, true, 0);
         var service = new Mock<IStyleArtPresetService>();
         service.Setup(x => x.UpdateAsync(id, It.IsAny<UpdateStyleArtPresetRequestDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(response));

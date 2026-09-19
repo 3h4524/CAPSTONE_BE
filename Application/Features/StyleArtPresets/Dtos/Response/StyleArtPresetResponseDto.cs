@@ -9,6 +9,7 @@ namespace APCS.Application.Features.StyleArtPresets.Dtos.Response;
 /// <param name="Recommendations">Suggested use cases.</param>
 /// <param name="IsSystemTemplate">Whether this is a system-provided style.</param>
 /// <param name="IsMine">Whether the current seller created this style.</param>
+/// <param name="UsageCount">How often this style was used, for ordering.</param>
 public sealed record StyleArtPresetResponseDto(
     Guid Id,
     string Name,
@@ -17,4 +18,5 @@ public sealed record StyleArtPresetResponseDto(
     string? PreviewImageUrl,
     IReadOnlyList<string> Recommendations,
     bool IsSystemTemplate,
-    bool IsMine);
+    bool IsMine,
+    int UsageCount);

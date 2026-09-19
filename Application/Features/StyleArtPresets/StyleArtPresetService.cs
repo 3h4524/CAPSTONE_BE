@@ -39,12 +39,13 @@ public sealed class StyleArtPresetService(
                 preset.PreviewImageUrl,
                 preset.Recommendations,
                 preset.IsSystemTemplate,
+                preset.UsageCount,
                 preset.UserId
             })
             .ToListAsync(cancellationToken);
 
         IReadOnlyList<StyleArtPresetResponseDto> items = rows
-            .Select(row => Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId))
+            .Select(row => Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId, row.UsageCount))
             .ToList();
 
         return Result.Success(items);
@@ -66,6 +67,7 @@ public sealed class StyleArtPresetService(
                 item.PreviewImageUrl,
                 item.Recommendations,
                 item.IsSystemTemplate,
+                item.UsageCount,
                 item.UserId
             })
             .SingleOrDefaultAsync(cancellationToken);
@@ -73,7 +75,7 @@ public sealed class StyleArtPresetService(
         if (row is null)
             return Result.Failure<StyleArtPresetResponseDto>(Error.NotFound("StyleArtPresets.NotFound", "The art style was not found."));
 
-        return Result.Success(Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId));
+        return Result.Success(Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId, row.UsageCount));
     }
 
     public async Task<Result<StyleArtPresetResponseDto>> CreateAsync(CreateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default)
@@ -224,7 +226,7 @@ public sealed class StyleArtPresetService(
     private static string StorageKey(Guid presetId) => $"style-art-presets/{presetId:N}";
 
     private static StyleArtPresetResponseDto Map(StyleArtPreset preset, bool isMine) =>
-        Map(preset.Id, preset.Name, preset.Description, preset.StyleModifiers, preset.PreviewImageUrl, preset.Recommendations, preset.IsSystemTemplate, isMine);
+        Map(preset.Id, preset.Name, preset.Description, preset.StyleModifiers, preset.PreviewImageUrl, preset.Recommendations, preset.IsSystemTemplate, isMine, preset.UsageCount);
 
     private static StyleArtPresetResponseDto Map(
         Guid id,
@@ -234,8 +236,9 @@ public sealed class StyleArtPresetService(
         string? previewImageUrl,
         string recommendations,
         bool isSystemTemplate,
-        bool isMine) =>
-        new(id, name, description, styleModifiers, previewImageUrl, ToRecommendations(recommendations), isSystemTemplate, isMine);
+        bool isMine,
+        int usageCount) =>
+        new(id, name, description, styleModifiers, previewImageUrl, ToRecommendations(recommendations), isSystemTemplate, isMine, usageCount);
 
     private static IReadOnlyList<string> ToRecommendations(string source) =>
         StyleArtPresetRules.TryParseRecommendations(source, out var recommendations) ? recommendations : [];
