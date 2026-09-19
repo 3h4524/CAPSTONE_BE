@@ -92,6 +92,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<SocialMediaShare> SocialMediaShares { get; set; }
 
+    public virtual DbSet<StyleArtPreset> StyleArtPresets { get; set; }
+
     public virtual DbSet<Subscription> Subscriptions { get; set; }
 
     public virtual DbSet<SubscriptionPlan> SubscriptionPlans { get; set; }
@@ -1317,6 +1319,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.ProductType, "idx_mockup_templates_product_type");
 
+            entity.HasIndex(e => e.UserId, "idx_mockup_templates_user_id");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -1349,6 +1353,12 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.UsageCount)
                 .HasDefaultValue(0)
                 .HasColumnName("usage_count");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.MockupTemplates)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
         modelBuilder.Entity<MusicTrack>(entity =>
@@ -2110,6 +2120,49 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.PromoVideo).WithMany(p => p.SocialMediaShares)
                 .HasForeignKey(d => d.PromoVideoId)
                 .HasConstraintName("social_media_shares_promo_video_id_fkey");
+        });
+
+        modelBuilder.Entity<StyleArtPreset>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("style_art_presets_pkey");
+
+            entity.ToTable("style_art_presets");
+
+            entity.HasIndex(e => e.IsActive, "idx_style_art_presets_is_active");
+            entity.HasIndex(e => e.UserId, "idx_style_art_presets_user_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Description).HasColumnName("description");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.IsSystemTemplate)
+                .HasDefaultValue(true)
+                .HasColumnName("is_system_template");
+            entity.Property(e => e.Name).HasColumnName("name");
+            entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
+            entity.Property(e => e.Recommendations)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("recommendations");
+            entity.Property(e => e.StyleModifiers).HasColumnName("style_modifiers");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UsageCount)
+                .HasDefaultValue(0)
+                .HasColumnName("usage_count");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.StyleArtPresets)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("style_art_presets_user_id_fkey");
         });
 
         modelBuilder.Entity<Subscription>(entity =>

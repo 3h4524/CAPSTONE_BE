@@ -51,6 +51,8 @@ public partial class User
 
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
 
+    public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
+
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
 
     public virtual ICollection<PaymentMethod> PaymentMethods { get; set; } = new List<PaymentMethod>();
@@ -60,6 +62,8 @@ public partial class User
     public virtual ICollection<Product> Products { get; set; } = new List<Product>();
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
+
+    public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
 
     public virtual ICollection<SupportTicket> SupportTicketAssignedToNavigations { get; set; } = new List<SupportTicket>();
 

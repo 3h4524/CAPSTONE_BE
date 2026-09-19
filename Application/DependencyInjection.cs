@@ -2,7 +2,9 @@ using System.Reflection;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.ApiKeys;
+using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.Profile;
+using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
@@ -31,6 +33,8 @@ public static class DependencyInjection
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
+        services.AddScoped<IMockupTemplateService, MockupTemplateService>();
 
         return services;
     }
