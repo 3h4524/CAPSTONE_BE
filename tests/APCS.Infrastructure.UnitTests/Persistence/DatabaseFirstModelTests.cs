@@ -37,6 +37,20 @@ public sealed class DatabaseFirstModelTests
     }
 
     [TestMethod]
+    public void Model_StyleArtPresets_MapsExpectedIndexes()
+    {
+        using var context = CreateContext();
+
+        var indexNames = context.Model.FindEntityType(typeof(StyleArtPreset))!
+            .GetIndexes()
+            .Select(index => index.GetDatabaseName())
+            .ToArray();
+
+        indexNames.Should().Contain("idx_style_art_presets_is_active");
+        indexNames.Should().Contain("idx_style_art_presets_user_id");
+    }
+
+    [TestMethod]
     public void DatabaseFirstContext_HasNoCodeFirstMigrations()
     {
         using var context = CreateContext();

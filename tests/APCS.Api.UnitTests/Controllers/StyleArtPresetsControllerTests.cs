@@ -57,6 +57,8 @@ public sealed class StyleArtPresetsControllerTests
 
         var createdResult = result.Should().BeOfType<CreatedAtActionResult>().Subject;
         createdResult.Value.Should().BeSameAs(created);
+        createdResult.ActionName.Should().Be(nameof(StyleArtPresetsController.Get));
+        createdResult.RouteValues!["id"].Should().Be(created.Id);
     }
 
     [TestMethod]
@@ -97,6 +99,37 @@ public sealed class StyleArtPresetsControllerTests
         var result = await new StyleArtPresetsController(service.Object).Update(id, form, CancellationToken.None);
 
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
+    public async Task Update_ForwardsDeletePreviewFlag()
+    {
+        var id = Guid.NewGuid();
+        var stream = new MemoryStream([1, 2, 3]);
+        var form = new UpdateStyleArtPresetForm
+        {
+            Name = "Mine",
+            Description = "New description",
+            StyleModifiers = "new",
+            Preview = new FormFile(stream, 0, stream.Length, "Preview", "preview.webp")
+            {
+                Headers = new HeaderDictionary(),
+                ContentType = "image/webp"
+            },
+            DeletePreview = false
+        };
+        UpdateStyleArtPresetRequestDto? captured = null;
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.UpdateAsync(id, It.IsAny<UpdateStyleArtPresetRequestDto>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, UpdateStyleArtPresetRequestDto, CancellationToken>((_, request, _) => captured = request)
+            .ReturnsAsync(Result.Success(new StyleArtPresetResponseDto(id, "Mine", "New description", "new", null, [], false, true, 0)));
+
+        await new StyleArtPresetsController(service.Object).Update(id, form, CancellationToken.None);
+
+        captured.Should().NotBeNull();
+        captured!.DeletePreview.Should().BeFalse();
+        captured.Preview.Should().NotBeNull();
+        captured.Preview!.FileName.Should().Be("preview.webp");
     }
 
     [TestMethod]

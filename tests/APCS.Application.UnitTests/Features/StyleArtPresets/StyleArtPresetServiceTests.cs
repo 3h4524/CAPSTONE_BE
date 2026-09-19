@@ -7,6 +7,7 @@ using APCS.Application.Features.StyleArtPresets.Validators;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using FluentValidation;
+using Microsoft.EntityFrameworkCore;
 using MockQueryable.Moq;
 using Moq;
 
@@ -159,6 +160,159 @@ public sealed class StyleArtPresetServiceTests
         result.IsSuccess.Should().BeFalse();
         result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
         images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WhenConcurrentDuplicate_ReturnsConflictAndDeletesImage()
+    {
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        repository.SetupSequence(r => r.Query())
+            .Returns(new List<StyleArtPreset>().AsQueryable().BuildMock())
+            .Returns(new List<StyleArtPreset>
+            {
+                new() { Id = Guid.NewGuid(), Name = "Neon", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = true, IsSystemTemplate = true }
+            }.AsQueryable().BuildMock());
+        repository.Setup(r => r.AddAsync(It.IsAny<StyleArtPreset>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DbUpdateException("Unique violation", new Exception("ux_style_art_presets_name")));
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("https://images.example.com/preview.webp");
+
+        var result = await CreateService(userId: Guid.NewGuid(), repository: repository, images: images).CreateAsync(
+            new CreateStyleArtPresetRequestDto("neon", "Bold glow", "neon glow", null, PreviewFile()));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
+        images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WhenSaveFailsWithoutDuplicate_RethrowsAndDeletesImage()
+    {
+        var repository = PresetRepository();
+        repository.Setup(r => r.AddAsync(It.IsAny<StyleArtPreset>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DbUpdateException("Connection lost", new Exception("transient")));
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("https://images.example.com/preview.webp");
+
+        var act = () => CreateService(userId: Guid.NewGuid(), repository: repository, images: images).CreateAsync(
+            new CreateStyleArtPresetRequestDto("Neon", "Bold glow", "neon glow", null, PreviewFile()));
+
+        await act.Should().ThrowAsync<DbUpdateException>();
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenConcurrentDuplicate_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "Old", StyleModifiers = "old", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        repository.SetupSequence(r => r.Query())
+            .Returns(new List<StyleArtPreset> { stored }.AsQueryable().BuildMock())
+            .Returns(new List<StyleArtPreset>
+            {
+                stored,
+                new() { Id = Guid.NewGuid(), Name = "Taken", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = true, IsSystemTemplate = true }
+            }.AsQueryable().BuildMock());
+        repository.Setup(r => r.UpdateAsync(It.IsAny<StyleArtPreset>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DbUpdateException("Unique violation", new Exception("ux_style_art_presets_name")));
+
+        var result = await CreateService(userId: userId, repository: repository).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Taken", "New description", "new", null, null, false));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenReplacePreview_UploadsWithSameKeyAndUpdatesUrl()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "Old", StyleModifiers = "old", Recommendations = "[]", PreviewImageUrl = "https://images.example.com/old.webp", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        repository.Setup(r => r.Query()).Returns(new List<StyleArtPreset> { stored }.AsQueryable().BuildMock());
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("https://images.example.com/new.webp");
+
+        var result = await CreateService(userId: userId, repository: repository, images: images).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Mine", "New description", "new", null, PreviewFile(), false));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.PreviewImageUrl.Should().Be("https://images.example.com/new.webp");
+        images.Verify(
+            x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), $"style-art-presets/{presetId:N}", It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenDeletePreview_RemovesImageAndClearsUrl()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "Old", StyleModifiers = "old", Recommendations = "[]", PreviewImageUrl = "https://images.example.com/old.webp", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        repository.Setup(r => r.Query()).Returns(new List<StyleArtPreset> { stored }.AsQueryable().BuildMock());
+        var images = new Mock<IPublicImageService>();
+
+        var result = await CreateService(userId: userId, repository: repository, images: images).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Mine", "New description", "new", null, null, true));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.PreviewImageUrl.Should().BeNull();
+        images.Verify(x => x.DeleteImageAsync($"style-art-presets/{presetId:N}", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_RemovesRowBeforeImage()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "D", StyleModifiers = "m", Recommendations = "[]", PreviewImageUrl = "https://images.example.com/old.webp", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        var order = new List<string>();
+        repository.Setup(r => r.RemoveAsync(stored, true, It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("remove"))
+            .Returns(Task.CompletedTask);
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("image"))
+            .Returns(Task.CompletedTask);
+
+        var result = await CreateService(userId: userId, repository: repository, images: images).DeleteAsync(presetId);
+
+        result.IsSuccess.Should().BeTrue();
+        order.Should().Equal("remove", "image");
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_WhenImageDeleteFails_ReturnsSuccess()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "D", StyleModifiers = "m", Recommendations = "[]", PreviewImageUrl = "https://images.example.com/old.webp", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary unavailable"));
+
+        var result = await CreateService(userId: userId, repository: repository, images: images).DeleteAsync(presetId);
+
+        result.IsSuccess.Should().BeTrue();
+        repository.Verify(r => r.RemoveAsync(stored, true, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
