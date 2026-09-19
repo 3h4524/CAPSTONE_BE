@@ -261,9 +261,11 @@ public sealed class AdminUserServiceTests
         currentUserService.Setup(x => x.UserId).Returns(adminId);
 
         var unitOfWork = new Mock<IUnitOfWork>();
+        var auditLogRepository = new Mock<IRepository<AuditLog>>();
         var service = CreateService(
             userRepository: userRepository,
             authTokenRepository: tokenRepository,
+            auditLogRepository: auditLogRepository,
             currentUser: currentUserService,
             unitOfWork: unitOfWork);
 
@@ -275,9 +277,8 @@ public sealed class AdminUserServiceTests
         user.AccountStatus.Should().Be("suspended");
         user.SuspendedUntil.Should().NotBeNull();
         user.SuspendedUntil.Value.Date.Should().Be(DateTime.UtcNow.AddDays(7).Date);
-        user.AuditLogs.Should().HaveCount(1);
-        user.AuditLogs.First().ActionType.Should().Be("SuspendUser");
-        user.AuditLogs.First().NewValue.Should().Contain("\"status\":\"suspended\"");
+        auditLogRepository.Verify(x => x.AddAsync(It.Is<AuditLog>(l => 
+            l.ActionType == "SuspendUser" && l.NewValue != null && l.NewValue.Contains("\"status\":\"suspended\"")), false, It.IsAny<CancellationToken>()), Times.Once);
 
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -299,8 +300,10 @@ public sealed class AdminUserServiceTests
         currentUserService.Setup(x => x.UserId).Returns(adminId);
 
         var unitOfWork = new Mock<IUnitOfWork>();
+        var auditLogRepository = new Mock<IRepository<AuditLog>>();
         var service = CreateService(
             userRepository: userRepository,
+            auditLogRepository: auditLogRepository,
             currentUser: currentUserService,
             unitOfWork: unitOfWork);
 
@@ -311,9 +314,8 @@ public sealed class AdminUserServiceTests
         result.IsSuccess.Should().BeTrue();
         user.AccountStatus.Should().Be("active");
         user.SuspendedUntil.Should().BeNull();
-        user.AuditLogs.Should().HaveCount(1);
-        user.AuditLogs.First().ActionType.Should().Be("UnlockUser");
-        user.AuditLogs.First().NewValue.Should().Contain("\"status\":\"active\"");
+        auditLogRepository.Verify(x => x.AddAsync(It.Is<AuditLog>(l => 
+            l.ActionType == "UnlockUser" && l.NewValue != null && l.NewValue.Contains("\"status\":\"active\"")), false, It.IsAny<CancellationToken>()), Times.Once);
 
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
