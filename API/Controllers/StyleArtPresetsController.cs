@@ -1,6 +1,5 @@
 using APCS.Api.Contracts.StyleArtPresets;
 using APCS.Api.Extensions;
-using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.StyleArtPresets.Dtos.Request;
 using APCS.Application.Features.StyleArtPresets.Dtos.Response;
@@ -34,7 +33,7 @@ public sealed class StyleArtPresetsController(IStyleArtPresetService service) : 
         [FromForm] CreateStyleArtPresetForm form,
         CancellationToken cancellationToken)
     {
-        var preview = OpenPreview(form.Preview);
+        var preview = form.Preview.ToUploadFileDto();
         try
         {
             var result = await service.CreateAsync(
@@ -66,7 +65,7 @@ public sealed class StyleArtPresetsController(IStyleArtPresetService service) : 
         [FromForm] UpdateStyleArtPresetForm form,
         CancellationToken cancellationToken)
     {
-        var preview = OpenPreview(form.Preview);
+        var preview = form.Preview.ToUploadFileDto();
         try
         {
             var result = await service.UpdateAsync(
@@ -94,16 +93,4 @@ public sealed class StyleArtPresetsController(IStyleArtPresetService service) : 
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken) =>
         (await service.DeleteAsync(id, cancellationToken)).ToActionResult(this);
-
-    private static UploadFileDto? OpenPreview(IFormFile? file) =>
-        file is null
-            ? null
-            : new UploadFileDto(
-                SanitizeFileName(file.FileName),
-                file.ContentType,
-                file.Length,
-                file.OpenReadStream());
-
-    private static string SanitizeFileName(string fileName) =>
-        Path.GetFileName(fileName.Replace('\\', '/'));
 }

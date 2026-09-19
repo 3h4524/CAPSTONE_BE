@@ -23,8 +23,8 @@ public sealed class StyleArtPresetService(
 {
     public async Task<Result<IReadOnlyList<StyleArtPresetResponseDto>>> ListMineAsync(CancellationToken cancellationToken = default)
     {
-        if (GetAuthenticatedUserId() is not Guid userId)
-            return Result.Failure<IReadOnlyList<StyleArtPresetResponseDto>>(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in to view art styles."));
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<IReadOnlyList<StyleArtPresetResponseDto>>(StyleArtPresetErrors.Unauthenticated("view"));
 
         var rows = await presets.Query()
             .Where(preset => preset.IsActive && (preset.UserId == null || preset.UserId == userId))
@@ -53,8 +53,8 @@ public sealed class StyleArtPresetService(
 
     public async Task<Result<StyleArtPresetResponseDto>> GetMineAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        if (GetAuthenticatedUserId() is not Guid userId)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in to view art styles."));
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.Unauthenticated("view"));
 
         var row = await presets.Query()
             .Where(item => item.Id == id && item.IsActive && (item.UserId == null || item.UserId == userId))
@@ -73,15 +73,15 @@ public sealed class StyleArtPresetService(
             .SingleOrDefaultAsync(cancellationToken);
 
         if (row is null)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.NotFound("StyleArtPresets.NotFound", "The art style was not found."));
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.NotFound());
 
         return Result.Success(Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId, row.UsageCount));
     }
 
     public async Task<Result<StyleArtPresetResponseDto>> CreateAsync(CreateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default)
     {
-        if (GetAuthenticatedUserId() is not Guid userId)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in to create art styles."));
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.Unauthenticated("create"));
 
         var validation = await createValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -96,7 +96,7 @@ public sealed class StyleArtPresetService(
 
         if (await IsNameTakenAsync(request.Name, null, cancellationToken))
         {
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Conflict("StyleArtPresets.DuplicateName", "An art style with this name already exists."));
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
         }
 
         var presetId = Guid.NewGuid();
@@ -124,6 +124,17 @@ public sealed class StyleArtPresetService(
         {
             await presets.AddAsync(preset, saveChange: true, cancellationToken);
         }
+        catch (DbUpdateException)
+        {
+            await TryDeleteImageAsync(storageKey, cancellationToken);
+
+            if (await IsNameTakenAsync(request.Name, null, cancellationToken))
+            {
+                return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
+            }
+
+            throw;
+        }
         catch
         {
             await TryDeleteImageAsync(storageKey, cancellationToken);
@@ -135,8 +146,8 @@ public sealed class StyleArtPresetService(
 
     public async Task<Result<StyleArtPresetResponseDto>> UpdateAsync(Guid id, UpdateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default)
     {
-        if (GetAuthenticatedUserId() is not Guid userId)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in to update art styles."));
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.Unauthenticated("update"));
 
         var validation = await updateValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -146,13 +157,13 @@ public sealed class StyleArtPresetService(
 
         var preset = await presets.GetByIdAsync(id, cancellationToken);
         if (preset is null || !preset.IsActive)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.NotFound("StyleArtPresets.NotFound", "The art style was not found."));
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.NotFound());
         if (preset.UserId is null || preset.UserId != userId)
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Forbidden("StyleArtPresets.NotOwner", "Only the creator can update this art style."));
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.UpdateNotOwner());
 
         if (await IsNameTakenAsync(request.Name, id, cancellationToken))
         {
-            return Result.Failure<StyleArtPresetResponseDto>(Error.Conflict("StyleArtPresets.DuplicateName", "An art style with this name already exists."));
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
         }
 
         preset.Name = request.Name.Trim();
@@ -174,32 +185,44 @@ public sealed class StyleArtPresetService(
         }
 
         preset.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-        await presets.UpdateAsync(preset, saveChange: true, cancellationToken);
+
+        try
+        {
+            await presets.UpdateAsync(preset, saveChange: true, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            if (await IsNameTakenAsync(request.Name, id, cancellationToken))
+            {
+                return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
+            }
+
+            throw;
+        }
+
         return Result.Success(Map(preset, isMine: true));
     }
 
     public async Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        if (GetAuthenticatedUserId() is not Guid userId)
-            return Result.Failure(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in to delete art styles."));
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure(StyleArtPresetErrors.Unauthenticated("delete"));
 
         var preset = await presets.GetByIdAsync(id, cancellationToken);
         if (preset is null || !preset.IsActive)
-            return Result.Failure(Error.NotFound("StyleArtPresets.NotFound", "The art style was not found."));
+            return Result.Failure(StyleArtPresetErrors.NotFound());
         if (preset.UserId is null || preset.UserId != userId)
-            return Result.Failure(Error.Forbidden("StyleArtPresets.NotOwner", "System art styles cannot be deleted. Only the creator can delete this art style."));
+            return Result.Failure(StyleArtPresetErrors.DeleteNotOwner());
+
+        await presets.RemoveAsync(preset, saveChange: true, cancellationToken);
 
         if (preset.PreviewImageUrl is not null)
         {
-            await images.DeleteImageAsync(StorageKey(preset.Id), cancellationToken);
+            await TryDeleteImageAsync(StorageKey(preset.Id), cancellationToken);
         }
 
-        await presets.RemoveAsync(preset, saveChange: true, cancellationToken);
         return Result.Success();
     }
-
-    private Guid? GetAuthenticatedUserId() =>
-        currentUser.IsAuthenticated && currentUser.UserId is Guid userId ? userId : null;
 
     private async Task<bool> IsNameTakenAsync(string name, Guid? excludeId, CancellationToken cancellationToken)
     {

@@ -2121,6 +2121,7 @@ public partial class AppDbContext : DbContext
             entity.ToTable("style_art_presets");
 
             entity.HasIndex(e => e.IsActive, "idx_style_art_presets_is_active");
+            entity.HasIndex(e => e.UserId, "idx_style_art_presets_user_id");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("gen_random_uuid()")

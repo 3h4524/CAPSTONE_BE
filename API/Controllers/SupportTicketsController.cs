@@ -1,6 +1,5 @@
 using APCS.Api.Contracts.SupportTickets;
 using APCS.Api.Extensions;
-using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.SupportTickets.Dtos.Request;
 using APCS.Application.Features.SupportTickets.Dtos.Response;
@@ -27,7 +26,7 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         [FromForm] CreateSupportTicketForm form,
         CancellationToken cancellationToken)
     {
-        var uploads = OpenUploads(form.Attachments);
+        var uploads = form.Attachments.ToUploadFileDtos();
         try
         {
             var result = await supportTicketService.CreateAsync(
@@ -45,7 +44,7 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         }
         finally
         {
-            DisposeUploads(uploads);
+            uploads.DisposeUploads();
         }
     }
 
@@ -71,7 +70,7 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         [FromForm] CreateTicketReplyForm form,
         CancellationToken cancellationToken)
     {
-        var uploads = OpenUploads(form.Attachments);
+        var uploads = form.Attachments.ToUploadFileDtos();
         try
         {
             var result = await supportTicketService.ReplyAsync(
@@ -84,7 +83,7 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         }
         finally
         {
-            DisposeUploads(uploads);
+            uploads.DisposeUploads();
         }
     }
 
@@ -97,21 +96,4 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         CancellationToken cancellationToken) =>
         (await supportTicketService.RateAsync(id, request, cancellationToken)).ToActionResult(this);
 
-    private static IReadOnlyList<UploadFileDto> OpenUploads(IEnumerable<IFormFile> files) =>
-        files.Select(file => new UploadFileDto(
-            SanitizeFileName(file.FileName),
-            file.ContentType,
-            file.Length,
-            file.OpenReadStream())).ToArray();
-
-    private static void DisposeUploads(IEnumerable<UploadFileDto> uploads)
-    {
-        foreach (var upload in uploads)
-        {
-            upload.Content.Dispose();
-        }
-    }
-
-    private static string SanitizeFileName(string fileName) =>
-        Path.GetFileName(fileName.Replace('\\', '/'));
 }

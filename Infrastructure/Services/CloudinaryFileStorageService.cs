@@ -19,20 +19,7 @@ public sealed class CloudinaryFileStorageService : IFileStorageService
     {
         _options = options.Value;
         _timeProvider = timeProvider;
-
-        if (!_options.IsConfigured)
-        {
-            throw new InvalidOperationException(
-                "Cloudinary storage is not configured. Set Cloudinary__CloudName, Cloudinary__ApiKey, and Cloudinary__ApiSecret.");
-        }
-
-        _cloudinary = new Cloudinary(new Account(
-            _options.CloudName,
-            _options.ApiKey,
-            _options.ApiSecret))
-        {
-            Api = { Secure = true }
-        };
+        _cloudinary = CloudinaryClientFactory.Create(_options);
     }
 
     public async Task<StoredFileDto> UploadAsync(

@@ -15,20 +15,7 @@ public sealed class CloudinaryPublicImageService : IPublicImageService
     public CloudinaryPublicImageService(IOptions<CloudinaryOptions> options)
     {
         _options = options.Value;
-
-        if (!_options.IsConfigured)
-        {
-            throw new InvalidOperationException(
-                "Cloudinary storage is not configured. Set Cloudinary__CloudName, Cloudinary__ApiKey, and Cloudinary__ApiSecret.");
-        }
-
-        _cloudinary = new Cloudinary(new Account(
-            _options.CloudName,
-            _options.ApiKey,
-            _options.ApiSecret))
-        {
-            Api = { Secure = true }
-        };
+        _cloudinary = CloudinaryClientFactory.Create(_options);
     }
 
     public async Task<string> UploadImageAsync(
