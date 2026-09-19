@@ -71,7 +71,17 @@ public sealed class AuthService(
 
         if (!user.IsActive)
         {
-            return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+            var unlocked = await accountService.TryAutoUnlockAsync(user.Id, timeProvider.GetUtcNow(), cancellationToken);
+            if (unlocked)
+            {
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+                user = await accountService.FindByIdAsync(user.Id, cancellationToken);
+            }
+
+            if (user is null || !user.IsActive)
+            {
+                return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+            }
         }
 
         if (!await accountService.ValidateCredentialsAsync(user.Id, request.Password, cancellationToken))
@@ -315,7 +325,17 @@ public sealed class AuthService(
         var account = resolved.Value;
         if (!account.IsActive)
         {
-            return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+            var unlocked = await accountService.TryAutoUnlockAsync(account.Id, timeProvider.GetUtcNow(), cancellationToken);
+            if (unlocked)
+            {
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+                account = await accountService.FindByIdAsync(account.Id, cancellationToken);
+            }
+
+            if (account is null || !account.IsActive)
+            {
+                return Result.Failure<LoginResponseDto>(AuthErrors.Inactive());
+            }
         }
 
         var roles = await accountService.GetRolesAsync(account.Id, cancellationToken);

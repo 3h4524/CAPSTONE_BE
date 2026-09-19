@@ -360,6 +360,43 @@ public sealed class AccountService(
         return result != PasswordVerificationResult.Failed;
     }
 
+    public async Task<bool> TryAutoUnlockAsync(
+        Guid userId,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default)
+    {
+        var user = await accountRepository.GetByIdAsync(userId, cancellationToken);
+        if (user is null || !string.Equals(user.AccountStatus, AccountStatuses.Suspended, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (user.SuspendedUntil.HasValue && user.SuspendedUntil.Value <= utcNow.UtcDateTime)
+        {
+            user.AccountStatus = AccountStatuses.Active;
+            user.SuspendedUntil = null;
+            user.UpdatedAt = utcNow.UtcDateTime;
+
+            var auditLog = new AuditLog
+            {
+                Id = Guid.NewGuid(),
+                ActorUserId = null, // System
+                ActionType = "AutoUnlockUser",
+                ResourceType = "User",
+                ResourceId = user.Id,
+                OldValue = "suspended",
+                NewValue = "active",
+                CreatedAt = utcNow.UtcDateTime
+            };
+            user.AuditLogs.Add(auditLog);
+
+            _cachedUser = user;
+            return true;
+        }
+
+        return false;
+    }
+
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 
     private static AccountInfoDto Map(User user) =>
@@ -368,5 +405,7 @@ public sealed class AccountService(
             user.Email,
             user.FullName,
             user.CanAuthenticate,
-            user.EmailVerified == true);
+            user.EmailVerified == true,
+            user.AccountStatus,
+            user.SuspendedUntil);
 }

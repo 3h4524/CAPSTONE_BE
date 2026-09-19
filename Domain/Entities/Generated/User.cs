@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace APCS.Domain.Entities;
 
@@ -18,6 +19,12 @@ public partial class User
     public string? OauthProvider { get; set; }
 
     public string? AvatarUrl { get; set; }
+    
+    [Column("birthday")]
+    public DateTime? Birthday { get; set; }
+
+    [Column("suspended_until")]
+    public DateTime? SuspendedUntil { get; set; }
 
     public string AccountStatus { get; set; } = null!;
 

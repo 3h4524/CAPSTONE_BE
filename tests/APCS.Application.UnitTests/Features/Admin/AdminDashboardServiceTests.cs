@@ -118,7 +118,7 @@ public sealed class AdminDashboardServiceTests
             new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 15), TotalAmount = 50.0m },
             new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 14), TotalAmount = 30.0m }
         }.AsQueryable().BuildMock();
-        
+
         var invRepo = new Mock<IRepository<Invoice>>();
         invRepo.Setup(r => r.Query()).Returns(invoices);
 
@@ -148,7 +148,7 @@ public sealed class AdminDashboardServiceTests
             new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 5, 15), TotalAmount = 50.0m },
             new Invoice { Status = "paid", InvoiceDate = new DateOnly(2022, 10, 14), TotalAmount = 30.0m }
         }.AsQueryable().BuildMock();
-        
+
         var invRepo = new Mock<IRepository<Invoice>>();
         invRepo.Setup(r => r.Query()).Returns(invoices);
 
@@ -185,7 +185,7 @@ public sealed class AdminDashboardServiceTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().NotBeEmpty();
-        
+
         var csvContent = System.Text.Encoding.UTF8.GetString(result.Value);
         csvContent.Should().Contain("Admin Dashboard Export");
         csvContent.Should().Contain("Time Range,month");

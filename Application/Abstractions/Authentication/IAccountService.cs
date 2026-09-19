@@ -107,4 +107,12 @@ public interface IAccountService
         Guid userId,
         string candidatePassword,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks if a suspended account's ban has expired and automatically unlocks it.
+    /// </summary>
+    Task<bool> TryAutoUnlockAsync(
+        Guid userId,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default);
 }
