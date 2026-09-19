@@ -23,7 +23,7 @@ public sealed class AdminSubscriptionPlansControllerTests
     private static AdminPlanDto SamplePlan() => new(
         Guid.NewGuid(), "Creator", "creator", "For growing sellers",
         49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m,
-        true, true, false, true, 1, 0, DateTime.UtcNow, DateTime.UtcNow);
+        true, true, false, true, 1, 0, true, DateTime.UtcNow, DateTime.UtcNow);
 
     [TestMethod]
     public async Task GetAll_WhenSuccessful_ReturnsOk()
@@ -103,16 +103,30 @@ public sealed class AdminSubscriptionPlansControllerTests
     }
 
     [TestMethod]
-    public async Task Delete_WhenSuccessful_ReturnsOk()
+    public async Task Delete_WhenSuccessful_ReturnsNoContent()
     {
-        var deleteResult = new DeletePlanResultDto(HardDeleted: true);
         _serviceMock.Setup(s => s.DeleteAsync(It.IsAny<Guid>(), It.IsAny<DeletePlanRequestDto>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Success(deleteResult));
+            .ReturnsAsync(Result.Success());
 
         var result = await _controller.Delete(Guid.NewGuid(), new DeletePlanRequestDto("No longer offered"), CancellationToken.None);
 
-        var okResult = result as OkObjectResult;
-        okResult.Should().NotBeNull();
-        okResult!.Value.Should().BeEquivalentTo(deleteResult);
+        result.Should().BeOfType<NoContentResult>();
+    }
+
+    [TestMethod]
+    public async Task Delete_WhenPlanHasSubscriptionHistory_ReturnsConflict()
+    {
+        var error = new Error(
+            "subscriptions.plan_has_subscription_history",
+            "This plan cannot be deleted because one or more Sellers have subscribed to it.",
+            ErrorType.Conflict);
+        _serviceMock.Setup(s => s.DeleteAsync(It.IsAny<Guid>(), It.IsAny<DeletePlanRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(error));
+
+        var result = await _controller.Delete(Guid.NewGuid(), new DeletePlanRequestDto("Retiring this tier"), CancellationToken.None);
+
+        var objectResult = result as ObjectResult;
+        objectResult.Should().NotBeNull();
+        objectResult!.StatusCode.Should().Be(409);
     }
 }

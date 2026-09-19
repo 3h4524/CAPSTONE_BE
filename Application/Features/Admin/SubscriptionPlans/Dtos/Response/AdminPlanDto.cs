@@ -8,9 +8,11 @@ namespace APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
 /// <param name="WhiteLabelExportEnabled">
 /// Backed by a <c>plan_features</c> row (<c>white_label_export</c>), not a dedicated column.
 /// </param>
-/// <param name="ActiveSubscriberCount">
-/// Used by the client to preview whether a delete will hard-delete or soft-deactivate the plan
-/// (BR200/BR201) before the Admin confirms.
+/// <param name="ActiveSubscriberCount">Shown to the Admin as context, not a delete gate.</param>
+/// <param name="CanDelete">
+/// True only when no subscription (active or historical) ever referenced this plan — the exact
+/// condition the Delete action itself checks (BR200). The client uses this to disable the trash
+/// action up front instead of letting the Admin attempt it and hit a Conflict.
 /// </param>
 public sealed record AdminPlanDto(
     Guid Id,
@@ -32,11 +34,6 @@ public sealed record AdminPlanDto(
     bool IsActive,
     int SortOrder,
     int ActiveSubscriberCount,
+    bool CanDelete,
     DateTime? CreatedAt,
     DateTime? UpdatedAt);
-
-/// <summary>
-/// The outcome of a delete request (3.6.10), so the client can show the right confirmation
-/// message after the fact.
-/// </summary>
-public sealed record DeletePlanResultDto(bool HardDeleted);

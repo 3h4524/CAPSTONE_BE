@@ -82,15 +82,16 @@ public sealed class AdminSubscriptionPlansController(IAdminSubscriptionPlanServi
     }
 
     /// <summary>
-    /// Deletes a plan tier with no subscription history, or soft-deactivates it otherwise
-    /// (3.6.10 Delete Subscription Plan).
+    /// Permanently deletes a plan tier (3.6.10 Delete Subscription Plan). Fails with 409 when the
+    /// plan has any subscription history — deactivate it instead via <see cref="Update"/>.
     /// </summary>
     [HttpDelete("{id:guid}")]
-    [ProducesResponseType(typeof(DeletePlanResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Delete(
         Guid id,
         DeletePlanRequestDto request,
@@ -98,6 +99,6 @@ public sealed class AdminSubscriptionPlansController(IAdminSubscriptionPlanServi
     {
         var result = await planService.DeleteAsync(id, request, cancellationToken);
 
-        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
+        return result.ToActionResult(this);
     }
 }

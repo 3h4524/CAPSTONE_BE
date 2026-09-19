@@ -20,4 +20,16 @@ internal static class AdminSubscriptionPlanErrors
             ErrorCodes.SubscriptionPlanNameOrTierTaken,
             "A plan with this name or tier slug already exists.",
             ErrorType.Validation);
+
+    /// <summary>
+    /// The Delete button only ever hard-deletes (BR200); a plan with any subscription history
+    /// (active or not) must be deactivated instead — via the "Plan is active" toggle on Edit —
+    /// rather than silently soft-deleted by this same action.
+    /// </summary>
+    public static Error HasSubscriptionHistory() =>
+        new(
+            ErrorCodes.SubscriptionPlanHasSubscriptionHistory,
+            "This plan cannot be deleted because one or more Sellers have subscribed to it. " +
+            "Deactivate it instead by turning off \"Plan is active\" on the Edit form.",
+            ErrorType.Conflict);
 }

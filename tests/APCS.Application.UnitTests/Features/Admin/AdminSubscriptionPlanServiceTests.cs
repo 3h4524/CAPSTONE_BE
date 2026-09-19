@@ -4,7 +4,6 @@ using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
 using APCS.Application.Features.Admin.SubscriptionPlans.Validators;
 using APCS.Domain.Entities;
 using FluentAssertions;
-using Microsoft.Extensions.Time.Testing;
 using MockQueryable.Moq;
 using Moq;
 
@@ -94,6 +93,7 @@ public sealed class AdminSubscriptionPlanServiceTests
         result.Value.Name.Should().Be("Creator");
         result.Value.Tier.Should().Be("creator");
         result.Value.WhiteLabelExportEnabled.Should().BeTrue();
+        result.Value.CanDelete.Should().BeTrue();
         plansRepo.Verify(r => r.AddAsync(
             It.Is<SubscriptionPlan>(plan => plan.Name == "Creator" && plan.Tier == "creator"),
             false,
@@ -196,14 +196,15 @@ public sealed class AdminSubscriptionPlanServiceTests
         var result = await service.DeleteAsync(planId, new DeletePlanRequestDto("No longer offered"));
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.HardDeleted.Should().BeTrue();
         plansRepo.Verify(r => r.RemoveAsync(plan, false, It.IsAny<CancellationToken>()), Times.Once);
         plansRepo.Verify(r => r.UpdateAsync(It.IsAny<SubscriptionPlan>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
-    public async Task DeleteAsync_WhenPlanHasSubscriptionHistory_SoftDeactivatesInstead()
+    public async Task DeleteAsync_WhenPlanHasSubscriptionHistory_ReturnsConflictAndNeverDeactivates()
     {
+        // The Delete action no longer falls back to soft-deactivate on its own — deactivating
+        // must be a deliberate, separate action via UpdateAsync's "Plan is active" toggle.
         var planId = Guid.NewGuid();
         var plan = new SubscriptionPlan { Id = planId, Name = "Creator", Tier = "creator", IsActive = true, PlanFeatures = new List<PlanFeature>() };
         var plansRepo = new Mock<IPlanRepository>();
@@ -211,15 +212,14 @@ public sealed class AdminSubscriptionPlanServiceTests
         var subscriptionsRepo = new Mock<ISubscriptionRepository>();
         subscriptionsRepo.Setup(r => r.HasAnySubscriptionReferenceAsync(planId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-        var timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-        var service = CreateService(plansRepo, subscriptionsRepo, timeProvider: timeProvider);
+        var service = CreateService(plansRepo, subscriptionsRepo);
 
         var result = await service.DeleteAsync(planId, new DeletePlanRequestDto("Retiring this tier"));
 
-        result.IsSuccess.Should().BeTrue();
-        result.Value.HardDeleted.Should().BeFalse();
-        plan.IsActive.Should().BeFalse();
-        plansRepo.Verify(r => r.UpdateAsync(plan, false, It.IsAny<CancellationToken>()), Times.Once);
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("subscriptions.plan_has_subscription_history");
+        plan.IsActive.Should().BeTrue();
+        plansRepo.Verify(r => r.UpdateAsync(It.IsAny<SubscriptionPlan>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
         plansRepo.Verify(r => r.RemoveAsync(It.IsAny<SubscriptionPlan>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 

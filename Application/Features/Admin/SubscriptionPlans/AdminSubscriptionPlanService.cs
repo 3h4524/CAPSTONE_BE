@@ -33,7 +33,8 @@ public sealed class AdminSubscriptionPlanService(
         foreach (var plan in allPlans)
         {
             var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(plan.Id, cancellationToken);
-            dtos.Add(MapToDto(plan, activeSubscriberCount));
+            var hasAnyReference = await subscriptions.HasAnySubscriptionReferenceAsync(plan.Id, cancellationToken);
+            dtos.Add(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference));
         }
 
         return Result.Success<IReadOnlyList<AdminPlanDto>>(dtos);
@@ -49,7 +50,8 @@ public sealed class AdminSubscriptionPlanService(
         }
 
         var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(planId, cancellationToken);
-        return Result.Success(MapToDto(plan, activeSubscriberCount));
+        var hasAnyReference = await subscriptions.HasAnySubscriptionReferenceAsync(planId, cancellationToken);
+        return Result.Success(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference));
     }
 
     /// <inheritdoc />
@@ -110,7 +112,7 @@ public sealed class AdminSubscriptionPlanService(
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return Result.Success(MapToDto(plan, activeSubscriberCount: 0, request.WhiteLabelExportEnabled));
+        return Result.Success(MapToDto(plan, activeSubscriberCount: 0, canDelete: true, request.WhiteLabelExportEnabled));
     }
 
     /// <inheritdoc />
@@ -162,11 +164,12 @@ public sealed class AdminSubscriptionPlanService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(planId, cancellationToken);
-        return Result.Success(MapToDto(plan, activeSubscriberCount, request.WhiteLabelExportEnabled));
+        var hasAnyReferenceAfterUpdate = await subscriptions.HasAnySubscriptionReferenceAsync(planId, cancellationToken);
+        return Result.Success(MapToDto(plan, activeSubscriberCount, !hasAnyReferenceAfterUpdate, request.WhiteLabelExportEnabled));
     }
 
     /// <inheritdoc />
-    public async Task<Result<DeletePlanResultDto>> DeleteAsync(
+    public async Task<Result> DeleteAsync(
         Guid planId,
         DeletePlanRequestDto request,
         CancellationToken cancellationToken = default)
@@ -174,35 +177,30 @@ public sealed class AdminSubscriptionPlanService(
         var validation = await deleteValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
         {
-            return Result.Failure<DeletePlanResultDto>(validation.ToValidationError());
+            return Result.Failure(validation.ToValidationError());
         }
 
         var plan = await plans.GetByIdForAdminAsync(planId, cancellationToken);
         if (plan is null)
         {
-            return Result.Failure<DeletePlanResultDto>(AdminSubscriptionPlanErrors.PlanNotFound());
+            return Result.Failure(AdminSubscriptionPlanErrors.PlanNotFound());
         }
 
-        // BR200/BR201: hard-delete only when nothing ever referenced this plan. Both
+        // BR200: only ever hard-deletes, and only when nothing ever referenced this plan. Both
         // subscriptions_plan_id_fkey and subscriptions_scheduled_plan_id_fkey are ON DELETE
         // RESTRICT, so a plan with any historical (not just active) subscription would otherwise
-        // fail this DELETE with an unhandled FK violation.
+        // fail this DELETE with an unhandled FK violation. A plan with history must be
+        // deactivated instead, explicitly, via UpdateAsync's "Plan is active" toggle — this
+        // action never falls back to that silently.
         var hasAnyReference = await subscriptions.HasAnySubscriptionReferenceAsync(planId, cancellationToken);
-        if (!hasAnyReference)
+        if (hasAnyReference)
         {
-            await plans.RemoveAsync(plan, cancellationToken: cancellationToken);
-            await unitOfWork.SaveChangesAsync(cancellationToken);
-            return Result.Success(new DeletePlanResultDto(HardDeleted: true));
+            return Result.Failure(AdminSubscriptionPlanErrors.HasSubscriptionHistory());
         }
 
-        // BR202: soft-deactivated plans no longer appear on the public pricing page / Available
-        // Plans comparison (see PlanRepository.GetComparisonPlansAsync).
-        plan.IsActive = false;
-        plan.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-        await plans.UpdateAsync(plan, cancellationToken: cancellationToken);
+        await plans.RemoveAsync(plan, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
-
-        return Result.Success(new DeletePlanResultDto(HardDeleted: false));
+        return Result.Success();
     }
 
     private async Task UpsertWhiteLabelFeatureAsync(
@@ -239,13 +237,18 @@ public sealed class AdminSubscriptionPlanService(
         await planFeatures.UpdateAsync(feature, cancellationToken: cancellationToken);
     }
 
-    private static AdminPlanDto MapToDto(SubscriptionPlan plan, int activeSubscriberCount) =>
+    private static AdminPlanDto MapToDto(SubscriptionPlan plan, int activeSubscriberCount, bool canDelete) =>
         MapToDto(
             plan,
             activeSubscriberCount,
+            canDelete,
             plan.PlanFeatures.Any(f => f.FeatureCode == PlanFeatureCodes.WhiteLabelExport && f.IsEnabled == true));
 
-    private static AdminPlanDto MapToDto(SubscriptionPlan plan, int activeSubscriberCount, bool whiteLabelExportEnabled) =>
+    private static AdminPlanDto MapToDto(
+        SubscriptionPlan plan,
+        int activeSubscriberCount,
+        bool canDelete,
+        bool whiteLabelExportEnabled) =>
         new(
             plan.Id,
             plan.Name,
@@ -266,6 +269,7 @@ public sealed class AdminSubscriptionPlanService(
             plan.IsActive ?? false,
             plan.SortOrder ?? 0,
             activeSubscriberCount,
+            canDelete,
             plan.CreatedAt,
             plan.UpdatedAt);
 }

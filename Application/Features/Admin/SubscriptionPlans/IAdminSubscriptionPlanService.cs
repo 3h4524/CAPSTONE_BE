@@ -35,9 +35,11 @@ public interface IAdminSubscriptionPlanService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Deletes or soft-deactivates a plan tier (3.6.10 Delete Subscription Plan).
+    /// Permanently deletes a plan tier (3.6.10 Delete Subscription Plan). Fails with a Conflict
+    /// when the plan has any subscription history — deactivate it instead via
+    /// <see cref="UpdateAsync"/> (BR200).
     /// </summary>
-    Task<Result<DeletePlanResultDto>> DeleteAsync(
+    Task<Result> DeleteAsync(
         Guid planId,
         DeletePlanRequestDto request,
         CancellationToken cancellationToken = default);
