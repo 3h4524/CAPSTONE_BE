@@ -16,6 +16,7 @@ public sealed class AdminUserServiceTests
         Mock<IRepository<User>>? userRepository = null,
         Mock<IRepository<SubscriptionPlan>>? planRepository = null,
         Mock<IRepository<Role>>? roleRepository = null,
+        Mock<IRepository<UserRole>>? userRoleRepository = null,
         Mock<IRepository<AuthToken>>? authTokenRepository = null,
         Mock<IUnitOfWork>? unitOfWork = null,
         TimeProvider? timeProvider = null)
@@ -23,6 +24,7 @@ public sealed class AdminUserServiceTests
         userRepository ??= new Mock<IRepository<User>>();
         planRepository ??= new Mock<IRepository<SubscriptionPlan>>();
         roleRepository ??= new Mock<IRepository<Role>>();
+        userRoleRepository ??= new Mock<IRepository<UserRole>>();
         authTokenRepository ??= new Mock<IRepository<AuthToken>>();
         unitOfWork ??= new Mock<IUnitOfWork>();
         timeProvider ??= TimeProvider.System;
@@ -31,6 +33,7 @@ public sealed class AdminUserServiceTests
             userRepository.Object,
             planRepository.Object,
             roleRepository.Object,
+            userRoleRepository.Object,
             authTokenRepository.Object,
             unitOfWork.Object,
             timeProvider,
