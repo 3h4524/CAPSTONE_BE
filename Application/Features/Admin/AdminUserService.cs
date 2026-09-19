@@ -17,6 +17,7 @@ public sealed class AdminUserService(
     IRepository<Role> roleRepository,
     IRepository<UserRole> userRoleRepository,
     IRepository<AuthToken> authTokenRepository,
+    IRepository<AuditLog> auditLogRepository,
     IUnitOfWork unitOfWork,
     ICurrentUser currentUser,
     IAuthService authService,
@@ -164,11 +165,10 @@ public sealed class AdminUserService(
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
         // Revoke tokens
-        var tokens = await authTokenRepository.Query().Where(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().UtcDateTime && t.RevokedAt == null).ToListAsync(cancellationToken);
+        var tokens = await authTokenRepository.FindAsync(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().UtcDateTime && t.RevokedAt == null, cancellationToken);
         foreach (var token in tokens)
         {
             token.Revoke(timeProvider.GetUtcNow());
-            await authTokenRepository.UpdateAsync(token, false, cancellationToken);
         }
 
         // Add Audit Log
@@ -179,13 +179,17 @@ public sealed class AdminUserService(
             ActionType = "SuspendUser",
             ResourceType = "User",
             ResourceId = user.Id,
-            OldValue = "active",
-            NewValue = request.DurationDays.HasValue ? $"suspended_until: {user.SuspendedUntil} (Reason: {request.Reason})" : $"permanent (Reason: {request.Reason})",
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new 
+            { 
+                status = "suspended", 
+                reason = request.Reason, 
+                suspended_until = user.SuspendedUntil 
+            }),
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         };
-        user.AuditLogs.Add(auditLog);
+        await auditLogRepository.AddAsync(auditLog, false, cancellationToken);
 
-        await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User {UserId} suspended by admin. Reason: {Reason}", id, request.Reason);
@@ -210,13 +214,12 @@ public sealed class AdminUserService(
             ActionType = "UnlockUser",
             ResourceType = "User",
             ResourceId = user.Id,
-            OldValue = "suspended",
-            NewValue = "active",
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "suspended" }),
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         };
-        user.AuditLogs.Add(auditLog);
+        await auditLogRepository.AddAsync(auditLog, false, cancellationToken);
 
-        await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User {UserId} unlocked by admin.", id);
@@ -294,7 +297,7 @@ public sealed class AdminUserService(
         
         // Cập nhật roles
         var existingRoleNames = user.UserRoleUsers.Select(ur => ur.Role.Name).ToList();
-        var newRoleNames = request.Roles.Select(r => r.ToLower()).Distinct().ToList();
+        var newRoleNames = request.Roles?.Select(r => r.ToLower()).Distinct().ToList() ?? new List<string>();
         
         var rolesToRemove = user.UserRoleUsers.Where(ur => !newRoleNames.Contains(ur.Role.Name.ToLower())).ToList();
         foreach (var roleToRemove in rolesToRemove)

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Admin.Dtos.Request;
@@ -18,6 +19,7 @@ public sealed class AdminUserServiceTests
         Mock<IRepository<Role>>? roleRepository = null,
         Mock<IRepository<UserRole>>? userRoleRepository = null,
         Mock<IRepository<AuthToken>>? authTokenRepository = null,
+        Mock<IRepository<AuditLog>>? auditLogRepository = null,
         Mock<IUnitOfWork>? unitOfWork = null,
         Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>? currentUser = null,
         Mock<APCS.Application.Features.Auth.IAuthService>? authService = null,
@@ -28,6 +30,7 @@ public sealed class AdminUserServiceTests
         roleRepository ??= new Mock<IRepository<Role>>();
         userRoleRepository ??= new Mock<IRepository<UserRole>>();
         authTokenRepository ??= new Mock<IRepository<AuthToken>>();
+        auditLogRepository ??= new Mock<IRepository<AuditLog>>();
         unitOfWork ??= new Mock<IUnitOfWork>();
         currentUser ??= new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
         authService ??= new Mock<APCS.Application.Features.Auth.IAuthService>();
@@ -39,6 +42,7 @@ public sealed class AdminUserServiceTests
             roleRepository.Object,
             userRoleRepository.Object,
             authTokenRepository.Object,
+            auditLogRepository.Object,
             unitOfWork.Object,
             currentUser.Object,
             authService.Object,
@@ -249,8 +253,9 @@ public sealed class AdminUserServiceTests
         userRepository.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>())).ReturnsAsync(user);
 
         var tokenRepository = new Mock<IRepository<AuthToken>>();
-        var tokens = new List<AuthToken> { activeToken }.AsQueryable().BuildMock();
-        tokenRepository.Setup(x => x.Query()).Returns(tokens);
+        var tokenList = new List<AuthToken> { activeToken };
+        tokenRepository.Setup(x => x.FindAsync(It.IsAny<Expression<Func<AuthToken, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(tokenList);
 
         var currentUserService = new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
         currentUserService.Setup(x => x.UserId).Returns(adminId);
@@ -274,7 +279,6 @@ public sealed class AdminUserServiceTests
         user.AuditLogs.First().ActionType.Should().Be("SuspendUser");
         user.AuditLogs.First().NewValue.Should().Contain("\"status\":\"suspended\"");
 
-        tokenRepository.Verify(x => x.UpdateAsync(It.Is<AuthToken>(t => t.IsRevoked), false, It.IsAny<CancellationToken>()), Times.Once);
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
