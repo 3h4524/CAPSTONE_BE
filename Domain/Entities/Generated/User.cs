@@ -61,6 +61,8 @@ public partial class User
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
 
+    public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
+
     public virtual ICollection<SupportTicket> SupportTicketAssignedToNavigations { get; set; } = new List<SupportTicket>();
 
     public virtual ICollection<SupportTicket> SupportTicketUsers { get; set; } = new List<SupportTicket>();

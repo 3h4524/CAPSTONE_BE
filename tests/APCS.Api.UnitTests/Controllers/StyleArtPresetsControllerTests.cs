@@ -1,8 +1,11 @@
+using APCS.Api.Contracts.StyleArtPresets;
 using APCS.Api.Controllers;
 using APCS.Application.Features.StyleArtPresets;
+using APCS.Application.Features.StyleArtPresets.Dtos.Request;
 using APCS.Application.Features.StyleArtPresets.Dtos.Response;
 using APCS.Common.Models;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Moq;
 
@@ -17,27 +20,68 @@ public sealed class StyleArtPresetsControllerTests
         using var cancellation = new CancellationTokenSource();
         IReadOnlyList<StyleArtPresetResponseDto> response =
         [
-            new(Guid.NewGuid(), "Vintage", "Retro", "vintage", null, ["Apparel"])
+            new(Guid.NewGuid(), "Vintage", "Retro", "vintage", null, ["Apparel"], true, false)
         ];
         var service = new Mock<IStyleArtPresetService>();
-        service.Setup(x => x.ListActiveAsync(cancellation.Token)).ReturnsAsync(Result.Success(response));
+        service.Setup(x => x.ListMineAsync(cancellation.Token)).ReturnsAsync(Result.Success(response));
 
         var result = await new StyleArtPresetsController(service.Object).List(cancellation.Token);
 
         result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
-        service.Verify(x => x.ListActiveAsync(cancellation.Token), Times.Once);
+        service.Verify(x => x.ListMineAsync(cancellation.Token), Times.Once);
     }
 
     [TestMethod]
     public async Task List_Unauthenticated_ReturnsProblem()
     {
         var service = new Mock<IStyleArtPresetService>();
-        service.Setup(x => x.ListActiveAsync(It.IsAny<CancellationToken>()))
+        service.Setup(x => x.ListMineAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure<IReadOnlyList<StyleArtPresetResponseDto>>(Error.Unauthorized("StyleArtPresets.Unauthenticated", "Please sign in.")));
 
         var result = await new StyleArtPresetsController(service.Object).List(CancellationToken.None);
 
         var problem = result.Should().BeOfType<ObjectResult>().Subject;
         problem.StatusCode.Should().Be(401);
+    }
+
+    [TestMethod]
+    public async Task Create_Success_ReturnsCreatedWithLocation()
+    {
+        var form = new CreateStyleArtPresetForm { Name = "Neon", Description = "Glow", StyleModifiers = "neon" };
+        var created = new StyleArtPresetResponseDto(Guid.NewGuid(), "Neon", "Glow", "neon", null, [], false, true);
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.CreateAsync(It.IsAny<CreateStyleArtPresetRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(created));
+
+        var result = await new StyleArtPresetsController(service.Object).Create(form, CancellationToken.None);
+
+        var createdResult = result.Should().BeOfType<CreatedAtActionResult>().Subject;
+        createdResult.Value.Should().BeSameAs(created);
+    }
+
+    [TestMethod]
+    public async Task Delete_OwnPreset_ReturnsNoContent()
+    {
+        var id = Guid.NewGuid();
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.DeleteAsync(id, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+
+        var result = await new StyleArtPresetsController(service.Object).Delete(id, CancellationToken.None);
+
+        result.Should().BeOfType<NoContentResult>();
+    }
+
+    [TestMethod]
+    public async Task Delete_SystemPreset_ReturnsForbiddenProblem()
+    {
+        var id = Guid.NewGuid();
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.DeleteAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(Error.Forbidden("StyleArtPresets.NotOwner", "System art styles cannot be deleted.")));
+
+        var result = await new StyleArtPresetsController(service.Object).Delete(id, CancellationToken.None);
+
+        var problem = result.Should().BeOfType<ObjectResult>().Subject;
+        problem.StatusCode.Should().Be(403);
     }
 }

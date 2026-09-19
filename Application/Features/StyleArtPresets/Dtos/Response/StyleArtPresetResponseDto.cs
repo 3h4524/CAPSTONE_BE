@@ -6,4 +6,6 @@ public sealed record StyleArtPresetResponseDto(
     string Description,
     string StyleModifiers,
     string? PreviewImageUrl,
-    IReadOnlyList<string> Recommendations);
+    IReadOnlyList<string> Recommendations,
+    bool IsSystemTemplate,
+    bool IsMine);

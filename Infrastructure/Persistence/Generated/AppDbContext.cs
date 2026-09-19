@@ -2148,6 +2148,12 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.UsageCount)
                 .HasDefaultValue(0)
                 .HasColumnName("usage_count");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.StyleArtPresets)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("style_art_presets_user_id_fkey");
         });
 
         modelBuilder.Entity<Subscription>(entity =>

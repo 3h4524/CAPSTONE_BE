@@ -1,8 +1,12 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.StyleArtPresets;
+using APCS.Application.Features.StyleArtPresets.Dtos.Request;
+using APCS.Application.Features.StyleArtPresets.Validators;
 using APCS.Domain.Entities;
 using FluentAssertions;
+using FluentValidation;
 using MockQueryable.Moq;
 using Moq;
 
@@ -12,51 +16,151 @@ namespace APCS.Application.UnitTests.Features.StyleArtPresets;
 public sealed class StyleArtPresetServiceTests
 {
     [TestMethod]
-    public async Task ListActiveAsync_WhenCalled_ReturnsOnlyActiveOrderedByUsageThenName()
+    public async Task ListMineAsync_WhenCalled_ReturnsSystemAndOwnOrderedByUsageThenName()
     {
-        var currentUser = AuthenticatedUser();
+        var userId = Guid.NewGuid();
         var repository = PresetRepository(
-            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Watercolor", Description = "Soft", StyleModifiers = "watercolor", Recommendations = "[\"A\"]", IsActive = true, UsageCount = 5 },
-            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro", StyleModifiers = "vintage", Recommendations = "[]", IsActive = true, UsageCount = 9 },
-            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Retired", Description = "Old", StyleModifiers = "old", Recommendations = "[]", IsActive = false, UsageCount = 99 });
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Watercolor", Description = "Soft", StyleModifiers = "watercolor", Recommendations = "[\"A\"]", IsActive = true, IsSystemTemplate = true, UsageCount = 5 },
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro", StyleModifiers = "vintage", Recommendations = "[]", IsActive = true, IsSystemTemplate = true, UsageCount = 9 },
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Mine", Description = "Own", StyleModifiers = "own", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = userId, UsageCount = 1 },
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Other", Description = "Someone else", StyleModifiers = "x", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = Guid.NewGuid(), UsageCount = 99 },
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Retired", Description = "Old", StyleModifiers = "old", Recommendations = "[]", IsActive = false, IsSystemTemplate = true, UsageCount = 99 });
 
-        var result = await new StyleArtPresetService(currentUser.Object, repository.Object).ListActiveAsync();
+        var result = await CreateService(userId: userId, repository: repository).ListMineAsync();
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().HaveCount(2);
-        result.Value[0].Name.Should().Be("Vintage");
-        result.Value[1].Name.Should().Be("Watercolor");
-        result.Value[1].Recommendations.Should().ContainSingle().Which.Should().Be("A");
+        result.Value.Select(item => item.Name).Should().Equal("Vintage", "Watercolor", "Mine");
+        result.Value.Should().OnlyContain(item => !item.IsMine || item.Name == "Mine");
+        result.Value.First(item => item.Name == "Mine").IsMine.Should().BeTrue();
+        result.Value.First(item => item.Name == "Vintage").IsSystemTemplate.Should().BeTrue();
     }
 
     [TestMethod]
-    public async Task ListActiveAsync_WhenUnauthenticated_ReturnsFailure()
+    public async Task ListMineAsync_WhenUnauthenticated_ReturnsFailure()
     {
-        var currentUser = new Mock<ICurrentUser>();
-        currentUser.SetupGet(user => user.IsAuthenticated).Returns(false);
+        var service = CreateService(userId: null, repository: PresetRepository());
 
-        var result = await new StyleArtPresetService(currentUser.Object, new Mock<IRepository<StyleArtPreset>>().Object).ListActiveAsync();
+        var result = await service.ListMineAsync();
 
         result.IsSuccess.Should().BeFalse();
     }
 
     [TestMethod]
-    public async Task ListActiveAsync_WhenRecommendationsInvalid_ReturnsEmptyList()
+    public async Task CreateAsync_WhenValid_UploadsPreviewAndReturnsMine()
     {
-        var repository = PresetRepository(
-            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Broken", Description = "Bad data", StyleModifiers = "x", Recommendations = "not-json", IsActive = true });
+        var userId = Guid.NewGuid();
+        var repository = PresetRepository();
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("https://images.example.com/preview.webp");
 
-        var result = await new StyleArtPresetService(AuthenticatedUser().Object, repository.Object).ListActiveAsync();
+        var result = await CreateService(userId: userId, repository: repository, images: images).CreateAsync(
+            new CreateStyleArtPresetRequestDto("Neon", "Bold glow", "neon glow", "[\"Posters\"]", PreviewFile()));
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().ContainSingle().Which.Recommendations.Should().BeEmpty();
+        result.Value.Name.Should().Be("Neon");
+        result.Value.PreviewImageUrl.Should().Be("https://images.example.com/preview.webp");
+        result.Value.IsMine.Should().BeTrue();
+        result.Value.IsSystemTemplate.Should().BeFalse();
+        result.Value.Recommendations.Should().ContainSingle().Which.Should().Be("Posters");
+        images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    private static Mock<ICurrentUser> AuthenticatedUser()
+    [TestMethod]
+    public async Task CreateAsync_WhenPreviewMissing_ReturnsFailureWithoutUpload()
+    {
+        var images = new Mock<IPublicImageService>();
+
+        var result = await CreateService(userId: Guid.NewGuid(), repository: PresetRepository(), images: images).CreateAsync(
+            new CreateStyleArtPresetRequestDto("Neon", "Bold glow", "neon glow", null, null));
+
+        result.IsSuccess.Should().BeFalse();
+        images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenSystemPreset_ReturnsForbidden()
+    {
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StyleArtPreset { Id = presetId, Name = "Vintage", Description = "Retro", StyleModifiers = "vintage", Recommendations = "[]", IsActive = true, IsSystemTemplate = true });
+
+        var result = await CreateService(userId: Guid.NewGuid(), repository: repository).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Vintage+", "Retro", "vintage", null, null, false));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenOwnPreset_AppliesChanges()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "Old", StyleModifiers = "old", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+
+        var result = await CreateService(userId: userId, repository: repository).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Mine+", "New", "new", "[\"A\",\"B\"]", null, false));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Name.Should().Be("Mine+");
+        result.Value.Recommendations.Should().HaveCount(2);
+        repository.Verify(r => r.UpdateAsync(stored, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_WhenOwnPresetWithPreview_RemovesRowAndImage()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "D", StyleModifiers = "m", Recommendations = "[]", PreviewImageUrl = "https://images.example.com/old.webp", IsActive = true, IsSystemTemplate = false, UserId = userId };
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        var images = new Mock<IPublicImageService>();
+
+        var result = await CreateService(userId: userId, repository: repository, images: images).DeleteAsync(presetId);
+
+        result.IsSuccess.Should().BeTrue();
+        repository.Verify(r => r.RemoveAsync(stored, true, It.IsAny<CancellationToken>()), Times.Once);
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_WhenSystemPreset_ReturnsForbiddenWithoutRemove()
+    {
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StyleArtPreset { Id = presetId, Name = "Vintage", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = true, IsSystemTemplate = true });
+
+        var result = await CreateService(userId: Guid.NewGuid(), repository: repository).DeleteAsync(presetId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
+        repository.Verify(r => r.RemoveAsync(It.IsAny<StyleArtPreset>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static StyleArtPresetService CreateService(
+        Guid? userId,
+        Mock<IRepository<StyleArtPreset>> repository,
+        Mock<IPublicImageService>? images = null)
     {
         var currentUser = new Mock<ICurrentUser>();
-        currentUser.SetupGet(user => user.IsAuthenticated).Returns(true);
-        return currentUser;
+        currentUser.SetupGet(user => user.IsAuthenticated).Returns(userId.HasValue);
+        currentUser.SetupGet(user => user.UserId).Returns(userId);
+
+        return new StyleArtPresetService(
+            currentUser.Object,
+            repository.Object,
+            (images ?? new Mock<IPublicImageService>()).Object,
+            new CreateStyleArtPresetValidator(),
+            new UpdateStyleArtPresetValidator(),
+            TimeProvider.System);
     }
 
     private static Mock<IRepository<StyleArtPreset>> PresetRepository(params StyleArtPreset[] presets)
@@ -65,4 +169,7 @@ public sealed class StyleArtPresetServiceTests
         repository.Setup(r => r.Query()).Returns(presets.AsQueryable().BuildMock());
         return repository;
     }
+
+    private static UploadFileDto PreviewFile() =>
+        new("preview.webp", "image/webp", 1024, new MemoryStream([1, 2, 3]));
 }
