@@ -38,4 +38,42 @@ public sealed class PlanRepository(AppDbContext dbContext)
             .AsNoTracking()
             .Where(plan => plan.Id == planId && plan.IsActive == true)
             .SingleOrDefaultAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<SubscriptionPlan>> GetAllForAdminAsync(CancellationToken cancellationToken = default) =>
+        QueryAllForAdminAsync(cancellationToken);
+
+    private async Task<IReadOnlyList<SubscriptionPlan>> QueryAllForAdminAsync(CancellationToken cancellationToken)
+    {
+        var plans = await dbContext.SubscriptionPlans
+            .AsNoTracking()
+            .Include(plan => plan.PlanFeatures)
+            .OrderBy(plan => plan.SortOrder)
+            .ThenBy(plan => plan.MonthlyPriceUsd)
+            .ToListAsync(cancellationToken);
+
+        return plans;
+    }
+
+    /// <inheritdoc />
+    public Task<SubscriptionPlan?> GetByIdForAdminAsync(
+        Guid planId,
+        CancellationToken cancellationToken = default) =>
+        dbContext.SubscriptionPlans
+            .AsNoTracking()
+            .Include(plan => plan.PlanFeatures)
+            .SingleOrDefaultAsync(plan => plan.Id == planId, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<bool> IsNameOrTierTakenAsync(
+        string name,
+        string tier,
+        Guid? excludePlanId,
+        CancellationToken cancellationToken = default) =>
+        dbContext.SubscriptionPlans
+            .AsNoTracking()
+            .Where(plan => excludePlanId == null || plan.Id != excludePlanId)
+            .AnyAsync(
+                plan => plan.Name.ToLower() == name.ToLower() || plan.Tier.ToLower() == tier.ToLower(),
+                cancellationToken);
 }
