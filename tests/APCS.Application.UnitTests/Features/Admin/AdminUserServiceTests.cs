@@ -232,4 +232,85 @@ public sealed class AdminUserServiceTests
         result.Error.Code.Should().Be("validation.failed");
         result.Error.Message.Should().Contain("Birthday must be in the past");
     }
+
+    [TestMethod]
+    public async Task SuspendUserAsync_ValidRequest_SuspendsUserAndAddsAuditLog()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        Guid? adminId = Guid.NewGuid();
+        var user = new User { Id = userId, AccountStatus = "Active", AuditLogs = new List<AuditLog>() };
+        var activeToken = new AuthToken { UserId = userId, TokenHash = "token1", ExpiresAt = DateTime.UtcNow.AddDays(1) };
+        var request = new SuspendUserRequestDto("Violation of terms", 7);
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+        userRepository.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>())).ReturnsAsync(user);
+
+        var tokenRepository = new Mock<IRepository<AuthToken>>();
+        var tokens = new List<AuthToken> { activeToken }.AsQueryable().BuildMock();
+        tokenRepository.Setup(x => x.Query()).Returns(tokens);
+
+        var currentUserService = new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
+        currentUserService.Setup(x => x.UserId).Returns(adminId);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var service = CreateService(
+            userRepository: userRepository,
+            authTokenRepository: tokenRepository,
+            currentUser: currentUserService,
+            unitOfWork: unitOfWork);
+
+        // Act
+        var result = await service.SuspendUserAsync(userId, request, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        user.AccountStatus.Should().Be("suspended");
+        user.SuspendedUntil.Should().NotBeNull();
+        user.SuspendedUntil.Value.Date.Should().Be(DateTime.UtcNow.AddDays(7).Date);
+        user.AuditLogs.Should().HaveCount(1);
+        user.AuditLogs.First().ActionType.Should().Be("SuspendUser");
+        user.AuditLogs.First().NewValue.Should().Contain("\"status\":\"suspended\"");
+
+        tokenRepository.Verify(x => x.UpdateAsync(It.Is<AuthToken>(t => t.IsRevoked), false, It.IsAny<CancellationToken>()), Times.Once);
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UnlockUserAsync_ValidRequest_UnlocksUserAndAddsAuditLog()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        Guid? adminId = Guid.NewGuid();
+        var user = new User { Id = userId, AccountStatus = "suspended", SuspendedUntil = DateTime.UtcNow.AddDays(7), AuditLogs = new List<AuditLog>() };
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+        userRepository.Setup(x => x.GetByIdAsync(userId, It.IsAny<CancellationToken>())).ReturnsAsync(user);
+
+        var currentUserService = new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
+        currentUserService.Setup(x => x.UserId).Returns(adminId);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var service = CreateService(
+            userRepository: userRepository,
+            currentUser: currentUserService,
+            unitOfWork: unitOfWork);
+
+        // Act
+        var result = await service.UnlockUserAsync(userId, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        user.AccountStatus.Should().Be("active");
+        user.SuspendedUntil.Should().BeNull();
+        user.AuditLogs.Should().HaveCount(1);
+        user.AuditLogs.First().ActionType.Should().Be("UnlockUser");
+        user.AuditLogs.First().NewValue.Should().Contain("\"status\":\"active\"");
+
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
 }
