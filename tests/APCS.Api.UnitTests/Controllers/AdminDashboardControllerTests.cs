@@ -50,7 +50,7 @@ public sealed class AdminDashboardControllerTests
         var objectResult = result as ObjectResult;
         objectResult.Should().NotBeNull();
         objectResult!.StatusCode.Should().Be(500); // Because it uses ToActionResult under the hood which returns 500 for Failure type
-        
+
         var problemDetails = objectResult.Value as ValidationProblemDetails ?? objectResult.Value as ProblemDetails;
         problemDetails.Should().NotBeNull();
     }
