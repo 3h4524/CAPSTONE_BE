@@ -1,6 +1,26 @@
 -- mockup_templates: system-provided mock-up templates for the batch setup picker.
 -- Database-first: seed-only script, no schema change, no scaffold needed.
 -- Preview images are null until design supplies them; the frontend renders a fallback.
+-- Owner: null means a system template, otherwise the seller who created it.
+
+ALTER TABLE public.mockup_templates ADD COLUMN IF NOT EXISTS user_id uuid NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'mockup_templates_user_id_fkey'
+    ) THEN
+        ALTER TABLE public.mockup_templates
+            ADD CONSTRAINT mockup_templates_user_id_fkey
+            FOREIGN KEY (user_id) REFERENCES public.users (id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_mockup_templates_user_id
+    ON public.mockup_templates (user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_mockup_templates_name
+    ON public.mockup_templates (lower(name));
 
 INSERT INTO public.mockup_templates
     (name, product_type, base_image_url, preview_image_url, print_area_config,

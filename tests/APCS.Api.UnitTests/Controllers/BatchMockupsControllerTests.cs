@@ -17,7 +17,7 @@ public sealed class BatchMockupsControllerTests
     {
         IReadOnlyList<MockupTemplateResponseDto> response =
         [
-            new(Guid.NewGuid(), "Tee A", "tshirt", "https://x/a.jpg", null, "{}", 2000, 2000, 0)
+            new(Guid.NewGuid(), "Tee A", "tshirt", "https://x/a.jpg", null, "{}", 2000, 2000, 0, true, false)
         ];
         var service = new Mock<IMockupTemplateService>();
         service.Setup(x => x.ListAsync("tshirt", It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));

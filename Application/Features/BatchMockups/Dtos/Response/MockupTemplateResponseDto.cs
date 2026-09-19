@@ -10,6 +10,8 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// <param name="OutputWidthPx">The output image width in pixels.</param>
 /// <param name="OutputHeightPx">The output image height in pixels.</param>
 /// <param name="UsageCount">How often this template was used, for ordering.</param>
+/// <param name="IsSystemTemplate">Whether this is a system-provided template.</param>
+/// <param name="IsMine">Whether the current seller created this template.</param>
 public sealed record MockupTemplateResponseDto(
     Guid Id,
     string Name,
@@ -19,4 +21,6 @@ public sealed record MockupTemplateResponseDto(
     string PrintAreaConfig,
     int OutputWidthPx,
     int OutputHeightPx,
-    int UsageCount);
+    int UsageCount,
+    bool IsSystemTemplate,
+    bool IsMine);

@@ -1,5 +1,6 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Validators;
@@ -84,12 +85,58 @@ public sealed class MockupTemplateServiceTests
         result.IsSuccess.Should().BeFalse();
     }
 
+    [TestMethod]
+    public async Task CreateAsync_WhenValid_UploadsBothImagesAndReturnsMine()
+    {
+        var images = new Mock<IPublicImageService>();
+        images.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("https://images.example.com/mockup.webp");
+        var templates = TemplateRepository();
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, images: images).CreateAsync(
+            new CreateMockupTemplateRequestDto("Tee Custom", "tshirt", "{\"x\":1}", 2000, 2000, PreviewFile(), PreviewFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Name.Should().Be("Tee Custom");
+        result.Value.PreviewImageUrl.Should().Be("https://images.example.com/mockup.webp");
+        result.Value.IsMine.Should().BeTrue();
+        images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WhenNameTaken_ReturnsConflict()
+    {
+        var repository = TemplateRepository(
+            new MockupTemplate { Id = Guid.NewGuid(), Name = "Tee A", ProductType = "tshirt", BaseImageUrl = "https://x/a.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true });
+
+        var result = await CreateService(Guid.NewGuid(), templates: repository).CreateAsync(
+            new CreateMockupTemplateRequestDto("tee a", "tshirt", "{\"x\":1}", 2000, 2000, PreviewFile(), null));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_WhenSystemTemplate_ReturnsForbidden()
+    {
+        var templateId = Guid.NewGuid();
+        var repository = new Mock<IRepository<MockupTemplate>>();
+        repository.Setup(r => r.GetByIdAsync(templateId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MockupTemplate { Id = templateId, Name = "Tee A", ProductType = "tshirt", BaseImageUrl = "https://x/a.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, IsSystemTemplate = true });
+
+        var result = await CreateService(Guid.NewGuid(), templates: repository).DeleteAsync(templateId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
+    }
+
     private static MockupTemplateService CreateService(
         Guid? userId,
         Mock<IRepository<MockupTemplate>>? templates = null,
         Mock<IRepository<BatchJob>>? batches = null,
         Mock<IRepository<BatchJobProduct>>? rows = null,
-        Mock<IRepository<Product>>? products = null)
+        Mock<IRepository<Product>>? products = null,
+        Mock<IPublicImageService>? images = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(userId.HasValue);
@@ -101,7 +148,12 @@ public sealed class MockupTemplateServiceTests
             (batches ?? new Mock<IRepository<BatchJob>>()).Object,
             (rows ?? new Mock<IRepository<BatchJobProduct>>()).Object,
             (products ?? new Mock<IRepository<Product>>()).Object,
+            new Mock<IRepository<ProductMockupTemplate>>().Object,
+            new Mock<IRepository<MockupImage>>().Object,
+            (images ?? new Mock<IPublicImageService>()).Object,
             new ApplyMockupTemplatesValidator(),
+            new CreateMockupTemplateValidator(),
+            new UpdateMockupTemplateValidator(),
             TimeProvider.System);
     }
 
@@ -132,4 +184,7 @@ public sealed class MockupTemplateServiceTests
         repository.Setup(r => r.Query()).Returns(items.AsQueryable().BuildMock());
         return repository;
     }
+
+    private static UploadFileDto PreviewFile() =>
+        new("preview.webp", "image/webp", 1024, new MemoryStream([1, 2, 3]));
 }

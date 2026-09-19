@@ -1319,6 +1319,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.ProductType, "idx_mockup_templates_product_type");
 
+            entity.HasIndex(e => e.UserId, "idx_mockup_templates_user_id");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -1351,6 +1353,12 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.UsageCount)
                 .HasDefaultValue(0)
                 .HasColumnName("usage_count");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.MockupTemplates)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
         modelBuilder.Entity<MusicTrack>(entity =>
