@@ -43,8 +43,8 @@ public sealed class CloudinaryFileStorageService : IFileStorageService
         ArgumentNullException.ThrowIfNull(file);
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
 
-        var publicId = BuildPublicId(storageKey);
-        var assetFolder = BuildAssetFolder(storageKey);
+        var publicId = CloudinaryPaths.BuildPublicId(_options.Folder, storageKey);
+        var assetFolder = CloudinaryPaths.BuildAssetFolder(_options.Folder, storageKey);
         using var description = new FileDescription(file.FileName, file.Content);
         var result = await _cloudinary.UploadAsync(
             new RawUploadParams
@@ -74,7 +74,7 @@ public sealed class CloudinaryFileStorageService : IFileStorageService
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var result = await _cloudinary.DestroyAsync(new DeletionParams(BuildPublicId(storageKey))
+        var result = await _cloudinary.DestroyAsync(new DeletionParams(CloudinaryPaths.BuildPublicId(_options.Folder, storageKey))
         {
             ResourceType = ResourceType.Raw,
             Type = "authenticated",
@@ -94,7 +94,7 @@ public sealed class CloudinaryFileStorageService : IFileStorageService
 
         var expiresAt = _timeProvider.GetUtcNow().AddMinutes(_options.SignedUrlTtlMinutes);
         var url = _cloudinary.DownloadPrivate(
-            BuildPublicId(storageKey),
+            CloudinaryPaths.BuildPublicId(_options.Folder, storageKey),
             attachment: true,
             format: null,
             type: "authenticated",
@@ -105,23 +105,4 @@ public sealed class CloudinaryFileStorageService : IFileStorageService
 
         return new SignedDownloadDto(url, expiresAt);
     }
-
-    private string BuildPublicId(string storageKey)
-    {
-        var folder = NormalizePath(_options.Folder);
-        var key = NormalizePath(storageKey);
-        return string.IsNullOrWhiteSpace(folder) ? key : $"{folder}/{key}";
-    }
-
-    private string BuildAssetFolder(string storageKey)
-    {
-        var publicId = BuildPublicId(storageKey);
-        var lastSeparatorIndex = publicId.LastIndexOf('/');
-        return lastSeparatorIndex < 0 ? string.Empty : publicId[..lastSeparatorIndex];
-    }
-
-    private static string NormalizePath(string value) =>
-        string.Join('/', value
-            .Replace('\\', '/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 }

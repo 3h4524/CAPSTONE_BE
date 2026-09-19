@@ -102,6 +102,7 @@ public sealed class StyleArtPresetServiceTests
         var repository = new Mock<IRepository<StyleArtPreset>>();
         var stored = new StyleArtPreset { Id = presetId, Name = "Mine", Description = "Old", StyleModifiers = "old", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = userId };
         repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>())).ReturnsAsync(stored);
+        repository.Setup(r => r.Query()).Returns(new List<StyleArtPreset> { stored }.AsQueryable().BuildMock());
 
         var result = await CreateService(userId: userId, repository: repository).UpdateAsync(
             presetId,
@@ -143,6 +144,48 @@ public sealed class StyleArtPresetServiceTests
         result.IsSuccess.Should().BeFalse();
         result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
         repository.Verify(r => r.RemoveAsync(It.IsAny<StyleArtPreset>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WhenNameTaken_ReturnsConflictWithoutUpload()
+    {
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = true, IsSystemTemplate = true });
+        var images = new Mock<IPublicImageService>();
+
+        var result = await CreateService(userId: Guid.NewGuid(), repository: repository, images: images).CreateAsync(
+            new CreateStyleArtPresetRequestDto("vintage", "Bold glow", "neon glow", null, PreviewFile()));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
+        images.Verify(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenUnauthenticated_ReturnsFailure()
+    {
+        var result = await CreateService(userId: null, repository: PresetRepository()).UpdateAsync(
+            Guid.NewGuid(),
+            new UpdateStyleArtPresetRequestDto("X", "Y description", "modifiers", null, null, false));
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenOwnPresetInactive_ReturnsNotFound()
+    {
+        var userId = Guid.NewGuid();
+        var presetId = Guid.NewGuid();
+        var repository = new Mock<IRepository<StyleArtPreset>>();
+        repository.Setup(r => r.GetByIdAsync(presetId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StyleArtPreset { Id = presetId, Name = "Mine", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = false, IsSystemTemplate = false, UserId = userId });
+
+        var result = await CreateService(userId: userId, repository: repository).UpdateAsync(
+            presetId,
+            new UpdateStyleArtPresetRequestDto("Mine+", "New description", "new", null, null, false));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
     }
 
     private static StyleArtPresetService CreateService(

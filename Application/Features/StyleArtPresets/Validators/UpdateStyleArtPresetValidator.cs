@@ -1,4 +1,3 @@
-using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.StyleArtPresets.Common;
 using APCS.Application.Features.StyleArtPresets.Dtos.Request;
 using FluentValidation;
@@ -21,15 +20,8 @@ public sealed class UpdateStyleArtPresetValidator : AbstractValidator<UpdateStyl
             .WithMessage("The preview must be an image file.")
             .Must(preview => preview is null || StyleArtPresetValidators.IsWithinSizeLimit(preview))
             .WithMessage("The preview image cannot exceed 5 MB.");
+        RuleFor(request => request.DeletePreview)
+            .Must((request, deletePreview) => request.Preview is null || !deletePreview)
+            .WithMessage("Choose either a new preview image or removing the current one, not both.");
     }
-}
-
-/// <summary>Shared preview file checks.</summary>
-public static class StyleArtPresetValidators
-{
-    public static bool IsSupportedImage(UploadFileDto? file) =>
-        file is not null && file.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
-
-    public static bool IsWithinSizeLimit(UploadFileDto? file) =>
-        file is not null && file.Length > 0 && file.Length <= StyleArtPresetRules.MaximumPreviewBytes;
 }

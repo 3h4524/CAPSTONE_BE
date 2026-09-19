@@ -60,6 +60,46 @@ public sealed class StyleArtPresetsControllerTests
     }
 
     [TestMethod]
+    public async Task Get_Found_ReturnsPreset()
+    {
+        var id = Guid.NewGuid();
+        var response = new StyleArtPresetResponseDto(id, "Vintage", "Retro", "vintage", null, [], true, false);
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.GetMineAsync(id, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
+
+        var result = await new StyleArtPresetsController(service.Object).Get(id, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
+    public async Task Get_Missing_ReturnsNotFoundProblem()
+    {
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.GetMineAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<StyleArtPresetResponseDto>(Error.NotFound("StyleArtPresets.NotFound", "Missing.")));
+
+        var result = await new StyleArtPresetsController(service.Object).Get(Guid.NewGuid(), CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(404);
+    }
+
+    [TestMethod]
+    public async Task Update_Success_ReturnsPreset()
+    {
+        var id = Guid.NewGuid();
+        var form = new UpdateStyleArtPresetForm { Name = "Mine+", Description = "New description", StyleModifiers = "new" };
+        var response = new StyleArtPresetResponseDto(id, "Mine+", "New description", "new", null, [], false, true);
+        var service = new Mock<IStyleArtPresetService>();
+        service.Setup(x => x.UpdateAsync(id, It.IsAny<UpdateStyleArtPresetRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(response));
+
+        var result = await new StyleArtPresetsController(service.Object).Update(id, form, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
     public async Task Delete_OwnPreset_ReturnsNoContent()
     {
         var id = Guid.NewGuid();

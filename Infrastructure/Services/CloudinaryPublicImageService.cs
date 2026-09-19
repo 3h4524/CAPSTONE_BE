@@ -44,8 +44,8 @@ public sealed class CloudinaryPublicImageService : IPublicImageService
             new ImageUploadParams
             {
                 File = description,
-                PublicId = BuildPublicId(storageKey),
-                AssetFolder = BuildAssetFolder(storageKey),
+                PublicId = CloudinaryPaths.BuildPublicId(_options.Folder, storageKey),
+                AssetFolder = CloudinaryPaths.BuildAssetFolder(_options.Folder, storageKey),
                 Overwrite = true,
                 UseFilename = false,
                 UniqueFilename = false,
@@ -67,13 +67,13 @@ public sealed class CloudinaryPublicImageService : IPublicImageService
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var result = await _cloudinary.DestroyAsync(new DeletionParams(BuildPublicId(storageKey))
+        var result = await _cloudinary.DestroyAsync(new DeletionParams(CloudinaryPaths.BuildPublicId(_options.Folder, storageKey))
         {
             ResourceType = ResourceType.Image,
             Invalidate = true
         });
 
-        if (result.Error is not null && result.Error.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(result.Result, "not found", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -83,23 +83,4 @@ public sealed class CloudinaryPublicImageService : IPublicImageService
             throw new InvalidOperationException($"Cloudinary could not delete the image: {result.Error.Message}");
         }
     }
-
-    private string BuildPublicId(string storageKey)
-    {
-        var folder = NormalizePath(_options.Folder);
-        var key = NormalizePath(storageKey);
-        return string.IsNullOrWhiteSpace(folder) ? key : $"{folder}/{key}";
-    }
-
-    private string BuildAssetFolder(string storageKey)
-    {
-        var publicId = BuildPublicId(storageKey);
-        var lastSeparatorIndex = publicId.LastIndexOf('/');
-        return lastSeparatorIndex < 0 ? string.Empty : publicId[..lastSeparatorIndex];
-    }
-
-    private static string NormalizePath(string value) =>
-        string.Join('/', value
-            .Replace('\\', '/')
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 }
