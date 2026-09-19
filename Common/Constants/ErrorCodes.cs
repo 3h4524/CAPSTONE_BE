@@ -37,4 +37,5 @@ public static class ErrorCodes
     public const string SubscriptionTargetNotLowerTier = "subscriptions.target_not_lower_tier";
     public const string SubscriptionNoScheduledDowngrade = "subscriptions.no_scheduled_downgrade";
     public const string SubscriptionInvoicePdfGenerationFailed = "subscriptions.invoice_pdf_generation_failed";
+    public const string SubscriptionPlanNameOrTierTaken = "subscriptions.plan_name_or_tier_taken";
 }
