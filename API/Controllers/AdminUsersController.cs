@@ -62,9 +62,10 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> SuspendUser(
         Guid id,
+        [FromBody] APCS.Application.Features.Admin.Dtos.Request.SuspendUserRequestDto request,
         CancellationToken cancellationToken)
     {
-        var result = await adminUserService.SuspendUserAsync(id, cancellationToken);
+        var result = await adminUserService.SuspendUserAsync(id, request, cancellationToken);
         return result.IsSuccess ? NoContent() : NotFound(result.Error);
     }
 

@@ -26,7 +26,7 @@ public sealed class ApiKeyServiceTests
         current.SetupGet(x => x.IsAuthenticated).Returns(true);
         current.SetupGet(x => x.UserId).Returns(userId);
         accounts.Setup(x => x.FindByIdAsync(userId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", true, true));
+            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", true, true, "active", null));
         accounts.Setup(x => x.GetRolesAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { "Seller" });
         repository.Setup(x => x.ListMetadataOwnedAsync(userId, It.IsAny<CancellationToken>())).ReturnsAsync(rows);
@@ -64,7 +64,7 @@ public sealed class ApiKeyServiceTests
     {
         var service = Create();
         accounts.Setup(x => x.FindByIdAsync(userId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", false, true));
+            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", false, true, "suspended", null));
         (await service.ListMineAsync()).Error.Type.Should().Be(ErrorType.Forbidden);
         repository.Verify(x => x.ListMetadataOwnedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }

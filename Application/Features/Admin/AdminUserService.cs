@@ -150,7 +150,7 @@ public sealed class AdminUserService(
         return Result<AdminUserDto>.Success(dto);
     }
 
-    public async Task<Result<bool>> SuspendUserAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<Result<bool>> SuspendUserAsync(Guid id, SuspendUserRequestDto request, CancellationToken cancellationToken = default)
     {
         if (id == currentUser.UserId)
             return Result<bool>.Failure(Error.Validation("You cannot suspend your own account."));
@@ -160,12 +160,35 @@ public sealed class AdminUserService(
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
         user.AccountStatus = "suspended";
+        user.SuspendedUntil = request.DurationDays.HasValue ? timeProvider.GetUtcNow().UtcDateTime.AddDays(request.DurationDays.Value) : null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+
+        // Revoke tokens
+        var tokens = await authTokenRepository.Query().Where(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().UtcDateTime && t.RevokedAt == null).ToListAsync(cancellationToken);
+        foreach (var token in tokens)
+        {
+            token.Revoke(timeProvider.GetUtcNow());
+            await authTokenRepository.UpdateAsync(token, false, cancellationToken);
+        }
+
+        // Add Audit Log
+        var auditLog = new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActorUserId = currentUser.UserId,
+            ActionType = "SuspendUser",
+            ResourceType = "User",
+            ResourceId = user.Id,
+            OldValue = "active",
+            NewValue = request.DurationDays.HasValue ? $"suspended_until: {user.SuspendedUntil} (Reason: {request.Reason})" : $"permanent (Reason: {request.Reason})",
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        };
+        user.AuditLogs.Add(auditLog);
 
         await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        logger.LogInformation("User {UserId} suspended by admin.", id);
+        logger.LogInformation("User {UserId} suspended by admin. Reason: {Reason}", id, request.Reason);
         return Result<bool>.Success(true);
     }
 
@@ -176,7 +199,22 @@ public sealed class AdminUserService(
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
         user.AccountStatus = "active";
+        user.SuspendedUntil = null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+
+        // Add Audit Log
+        var auditLog = new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActorUserId = currentUser.UserId,
+            ActionType = "UnlockUser",
+            ResourceType = "User",
+            ResourceId = user.Id,
+            OldValue = "suspended",
+            NewValue = "active",
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        };
+        user.AuditLogs.Add(auditLog);
 
         await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);

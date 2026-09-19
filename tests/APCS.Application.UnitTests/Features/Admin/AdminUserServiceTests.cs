@@ -19,6 +19,8 @@ public sealed class AdminUserServiceTests
         Mock<IRepository<UserRole>>? userRoleRepository = null,
         Mock<IRepository<AuthToken>>? authTokenRepository = null,
         Mock<IUnitOfWork>? unitOfWork = null,
+        Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>? currentUser = null,
+        Mock<APCS.Application.Features.Auth.IAuthService>? authService = null,
         TimeProvider? timeProvider = null)
     {
         userRepository ??= new Mock<IRepository<User>>();
@@ -27,6 +29,8 @@ public sealed class AdminUserServiceTests
         userRoleRepository ??= new Mock<IRepository<UserRole>>();
         authTokenRepository ??= new Mock<IRepository<AuthToken>>();
         unitOfWork ??= new Mock<IUnitOfWork>();
+        currentUser ??= new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
+        authService ??= new Mock<APCS.Application.Features.Auth.IAuthService>();
         timeProvider ??= TimeProvider.System;
 
         return new AdminUserService(
@@ -36,6 +40,8 @@ public sealed class AdminUserServiceTests
             userRoleRepository.Object,
             authTokenRepository.Object,
             unitOfWork.Object,
+            currentUser.Object,
+            authService.Object,
             timeProvider,
             NullLogger<AdminUserService>.Instance);
     }
@@ -165,5 +171,65 @@ public sealed class AdminUserServiceTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error.Code.Should().Be("User.NotFound");
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_ValidRequest_UpdatesUser()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, FullName = "Old Name" };
+        var request = new UpdateAdminUserDto("New Name", "test@test.com", null, null, "Active", Array.Empty<string>());
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+
+        var roleRepository = new Mock<IRepository<Role>>();
+        var roles = new List<Role>().AsQueryable().BuildMock();
+        roleRepository.Setup(x => x.Query()).Returns(roles);
+
+        var userRoleRepository = new Mock<IRepository<UserRole>>();
+        var userRoles = new List<UserRole>().AsQueryable().BuildMock();
+        userRoleRepository.Setup(x => x.Query()).Returns(userRoles);
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var service = CreateService(
+            userRepository: userRepository, 
+            roleRepository: roleRepository, 
+            userRoleRepository: userRoleRepository, 
+            unitOfWork: unitOfWork);
+
+        // Act
+        var result = await service.UpdateUserAsync(userId, request, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.FullName.Should().Be("New Name");
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_FutureBirthday_ReturnsValidationError()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, FullName = "Old Name" };
+        var futureDate = DateTime.UtcNow.AddDays(1);
+        var request = new UpdateAdminUserDto("New Name", "test@test.com", futureDate, null, "Active", Array.Empty<string>());
+
+        var userRepository = new Mock<IRepository<User>>();
+        var users = new List<User> { user }.AsQueryable().BuildMock();
+        userRepository.Setup(x => x.Query()).Returns(users);
+
+        var service = CreateService(userRepository: userRepository);
+
+        // Act
+        var result = await service.UpdateUserAsync(userId, request, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("validation.failed");
+        result.Error.Message.Should().Contain("Birthday must be in the past");
     }
 }

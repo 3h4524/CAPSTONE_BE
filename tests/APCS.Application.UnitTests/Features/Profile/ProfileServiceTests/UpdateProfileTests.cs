@@ -62,7 +62,7 @@ public sealed class UpdateProfileTests
         accountService.Setup(svc => svc.EmailExistsAsync("taken@example.com", ct))
             .ReturnsAsync(true);
         accountService.Setup(svc => svc.FindByEmailAsync("taken@example.com", ct))
-            .ReturnsAsync(new AccountInfoDto(Guid.NewGuid(), "taken@example.com", "Other", true, true));
+            .ReturnsAsync(new AccountInfoDto(Guid.NewGuid(), "taken@example.com", "Other", true, true, "active", null));
         var service = ProfileTestData.CreateService(
             accountService: accountService,
             accountRepository: accountRepository);

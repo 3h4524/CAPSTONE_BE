@@ -82,6 +82,7 @@ public static class DependencyInjection
 
         services.AddRepositories();
         services.AddApplicationServices(configuration);
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
 
         return services;
     }
