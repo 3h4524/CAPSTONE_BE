@@ -676,6 +676,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Name)
                 .HasMaxLength(255)
                 .HasColumnName("name");
+            entity.Property(e => e.NegativePrompt).HasColumnName("negative_prompt");
             entity.Property(e => e.NicheCategory)
                 .HasMaxLength(255)
                 .HasColumnName("niche_category");

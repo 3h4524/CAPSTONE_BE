@@ -101,6 +101,7 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
 
         return services;
     }

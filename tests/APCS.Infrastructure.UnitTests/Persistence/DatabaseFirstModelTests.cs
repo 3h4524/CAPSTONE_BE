@@ -2,6 +2,7 @@ using APCS.Domain.Entities;
 using APCS.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace APCS.Infrastructure.UnitTests.Persistence;
 
@@ -42,6 +43,22 @@ public sealed class DatabaseFirstModelTests
         using var context = CreateContext();
 
         context.Database.GetMigrations().Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Model_DesignTemplate_MapsNullableNegativePromptColumn()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(DesignTemplate));
+        var property = entityType!.FindProperty(nameof(DesignTemplate.NegativePrompt));
+        var table = StoreObjectIdentifier.Table("design_templates", null);
+
+        entityType.GetTableName().Should().Be("design_templates");
+        property.Should().NotBeNull();
+        property!.GetColumnName(table).Should().Be("negative_prompt");
+        property.IsNullable.Should().BeTrue();
+        property.GetColumnType().Should().Be("text");
     }
 
     private static AppDbContext CreateContext()
