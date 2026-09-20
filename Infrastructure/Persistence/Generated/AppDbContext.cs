@@ -526,6 +526,11 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.CurrentStep)
                 .HasMaxLength(50)
                 .HasColumnName("current_step");
+            entity.Property(e => e.CustomArtStyle).HasColumnName("custom_art_style");
+            entity.Property(e => e.CustomInstructions).HasColumnName("custom_instructions");
+            entity.Property(e => e.CustomMoodTone).HasColumnName("custom_mood_tone");
+            entity.Property(e => e.CustomNegativeTerms).HasColumnName("custom_negative_terms");
+            entity.Property(e => e.CustomSubject).HasColumnName("custom_subject");
             entity.Property(e => e.DurationSeconds)
                 .HasPrecision(10, 2)
                 .HasColumnName("duration_seconds");

@@ -2,6 +2,7 @@ using System.Reflection;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.ApiKeys;
+using APCS.Application.Features.BatchProductPrompts;
 using APCS.Application.Features.Profile;
 using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.Subscriptions;
@@ -33,6 +34,7 @@ public static class DependencyInjection
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
+        services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
 
         return services;
     }
