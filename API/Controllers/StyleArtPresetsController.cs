@@ -55,6 +55,20 @@ public sealed class StyleArtPresetsController(IStyleArtPresetService service) : 
         }
     }
 
+    [HttpPost("quick")]
+    [ProducesResponseType(typeof(StyleArtPresetResponseDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> QuickCreate(
+        [FromBody] QuickCreateStyleArtPresetRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await service.QuickCreateAsync(request.Name, cancellationToken);
+
+        return result.IsSuccess
+            ? CreatedAtAction(nameof(Get), new { id = result.Value.Id }, result.Value)
+            : result.ToActionResult(this);
+    }
+
     [HttpPut("{id:guid}")]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(typeof(StyleArtPresetResponseDto), StatusCodes.Status200OK)]
