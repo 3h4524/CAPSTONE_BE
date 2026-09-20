@@ -1,6 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
-using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Validators;
@@ -83,6 +82,83 @@ public sealed class MockupTemplateServiceTests
             .ApplyAsync(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto([]));
 
         result.IsSuccess.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GetSelectionAsync_WhenOwnedBatch_ReturnsStoredIds()
+    {
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchId,
+            UserId = userId,
+            Name = "B",
+            Status = "draft",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"]}}"
+        });
+
+        var result = await CreateService(userId, batches: batches).GetSelectionAsync(batchId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.TemplateIds.Should().ContainSingle().Which.Should().Be(templateId);
+    }
+
+    [TestMethod]
+    public async Task GetSelectionAsync_WhenUnauthenticated_ReturnsFailure()
+    {
+        var result = await CreateService(null).GetSelectionAsync(Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WhenTemplateInactive_ReturnsNotFound()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "draft", Config = "{}" });
+        var templates = TemplateRepository(
+            new MockupTemplate { Id = templateId, Name = "Old", ProductType = "mug", BaseImageUrl = "https://x/o.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = false });
+
+        var result = await CreateService(userId, templates: templates, batches: batches)
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([templateId]));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WhenTooManyIds_ReturnsFailure()
+    {
+        var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToList();
+
+        var result = await CreateService(Guid.NewGuid())
+            .ApplyAsync(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto(ids));
+
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WhenIncompatibleType_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var productId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "draft", Config = "{}" });
+        var templates = TemplateRepository(
+            new MockupTemplate { Id = templateId, Name = "Mug A", ProductType = "mug", BaseImageUrl = "https://x/m.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true });
+        var rows = MockRows(new BatchJobProduct { Id = Guid.NewGuid(), BatchJobId = batchId, ProductId = productId, Status = "pending" });
+        var products = MockProducts(new Product { Id = productId, UserId = userId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending" });
+
+        var result = await CreateService(userId, templates: templates, batches: batches, rows: rows, products: products)
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([templateId]));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
     }
 
     private static MockupTemplateService CreateService(

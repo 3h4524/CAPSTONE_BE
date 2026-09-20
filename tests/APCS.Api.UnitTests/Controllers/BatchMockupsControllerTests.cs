@@ -28,6 +28,31 @@ public sealed class BatchMockupsControllerTests
     }
 
     [TestMethod]
+    public async Task Get_Found_ReturnsSelection()
+    {
+        var batchId = Guid.NewGuid();
+        var response = new BatchMockupSelectionResponseDto(batchId, [Guid.NewGuid()]);
+        var service = new Mock<IMockupTemplateService>();
+        service.Setup(x => x.GetSelectionAsync(batchId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
+
+        var result = await new BatchMockupsController(service.Object).Get(batchId, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
+    public async Task Get_MissingBatch_ReturnsNotFound()
+    {
+        var service = new Mock<IMockupTemplateService>();
+        service.Setup(x => x.GetSelectionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<BatchMockupSelectionResponseDto>(Error.NotFound("BatchMockups.BatchNotFound", "Missing.")));
+
+        var result = await new BatchMockupsController(service.Object).Get(Guid.NewGuid(), CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(404);
+    }
+
+    [TestMethod]
     public async Task Apply_ValidIds_ReturnsSelection()
     {
         var batchId = Guid.NewGuid();

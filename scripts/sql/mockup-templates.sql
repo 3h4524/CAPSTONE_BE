@@ -1,6 +1,7 @@
 -- mockup_templates: system-provided mock-up templates for the batch setup picker.
--- Database-first: seed-only script, no schema change, no scaffold needed.
--- Preview images are null until design supplies them; the frontend renders a fallback.
+-- Database-first: this script is the approved schema change (owner column, indexes)
+-- plus seed data; entity + context are regenerated afterwards with
+-- ./scripts/Scaffold-Database.ps1 (or dotnet ef scaffold).
 -- Owner: null means a system template, otherwise the seller who created it.
 
 ALTER TABLE public.mockup_templates ADD COLUMN IF NOT EXISTS user_id uuid NULL;

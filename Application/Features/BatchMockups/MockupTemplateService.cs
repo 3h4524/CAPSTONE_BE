@@ -32,6 +32,7 @@ public sealed class MockupTemplateService(
 
         var items = await templates.Query()
             .Where(template => template.IsActive == true
+                && (template.UserId == null || template.UserId == userId)
                 && (string.IsNullOrEmpty(normalizedType) || template.ProductType.ToLower() == normalizedType))
             .OrderByDescending(template => template.UsageCount)
             .ThenBy(template => template.Name)
@@ -54,6 +55,9 @@ public sealed class MockupTemplateService(
 
     public async Task<Result<BatchMockupSelectionResponseDto>> GetSelectionAsync(Guid batchJobId, CancellationToken cancellationToken = default)
     {
+        if (currentUser.TryGetUserId() is not Guid)
+            return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.Unauthenticated("view"));
+
         var batch = await FindOwnedBatchAsync(batchJobId, cancellationToken);
         if (batch is null)
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.BatchNotFound());
@@ -79,8 +83,8 @@ public sealed class MockupTemplateService(
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.NotDraft());
 
         var candidates = await templates.Query()
-            .Where(template => request.TemplateIds.Contains(template.Id))
-            .Select(template => new { template.Id, template.Name, template.ProductType, template.IsActive })
+            .Where(template => request.TemplateIds.Contains(template.Id) && template.IsActive == true)
+            .Select(template => new { template.Id, template.Name, template.ProductType })
             .ToListAsync(cancellationToken);
 
         if (candidates.Count != request.TemplateIds.Count)
