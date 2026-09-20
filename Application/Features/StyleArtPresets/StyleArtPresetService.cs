@@ -7,6 +7,7 @@ using APCS.Application.Features.StyleArtPresets.Dtos.Request;
 using APCS.Application.Features.StyleArtPresets.Dtos.Response;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using System.Text.Json;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 
@@ -273,6 +274,6 @@ public sealed class StyleArtPresetService(
             return "[]";
         }
 
-        return System.Text.Json.JsonSerializer.Serialize(recommendations);
+        return JsonSerializer.Serialize(recommendations);
     }
 }
