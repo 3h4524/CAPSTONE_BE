@@ -20,6 +20,7 @@ public sealed class StyleArtPresetService(
     IPublicImageService images,
     IValidator<CreateStyleArtPresetRequestDto> createValidator,
     IValidator<UpdateStyleArtPresetRequestDto> updateValidator,
+    IValidator<string> quickCreateValidator,
     TimeProvider timeProvider) : IStyleArtPresetService
 {
     public async Task<Result<IReadOnlyList<StyleArtPresetResponseDto>>> ListMineAsync(CancellationToken cancellationToken = default)
@@ -142,6 +143,43 @@ public sealed class StyleArtPresetService(
             throw;
         }
 
+        return Result.Success(Map(preset, isMine: true));
+    }
+
+    public async Task<Result<StyleArtPresetResponseDto>> QuickCreateAsync(string name, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.Unauthenticated("create"));
+
+        var validation = await quickCreateValidator.ValidateAsync(name, cancellationToken);
+        if (!validation.IsValid)
+        {
+            return Result.Failure<StyleArtPresetResponseDto>(validation.ToValidationError());
+        }
+
+        if (await IsNameTakenAsync(name, null, cancellationToken))
+        {
+            return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
+        }
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var preset = new StyleArtPreset
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Name = name.Trim(),
+            Description = string.Empty,
+            StyleModifiers = string.Empty,
+            PreviewImageUrl = null,
+            Recommendations = "[]",
+            IsSystemTemplate = false,
+            IsActive = true,
+            UsageCount = 0,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        await presets.AddAsync(preset, saveChange: true, cancellationToken);
         return Result.Success(Map(preset, isMine: true));
     }
 

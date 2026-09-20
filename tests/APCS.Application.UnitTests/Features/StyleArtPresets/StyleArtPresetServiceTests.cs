@@ -357,6 +357,7 @@ public sealed class StyleArtPresetServiceTests
             (images ?? new Mock<IPublicImageService>()).Object,
             new CreateStyleArtPresetValidator(),
             new UpdateStyleArtPresetValidator(),
+            new QuickCreateStyleArtPresetValidator(),
             TimeProvider.System);
     }
 
@@ -369,4 +370,29 @@ public sealed class StyleArtPresetServiceTests
 
     private static UploadFileDto PreviewFile() =>
         new("preview.webp", "image/webp", 1024, new MemoryStream([1, 2, 3]));
+
+    [TestMethod]
+    public async Task QuickCreateAsync_WhenValid_CreatesMinimalOwnPreset()
+    {
+        var service = CreateService(Guid.NewGuid(), PresetRepository());
+
+        var result = await service.QuickCreateAsync("Fresh Style");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Name.Should().Be("Fresh Style");
+        result.Value.IsMine.Should().BeTrue();
+        result.Value.StyleModifiers.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task QuickCreateAsync_WhenNameTaken_ReturnsConflict()
+    {
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "D", StyleModifiers = "m", Recommendations = "[]", IsActive = true });
+
+        var result = await CreateService(Guid.NewGuid(), repository).QuickCreateAsync("vintage");
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Conflict);
+    }
 }
