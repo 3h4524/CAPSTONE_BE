@@ -56,8 +56,7 @@ public sealed class AdminSubscriptionPlanServiceTests
         CustomApiKeysAllowed: true,
         WhiteLabelExportEnabled: true,
         PrioritySupport: false,
-        IsActive: true,
-        SortOrder: 1);
+        IsActive: true);
 
     private static UpdatePlanRequestDto ValidUpdateRequest() => new(
         Name: "Creator Plus",
@@ -74,8 +73,7 @@ public sealed class AdminSubscriptionPlanServiceTests
         CustomApiKeysAllowed: true,
         WhiteLabelExportEnabled: false,
         PrioritySupport: true,
-        IsActive: true,
-        SortOrder: 1);
+        IsActive: true);
 
     [TestMethod]
     public async Task CreateAsync_WhenValid_AddsPlanAndSaves()

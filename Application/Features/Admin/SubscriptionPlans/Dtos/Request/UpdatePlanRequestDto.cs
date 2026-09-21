@@ -19,5 +19,4 @@ public sealed record UpdatePlanRequestDto(
     bool CustomApiKeysAllowed,
     bool WhiteLabelExportEnabled,
     bool PrioritySupport,
-    bool IsActive,
-    int SortOrder);
+    bool IsActive);

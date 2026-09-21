@@ -22,7 +22,7 @@ public interface IPlanRepository : IRepository<SubscriptionPlan>
 
     /// <summary>
     /// Gets every plan tier for the Admin Portal (ADM-03), regardless of <c>IsActive</c>, ordered
-    /// by <c>SortOrder</c> then price.
+    /// by monthly price then name (the same ascending-price order Sellers see, BR93).
     /// </summary>
     Task<IReadOnlyList<SubscriptionPlan>> GetAllForAdminAsync(CancellationToken cancellationToken = default);
 
