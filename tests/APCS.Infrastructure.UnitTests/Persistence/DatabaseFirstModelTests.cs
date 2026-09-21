@@ -2,6 +2,7 @@ using APCS.Domain.Entities;
 using APCS.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace APCS.Infrastructure.UnitTests.Persistence;
 
@@ -9,7 +10,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyOneMappedTables()
+    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyTwoMappedTables()
     {
         using var context = CreateContext();
 
@@ -19,8 +20,39 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(51);
-        mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens"]);
+        mappedTables.Should().HaveCount(52);
+        mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens", "batches"]);
+    }
+
+    [TestMethod]
+    public void BatchPipelineModel_LinksProductsAndStageOutputsToTheirJobItem()
+    {
+        using var context = CreateContext();
+
+        var product = context.Model.FindEntityType(typeof(Product))!;
+        product.FindProperty(nameof(Product.BatchId))!.IsNullable.Should().BeFalse();
+
+        var batchJob = context.Model.FindEntityType(typeof(BatchJob))!;
+        batchJob.FindProperty(nameof(BatchJob.BatchId))!.IsNullable.Should().BeFalse();
+        batchJob.FindProperty(nameof(BatchJob.JobType))!.IsNullable.Should().BeFalse();
+
+        var jobProduct = context.Model.FindEntityType(typeof(BatchJobProduct))!;
+        jobProduct.FindProperty(nameof(BatchJobProduct.BatchId))!.IsNullable.Should().BeFalse();
+
+        foreach (var outputType in new[]
+                 {
+                     typeof(AiPrompt),
+                     typeof(DesignImage),
+                     typeof(MockupImage),
+                     typeof(PromoVideo),
+                     typeof(ListingContent)
+                 })
+        {
+            var output = context.Model.FindEntityType(outputType)!;
+            output.GetForeignKeys().Should().Contain(foreignKey =>
+                foreignKey.PrincipalEntityType.ClrType == typeof(BatchJobProduct)
+                && foreignKey.Properties.Single().Name == "BatchJobProductId");
+        }
     }
 
     [TestMethod]
@@ -56,6 +88,22 @@ public sealed class DatabaseFirstModelTests
         using var context = CreateContext();
 
         context.Database.GetMigrations().Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Model_DesignTemplate_MapsNullableNegativePromptColumn()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(DesignTemplate));
+        var property = entityType!.FindProperty(nameof(DesignTemplate.NegativePrompt));
+        var table = StoreObjectIdentifier.Table("design_templates", null);
+
+        entityType.GetTableName().Should().Be("design_templates");
+        property.Should().NotBeNull();
+        property!.GetColumnName(table).Should().Be("negative_prompt");
+        property.IsNullable.Should().BeTrue();
+        property.GetColumnType().Should().Be("text");
     }
 
     private static AppDbContext CreateContext()

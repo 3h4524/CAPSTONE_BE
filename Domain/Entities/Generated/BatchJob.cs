@@ -51,7 +51,13 @@ public partial class BatchJob
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid BatchId { get; set; }
+
+    public string JobType { get; set; } = null!;
+
     public virtual ICollection<ApiUsageRecord> ApiUsageRecords { get; set; } = new List<ApiUsageRecord>();
+
+    public virtual Batch Batch { get; set; } = null!;
 
     public virtual ICollection<BatchJobLog> BatchJobLogs { get; set; } = new List<BatchJobLog>();
 
