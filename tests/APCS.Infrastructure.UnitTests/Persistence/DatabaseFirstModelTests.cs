@@ -2,6 +2,7 @@ using APCS.Domain.Entities;
 using APCS.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace APCS.Infrastructure.UnitTests.Persistence;
 
@@ -52,6 +53,7 @@ public sealed class DatabaseFirstModelTests
                 foreignKey.PrincipalEntityType.ClrType == typeof(BatchJobProduct)
                 && foreignKey.Properties.Single().Name == "BatchJobProductId");
         }
+        mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens"]);
     }
 
     [TestMethod]
@@ -68,11 +70,41 @@ public sealed class DatabaseFirstModelTests
     }
 
     [TestMethod]
+    public void Model_StyleArtPresets_MapsExpectedIndexes()
+    {
+        using var context = CreateContext();
+
+        var indexNames = context.Model.FindEntityType(typeof(StyleArtPreset))!
+            .GetIndexes()
+            .Select(index => index.GetDatabaseName())
+            .ToArray();
+
+        indexNames.Should().Contain("idx_style_art_presets_is_active");
+        indexNames.Should().Contain("idx_style_art_presets_user_id");
+    }
+
+    [TestMethod]
     public void DatabaseFirstContext_HasNoCodeFirstMigrations()
     {
         using var context = CreateContext();
 
         context.Database.GetMigrations().Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Model_DesignTemplate_MapsNullableNegativePromptColumn()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(DesignTemplate));
+        var property = entityType!.FindProperty(nameof(DesignTemplate.NegativePrompt));
+        var table = StoreObjectIdentifier.Table("design_templates", null);
+
+        entityType.GetTableName().Should().Be("design_templates");
+        property.Should().NotBeNull();
+        property!.GetColumnName(table).Should().Be("negative_prompt");
+        property.IsNullable.Should().BeTrue();
+        property.GetColumnType().Should().Be("text");
     }
 
     private static AppDbContext CreateContext()

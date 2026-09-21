@@ -19,6 +19,8 @@ public partial class DesignTemplate
 
     public string BasePrompt { get; set; } = null!;
 
+    public string? NegativePrompt { get; set; }
+
     public string ExamplePrompts { get; set; } = null!;
 
     public string? StyleDescription { get; set; }

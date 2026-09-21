@@ -101,6 +101,7 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
 
         return services;
     }
@@ -127,6 +128,7 @@ public static class DependencyInjection
         services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
         services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
+        services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()
