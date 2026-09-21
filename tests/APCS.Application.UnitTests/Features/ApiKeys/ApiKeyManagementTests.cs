@@ -38,9 +38,19 @@ public sealed class ApiKeyManagementTests
     }
     private static SaveApiKeyRequestDto Request(string? key = "test-key-1234", bool confirmed = true) =>
         new() { Provider = "openai", Name = " Workspace ", Environment = "Production", ApiKey = key, Confirmed = confirmed };
-    private ApiKey Row() => new() { Id = Guid.NewGuid(), UserId = owner, ServiceProvider = "openai", AuthType = "api_key",
-        KeyIdentifier = "Original", KeyValueEncrypted = "old-encrypted", KeyLast4 = "old4", IsActive = true,
-        LastCheckSucceeded = true, LastCheckedAt = clock.GetUtcNow().UtcDateTime };
+    private ApiKey Row() => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = owner,
+        ServiceProvider = "openai",
+        AuthType = "api_key",
+        KeyIdentifier = "Original",
+        KeyValueEncrypted = "old-encrypted",
+        KeyLast4 = "old4",
+        IsActive = true,
+        LastCheckSucceeded = true,
+        LastCheckedAt = clock.GetUtcNow().UtcDateTime
+    };
 
     [TestMethod]
     public async Task Add_EncryptsAndCommitsOnlyValidatedKey()

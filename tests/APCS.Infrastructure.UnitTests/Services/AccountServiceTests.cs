@@ -26,19 +26,19 @@ public sealed class AccountServiceTests
         string? oauthGoogleId = null,
         string? oauthProvider = null,
         string? avatarUrl = null) => new()
-    {
-        Id = id ?? UserId,
-        Email = email,
-        FullName = "Seller Name",
-        PasswordHash = passwordHash,
-        AccountStatus = accountStatus,
-        EmailVerified = emailVerified,
-        OauthGoogleId = oauthGoogleId,
-        OauthProvider = oauthProvider,
-        AvatarUrl = avatarUrl,
-        CreatedAt = UtcNow.UtcDateTime,
-        UpdatedAt = UtcNow.UtcDateTime
-    };
+        {
+            Id = id ?? UserId,
+            Email = email,
+            FullName = "Seller Name",
+            PasswordHash = passwordHash,
+            AccountStatus = accountStatus,
+            EmailVerified = emailVerified,
+            OauthGoogleId = oauthGoogleId,
+            OauthProvider = oauthProvider,
+            AvatarUrl = avatarUrl,
+            CreatedAt = UtcNow.UtcDateTime,
+            UpdatedAt = UtcNow.UtcDateTime
+        };
 
     private static (AccountService Service, Mock<IAccountRepository> Repository, Mock<IPasswordHasher<User>> Hasher)
         CreateService(TimeProvider? timeProvider = null)

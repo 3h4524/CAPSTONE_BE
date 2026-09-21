@@ -16,6 +16,9 @@ public interface IStyleArtPresetService
     /// <summary>Creates a seller-owned style with an uploaded preview image.</summary>
     Task<Result<StyleArtPresetResponseDto>> CreateAsync(CreateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default);
 
+    /// <summary>Quickly creates a seller-owned style with only a name. Details can be completed later.</summary>
+    Task<Result<StyleArtPresetResponseDto>> QuickCreateAsync(string name, CancellationToken cancellationToken = default);
+
     /// <summary>Updates a seller-owned style.</summary>
     Task<Result<StyleArtPresetResponseDto>> UpdateAsync(Guid id, UpdateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default);
 

@@ -95,5 +95,4 @@ public sealed class SupportTicketsController(ISupportTicketService supportTicket
         RateSupportTicketRequestDto request,
         CancellationToken cancellationToken) =>
         (await supportTicketService.RateAsync(id, request, cancellationToken)).ToActionResult(this);
-
 }

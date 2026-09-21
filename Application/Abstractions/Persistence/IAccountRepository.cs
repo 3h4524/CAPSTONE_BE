@@ -41,7 +41,7 @@ public interface IAccountRepository : IRepository<User>
     /// Finds a user previously linked to the given Google subject identifier.
     /// </summary>
     Task<User?> FindByGoogleIdAsync(string googleId, CancellationToken cancellationToken = default);
-    
+
     /// <summary>
     /// Gets the codes of every role currently granted to a user.
     /// </summary>

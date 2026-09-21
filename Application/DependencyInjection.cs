@@ -35,6 +35,7 @@ public static class DependencyInjection
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
+        services.AddScoped<IAdminUserService, AdminUserService>();
 
         return services;
     }

@@ -12,7 +12,8 @@ public static class StyleArtPresetRules
     public const int MaximumRecommendationLength = 60;
     public const long MaximumPreviewBytes = 5 * 1024 * 1024;
 
-    public static bool TryParseRecommendations(string? source, out string[] recommendations)    {
+    public static bool TryParseRecommendations(string? source, out string[] recommendations)
+    {
         recommendations = [];
         if (string.IsNullOrWhiteSpace(source))
         {
