@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace APCS.Domain.Entities;
 
@@ -18,6 +19,9 @@ public partial class User
     public string? OauthProvider { get; set; }
 
     public string? AvatarUrl { get; set; }
+    
+    [Column("birthday")]
+    public DateTime? Birthday { get; set; }
 
     public string AccountStatus { get; set; } = null!;
 
@@ -50,6 +54,8 @@ public partial class User
     public virtual ICollection<ExportPackage> ExportPackages { get; set; } = new List<ExportPackage>();
 
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
+
+    public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
 
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
 

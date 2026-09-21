@@ -31,9 +31,9 @@ public sealed class AdminDashboardController(IAdminDashboardService dashboardSer
         CancellationToken cancellationToken = default)
     {
         var result = await dashboardService.GetMetricsAsync(timeRange, date, cancellationToken);
-        
-        return result.IsSuccess 
-            ? Ok(result.Value) 
+
+        return result.IsSuccess
+            ? Ok(result.Value)
             : result.ToActionResult(this);
     }
 
@@ -54,7 +54,7 @@ public sealed class AdminDashboardController(IAdminDashboardService dashboardSer
         CancellationToken cancellationToken = default)
     {
         var result = await dashboardService.ExportMetricsAsync(timeRange, date, cancellationToken);
-        
+
         if (result.IsFailure)
         {
             return result.ToActionResult(this);
