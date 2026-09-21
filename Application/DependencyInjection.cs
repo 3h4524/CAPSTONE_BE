@@ -1,5 +1,6 @@
 using System.Reflection;
 using APCS.Application.Features.Admin;
+using APCS.Application.Features.Admin.SubscriptionPlans;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.ApiKeys;
 using APCS.Application.Features.BatchMockups;
@@ -33,6 +34,7 @@ public static class DependencyInjection
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IAdminSubscriptionPlanService, AdminSubscriptionPlanService>();
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IAdminUserService, AdminUserService>();

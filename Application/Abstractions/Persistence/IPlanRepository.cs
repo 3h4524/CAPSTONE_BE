@@ -19,4 +19,25 @@ public interface IPlanRepository : IRepository<SubscriptionPlan>
     /// Finds an active plan that can be purchased through checkout.
     /// </summary>
     Task<SubscriptionPlan?> GetPurchasableByIdAsync(Guid planId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets every plan tier for the Admin Portal (ADM-03), regardless of <c>IsActive</c>, ordered
+    /// by <c>SortOrder</c> then price.
+    /// </summary>
+    Task<IReadOnlyList<SubscriptionPlan>> GetAllForAdminAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds a single plan for the Admin Portal (ADM-04), regardless of <c>IsActive</c>.
+    /// </summary>
+    Task<SubscriptionPlan?> GetByIdForAdminAsync(Guid planId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks whether another plan already uses the given name or tier slug (BR193/BR194),
+    /// case-insensitively. <paramref name="excludePlanId"/> excludes the plan being edited.
+    /// </summary>
+    Task<bool> IsNameOrTierTakenAsync(
+        string name,
+        string tier,
+        Guid? excludePlanId,
+        CancellationToken cancellationToken = default);
 }
