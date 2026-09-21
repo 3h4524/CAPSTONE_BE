@@ -33,6 +33,7 @@ public static class DependencyInjection
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
+        services.AddScoped<IAdminUserService, AdminUserService>();
 
         return services;
     }
