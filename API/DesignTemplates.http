@@ -1,0 +1,60 @@
+@baseUrl = http://localhost:5191
+@token = replace-with-seller-access-token
+@templateId = replace-with-template-id
+
+### List system design templates
+GET {{baseUrl}}/api/design-templates?pageNumber=1&pageSize=12&scope=system
+Authorization: Bearer {{token}}
+
+### List personal design templates
+GET {{baseUrl}}/api/design-templates?pageNumber=1&pageSize=12&scope=personal
+Authorization: Bearer {{token}}
+
+### Get editor options
+GET {{baseUrl}}/api/design-templates/options
+Authorization: Bearer {{token}}
+
+### Get one design template
+GET {{baseUrl}}/api/design-templates/{{templateId}}
+Authorization: Bearer {{token}}
+
+### Create a personal design template
+POST {{baseUrl}}/api/design-templates
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "My botanical direction",
+  "nicheCategory": "Nature & Botanical",
+  "artStyle": "floral",
+  "basePrompt": "Create a print-ready {style} illustration of {subject} for the {niche} niche with {keywords}.",
+  "negativePrompt": "photograph, watermark, product mockup",
+  "examples": [
+    {
+      "subject": "wildflower wreath",
+      "prompt": "A balanced wreath of seasonal wildflowers with an open center."
+    }
+  ]
+}
+
+### Clone a system template
+POST {{baseUrl}}/api/design-templates/{{templateId}}/clone
+Authorization: Bearer {{token}}
+
+### Update a personal template
+PUT {{baseUrl}}/api/design-templates/{{templateId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "My refined botanical direction",
+  "nicheCategory": "Nature & Botanical",
+  "artStyle": "watercolor",
+  "basePrompt": "Paint a print-ready {style} composition of {subject} for the {niche} niche with {keywords}.",
+  "negativePrompt": "hard vector lines, watermark, product mockup",
+  "examples": []
+}
+
+### Delete a personal template
+DELETE {{baseUrl}}/api/design-templates/{{templateId}}
+Authorization: Bearer {{token}}
