@@ -128,6 +128,7 @@ public static class DependencyInjection
         services.AddScoped<IPaymentGatewayClient, PayOsGatewayClient>();
         services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
+        services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

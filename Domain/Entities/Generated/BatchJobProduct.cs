@@ -35,6 +35,16 @@ public partial class BatchJobProduct
 
     public DateTime? UpdatedAt { get; set; }
 
+    public string? CustomSubject { get; set; }
+
+    public string? CustomArtStyle { get; set; }
+
+    public string? CustomMoodTone { get; set; }
+
+    public string? CustomNegativeTerms { get; set; }
+
+    public string? CustomInstructions { get; set; }
+
     public virtual BatchJob BatchJob { get; set; } = null!;
 
     public virtual ICollection<BatchJobLog> BatchJobLogs { get; set; } = new List<BatchJobLog>();

@@ -10,7 +10,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyMappedTables()
+    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyOneMappedTables()
     {
         using var context = CreateContext();
 
@@ -20,7 +20,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(50);
+        mappedTables.Should().HaveCount(51);
         mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens"]);
     }
 
@@ -35,6 +35,20 @@ public sealed class DatabaseFirstModelTests
         entityType.GetTableName().Should().Be("auth_tokens");
         xmin.Should().NotBeNull();
         xmin!.IsConcurrencyToken.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void Model_StyleArtPresets_MapsExpectedIndexes()
+    {
+        using var context = CreateContext();
+
+        var indexNames = context.Model.FindEntityType(typeof(StyleArtPreset))!
+            .GetIndexes()
+            .Select(index => index.GetDatabaseName())
+            .ToArray();
+
+        indexNames.Should().Contain("idx_style_art_presets_is_active");
+        indexNames.Should().Contain("idx_style_art_presets_user_id");
     }
 
     [TestMethod]

@@ -16,7 +16,7 @@ namespace APCS.Application.UnitTests.Features.Auth.AuthServiceTests;
 public sealed class GoogleLoginTests
 {
     private const string ValidIdToken = "valid-google-id-token";
-    
+
     private static readonly GoogleUserInfoDto ValidGoogleUser = new(
         "google-id-123",
         "user@example.com",
@@ -113,7 +113,7 @@ public sealed class GoogleLoginTests
         result.Value.TempToken.Should().NotBeNullOrWhiteSpace();
         result.Value.TwoFactorExpiresAtUtc.Should().NotBeNull();
         result.Value.AccessToken.Should().BeNull();
-        
+
         emailService.Verify(service => service.SendAsync(
             AuthTestData.ActiveUser.Email,
             It.IsAny<string>(),
@@ -157,7 +157,7 @@ public sealed class GoogleLoginTests
         result.IsSuccess.Should().BeTrue();
         result.Value.AccessToken.Should().NotBeNull();
         result.Value.RequiresTwoFactor.Should().BeFalse();
-        
+
         repository.Verify(candidate => candidate.AddAsync(
             It.IsAny<RefreshTokenEntity>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
         unitOfWork.Verify(context => context.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(2)); // Link + Session

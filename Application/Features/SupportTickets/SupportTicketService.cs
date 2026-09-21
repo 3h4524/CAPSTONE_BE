@@ -8,6 +8,7 @@ using APCS.Application.Features.SupportTickets.Common;
 using APCS.Application.Features.SupportTickets.Dtos.Request;
 using APCS.Application.Features.SupportTickets.Dtos.Response;
 using APCS.Common.Constants;
+using APCS.Common.Helpers;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
@@ -533,7 +534,7 @@ public sealed class SupportTicketService(
             foreach (var file in files)
             {
                 var attachmentId = Guid.NewGuid();
-                var extension = Path.GetExtension(SanitizeFileName(file.FileName)).ToLowerInvariant();
+                var extension = Path.GetExtension(FileNameHelper.SanitizeFileName(file.FileName)).ToLowerInvariant();
                 var key = $"support-tickets/{ticketId:N}/{attachmentId:N}{extension}";
                 var stored = await fileStorageService.UploadAsync(file, key, cancellationToken);
                 uploads.Add(new UploadedAttachment(attachmentId, file, stored));
@@ -619,7 +620,7 @@ public sealed class SupportTicketService(
             SupportTicketId = ticketId,
             TicketReplyId = replyId,
             FileUrl = upload.Stored.StableUrl,
-            FileName = SanitizeFileName(upload.File.FileName),
+            FileName = FileNameHelper.SanitizeFileName(upload.File.FileName),
             MimeType = upload.File.ContentType,
             FileSizeMb = Math.Round((decimal)upload.File.Length / (1024 * 1024), 4),
             UploadedBy = uploadedBy,
@@ -692,9 +693,6 @@ public sealed class SupportTicketService(
         attachment.SupportTicketId
         ?? attachment.TicketReply?.SupportTicketId
         ?? throw new InvalidOperationException("The attachment is not linked to a support ticket.");
-
-    private static string SanitizeFileName(string fileName) =>
-        Path.GetFileName(fileName.Replace('\\', '/'));
 
     private static SupportTicketSummaryResponseDto MapSummary(SupportTicket ticket) =>
         new(

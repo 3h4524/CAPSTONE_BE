@@ -119,8 +119,15 @@ public sealed class ApiKeyService(
             return Result.Failure(CheckFailed);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var added = key is null;
-        key ??= new ApiKey { Id = Guid.NewGuid(), UserId = userId, ServiceProvider = request.Provider,
-            AuthType = "api_key", CreatedAt = now, UsageCount = 0 };
+        key ??= new ApiKey
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            ServiceProvider = request.Provider,
+            AuthType = "api_key",
+            CreatedAt = now,
+            UsageCount = 0
+        };
         key.KeyIdentifier = string.IsNullOrWhiteSpace(request.Name) ? request.Provider : request.Name.Trim();
         key.Environment = request.Environment;
         if (request.ApiKey is not null)
