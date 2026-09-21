@@ -59,9 +59,13 @@ public partial class PromoVideo
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid? BatchJobProductId { get; set; }
+
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
 
     public virtual BatchJob? BatchJob { get; set; }
+
+    public virtual BatchJobProduct? BatchJobProduct { get; set; }
 
     public virtual MusicTrack? MusicTrack { get; set; }
 

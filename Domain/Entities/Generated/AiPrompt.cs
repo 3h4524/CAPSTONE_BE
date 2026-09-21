@@ -29,6 +29,10 @@ public partial class AiPrompt
 
     public DateTime? ModifiedAt { get; set; }
 
+    public Guid? BatchJobProductId { get; set; }
+
+    public virtual BatchJobProduct? BatchJobProduct { get; set; }
+
     public virtual ICollection<DesignImage> DesignImages { get; set; } = new List<DesignImage>();
 
     public virtual DesignTemplate? DesignTemplate { get; set; }

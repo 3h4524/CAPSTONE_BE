@@ -22,6 +22,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<AuthToken> AuthTokens { get; set; }
 
+    public virtual DbSet<Batch> Batches { get; set; }
+
     public virtual DbSet<BatchJob> BatchJobs { get; set; }
 
     public virtual DbSet<BatchJobLog> BatchJobLogs { get; set; }
@@ -122,6 +124,8 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("ai_prompts");
 
+            entity.HasIndex(e => e.BatchJobProductId, "idx_ai_prompts_job_product");
+
             entity.HasIndex(e => e.ProductId, "idx_ai_prompts_product_id");
 
             entity.HasIndex(e => new { e.ProductId, e.VersionNumber }, "uq_ai_prompts_product_version").IsUnique();
@@ -129,6 +133,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -150,6 +155,11 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.VersionNumber)
                 .HasDefaultValue(1)
                 .HasColumnName("version_number");
+
+            entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.AiPrompts)
+                .HasForeignKey(d => d.BatchJobProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_ai_prompts_job_product");
 
             entity.HasOne(d => d.DesignTemplate).WithMany(p => p.AiPrompts)
                 .HasForeignKey(d => d.DesignTemplateId)
@@ -366,11 +376,55 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("auth_tokens_user_id_fkey");
         });
 
+        modelBuilder.Entity<Batch>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("batches_pkey");
+
+            entity.ToTable("batches");
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "idx_batches_user_created").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.Id, e.UserId }, "uq_batches_id_user").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefaultNiche)
+                .HasMaxLength(150)
+                .HasColumnName("default_niche");
+            entity.Property(e => e.DefaultProductType)
+                .HasMaxLength(50)
+                .HasColumnName("default_product_type");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.Description).HasColumnName("description");
+            entity.Property(e => e.InputMethod)
+                .HasMaxLength(20)
+                .HasColumnName("input_method");
+            entity.Property(e => e.Name)
+                .HasMaxLength(255)
+                .HasColumnName("name");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'draft'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.Batches)
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("batches_user_id_fkey");
+        });
+
         modelBuilder.Entity<BatchJob>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("batch_jobs_pkey");
 
             entity.ToTable("batch_jobs");
+
+            entity.HasIndex(e => new { e.BatchId, e.CreatedAt }, "idx_batch_jobs_batch_created").IsDescending(false, true);
 
             entity.HasIndex(e => e.CreatedAt, "idx_batch_jobs_created_at");
 
@@ -382,6 +436,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.UserId, e.Status }, "idx_batch_jobs_user_status");
 
+            entity.HasIndex(e => new { e.Id, e.BatchId }, "uq_batch_jobs_id_batch").IsUnique();
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -389,6 +445,7 @@ public partial class AppDbContext : DbContext
                 .HasPrecision(12, 6)
                 .HasDefaultValueSql("0")
                 .HasColumnName("actual_cost_usd");
+            entity.Property(e => e.BatchId).HasColumnName("batch_id");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
             entity.Property(e => e.Config)
                 .HasDefaultValueSql("'{}'::jsonb")
@@ -407,6 +464,10 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.FailedProducts)
                 .HasDefaultValue(0)
                 .HasColumnName("failed_products");
+            entity.Property(e => e.JobType)
+                .HasMaxLength(40)
+                .HasDefaultValueSql("'legacy'::character varying")
+                .HasColumnName("job_type");
             entity.Property(e => e.Name)
                 .HasMaxLength(255)
                 .HasColumnName("name");
@@ -447,6 +508,12 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.BatchJobs)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("batch_jobs_user_id_fkey");
+
+            entity.HasOne(d => d.Batch).WithMany(p => p.BatchJobs)
+                .HasPrincipalKey(p => new { p.Id, p.UserId })
+                .HasForeignKey(d => new { d.BatchId, d.UserId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_batch_jobs_batch_owner");
         });
 
         modelBuilder.Entity<BatchJobLog>(entity =>
@@ -503,6 +570,8 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("batch_job_products");
 
+            entity.HasIndex(e => e.BatchId, "idx_batch_job_products_batch");
+
             entity.HasIndex(e => e.BatchJobId, "idx_batch_job_products_batch_job_id");
 
             entity.HasIndex(e => new { e.BatchJobId, e.Status }, "idx_batch_job_products_batch_status");
@@ -513,9 +582,16 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.BatchJobId, e.SequenceOrder }, "uq_batch_job_product_order").IsUnique();
 
+            entity.HasIndex(e => new { e.Id, e.ProductId }, "uq_batch_job_products_id_product").IsUnique();
+
+            entity.HasIndex(e => new { e.BatchJobId, e.ProductId }, "uq_batch_job_products_job_product")
+                .IsUnique()
+                .HasFilter("(product_id IS NOT NULL)");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.BatchId).HasColumnName("batch_id");
             entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
             entity.Property(e => e.CreatedAt)
@@ -546,14 +622,15 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
 
-            entity.HasOne(d => d.BatchJob).WithMany(p => p.BatchJobProducts)
-                .HasForeignKey(d => d.BatchJobId)
-                .HasConstraintName("batch_job_products_batch_job_id_fkey");
-
             entity.HasOne(d => d.Product).WithMany(p => p.BatchJobProducts)
-                .HasForeignKey(d => d.ProductId)
-                .OnDelete(DeleteBehavior.SetNull)
-                .HasConstraintName("batch_job_products_product_id_fkey");
+                .HasPrincipalKey(p => new { p.BatchId, p.Id })
+                .HasForeignKey(d => new { d.BatchId, d.ProductId })
+                .HasConstraintName("fk_batch_job_products_product_batch");
+
+            entity.HasOne(d => d.BatchJob).WithMany(p => p.BatchJobProducts)
+                .HasPrincipalKey(p => new { p.Id, p.BatchId })
+                .HasForeignKey(d => new { d.BatchJobId, d.BatchId })
+                .HasConstraintName("fk_batch_job_products_job_batch");
         });
 
         modelBuilder.Entity<DesignImage>(entity =>
@@ -568,6 +645,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.IsFinal, "idx_design_images_is_final");
 
+            entity.HasIndex(e => e.BatchJobProductId, "idx_design_images_job_product");
+
             entity.HasIndex(e => e.ProductId, "idx_design_images_product_id");
 
             entity.Property(e => e.Id)
@@ -580,6 +659,7 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("approval_status");
             entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
+            entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -634,6 +714,11 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.BatchJobId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("design_images_batch_job_id_fkey");
+
+            entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.DesignImages)
+                .HasForeignKey(d => d.BatchJobProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_design_images_job_product");
 
             entity.HasOne(d => d.Product).WithMany(p => p.DesignImages)
                 .HasForeignKey(d => d.ProductId)
@@ -999,6 +1084,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.ApprovalStatus, "idx_listing_contents_approval_status");
 
+            entity.HasIndex(e => e.BatchJobProductId, "idx_listing_contents_job_product");
+
             entity.HasIndex(e => e.ProductId, "idx_listing_contents_product_id");
 
             entity.HasIndex(e => e.ProductId, "listing_contents_product_id_key").IsUnique();
@@ -1016,6 +1103,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("approval_status");
             entity.Property(e => e.ApprovedAt).HasColumnName("approved_at");
             entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
+            entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -1039,6 +1127,11 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.BatchJobId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("listing_contents_batch_job_id_fkey");
+
+            entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.ListingContents)
+                .HasForeignKey(d => d.BatchJobProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_listing_contents_job_product");
 
             entity.HasOne(d => d.Product).WithOne(p => p.ListingContent)
                 .HasForeignKey<ListingContent>(d => d.ProductId)
@@ -1252,6 +1345,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.DesignImageId, "idx_mockup_images_design_image_id");
 
+            entity.HasIndex(e => e.BatchJobProductId, "idx_mockup_images_job_product");
+
             entity.HasIndex(e => e.ProductId, "idx_mockup_images_product_id");
 
             entity.HasIndex(e => e.MockupTemplateId, "idx_mockup_images_template_id");
@@ -1264,6 +1359,7 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("approval_status");
+            entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -1292,6 +1388,11 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.ApiUsageRecordId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("mockup_images_api_usage_record_id_fkey");
+
+            entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.MockupImages)
+                .HasForeignKey(d => d.BatchJobProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_mockup_images_job_product");
 
             entity.HasOne(d => d.DesignImage).WithMany(p => p.MockupImages)
                 .HasForeignKey(d => d.DesignImageId)
@@ -1691,6 +1792,8 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("products");
 
+            entity.HasIndex(e => new { e.BatchId, e.ProcessingStatus }, "idx_products_batch_status");
+
             entity.HasIndex(e => e.CreatedAt, "idx_products_created_at");
 
             entity.HasIndex(e => e.DesignTemplateId, "idx_products_design_template_id");
@@ -1699,9 +1802,12 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.UserId, "idx_products_user_id");
 
+            entity.HasIndex(e => new { e.BatchId, e.Id }, "uq_products_batch_id_id").IsUnique();
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.BatchId).HasColumnName("batch_id");
             entity.Property(e => e.ColorPreference)
                 .HasMaxLength(255)
                 .HasColumnName("color_preference");
@@ -1748,6 +1854,12 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.Products)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("products_user_id_fkey");
+
+            entity.HasOne(d => d.Batch).WithMany(p => p.Products)
+                .HasPrincipalKey(p => new { p.Id, p.UserId })
+                .HasForeignKey(d => new { d.BatchId, d.UserId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_products_batch_owner");
         });
 
         modelBuilder.Entity<ProductMockupTemplate>(entity =>
@@ -1792,6 +1904,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.CreatedAt, "idx_promo_videos_created_at");
 
+            entity.HasIndex(e => e.BatchJobProductId, "idx_promo_videos_job_product");
+
             entity.HasIndex(e => e.ProductId, "idx_promo_videos_product_id");
 
             entity.HasIndex(e => e.Status, "idx_promo_videos_status");
@@ -1808,6 +1922,7 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(20)
                 .HasColumnName("aspect_ratio");
             entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
+            entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -1870,6 +1985,11 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.BatchJobId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("promo_videos_batch_job_id_fkey");
+
+            entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.PromoVideos)
+                .HasForeignKey(d => d.BatchJobProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_promo_videos_job_product");
 
             entity.HasOne(d => d.MusicTrack).WithMany(p => p.PromoVideos)
                 .HasForeignKey(d => d.MusicTrackId)

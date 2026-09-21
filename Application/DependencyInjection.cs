@@ -6,6 +6,7 @@ using APCS.Application.Features.Profile;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
+using APCS.Application.Features.Batches;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -31,6 +32,7 @@ public static class DependencyInjection
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IBatchService, BatchService>();
 
         return services;
     }
