@@ -35,7 +35,11 @@ public partial class MockupImage
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid? BatchJobProductId { get; set; }
+
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
+
+    public virtual BatchJobProduct? BatchJobProduct { get; set; }
 
     public virtual DesignImage DesignImage { get; set; } = null!;
 

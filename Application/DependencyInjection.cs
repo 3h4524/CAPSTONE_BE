@@ -10,6 +10,7 @@ using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
+using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignTemplates;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,6 +37,7 @@ public static class DependencyInjection
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IBatchService, BatchService>();
         services.AddScoped<IDesignTemplateService, DesignTemplateService>();
         services.AddScoped<IAdminSubscriptionPlanService, AdminSubscriptionPlanService>();
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();

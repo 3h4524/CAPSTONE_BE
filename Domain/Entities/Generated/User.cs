@@ -47,6 +47,8 @@ public partial class User
 
     public virtual ICollection<BatchJob> BatchJobs { get; set; } = new List<BatchJob>();
 
+    public virtual ICollection<Batch> Batches { get; set; } = new List<Batch>();
+
     public virtual ICollection<DesignTemplate> DesignTemplates { get; set; } = new List<DesignTemplate>();
 
     public virtual ICollection<EtsyIntegration> EtsyIntegrations { get; set; } = new List<EtsyIntegration>();

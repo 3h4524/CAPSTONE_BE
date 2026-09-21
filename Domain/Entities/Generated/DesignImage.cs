@@ -49,11 +49,15 @@ public partial class DesignImage
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid? BatchJobProductId { get; set; }
+
     public virtual AiPrompt AiPrompt { get; set; } = null!;
 
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
 
     public virtual BatchJob? BatchJob { get; set; }
+
+    public virtual BatchJobProduct? BatchJobProduct { get; set; }
 
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 

@@ -35,6 +35,9 @@ public partial class BatchJobProduct
 
     public DateTime? UpdatedAt { get; set; }
 
+    public Guid BatchId { get; set; }
+
+    public virtual ICollection<AiPrompt> AiPrompts { get; set; } = new List<AiPrompt>();
     public string? CustomSubject { get; set; }
 
     public string? CustomArtStyle { get; set; }
@@ -49,5 +52,13 @@ public partial class BatchJobProduct
 
     public virtual ICollection<BatchJobLog> BatchJobLogs { get; set; } = new List<BatchJobLog>();
 
+    public virtual ICollection<DesignImage> DesignImages { get; set; } = new List<DesignImage>();
+
+    public virtual ICollection<ListingContent> ListingContents { get; set; } = new List<ListingContent>();
+
+    public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
+
     public virtual Product? Product { get; set; }
+
+    public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
 }
