@@ -1,7 +1,9 @@
 using System.Linq.Expressions;
+using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Admin.Dtos.Request;
+using APCS.Application.Features.Auth;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;

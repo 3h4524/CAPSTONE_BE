@@ -27,9 +27,13 @@ public partial class ListingContent
 
     public DateTime? UpdatedAt { get; set; }
 
+    public Guid? BatchJobProductId { get; set; }
+
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
 
     public virtual BatchJob? BatchJob { get; set; }
+
+    public virtual BatchJobProduct? BatchJobProduct { get; set; }
 
     public virtual ICollection<ListingDescription> ListingDescriptions { get; set; } = new List<ListingDescription>();
 

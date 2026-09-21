@@ -50,6 +50,8 @@ public partial class User
 
     public virtual ICollection<BatchJob> BatchJobs { get; set; } = new List<BatchJob>();
 
+    public virtual ICollection<Batch> Batches { get; set; } = new List<Batch>();
+
     public virtual ICollection<DesignTemplate> DesignTemplates { get; set; } = new List<DesignTemplate>();
 
     public virtual ICollection<EtsyIntegration> EtsyIntegrations { get; set; } = new List<EtsyIntegration>();
@@ -57,6 +59,8 @@ public partial class User
     public virtual ICollection<ExportPackage> ExportPackages { get; set; } = new List<ExportPackage>();
 
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
+
+    public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
 
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
 
@@ -67,6 +71,8 @@ public partial class User
     public virtual ICollection<Product> Products { get; set; } = new List<Product>();
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
+
+    public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
 
     public virtual ICollection<SupportTicket> SupportTicketAssignedToNavigations { get; set; } = new List<SupportTicket>();
 

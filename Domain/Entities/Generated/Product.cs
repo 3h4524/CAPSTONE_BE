@@ -39,9 +39,13 @@ public partial class Product
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid BatchId { get; set; }
+
     public virtual ICollection<AiPrompt> AiPrompts { get; set; } = new List<AiPrompt>();
 
     public virtual ICollection<ApiUsageRecord> ApiUsageRecords { get; set; } = new List<ApiUsageRecord>();
+
+    public virtual Batch Batch { get; set; } = null!;
 
     public virtual ICollection<BatchJobProduct> BatchJobProducts { get; set; } = new List<BatchJobProduct>();
 
