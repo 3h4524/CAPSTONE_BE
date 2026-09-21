@@ -81,4 +81,34 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         var result = await adminUserService.UnlockUserAsync(id, cancellationToken);
         return result.IsSuccess ? NoContent() : NotFound(result.Error);
     }
+
+    /// <summary>
+    /// Updates a user's basic information and roles.
+    /// </summary>
+    [HttpPut("{id:guid}")]
+    [ProducesResponseType(typeof(AdminUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> UpdateUser(
+        Guid id,
+        [FromBody] UpdateAdminUserDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await adminUserService.UpdateUserAsync(id, request, cancellationToken);
+        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+    }
+
+    /// <summary>
+    /// Sends a reset password link to the user.
+    /// </summary>
+    [HttpPost("{id:guid}/send-reset-password")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SendResetPassword(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await adminUserService.SendResetPasswordLinkAsync(id, cancellationToken);
+        return result.IsSuccess ? NoContent() : NotFound(result.Error);
+    }
 }

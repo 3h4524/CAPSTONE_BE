@@ -29,6 +29,7 @@ public sealed class GlobalExceptionMiddleware(
         catch (Exception exception)
         {
             logger.LogError(exception, "Unhandled API exception.");
+            System.IO.File.WriteAllText("exception_dump.log", exception.ToString());
 
             if (context.Response.HasStarted)
             {

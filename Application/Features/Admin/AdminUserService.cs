@@ -1,6 +1,9 @@
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Features.Admin.Dtos.Request;
 using APCS.Application.Features.Admin.Dtos.Response;
+using APCS.Application.Features.Auth;
+using APCS.Application.Features.Auth.Dtos.Request;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -11,7 +14,12 @@ namespace APCS.Application.Features.Admin;
 public sealed class AdminUserService(
     IRepository<User> userRepository,
     IRepository<SubscriptionPlan> planRepository,
+    IRepository<Role> roleRepository,
+    IRepository<UserRole> userRoleRepository,
+    IRepository<AuthToken> authTokenRepository,
     IUnitOfWork unitOfWork,
+    ICurrentUser currentUser,
+    IAuthService authService,
     TimeProvider timeProvider,
     ILogger<AdminUserService> logger)
     : IAdminUserService
@@ -76,7 +84,7 @@ public sealed class AdminUserService(
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
-        var now = timeProvider.GetUtcNow().DateTime;
+        var now = timeProvider.GetUtcNow().UtcDateTime;
         var startOfMonth = new DateOnly(now.Year, now.Month, 1);
 
         var dtos = users.Select(u => new AdminUserDto(
@@ -89,6 +97,7 @@ public sealed class AdminUserService(
             Plan: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: u.BatchJobs.Count,
             MonthlyApiCost: u.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: u.Birthday,
             CreatedAt: u.CreatedAt
         )).ToList();
 
@@ -121,7 +130,7 @@ public sealed class AdminUserService(
         if (user is null)
             return Result<AdminUserDto>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
-        var now = timeProvider.GetUtcNow().DateTime;
+        var now = timeProvider.GetUtcNow().UtcDateTime;
         var startOfMonth = new DateOnly(now.Year, now.Month, 1);
 
         var dto = new AdminUserDto(
@@ -134,6 +143,7 @@ public sealed class AdminUserService(
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
             MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );
 
@@ -142,12 +152,15 @@ public sealed class AdminUserService(
 
     public async Task<Result<bool>> SuspendUserAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        if (id == currentUser.UserId)
+            return Result<bool>.Failure(Error.Validation("You cannot suspend your own account."));
+
         var user = await userRepository.GetByIdAsync(id, cancellationToken);
         if (user is null)
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
-        user.AccountStatus = "Suspended";
-        user.UpdatedAt = timeProvider.GetUtcNow().DateTime;
+        user.AccountStatus = "suspended";
+        user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
         await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -162,13 +175,150 @@ public sealed class AdminUserService(
         if (user is null)
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
-        user.AccountStatus = "Active";
-        user.UpdatedAt = timeProvider.GetUtcNow().DateTime;
+        user.AccountStatus = "active";
+        user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
         await userRepository.UpdateAsync(user, false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User {UserId} unlocked by admin.", id);
         return Result<bool>.Success(true);
+    }
+
+    public async Task<Result<bool>> SendResetPasswordLinkAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.GetByIdAsync(id, cancellationToken);
+        if (user is null)
+            return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
+
+        var result = await authService.ForgotPasswordAsync(
+            new ForgotPasswordRequestDto(user.Email, null),
+            cancellationToken);
+
+        if (result.IsFailure)
+            return Result<bool>.Failure(result.Error);
+
+        logger.LogInformation("Sent reset password link to {Email} by admin.", user.Email);
+        return Result<bool>.Success(true);
+    }
+
+    public async Task<Result<AdminUserDto>> UpdateUserAsync(Guid id, UpdateAdminUserDto request, CancellationToken cancellationToken = default)
+    {
+        var user = await userRepository.Query()
+            .Include(u => u.UserRoleUsers)
+                .ThenInclude(ur => ur.Role)
+            .Include(u => u.Subscriptions)
+                .ThenInclude(s => s.Plan)
+            .Include(u => u.Invoices)
+            .Include(u => u.BatchJobs)
+            .AsTracking()
+            .FirstOrDefaultAsync(u => u.Id == id, cancellationToken);
+
+        if (user is null)
+            return Result<AdminUserDto>.Failure(Error.NotFound("User.NotFound", "User not found."));
+
+        if (id == currentUser.UserId)
+        {
+            var newRoleNamesList = request.Roles?.Select(r => r.ToLower()).ToList() ?? new List<string>();
+            if (!newRoleNamesList.Contains("admin") && user.UserRoleUsers.Any(ur => ur.Role.Name.Equals("Admin", StringComparison.OrdinalIgnoreCase)))
+            {
+                return Result<AdminUserDto>.Failure(Error.Validation("You cannot remove your own Admin role."));
+            }
+
+            if (!request.AccountStatus.Equals(user.AccountStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<AdminUserDto>.Failure(Error.Validation("You cannot change your own account status."));
+            }
+        }
+
+        // Validate Email uniqueness
+        if (!string.Equals(user.Email, request.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var emailExists = await userRepository.Query().AnyAsync(u => u.Email == request.Email, cancellationToken);
+            if (emailExists)
+                return Result<AdminUserDto>.Failure(Error.Conflict("User.EmailExists", "Email address already in use."));
+        }
+
+        user.FullName = request.FullName;
+        user.Email = request.Email;
+
+        if (request.Birthday.HasValue)
+        {
+            var today = timeProvider.GetUtcNow().Date;
+            if (request.Birthday.Value.Date >= today)
+            {
+                return Result<AdminUserDto>.Failure(Error.Validation("Birthday must be in the past."));
+            }
+        }
+        
+        user.Birthday = request.Birthday.HasValue ? DateTime.SpecifyKind(request.Birthday.Value, DateTimeKind.Utc) : null;
+        user.AvatarUrl = request.AvatarUrl;
+        
+        // Cập nhật roles
+        var existingRoleNames = user.UserRoleUsers.Select(ur => ur.Role.Name).ToList();
+        var newRoleNames = request.Roles.Select(r => r.ToLower()).Distinct().ToList();
+        
+        var rolesToRemove = user.UserRoleUsers.Where(ur => !newRoleNames.Contains(ur.Role.Name.ToLower())).ToList();
+        foreach (var roleToRemove in rolesToRemove)
+        {
+            await userRoleRepository.RemoveAsync(roleToRemove, false, cancellationToken);
+            user.UserRoleUsers.Remove(roleToRemove);
+        }
+
+        var allRoles = await roleRepository.Query().ToListAsync(cancellationToken);
+
+        foreach (var roleName in newRoleNames)
+        {
+            if (!existingRoleNames.Any(r => r.ToLower() == roleName))
+            {
+                var role = allRoles.FirstOrDefault(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+                if (role != null)
+                {
+                    await userRoleRepository.AddAsync(new UserRole { UserId = user.Id, RoleId = role.Id }, false, cancellationToken);
+                }
+            }
+        }
+
+        // Account status and Auth tokens
+        if (request.AccountStatus.Equals("Suspended", StringComparison.OrdinalIgnoreCase) && !user.AccountStatus.Equals("Suspended", StringComparison.OrdinalIgnoreCase))
+        {
+            // Trạng thái mới là Suspended, cắt toàn bộ session
+            var tokens = await authTokenRepository.Query().Where(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().UtcDateTime && t.RevokedAt == null).ToListAsync(cancellationToken);
+            foreach (var token in tokens)
+            {
+                token.Revoke(timeProvider.GetUtcNow());
+                await authTokenRepository.UpdateAsync(token, false, cancellationToken);
+            }
+        }
+        
+        user.AccountStatus = request.AccountStatus.ToLower();
+        user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        
+        // Return updated DTO
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var startOfMonth = new DateOnly(now.Year, now.Month, 1);
+        
+        var resultRoles = allRoles
+            .Where(r => newRoleNames.Contains(r.Name.ToLower()))
+            .Select(r => r.Name)
+            .ToList();
+
+        var dto = new AdminUserDto(
+            Id: user.Id,
+            FullName: user.FullName,
+            Email: user.Email,
+            AvatarUrl: user.AvatarUrl,
+            AccountStatus: user.AccountStatus,
+            Roles: resultRoles,
+            Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
+            TotalJobs: user.BatchJobs.Count,
+            MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            Birthday: user.Birthday,
+            CreatedAt: user.CreatedAt
+        );
+
+        return Result<AdminUserDto>.Success(dto);
     }
 }

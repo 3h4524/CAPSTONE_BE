@@ -10,5 +10,6 @@ public record AdminUserDto(
     string Plan,
     int TotalJobs,
     decimal MonthlyApiCost,
+    DateTime? Birthday,
     DateTime? CreatedAt
 );
