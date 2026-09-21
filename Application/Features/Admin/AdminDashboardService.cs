@@ -83,7 +83,7 @@ public sealed class AdminDashboardService(
                 var invoicesLast7Days = await invoiceRepository.Query()
                     .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= sevenDaysAgo && i.InvoiceDate <= referenceDate)
                     .ToListAsync(cancellationToken);
-                
+
                 for (int i = 6; i >= 0; i--)
                 {
                     var dayDate = referenceDate.AddDays(-i);
@@ -98,7 +98,7 @@ public sealed class AdminDashboardService(
                 var invoicesLast5Years = await invoiceRepository.Query()
                     .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= fiveYearsAgo && i.InvoiceDate <= endDate)
                     .ToListAsync(cancellationToken);
-                
+
                 for (int i = 4; i >= 0; i--)
                 {
                     var yearDate = referenceDate.Year - i;
@@ -119,7 +119,7 @@ public sealed class AdminDashboardService(
                     var monthDate = startDate.AddMonths(-i);
                     var monthStr = monthDate.ToString("MMM");
                     var monthInvoices = invoicesLast6Months.Where(inv => inv.InvoiceDate.Year == monthDate.Year && inv.InvoiceDate.Month == monthDate.Month).ToList();
-                    
+
                     revenueChart.Add(new MonthlyRevenueDto(monthStr, monthInvoices.Sum(inv => inv.TotalAmount), 0m));
                 }
             }
@@ -149,8 +149,8 @@ public sealed class AdminDashboardService(
                     b.Status,
                     b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
                     b.User.FullName,
-                    b.Status.ToLower() == "completed" ? "emerald" : 
-                        b.Status.ToLower() == "running" ? "amber" : 
+                    b.Status.ToLower() == "completed" ? "emerald" :
+                        b.Status.ToLower() == "running" ? "amber" :
                         b.Status.ToLower() == "queued" ? "orange" : "rose"
                 ))
                 .ToListAsync(cancellationToken);
@@ -199,7 +199,7 @@ public sealed class AdminDashboardService(
         sb.AppendLine($"Active Batch Jobs,{metrics.ActiveBatchJobs}");
         sb.AppendLine($"Pending Tickets,{metrics.PendingTickets}");
         sb.AppendLine();
-        
+
         sb.AppendLine("--- Latest Support Tickets ---");
         sb.AppendLine("User Name,User Email,Issue,Status,Priority");
         foreach (var t in metrics.LatestTickets)
