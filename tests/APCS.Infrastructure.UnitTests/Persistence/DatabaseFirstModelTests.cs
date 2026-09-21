@@ -10,7 +10,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyOneMappedTables()
+    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyTwoMappedTables()
     {
         using var context = CreateContext();
 
@@ -20,7 +20,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(51);
+        mappedTables.Should().HaveCount(52);
         mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens", "batches"]);
     }
 
@@ -53,7 +53,6 @@ public sealed class DatabaseFirstModelTests
                 foreignKey.PrincipalEntityType.ClrType == typeof(BatchJobProduct)
                 && foreignKey.Properties.Single().Name == "BatchJobProductId");
         }
-        mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens"]);
     }
 
     [TestMethod]
