@@ -129,7 +129,7 @@ public sealed class VerifyAdminTwoFactorTests
         var repository = new Mock<IAuthTokenRepository>();
 
         var result = await AuthTestData.CreateService(
-                cacheService: cache, 
+                cacheService: cache,
                 accountService: account,
                 unitOfWork: unitOfWork,
                 authTokenRepository: repository)
@@ -137,7 +137,7 @@ public sealed class VerifyAdminTwoFactorTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.AccessToken.Should().NotBeNull();
-        
+
         cache.Verify(c => c.RemoveAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         account.Verify(service => service.TouchLastLoginAsync(
             AuthTestData.ActiveUser.Id, AuthTestData.UtcNow, It.IsAny<CancellationToken>()), Times.Once);
