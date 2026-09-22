@@ -10,7 +10,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyOneMappedTables()
+    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyTwoMappedTables()
     {
         using var context = CreateContext();
 
