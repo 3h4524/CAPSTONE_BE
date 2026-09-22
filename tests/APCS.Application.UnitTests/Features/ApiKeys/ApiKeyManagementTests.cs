@@ -27,7 +27,7 @@ public sealed class ApiKeyManagementTests
         current.SetupGet(x => x.IsAuthenticated).Returns(true);
         current.SetupGet(x => x.UserId).Returns(owner);
         accounts.Setup(x => x.FindByIdAsync(owner, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", true, true));
+            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", true, true, "active", null));
         accounts.Setup(x => x.GetRolesAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(new[] { "Seller" });
         repository.Setup(x => x.LockOwnerAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(transaction.Object);
         repository.Setup(x => x.ListOwnedAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(rows);
@@ -127,7 +127,7 @@ public sealed class ApiKeyManagementTests
     {
         var service = Create();
         accounts.Setup(x => x.FindByIdAsync(owner, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", false, true));
+            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", false, true, "suspended", null));
         (await service.SaveAsync(null, Request())).Error.Type.Should().Be(ErrorType.Forbidden);
         (await service.DeleteAsync(Guid.NewGuid())).Error.Type.Should().Be(ErrorType.Forbidden);
         (await service.ValidateAsync(Guid.NewGuid())).Error.Type.Should().Be(ErrorType.Forbidden);

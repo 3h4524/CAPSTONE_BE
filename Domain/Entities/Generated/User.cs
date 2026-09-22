@@ -23,6 +23,9 @@ public partial class User
     [Column("birthday")]
     public DateTime? Birthday { get; set; }
 
+    [Column("suspended_until")]
+    public DateTime? SuspendedUntil { get; set; }
+
     public string AccountStatus { get; set; } = null!;
 
     public bool? EmailVerified { get; set; }

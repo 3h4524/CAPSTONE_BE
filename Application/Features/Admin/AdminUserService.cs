@@ -17,6 +17,7 @@ public sealed class AdminUserService(
     IRepository<Role> roleRepository,
     IRepository<UserRole> userRoleRepository,
     IRepository<AuthToken> authTokenRepository,
+    IRepository<AuditLog> auditLogRepository,
     IUnitOfWork unitOfWork,
     ICurrentUser currentUser,
     IAuthService authService,
@@ -150,7 +151,7 @@ public sealed class AdminUserService(
         return Result<AdminUserDto>.Success(dto);
     }
 
-    public async Task<Result<bool>> SuspendUserAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<Result<bool>> SuspendUserAsync(Guid id, SuspendUserRequestDto request, CancellationToken cancellationToken = default)
     {
         if (id == currentUser.UserId)
             return Result<bool>.Failure(Error.Validation("You cannot suspend your own account."));
@@ -160,12 +161,38 @@ public sealed class AdminUserService(
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
         user.AccountStatus = "suspended";
+        user.SuspendedUntil = request.DurationDays.HasValue ? timeProvider.GetUtcNow().UtcDateTime.AddDays(request.DurationDays.Value) : null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
-        await userRepository.UpdateAsync(user, false, cancellationToken);
+        // Revoke tokens
+        var tokens = await authTokenRepository.FindAsync(t => t.UserId == user.Id && t.ExpiresAt > timeProvider.GetUtcNow().UtcDateTime && t.RevokedAt == null, cancellationToken);
+        foreach (var token in tokens)
+        {
+            token.Revoke(timeProvider.GetUtcNow());
+        }
+
+        // Add Audit Log
+        var auditLog = new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActorUserId = currentUser.UserId,
+            ActionType = "SuspendUser",
+            ResourceType = "User",
+            ResourceId = user.Id,
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new 
+            { 
+                status = "suspended", 
+                reason = request.Reason, 
+                suspended_until = user.SuspendedUntil 
+            }),
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        };
+        await auditLogRepository.AddAsync(auditLog, false, cancellationToken);
+
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        logger.LogInformation("User {UserId} suspended by admin.", id);
+        logger.LogInformation("User {UserId} suspended by admin. Reason: {Reason}", id, request.Reason);
         return Result<bool>.Success(true);
     }
 
@@ -176,9 +203,23 @@ public sealed class AdminUserService(
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
         user.AccountStatus = "active";
+        user.SuspendedUntil = null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
-        await userRepository.UpdateAsync(user, false, cancellationToken);
+        // Add Audit Log
+        var auditLog = new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActorUserId = currentUser.UserId,
+            ActionType = "UnlockUser",
+            ResourceType = "User",
+            ResourceId = user.Id,
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "suspended" }),
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        };
+        await auditLogRepository.AddAsync(auditLog, false, cancellationToken);
+
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation("User {UserId} unlocked by admin.", id);
@@ -256,7 +297,7 @@ public sealed class AdminUserService(
         
         // Cập nhật roles
         var existingRoleNames = user.UserRoleUsers.Select(ur => ur.Role.Name).ToList();
-        var newRoleNames = request.Roles.Select(r => r.ToLower()).Distinct().ToList();
+        var newRoleNames = request.Roles?.Select(r => r.ToLower()).Distinct().ToList() ?? new List<string>();
         
         var rolesToRemove = user.UserRoleUsers.Where(ur => !newRoleNames.Contains(ur.Role.Name.ToLower())).ToList();
         foreach (var roleToRemove in rolesToRemove)

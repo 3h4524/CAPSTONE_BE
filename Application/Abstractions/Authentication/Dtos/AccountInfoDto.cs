@@ -17,4 +17,6 @@ public sealed record AccountInfoDto(
     string Email,
     string FullName,
     bool IsActive,
-    bool IsEmailVerified);
+    bool IsEmailVerified,
+    string AccountStatus,
+    DateTime? SuspendedUntil);

@@ -145,7 +145,7 @@ public sealed class BatchApprovalTests
         currentUser.SetupGet(x => x.UserId).Returns(userId);
         var accounts = new Mock<IAccountService>();
         accounts.Setup(x => x.FindByIdAsync(userId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", true, true));
+            .ReturnsAsync(new AccountInfoDto(userId, "seller@example.com", "Seller", true, true, "active", null));
         accounts.Setup(x => x.GetRolesAsync(userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { AuthConstants.UserRole });
 
