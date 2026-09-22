@@ -90,7 +90,6 @@ public sealed class AdminSubscriptionPlanService(
             CustomApiKeysAllowed = request.CustomApiKeysAllowed,
             PrioritySupport = request.PrioritySupport,
             IsActive = request.IsActive,
-            SortOrder = request.SortOrder,
             CreatedAt = utcNow,
             UpdatedAt = utcNow
         };
@@ -156,7 +155,6 @@ public sealed class AdminSubscriptionPlanService(
         plan.CustomApiKeysAllowed = request.CustomApiKeysAllowed;
         plan.PrioritySupport = request.PrioritySupport;
         plan.IsActive = request.IsActive;
-        plan.SortOrder = request.SortOrder;
         plan.UpdatedAt = utcNow;
 
         await plans.UpdateAsync(plan, cancellationToken: cancellationToken);
@@ -267,7 +265,6 @@ public sealed class AdminSubscriptionPlanService(
             whiteLabelExportEnabled,
             plan.PrioritySupport ?? false,
             plan.IsActive ?? false,
-            plan.SortOrder ?? 0,
             activeSubscriberCount,
             canDelete,
             plan.CreatedAt,

@@ -32,7 +32,6 @@ public sealed record AdminPlanDto(
     bool WhiteLabelExportEnabled,
     bool PrioritySupport,
     bool IsActive,
-    int SortOrder,
     int ActiveSubscriberCount,
     bool CanDelete,
     DateTime? CreatedAt,
