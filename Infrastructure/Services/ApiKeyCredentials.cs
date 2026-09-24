@@ -16,12 +16,17 @@ public sealed class ApiKeyCredentials(IDataProtectionProvider protection, IHttpC
         {
             "openai" => "https://api.openai.com/v1/models",
             "replicate" => "https://api.replicate.com/v1/account",
+            "gemini" => "https://generativelanguage.googleapis.com/v1beta/models",
             "printify" => "https://api.printify.com/v1/shops.json",
             _ => null
         };
         if (url is null) return false;
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", value);
+        // Gemini authenticates via the x-goog-api-key header, not a Bearer token.
+        if (provider == "gemini")
+            request.Headers.Add("x-goog-api-key", value);
+        else
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", value);
         request.Headers.UserAgent.ParseAdd("APCS/1.0");
         try
         {

@@ -11,6 +11,7 @@ using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.Batches;
+using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignTemplates;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,6 +45,7 @@ public static class DependencyInjection
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
+        services.AddScoped<IDesignGenerationService, DesignGenerationService>();
 
         return services;
     }

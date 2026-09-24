@@ -1,5 +1,7 @@
 using System.Text;
+using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
@@ -76,6 +78,15 @@ public static class DependencyInjection
         services.AddOptions<CloudinaryOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
 
+        // Not required/ValidateOnStart: the Gemini key itself is per-Seller BYOK (ApiKeys table),
+        // not a platform credential, so a box with no override here still boots on the defaults.
+        services.AddOptions<GeminiOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Gemini));
+        services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(60))
+            .RedactLoggedHeaders(new[] { "x-goog-api-key" });
+        services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
+        services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
@@ -83,6 +94,7 @@ public static class DependencyInjection
         services.AddRepositories();
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
 
         return services;
     }

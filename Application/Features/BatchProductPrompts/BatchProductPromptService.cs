@@ -136,36 +136,8 @@ public sealed class BatchProductPromptService(
         return new LoadedRow(row, batch, product, canEdit);
     }
 
-    private async Task<PromptComponents> DefaultComponentsAsync(LoadedRow loaded, CancellationToken cancellationToken)
-    {
-        var product = loaded.Product;
-        var template = product?.DesignTemplateId.HasValue == true
-            ? await templates.Query()
-                .Where(item => item.Id == product!.DesignTemplateId!.Value)
-                .SingleOrDefaultAsync(cancellationToken)
-            : null;
-
-        var styleName = product?.StylePreset?.Trim() ?? string.Empty;
-        var style = string.IsNullOrEmpty(styleName)
-            ? null
-            : await styles.Query()
-                .Where(item => item.IsActive && item.Name.ToLower() == styleName.ToLowerInvariant())
-                .SingleOrDefaultAsync(cancellationToken);
-
-        return new PromptComponents(
-            product?.Name?.Trim() ?? string.Empty,
-            styleName,
-            string.Empty,
-            string.Empty,
-            string.Empty,
-            template?.BasePrompt ?? string.Empty,
-            product?.NicheCategory?.Trim() is { Length: > 0 } niche
-                ? niche
-                : product?.MainKeywords?.Trim() is { Length: > 0 } keywords
-                    ? keywords
-                    : PromptRules.FallbackNiche,
-            style?.StyleModifiers ?? string.Empty);
-    }
+    private Task<PromptComponents> DefaultComponentsAsync(LoadedRow loaded, CancellationToken cancellationToken) =>
+        PromptDefaultsResolver.ResolveAsync(loaded.Product, templates, styles, cancellationToken);
 
     private static PromptComponents EffectiveComponents(BatchJobProduct row, PromptComponents defaults) =>
         defaults with
@@ -216,14 +188,4 @@ public sealed class BatchProductPromptService(
     }
 
     private sealed record LoadedRow(BatchJobProduct Row, BatchJob Batch, Product? Product, bool CanEdit);
-
-    private sealed record PromptComponents(
-        string Subject,
-        string ArtStyle,
-        string MoodTone,
-        string NegativeTerms,
-        string Instructions,
-        string BasePrompt = "",
-        string Niche = "",
-        string StyleModifiers = "");
 }
