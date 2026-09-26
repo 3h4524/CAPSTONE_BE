@@ -41,6 +41,7 @@ public sealed class DesignGenerationService(
     IValidator<StartGenerationRequestDto> validator) : IDesignGenerationService
 {
     private const string GeminiProvider = "gemini";
+    private static readonly TimeSpan StepTimeout = TimeSpan.FromMinutes(3);
 
     public async Task<Result<StartGenerationResponseDto>> StartAsync(
         Guid batchJobId,
@@ -229,15 +230,26 @@ public sealed class DesignGenerationService(
             for (var variation = 0; variation < variationCount; variation++)
             {
                 var started = timeProvider.GetUtcNow();
+
+                // Hard cap for one image (provider call + upload) so nothing can hang the job forever.
+                using var stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                stepTimeout.CancelAfter(StepTimeout);
+
+                await LogAsync(job.Id, row.Id, "info", "generation_started",
+                    $"Requesting image {variation + 1}/{variationCount} from the provider.", cancellationToken);
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+
                 ImageGenerationResult result;
                 try
                 {
-                    result = await imageProvider.GenerateAsync(apiKeyPlain, prompt.GeneratedPrompt, aspectRatio, cancellationToken);
+                    result = await imageProvider.GenerateAsync(apiKeyPlain, prompt.GeneratedPrompt, aspectRatio, stepTimeout.Token);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     // Never let one provider failure strand the whole job in "running".
-                    result = ImageGenerationResult.Failed($"Unexpected provider error: {ex.Message}", "unknown");
+                    result = ImageGenerationResult.Failed(ex is OperationCanceledException
+                        ? "Image generation timed out."
+                        : $"Unexpected provider error: {ex.Message}", "unknown");
                 }
                 var elapsedSeconds = (decimal)(timeProvider.GetUtcNow() - started).TotalSeconds;
 
@@ -258,11 +270,12 @@ public sealed class DesignGenerationService(
                         imageUrl = await publicImages.UploadImageAsync(
                             new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(result.MimeType)}", result.MimeType!, stream.Length, stream),
                             storageKey,
-                            cancellationToken);
+                            stepTimeout.Token);
                     }
-                    catch (InvalidOperationException ex)
+                    catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                     {
-                        await LogAsync(job.Id, row.Id, "error", "upload_failed", ex.Message, cancellationToken);
+                        await LogAsync(job.Id, row.Id, "error", "upload_failed",
+                            ex is OperationCanceledException ? "Image upload timed out." : ex.Message, cancellationToken);
                         continue;
                     }
                 }
