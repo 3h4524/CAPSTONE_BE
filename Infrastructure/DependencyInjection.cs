@@ -82,7 +82,7 @@ public static class DependencyInjection
         // not a platform credential, so a box with no override here still boots on the defaults.
         services.AddOptions<GeminiOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Gemini));
-        services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(60))
+        services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();

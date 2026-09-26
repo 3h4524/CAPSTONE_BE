@@ -52,6 +52,11 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
         {
             return ImageGenerationResult.Failed($"Could not reach Gemini: {ex.Message}", model);
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // HttpClient reports its own timeout as a cancellation, not an HttpRequestException.
+            return ImageGenerationResult.Failed("Gemini did not respond in time (request timed out).", model);
+        }
 
         using (response)
         {

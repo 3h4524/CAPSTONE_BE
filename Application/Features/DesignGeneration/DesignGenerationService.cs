@@ -229,7 +229,16 @@ public sealed class DesignGenerationService(
             for (var variation = 0; variation < variationCount; variation++)
             {
                 var started = timeProvider.GetUtcNow();
-                var result = await imageProvider.GenerateAsync(apiKeyPlain, prompt.GeneratedPrompt, aspectRatio, cancellationToken);
+                ImageGenerationResult result;
+                try
+                {
+                    result = await imageProvider.GenerateAsync(apiKeyPlain, prompt.GeneratedPrompt, aspectRatio, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    // Never let one provider failure strand the whole job in "running".
+                    result = ImageGenerationResult.Failed($"Unexpected provider error: {ex.Message}", "unknown");
+                }
                 var elapsedSeconds = (decimal)(timeProvider.GetUtcNow() - started).TotalSeconds;
 
                 if (!result.IsSuccess)
