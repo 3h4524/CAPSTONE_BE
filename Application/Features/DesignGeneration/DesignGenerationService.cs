@@ -389,15 +389,47 @@ public sealed class DesignGenerationService(
                 UserId = userId,
                 BillingPeriodStart = periodEnd.AddMonths(-1),
                 BillingPeriodEnd = periodEnd,
-                ImagesGenerated = 0,
+                ImagesGenerated = count,
+                UpdatedAt = now,
                 CreatedAt = now
             };
+            // A brand-new row must only be Added: calling UpdateAsync on it would make EF emit an
+            // UPDATE for a row that does not exist yet ("affected 0 row(s)").
             await usageStatistics.AddAsync(usage, cancellationToken: cancellationToken);
+            return;
         }
 
         usage.ImagesGenerated = (usage.ImagesGenerated ?? 0) + count;
         usage.UpdatedAt = now;
         await usageStatistics.UpdateAsync(usage, cancellationToken: cancellationToken);
+    }
+
+    public async Task FailJobAsync(Guid batchJobId, string reason, CancellationToken cancellationToken = default)
+    {
+        var job = await batchJobs.Query().SingleOrDefaultAsync(x => x.Id == batchJobId, cancellationToken);
+        if (job is null || job.Status is BatchJobStatuses.Completed or BatchJobStatuses.PartiallyCompleted or BatchJobStatuses.Failed)
+            return;
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var stuck = await batchJobProducts.Query()
+            .Where(x => x.BatchJobId == job.Id && x.Status == BatchJobProductStatuses.GeneratingImage)
+            .ToListAsync(cancellationToken);
+        foreach (var row in stuck)
+        {
+            row.Status = BatchJobProductStatuses.Failed;
+            row.ErrorMessage = reason;
+            row.CompletedAt = now;
+            row.UpdatedAt = now;
+            await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+        }
+
+        job.FailedProducts = Math.Max(job.FailedProducts ?? 0, stuck.Count);
+        job.Status = BatchJobStatuses.Failed;
+        job.CompletedAt = now;
+        job.UpdatedAt = now;
+        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
+        await LogAsync(job.Id, null, "error", "job_failed", reason, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
     private async Task LogAsync(Guid batchJobId, Guid? batchJobProductId, string level, string eventType, string message, CancellationToken cancellationToken) =>

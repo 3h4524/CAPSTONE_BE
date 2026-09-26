@@ -22,4 +22,10 @@ public interface IDesignGenerationService
     /// job — never exposed through a controller.
     /// </summary>
     Task ProcessBatchJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Marks a batch job (and its still-generating products) as failed after an unexpected error, so
+    /// it never stays in "running". Called by the worker from a fresh scope.
+    /// </summary>
+    Task FailJobAsync(Guid batchJobId, string reason, CancellationToken cancellationToken = default);
 }

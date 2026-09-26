@@ -42,6 +42,17 @@ public sealed class DesignGenerationWorker(
             {
                 // One bad batch job must not stop the worker from processing the next one.
                 logger.LogError(ex, "Failed to process design generation for batch job {BatchJobId}.", batchJobId);
+                try
+                {
+                    // The failed scope's DbContext still holds the broken changes, so use a fresh one.
+                    using var recoveryScope = serviceProvider.CreateScope();
+                    await recoveryScope.ServiceProvider.GetRequiredService<IDesignGenerationService>()
+                        .FailJobAsync(batchJobId, $"Processing stopped unexpectedly: {ex.Message}", stoppingToken);
+                }
+                catch (Exception recoveryEx)
+                {
+                    logger.LogError(recoveryEx, "Could not mark batch job {BatchJobId} as failed.", batchJobId);
+                }
             }
         }
 
