@@ -9,4 +9,6 @@ public sealed record PromptComponents(
     string Instructions,
     string BasePrompt = "",
     string Niche = "",
-    string StyleModifiers = "");
+    string StyleModifiers = "",
+    string Keywords = "",
+    string Description = "");

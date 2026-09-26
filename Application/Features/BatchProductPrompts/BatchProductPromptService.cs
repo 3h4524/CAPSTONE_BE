@@ -158,7 +158,9 @@ public sealed class BatchProductPromptService(
             components.NegativeTerms,
             components.Instructions,
             defaults.Niche,
-            defaults.StyleModifiers);
+            defaults.StyleModifiers,
+            defaults.Keywords,
+            defaults.Description);
 
     private static BatchProductPromptResponseDto Respond(LoadedRow loaded, PromptComponents defaults, PromptComponents effective)
     {
