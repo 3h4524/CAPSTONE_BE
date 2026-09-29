@@ -31,6 +31,7 @@ public sealed class DesignGenerationServiceTests
         public required Mock<IDesignGenerationQueue> Queue { get; init; }
         public required Mock<IUnitOfWork> UnitOfWork { get; init; }
         public required DesignGenerationService Service { get; init; }
+        public required Guid OwnerId { get; init; }
     }
 
     private static Fixture CreateFixture(
@@ -39,7 +40,8 @@ public sealed class DesignGenerationServiceTests
         bool hasGeminiKey = true,
         bool hasOtherActiveJob = false,
         int imageGenerationQuota = 100,
-        int alreadyUsedImages = 0)
+        int alreadyUsedImages = 0,
+        bool withImage = false)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -72,6 +74,19 @@ public sealed class DesignGenerationServiceTests
         var jobRepo = MockRepo(jobs);
         var rowRepo = MockRepo(new[] { row });
         var productRepo = MockRepo(new[] { product });
+        var images = withImage
+            ? new[]
+            {
+                new DesignImage
+                {
+                    Id = Guid.NewGuid(), ProductId = product.Id, AiPromptId = Guid.NewGuid(), BatchJobId = job.Id,
+                    BatchJobProductId = row.Id, ImageUrl = "https://img/1.png", VariationIndex = 0, ImageWidthPx = 1024,
+                    ImageHeightPx = 1024, ApprovalStatus = "pending", ImageGeneratorModel = "m", StorageProvider = "cloudinary",
+                    StorageKey = "k", FileFormat = "png"
+                }
+            }
+            : Array.Empty<DesignImage>();
+        var imageRepo = MockRepo(images);
         var templateRepo = MockRepo(Array.Empty<DesignTemplate>());
         var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
 
@@ -135,7 +150,7 @@ public sealed class DesignGenerationServiceTests
 
         var service = new DesignGenerationService(
             currentUser.Object, batchRepo.Object, jobRepo.Object, rowRepo.Object, productRepo.Object,
-            promptRepo.Object, new Mock<IRepository<DesignImage>>().Object, new Mock<IRepository<ApiUsageRecord>>().Object,
+            promptRepo.Object, imageRepo.Object, new Mock<IRepository<ApiUsageRecord>>().Object,
             new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
             Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), queue.Object,
@@ -144,7 +159,7 @@ public sealed class DesignGenerationServiceTests
         return new Fixture
         {
             Job = job, Rows = [row], AddedPrompts = addedPrompts,
-            Queue = queue, UnitOfWork = unitOfWork, Service = service
+            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId
         };
     }
 
@@ -218,5 +233,40 @@ public sealed class DesignGenerationServiceTests
         fixture.AddedPrompts.Should().ContainSingle(p => p.BatchJobProductId == fixture.Rows[0].Id);
         fixture.Queue.Verify(x => x.Enqueue(fixture.Job.Id), Times.Once);
         fixture.UnitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_ReturnsCountersAndGeneratedImagesForOwner()
+    {
+        var fixture = CreateFixture(rowStatus: BatchJobProductStatuses.ImageReviewRequired, withImage: true);
+
+        var result = await fixture.Service.GetJobAsync(fixture.Job.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Counters.Completed.Should().Be(1);
+        result.Value.Counters.Pending.Should().Be(0);
+        result.Value.Products.Should().ContainSingle().Which.Images.Should().ContainSingle(i => i.ImageUrl == "https://img/1.png");
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_UnknownOrOtherOwnersJob_ReturnsNotFound()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.GetJobAsync(Guid.NewGuid());
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("DesignGeneration.JobNotFound");
+    }
+
+    [TestMethod]
+    public async Task ListJobsForBatchAsync_ReturnsJobsOfOwnedBatch()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(j => j.Id == fixture.Job.Id);
     }
 }

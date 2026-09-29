@@ -176,6 +176,94 @@ public sealed class DesignGenerationService(
         return Result.Success(new StartGenerationResponseDto(job.Id, rows.Count, job.Status));
     }
 
+    public async Task<Result<StartGenerationResponseDto>> RetryFailedAsync(Guid batchJobId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.Unauthenticated("retry"));
+
+        var job = await batchJobs.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
+        if (job is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.JobNotFound());
+        if (job.Status is not (BatchJobStatuses.Failed or BatchJobStatuses.PartiallyCompleted or BatchJobStatuses.Completed))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NotRetryable());
+
+        // BR52: no other active job for the same batch.
+        var hasActiveJob = await batchJobs.Query().AnyAsync(x => x.BatchId == job.BatchId && x.Id != job.Id
+            && x.DeletedAt == null && BatchJobStatuses.Active.Contains(x.Status.ToLower()), cancellationToken);
+        if (hasActiveJob) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.ActiveJobExists());
+
+        var failedRows = await batchJobProducts.Query()
+            .Where(x => x.BatchJobId == job.Id && x.Status == BatchJobProductStatuses.Failed)
+            .OrderBy(x => x.SequenceOrder)
+            .ToListAsync(cancellationToken);
+        if (failedRows.Count == 0) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoFailedProducts());
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+
+        // BR51: a valid, connected Gemini key must still exist.
+        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
+        var hasKey = ownedKeys.Any(key =>
+            string.Equals(key.ServiceProvider, GeminiProvider, StringComparison.OrdinalIgnoreCase)
+            && key.IsActive == true && key.LastCheckSucceeded == true
+            && (!key.ExpiresAt.HasValue || key.ExpiresAt > now));
+        if (!hasKey) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey());
+
+        // BR50: a retry consumes quota again.
+        var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+        if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
+        var (variationCount, _) = ReadConfig(job.Config);
+        var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
+        var remainingQuota = subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0);
+        if (failedRows.Count * variationCount > remainingQuota)
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
+
+        var productIds = failedRows.Where(row => row.ProductId.HasValue).Select(row => row.ProductId!.Value).ToList();
+        var productList = await products.Query().Where(p => productIds.Contains(p.Id)).ToListAsync(cancellationToken);
+        foreach (var product in productList)
+        {
+            product.ProcessingStatus = BatchJobProductStatuses.Queued;
+            product.UpdatedAt = now;
+            await products.UpdateAsync(product, cancellationToken: cancellationToken);
+        }
+
+        // The synthesized AiPrompt of each row is kept, so only the provider call is repeated.
+        foreach (var row in failedRows)
+        {
+            row.Status = BatchJobProductStatuses.GeneratingImage;
+            row.ErrorMessage = null;
+            row.StartedAt = now;
+            row.CompletedAt = null;
+            row.UpdatedAt = now;
+            row.RetryCount = (row.RetryCount ?? 0) + 1;
+            await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+        }
+
+        var total = job.TotalProducts ?? failedRows.Count;
+        job.ProcessedProducts = Math.Max(0, (job.ProcessedProducts ?? 0) - failedRows.Count);
+        job.FailedProducts = 0;
+        job.ProgressPercentage = total > 0 ? Math.Round(100m * job.ProcessedProducts.Value / total, 0) : 0;
+        job.Status = BatchJobStatuses.Queued;
+        job.CompletedAt = null;
+        job.UpdatedAt = now;
+        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
+
+        var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
+        if (batch is not null)
+        {
+            batch.Status = "processing";
+            batch.UpdatedAt = now;
+            await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
+        }
+
+        await LogAsync(job.Id, null, "info", "retry_requested", $"Retrying {failedRows.Count} failed product(s).", cancellationToken);
+
+        // Commit before enqueueing so the worker, which uses its own DbContext, sees the reset rows.
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        queue.Enqueue(job.Id);
+
+        return Result.Success(new StartGenerationResponseDto(job.Id, failedRows.Count, job.Status));
+    }
+
     public async Task ProcessBatchJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
     {
         var job = await batchJobs.Query().SingleOrDefaultAsync(x => x.Id == batchJobId, cancellationToken);
@@ -372,36 +460,109 @@ public sealed class DesignGenerationService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    public async Task<Result<BatchJobDetailDto>> GetJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<BatchJobDetailDto>(DesignGenerationErrors.Unauthenticated("view"));
+
+        var job = await batchJobs.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
+        if (job is null) return Result.Failure<BatchJobDetailDto>(DesignGenerationErrors.JobNotFound());
+
+        var batchName = await batches.Query().Where(b => b.Id == job.BatchId).Select(b => b.Name).SingleOrDefaultAsync(cancellationToken) ?? string.Empty;
+
+        var rows = await batchJobProducts.Query()
+            .Where(r => r.BatchJobId == job.Id)
+            .OrderBy(r => r.SequenceOrder)
+            .ToListAsync(cancellationToken);
+        var productIds = rows.Where(r => r.ProductId.HasValue).Select(r => r.ProductId!.Value).ToList();
+        var names = await products.Query().Where(p => productIds.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id, p => p.Name, cancellationToken);
+        var images = await designImages.Query()
+            .Where(i => i.BatchJobId == job.Id && i.DeletedAt == null)
+            .OrderBy(i => i.VariationIndex)
+            .ToListAsync(cancellationToken);
+        var imagesByRow = images.Where(i => i.BatchJobProductId.HasValue)
+            .GroupBy(i => i.BatchJobProductId!.Value)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<GeneratedImageDto>)g
+                .Select(i => new GeneratedImageDto(i.Id, i.ImageUrl, i.VariationIndex, i.ImageWidthPx, i.ImageHeightPx, i.ApprovalStatus))
+                .ToList());
+
+        var rowDtos = rows.Select(r => new BatchJobProductResultDto(
+            r.Id, r.ProductId,
+            r.ProductId.HasValue && names.TryGetValue(r.ProductId.Value, out var name) ? name : string.Empty,
+            r.SequenceOrder, r.Status, r.ErrorMessage,
+            imagesByRow.TryGetValue(r.Id, out var list) ? list : [])).ToList();
+
+        var counters = new BatchJobCountersDto(
+            rows.Count(r => r.Status is BatchJobProductStatuses.Pending or BatchJobProductStatuses.Queued),
+            rows.Count(r => r.Status == BatchJobProductStatuses.GeneratingImage),
+            rows.Count(r => r.Status == BatchJobProductStatuses.ImageReviewRequired),
+            rows.Count(r => r.Status == BatchJobProductStatuses.Failed));
+
+        var (variationCount, aspectRatio) = ReadConfig(job.Config);
+        return Result.Success(new BatchJobDetailDto(
+            job.Id, job.BatchId, batchName, job.Status,
+            job.TotalProducts ?? rows.Count, job.ProcessedProducts ?? 0, job.FailedProducts ?? 0,
+            job.ProgressPercentage ?? 0, job.StartedAt, job.CompletedAt,
+            variationCount, aspectRatio, counters, rowDtos));
+    }
+
+    public async Task<Result<IReadOnlyList<BatchJobSummaryDto>>> ListJobsForBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<IReadOnlyList<BatchJobSummaryDto>>(DesignGenerationErrors.Unauthenticated("view"));
+
+        if (!await batches.Query().AnyAsync(b => b.Id == batchId && b.UserId == userId && b.DeletedAt == null, cancellationToken))
+            return Result.Failure<IReadOnlyList<BatchJobSummaryDto>>(DesignGenerationErrors.BatchNotFound());
+
+        var list = await batchJobs.Query()
+            .Where(j => j.BatchId == batchId && j.UserId == userId && j.DeletedAt == null)
+            .OrderByDescending(j => j.CreatedAt)
+            .Select(j => new BatchJobSummaryDto(j.Id, j.Status, j.TotalProducts ?? 0, j.ProcessedProducts ?? 0, j.FailedProducts ?? 0, j.CreatedAt, j.StartedAt))
+            .ToListAsync(cancellationToken);
+        return Result.Success<IReadOnlyList<BatchJobSummaryDto>>(list);
+    }
+
+    // One job processes many products with the same DbContext. The usage row must therefore be
+    // loaded (or created) once and the same instance reused: querying again would return a second
+    // instance with the same key, which EF refuses to track ("another instance ... already tracked").
+    private UsageStatistic? cachedUsage;
+
     private async Task IncrementImagesGeneratedAsync(Guid userId, int count, CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var today = DateOnly.FromDateTime(now);
-        var usage = await usageStatistics.Query()
-            .SingleOrDefaultAsync(u => u.UserId == userId && u.BillingPeriodStart <= today && u.BillingPeriodEnd >= today, cancellationToken);
 
-        if (usage is null)
+        if (cachedUsage is null || cachedUsage.UserId != userId)
         {
-            var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
-            var periodEnd = subscription?.RenewalDate ?? today.AddMonths(1);
-            usage = new UsageStatistic
+            cachedUsage = await usageStatistics.Query()
+                .SingleOrDefaultAsync(u => u.UserId == userId && u.BillingPeriodStart <= today && u.BillingPeriodEnd >= today, cancellationToken);
+
+            if (cachedUsage is null)
             {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                BillingPeriodStart = periodEnd.AddMonths(-1),
-                BillingPeriodEnd = periodEnd,
-                ImagesGenerated = count,
-                UpdatedAt = now,
-                CreatedAt = now
-            };
-            // A brand-new row must only be Added: calling UpdateAsync on it would make EF emit an
-            // UPDATE for a row that does not exist yet ("affected 0 row(s)").
-            await usageStatistics.AddAsync(usage, cancellationToken: cancellationToken);
-            return;
+                var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+                var (periodStart, periodEnd) = UsagePeriod.Containing(today, subscription?.RenewalDate ?? today.AddMonths(1));
+                cachedUsage = new UsageStatistic
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    BillingPeriodStart = periodStart,
+                    BillingPeriodEnd = periodEnd,
+                    ImagesGenerated = count,
+                    UpdatedAt = now,
+                    CreatedAt = now
+                };
+                // A brand-new row must only be Added: calling UpdateAsync on it before it is saved would
+                // make EF emit an UPDATE for a row that does not exist yet ("affected 0 row(s)").
+                await usageStatistics.AddAsync(cachedUsage, cancellationToken: cancellationToken);
+                return;
+            }
         }
 
-        usage.ImagesGenerated = (usage.ImagesGenerated ?? 0) + count;
-        usage.UpdatedAt = now;
-        await usageStatistics.UpdateAsync(usage, cancellationToken: cancellationToken);
+        cachedUsage.ImagesGenerated = (cachedUsage.ImagesGenerated ?? 0) + count;
+        cachedUsage.UpdatedAt = now;
+        await usageStatistics.UpdateAsync(cachedUsage, cancellationToken: cancellationToken);
     }
 
     public async Task FailJobAsync(Guid batchJobId, string reason, CancellationToken cancellationToken = default)

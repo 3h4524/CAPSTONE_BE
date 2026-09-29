@@ -33,8 +33,10 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
         // Aspect ratio is folded into the prompt text rather than a structured field: Gemini's
         // image-generation request shape for this has moved between model versions in ways the
         // available docs did not agree on, while a descriptive clause in the prompt is guaranteed
-        // to be understood by every version.
-        var effectivePrompt = string.IsNullOrWhiteSpace(aspectRatio) || aspectRatio == "1:1"
+        // to be understood by every version. "1:1" must be stated too — Gemini's own default is not
+        // necessarily square, so omitting the instruction for it (as an earlier version of this code
+        // did) let the model pick whatever ratio it wanted.
+        var effectivePrompt = string.IsNullOrWhiteSpace(aspectRatio)
             ? prompt
             : $"{prompt}\nImage aspect ratio: {aspectRatio}.";
 

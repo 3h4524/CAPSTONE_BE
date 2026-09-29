@@ -28,4 +28,15 @@ public interface IDesignGenerationService
     /// it never stays in "running". Called by the worker from a fresh scope.
     /// </summary>
     Task FailJobAsync(Guid batchJobId, string reason, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Re-queues only the failed products of a finished job (SRS 3.4.10 "Retry failed products"). Each
+    /// retry consumes image-generation quota again.
+    /// </summary>
+    Task<Result<StartGenerationResponseDto>> RetryFailedAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>Returns a batch job with per-product state and generated images (owner only, BR34).</summary>
+    Task<Result<BatchJobDetailDto>> GetJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>Lists the jobs of one batch, newest first (owner only, BR34).</summary>
+    Task<Result<IReadOnlyList<BatchJobSummaryDto>>> ListJobsForBatchAsync(Guid batchId, CancellationToken cancellationToken = default);
 }

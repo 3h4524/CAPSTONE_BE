@@ -8,8 +8,17 @@ public static class DesignGenerationErrors
     public static Error Unauthenticated(string action) =>
         Error.Unauthorized("DesignGeneration.Unauthenticated", $"Please sign in to {action} image generation.");
 
+    public static Error BatchNotFound() =>
+        Error.NotFound("DesignGeneration.BatchNotFound", "The batch was not found.");
+
     public static Error JobNotFound() =>
         Error.NotFound("DesignGeneration.JobNotFound", "The batch job was not found.");
+
+    public static Error NotRetryable() =>
+        Error.Conflict("DesignGeneration.NotRetryable", "Failed products can only be retried after the job has finished.");
+
+    public static Error NoFailedProducts() =>
+        Error.Conflict("DesignGeneration.NoFailedProducts", "This job has no failed products to retry.");
 
     public static Error NotDraft() =>
         Error.Conflict("DesignGeneration.NotDraft", "Image generation can only be started from a draft batch job.");
