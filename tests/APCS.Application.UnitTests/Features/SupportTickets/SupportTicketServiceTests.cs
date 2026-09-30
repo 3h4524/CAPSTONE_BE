@@ -2,9 +2,11 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions.Notifications;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.SupportTickets.Common;
 using APCS.Application.Features.SupportTickets.Dtos.Request;
+using APCS.Application.Features.SupportTickets.Dtos.Response;
 using APCS.Application.Features.SupportTickets.Validators;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -51,6 +53,8 @@ public sealed class SupportTicketServiceTests
         result.Value.AuthorRole.Should().Be("Seller");
         ticket.Status.Should().Be(SupportTicketStatuses.InProgress);
         fixture.UnitOfWork.Verify(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        fixture.Notifier.Verify(n => n.NotifyTicketUpdatedAsync(
+            ticket.Id, ticket.UserId, It.IsAny<SupportTicketReplyResponseDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -85,6 +89,8 @@ public sealed class SupportTicketServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.SatisfactionRating.Should().Be(5);
         ticket.SatisfactionRating.Should().Be(5);
+        fixture.Notifier.Verify(n => n.NotifyTicketUpdatedAsync(
+            ticket.Id, ticket.UserId, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -188,6 +194,8 @@ public sealed class SupportTicketServiceTests
         emailDelivery.DeliveryStatus.Should().Be("failed");
         emailDelivery.RetryCount.Should().Be(1);
         fixture.UnitOfWork.Verify(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Exactly(2));
+        fixture.Notifier.Verify(n => n.NotifyTicketUpdatedAsync(
+            It.IsAny<Guid>(), SellerId, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -218,6 +226,8 @@ public sealed class SupportTicketServiceTests
         {
             ticket.ResolvedAt.Should().Be(Now.UtcDateTime);
         }
+        fixture.Notifier.Verify(n => n.NotifyTicketUpdatedAsync(
+            ticket.Id, ticket.UserId, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private static Fixture CreateFixture()
@@ -233,6 +243,7 @@ public sealed class SupportTicketServiceTests
         var storage = new Mock<IFileStorageService>();
         var email = new Mock<IEmailService>();
         var currentUser = new Mock<ICurrentUser>();
+        var notifier = new Mock<ISupportTicketNotifier>();
 
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(true);
         currentUser.SetupGet(user => user.UserId).Returns(SellerId);
@@ -265,6 +276,7 @@ public sealed class SupportTicketServiceTests
             new CreateAdminTicketReplyValidator(),
             new UpdateSupportTicketValidator(),
             new RateSupportTicketValidator(),
+            notifier.Object,
             NullLogger<SupportTicketService>.Instance);
 
         return new Fixture(
@@ -276,7 +288,8 @@ public sealed class SupportTicketServiceTests
             unitOfWork,
             transaction,
             storage,
-            email);
+            email,
+            notifier);
     }
 
     private static SupportTicket Ticket(string status) =>
@@ -304,5 +317,6 @@ public sealed class SupportTicketServiceTests
         Mock<IUnitOfWork> UnitOfWork,
         Mock<IUnitOfWorkTransaction> Transaction,
         Mock<IFileStorageService> Storage,
-        Mock<IEmailService> Email);
+        Mock<IEmailService> Email,
+        Mock<ISupportTicketNotifier> Notifier);
 }
