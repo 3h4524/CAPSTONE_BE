@@ -23,7 +23,7 @@ public sealed class AdminSubscriptionPlansControllerTests
     private static AdminPlanDto SamplePlan() => new(
         Guid.NewGuid(), "Creator", "creator", "For growing sellers",
         49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m,
-        true, true, false, true, 1, 0, true, DateTime.UtcNow, DateTime.UtcNow);
+        true, true, false, true, 0, true, DateTime.UtcNow, DateTime.UtcNow);
 
     [TestMethod]
     public async Task GetAll_WhenSuccessful_ReturnsOk()
@@ -61,7 +61,7 @@ public sealed class AdminSubscriptionPlansControllerTests
             .ReturnsAsync(Result.Success(plan));
 
         var result = await _controller.Create(
-            new CreatePlanRequestDto("Creator", "creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true, 1),
+            new CreatePlanRequestDto("Creator", "creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true),
             CancellationToken.None);
 
         var okResult = result as OkObjectResult;
@@ -77,7 +77,7 @@ public sealed class AdminSubscriptionPlansControllerTests
             .ReturnsAsync(Result.Failure<AdminPlanDto>(error));
 
         var result = await _controller.Create(
-            new CreatePlanRequestDto("", "creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true, 1),
+            new CreatePlanRequestDto("", "creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true),
             CancellationToken.None);
 
         var objectResult = result as ObjectResult;
@@ -94,7 +94,7 @@ public sealed class AdminSubscriptionPlansControllerTests
 
         var result = await _controller.Update(
             plan.Id,
-            new UpdatePlanRequestDto("Creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true, 1),
+            new UpdatePlanRequestDto("Creator", null, 49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m, true, true, false, true),
             CancellationToken.None);
 
         var okResult = result as OkObjectResult;

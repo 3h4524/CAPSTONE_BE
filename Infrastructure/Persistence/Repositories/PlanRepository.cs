@@ -48,8 +48,8 @@ public sealed class PlanRepository(AppDbContext dbContext)
         var plans = await dbContext.SubscriptionPlans
             .AsNoTracking()
             .Include(plan => plan.PlanFeatures)
-            .OrderBy(plan => plan.SortOrder)
-            .ThenBy(plan => plan.MonthlyPriceUsd)
+            .OrderBy(plan => plan.MonthlyPriceUsd)
+            .ThenBy(plan => plan.Name)
             .ToListAsync(cancellationToken);
 
         return plans;
