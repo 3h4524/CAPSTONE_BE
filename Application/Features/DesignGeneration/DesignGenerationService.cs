@@ -133,7 +133,8 @@ public sealed class DesignGenerationService(
             };
             var generatedPrompt = PromptComposer.Compose(
                 defaults.BasePrompt, effective.Subject, effective.ArtStyle, effective.MoodTone,
-                effective.NegativeTerms, effective.Instructions, defaults.Niche, defaults.StyleModifiers);
+                effective.NegativeTerms, effective.Instructions, defaults.Niche, defaults.StyleModifiers,
+                defaults.Keywords, defaults.Description);
 
             await aiPrompts.AddAsync(new AiPrompt
             {

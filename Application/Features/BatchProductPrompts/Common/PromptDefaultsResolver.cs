@@ -32,7 +32,7 @@ public static class PromptDefaultsResolver
                 .SingleOrDefaultAsync(cancellationToken);
 
         return new PromptComponents(
-            product?.Name?.Trim() ?? string.Empty,
+            CleanSubject(product),
             styleName,
             string.Empty,
             string.Empty,
@@ -43,6 +43,37 @@ public static class PromptDefaultsResolver
                 : product?.MainKeywords?.Trim() is { Length: > 0 } keywords
                     ? keywords
                     : PromptRules.FallbackNiche,
-            style?.StyleModifiers ?? string.Empty);
+            style?.StyleModifiers ?? string.Empty,
+            product?.MainKeywords?.Trim() ?? string.Empty,
+            UserDescription(product));
+    }
+
+    private static readonly string[] ProductTypeWords =
+        ["t-shirt", "t shirt", "tshirt", "hoodie", "mug", "poster", "tote bag", "tote_bag", "phone case", "phone_case"];
+
+    // The subject is the product name, but a trailing product word ("... T-Shirt") makes the image
+    // model draw the product instead of just the artwork, so it is stripped when something remains.
+    private static string CleanSubject(Product? product)
+    {
+        var name = product?.Name?.Trim() ?? string.Empty;
+        foreach (var word in ProductTypeWords)
+        {
+            if (name.EndsWith(word, StringComparison.OrdinalIgnoreCase))
+            {
+                var stripped = name[..^word.Length].TrimEnd(' ', '-', ',');
+                if (stripped.Length > 0) return stripped;
+            }
+        }
+        return name;
+    }
+
+    // BatchService stores a generated "name; type: ...; niche: ...; keywords: ..." fallback when the
+    // Seller left the description empty; that carries no extra information, so it is skipped.
+    private static string UserDescription(Product? product)
+    {
+        var description = product?.InputDescription?.Trim() ?? string.Empty;
+        return description.Length == 0 || description.StartsWith($"{product!.Name}; type:", StringComparison.Ordinal)
+            ? string.Empty
+            : description;
     }
 }
