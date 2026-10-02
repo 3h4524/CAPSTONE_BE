@@ -142,6 +142,7 @@ public static class DependencyInjection
         services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
+        services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

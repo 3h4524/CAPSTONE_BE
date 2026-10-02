@@ -29,4 +29,12 @@ public sealed class BatchMockupsController(IMockupTemplateService service) : Con
         [FromBody] ApplyMockupTemplatesRequestDto request,
         CancellationToken cancellationToken) =>
         (await service.ApplyAsync(batchJobId, request, cancellationToken)).ToActionResult(this);
+
+    /// <summary>Composites mock-ups for every product in the batch job at once. Safe to call again.</summary>
+    [HttpPost("generate")]
+    [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> GenerateAll(Guid batchJobId, CancellationToken cancellationToken) =>
+        (await service.GenerateAllAsync(batchJobId, cancellationToken)).ToActionResult(this);
 }

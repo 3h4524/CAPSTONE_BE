@@ -15,4 +15,26 @@ public interface IMockupTemplateService
 
     /// <summary>Stores the mock-up selection on a draft batch.</summary>
     Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Creates a personal mock-up template with a real uploaded base photo.</summary>
+    Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Updates a personal mock-up template the current Seller owns.</summary>
+    Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Deactivates a personal mock-up template the current Seller owns (soft — no hard delete column exists).</summary>
+    Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Composites a design image onto a mock-up template's base photo (SRS 3.5.9 execution). Uses the
+    /// template's stored print area unless the request overrides it (the "advanced" positioning path).
+    /// </summary>
+    Task<Result<MockupImageResponseDto>> GenerateCompositeAsync(Guid designImageId, GenerateMockupImageRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Composites mock-ups for every product in the batch job at once, using each product's selected,
+    /// compatible template(s) and its earliest design image. Idempotent — already-generated pairs are
+    /// skipped, so it is safe to call again as more products finish.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GenerateAllAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 }

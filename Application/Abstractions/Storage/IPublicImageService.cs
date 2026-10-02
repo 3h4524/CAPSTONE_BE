@@ -17,4 +17,17 @@ public interface IPublicImageService
     /// <param name="storageKey">The stable key identifying the image.</param>
     /// <param name="cancellationToken">A cancellation token.</param>
     Task DeleteImageAsync(string storageKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Uploads a public image the same way as <see cref="UploadImageAsync"/>, but also returns the
+    /// pixel dimensions the storage provider measured — so callers (e.g. mock-up template creation)
+    /// don't need a local image-processing library just to read a width/height.
+    /// </summary>
+    Task<PublicImageUploadResult> UploadImageWithMetadataAsync(
+        UploadFileDto file,
+        string storageKey,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>The delivery URL of a stored image plus its measured pixel dimensions.</summary>
+public sealed record PublicImageUploadResult(string Url, int WidthPx, int HeightPx);
