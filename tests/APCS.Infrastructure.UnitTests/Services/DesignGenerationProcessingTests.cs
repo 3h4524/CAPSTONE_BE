@@ -39,7 +39,9 @@ public sealed class DesignGenerationProcessingTests
         await CreateService(db).ProcessBatchJobAsync(jobId);
 
         db.ChangeTracker.Clear();
-        (await db.DesignImages.CountAsync()).Should().Be(3);
+        var images = await db.DesignImages.ToListAsync();
+        images.Should().HaveCount(3);
+        images.Should().OnlyContain(i => i.StorageKey == $"design-images/{i.Id:N}");
         (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
         (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
             .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.ImageReviewRequired);

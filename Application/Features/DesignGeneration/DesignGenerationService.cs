@@ -350,7 +350,10 @@ public sealed class DesignGenerationService(
                     continue;
                 }
 
-                var storageKey = $"design-images/{prompt.Id}/{variation}";
+                // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
+                // and a later regenerate with the same prompt can never overwrite an existing image.
+                var designImageId = Guid.NewGuid();
+                var storageKey = $"design-images/{designImageId:N}";
                 string imageUrl;
                 using (var stream = new MemoryStream(result.ImageBytes!))
                 {
@@ -388,7 +391,7 @@ public sealed class DesignGenerationService(
                 var (width, height) = TryReadPngDimensions(result.ImageBytes!);
                 await designImages.AddAsync(new DesignImage
                 {
-                    Id = Guid.NewGuid(),
+                    Id = designImageId,
                     ProductId = row.ProductId!.Value,
                     AiPromptId = prompt.Id,
                     BatchJobId = job.Id,
@@ -403,7 +406,8 @@ public sealed class DesignGenerationService(
                     FileFormat = FileExtension(result.MimeType),
                     FileSizeMb = Math.Round(result.ImageBytes!.Length / 1024m / 1024m, 3),
                     ApprovalStatus = "pending",
-                    VariationIndex = variation,
+                    // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead.
+                    VariationIndex = variation + 1,
                     GenerationTimeSeconds = elapsedSeconds,
                     CreatedAt = timeProvider.GetUtcNow().UtcDateTime
                 }, cancellationToken: cancellationToken);
@@ -477,11 +481,13 @@ public sealed class DesignGenerationService(
             .OrderBy(r => r.SequenceOrder)
             .ToListAsync(cancellationToken);
         var productIds = rows.Where(r => r.ProductId.HasValue).Select(r => r.ProductId!.Value).ToList();
-        var names = await products.Query().Where(p => productIds.Contains(p.Id))
-            .ToDictionaryAsync(p => p.Id, p => p.Name, cancellationToken);
+        var productInfo = await products.Query().Where(p => productIds.Contains(p.Id))
+            .Select(p => new { p.Id, p.Name, p.ProductType })
+            .ToDictionaryAsync(p => p.Id, cancellationToken);
         var images = await designImages.Query()
             .Where(i => i.BatchJobId == job.Id && i.DeletedAt == null)
             .OrderBy(i => i.VariationIndex)
+            .ThenBy(i => i.CreatedAt)
             .ToListAsync(cancellationToken);
         var imagesByRow = images.Where(i => i.BatchJobProductId.HasValue)
             .GroupBy(i => i.BatchJobProductId!.Value)
@@ -489,11 +495,14 @@ public sealed class DesignGenerationService(
                 .Select(i => new GeneratedImageDto(i.Id, i.ImageUrl, i.VariationIndex, i.ImageWidthPx, i.ImageHeightPx, i.ApprovalStatus))
                 .ToList());
 
-        var rowDtos = rows.Select(r => new BatchJobProductResultDto(
-            r.Id, r.ProductId,
-            r.ProductId.HasValue && names.TryGetValue(r.ProductId.Value, out var name) ? name : string.Empty,
-            r.SequenceOrder, r.Status, r.ErrorMessage,
-            imagesByRow.TryGetValue(r.Id, out var list) ? list : [])).ToList();
+        var rowDtos = rows.Select(r =>
+        {
+            var info = r.ProductId.HasValue && productInfo.TryGetValue(r.ProductId.Value, out var found) ? found : null;
+            return new BatchJobProductResultDto(
+                r.Id, r.ProductId, info?.Name ?? string.Empty, info?.ProductType ?? string.Empty,
+                r.SequenceOrder, r.Status, r.ErrorMessage,
+                imagesByRow.TryGetValue(r.Id, out var list) ? list : []);
+        }).ToList();
 
         var counters = new BatchJobCountersDto(
             rows.Count(r => r.Status is BatchJobProductStatuses.Pending or BatchJobProductStatuses.Queued),

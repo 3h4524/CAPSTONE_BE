@@ -14,6 +14,7 @@ public sealed record BatchJobProductResultDto(
     Guid Id,
     Guid? ProductId,
     string ProductName,
+    string ProductType,
     int Sequence,
     string Status,
     string? ErrorMessage,
