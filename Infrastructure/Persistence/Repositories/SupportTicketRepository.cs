@@ -10,6 +10,7 @@ public sealed class SupportTicketRepository(AppDbContext dbContext)
 {
     public async Task<(IReadOnlyList<SupportTicket> Items, int TotalCount)> ListAsync(
         Guid? ownerId,
+        string? searchTerm,
         string? status,
         string? category,
         string? priority,
@@ -21,6 +22,13 @@ public sealed class SupportTicketRepository(AppDbContext dbContext)
         if (ownerId.HasValue)
         {
             query = query.Where(ticket => ticket.UserId == ownerId.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            var cleanSearchTerm = searchTerm.TrimStart('#');
+            var searchPattern = $"%{cleanSearchTerm}%";
+            query = query.Where(ticket => EF.Functions.Like(ticket.Subject, searchPattern) || EF.Functions.Like(ticket.TicketNumber, searchPattern));
         }
 
         if (!string.IsNullOrWhiteSpace(status))
@@ -40,6 +48,8 @@ public sealed class SupportTicketRepository(AppDbContext dbContext)
 
         var totalCount = await query.CountAsync(cancellationToken);
         var items = await query
+            .Include(ticket => ticket.TicketReplies)
+            .Include(ticket => ticket.AssignedToNavigation)
             .OrderByDescending(ticket => ticket.UpdatedAt)
             .ThenByDescending(ticket => ticket.CreatedAt)
             .Skip((pageNumber - 1) * pageSize)

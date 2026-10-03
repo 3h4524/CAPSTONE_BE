@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Api.Extensions;
+using APCS.Api.Hubs;
 using APCS.Api.Middleware;
 using APCS.Application;
 using APCS.Application.Abstractions.Caching;
@@ -99,12 +100,25 @@ builder.Services
                     context.Token = accessToken;
                 }
 
+                // SignalR fallback: Đọc Token từ URL nếu Cookie không đi kèm được trên WebSocket
+                var path = context.HttpContext.Request.Path;
+                if (string.IsNullOrEmpty(context.Token) && path.StartsWithSegments("/hubs/support"))
+                {
+                    var accessTokenQuery = context.Request.Query["access_token"];
+                    if (!string.IsNullOrEmpty(accessTokenQuery))
+                    {
+                        context.Token = accessTokenQuery;
+                    }
+                }
+
                 return Task.CompletedTask;
             }
         };
     });
 
 builder.Services.AddAuthorization();
+builder.Services.AddSignalR();
+builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.ISupportTicketNotifier, APCS.Api.Hubs.SupportTicketNotifier>();
 builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
@@ -154,6 +168,7 @@ app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
 
+app.MapHub<SupportHub>("/hubs/support");
 app.MapControllers();
 app.MapHealthChecks("/health");
 

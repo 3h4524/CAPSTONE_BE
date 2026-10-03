@@ -22,7 +22,7 @@ public sealed class SupportTicketRepositoryTests
         await context.SaveChangesAsync();
         var repository = new SupportTicketRepository(context);
 
-        var result = await repository.ListAsync(seller.Id, null, null, null, 1, 20);
+        var result = await repository.ListAsync(seller.Id, null, null, null, null, 1, 20);
 
         result.TotalCount.Should().Be(2);
         result.Items.Select(ticket => ticket.Id).Should().Equal(newer.Id, older.Id);

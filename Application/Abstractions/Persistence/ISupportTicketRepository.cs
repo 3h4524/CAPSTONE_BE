@@ -10,6 +10,7 @@ public interface ISupportTicketRepository : IRepository<SupportTicket>
     /// <summary>Lists tickets using server-side filtering and pagination.</summary>
     Task<(IReadOnlyList<SupportTicket> Items, int TotalCount)> ListAsync(
         Guid? ownerId,
+        string? searchTerm,
         string? status,
         string? category,
         string? priority,

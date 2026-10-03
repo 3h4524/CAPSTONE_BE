@@ -10,4 +10,7 @@ public sealed record SupportTicketSummaryResponseDto(
     string Status,
     int? SatisfactionRating,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? LastMessageSnippet,
+    bool HasUnreadMessages,
+    string? AssignedToName);

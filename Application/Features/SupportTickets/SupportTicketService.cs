@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Email;
+using APCS.Application.Abstractions.Notifications;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Common.Validation;
@@ -35,6 +36,7 @@ public sealed class SupportTicketService(
     IValidator<CreateAdminTicketReplyRequestDto> adminReplyValidator,
     IValidator<UpdateSupportTicketRequestDto> updateValidator,
     IValidator<RateSupportTicketRequestDto> ratingValidator,
+    ISupportTicketNotifier ticketNotifier,
     ILogger<SupportTicketService> logger) : ISupportTicketService
 {
     public async Task<Result<SupportTicketSummaryResponseDto>> CreateAsync(
@@ -140,6 +142,7 @@ public sealed class SupportTicketService(
         }
 
         await DeliverAdminEmailsAsync(emailDeliveries, ticket, cancellationToken);
+        await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, null, cancellationToken);
         return Result.Success(MapSummary(ticket));
     }
 
@@ -209,8 +212,7 @@ public sealed class SupportTicketService(
             Id = replyId,
             SupportTicketId = ticket.Id,
             AuthorId = userId.Value,
-            ReplyText = request.ReplyText.Trim(),
-            IsInternalNote = false,
+            ReplyText = request.ReplyText?.Trim() ?? string.Empty,
             CreatedAt = now.UtcDateTime,
             UpdatedAt = now.UtcDateTime,
             Author = ticket.User
@@ -238,6 +240,10 @@ public sealed class SupportTicketService(
             await supportTicketRepository.UpdateAsync(ticket, cancellationToken: cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            var mappedReply = MapReply(reply, ticket.UserId);
+            
+            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này VÀ cục Noti của User
+            await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, mappedReply, cancellationToken);
         }
         catch
         {
@@ -288,8 +294,17 @@ public sealed class SupportTicketService(
             return Result.Failure<SupportTicketSummaryResponseDto>(SupportTicketErrors.NotFound());
         }
 
-        if (ticket.Status != SupportTicketStatuses.Resolved || ticket.SatisfactionRating.HasValue)
+        if (ticket.Status != SupportTicketStatuses.Resolved)
         {
+            return Result.Failure<SupportTicketSummaryResponseDto>(SupportTicketErrors.RatingNotAllowed());
+        }
+
+        if (ticket.SatisfactionRating.HasValue)
+        {
+            if (ticket.SatisfactionRating.Value == request.Rating)
+            {
+                return Result.Success(MapSummary(ticket));
+            }
             return Result.Failure<SupportTicketSummaryResponseDto>(SupportTicketErrors.RatingNotAllowed());
         }
 
@@ -297,6 +312,7 @@ public sealed class SupportTicketService(
         ticket.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await supportTicketRepository.UpdateAsync(ticket, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
+        await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, null, cancellationToken);
         return Result.Success(MapSummary(ticket));
     }
 
@@ -384,6 +400,7 @@ public sealed class SupportTicketService(
 
         var updated = await supportTicketRepository.GetDetailsAsync(
             id, ownerId: null, includeInternalNotes: true, cancellationToken);
+        await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, null, cancellationToken);
         return Result.Success(MapDetail(updated!));
     }
 
@@ -419,8 +436,7 @@ public sealed class SupportTicketService(
             Id = replyId,
             SupportTicketId = ticket.Id,
             AuthorId = userId.Value,
-            ReplyText = request.ReplyText.Trim(),
-            IsInternalNote = request.IsInternalNote,
+            ReplyText = request.ReplyText?.Trim() ?? string.Empty,
             CreatedAt = now.UtcDateTime,
             UpdatedAt = now.UtcDateTime,
             Author = author!
@@ -439,10 +455,17 @@ public sealed class SupportTicketService(
                 await attachmentRepository.AddAsync(attachment, cancellationToken: cancellationToken);
             }
 
+            if (ticket.AssignedTo == null)
+            {
+                ticket.AssignedTo = userId.Value;
+            }
             ticket.UpdatedAt = now.UtcDateTime;
             await supportTicketRepository.UpdateAsync(ticket, cancellationToken: cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            var mappedReply = MapReply(reply, ticket.UserId);
+            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này VÀ cục Noti của User
+            await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, mappedReply, cancellationToken);
         }
         catch
         {
@@ -483,6 +506,7 @@ public sealed class SupportTicketService(
 
         var (items, totalCount) = await supportTicketRepository.ListAsync(
             ownerId,
+            request.SearchTerm,
             request.Status,
             request.Category,
             request.Priority,
@@ -569,8 +593,9 @@ public sealed class SupportTicketService(
         SupportTicket ticket,
         CancellationToken cancellationToken)
     {
-        foreach (var (admin, delivery) in deliveries)
+        var tasks = deliveries.Select(async item =>
         {
+            var (admin, delivery) = item;
             try
             {
                 await emailService.SendSupportTicketCreatedAsync(
@@ -596,7 +621,9 @@ public sealed class SupportTicketService(
                     admin.Id,
                     ticket.Id);
             }
-        }
+        });
+
+        await Task.WhenAll(tasks);
 
         try
         {
@@ -694,8 +721,21 @@ public sealed class SupportTicketService(
         ?? attachment.TicketReply?.SupportTicketId
         ?? throw new InvalidOperationException("The attachment is not linked to a support ticket.");
 
-    private static SupportTicketSummaryResponseDto MapSummary(SupportTicket ticket) =>
-        new(
+    private SupportTicketSummaryResponseDto MapSummary(SupportTicket ticket)
+    {
+        var currentUserId = GetAuthenticatedUserId();
+        var lastReply = ticket.TicketReplies?.OrderByDescending(r => r.CreatedAt).FirstOrDefault();
+        string? snippet = lastReply?.ReplyText;
+        if (!string.IsNullOrEmpty(snippet) && snippet.Length > 50)
+            snippet = snippet[..47] + "...";
+            
+        bool hasUnread = false;
+        if (lastReply != null)
+        {
+            hasUnread = lastReply.AuthorId != currentUserId;
+        }
+
+        return new(
             ticket.Id,
             ticket.TicketNumber,
             ticket.Subject,
@@ -704,7 +744,11 @@ public sealed class SupportTicketService(
             ticket.Status,
             ticket.SatisfactionRating,
             AsUtc(ticket.CreatedAt),
-            AsUtc(ticket.UpdatedAt));
+            AsUtc(ticket.UpdatedAt),
+            snippet,
+            hasUnread,
+            ticket.AssignedToNavigation?.FullName);
+    }
 
     private static DateTimeOffset AsUtc(DateTime? value) =>
         new(DateTime.SpecifyKind(value ?? DateTime.UnixEpoch, DateTimeKind.Utc));

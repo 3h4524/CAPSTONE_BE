@@ -130,6 +130,7 @@ public sealed class AdminDashboardService(
                 .OrderByDescending(t => t.CreatedAt)
                 .Take(5)
                 .Select(t => new SupportTicketDto(
+                    t.Id,
                     t.User.FullName,
                     t.User.Email,
                     $"#{t.TicketNumber} · {t.Subject}",
