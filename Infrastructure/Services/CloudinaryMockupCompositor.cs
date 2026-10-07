@@ -21,9 +21,10 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
 
     /// <summary>
     /// Largest shift the displacement map can cause (map value 0 or 255; 128 is no shift), as a share
-    /// of the design's shorter side so the bend looks the same on small and large photos.
+    /// of the design's shorter side so the bend looks the same on small and large photos. Fabric
+    /// moves a print by very little; much more than this reads as a warped print, not a fold.
     /// </summary>
-    internal const double DisplacementStrengthRatio = 0.05;
+    internal const double DisplacementStrengthRatio = 0.02;
 
     private readonly CloudinaryOptions _options = options.Value;
 
@@ -70,6 +71,15 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
                 components.Add($"c_crop,g_north_west,x_{fitted.X},y_{fitted.Y},w_{fitted.Width},h_{fitted.Height}");
                 var strength = Math.Max(2, (int)Math.Round(Math.Min(fitted.Width, fitted.Height) * DisplacementStrengthRatio));
                 components.Add($"e_displace,fl_layer_apply,x_{strength},y_{strength}");
+            }
+
+            // Cut to the garment after bending, so the print ends at the garment's edge instead of
+            // carrying on over the background.
+            if (layers.GarmentMaskKey is { } cutKey)
+            {
+                components.Add($"l_{LayerToken(cutKey)}");
+                components.Add($"c_crop,g_north_west,x_{fitted.X},y_{fitted.Y},w_{fitted.Width},h_{fitted.Height}");
+                components.Add("fl_cutter,fl_layer_apply,g_north_west");
             }
 
             var blend = layers.MultiplyDesign ? "e_multiply," : "";

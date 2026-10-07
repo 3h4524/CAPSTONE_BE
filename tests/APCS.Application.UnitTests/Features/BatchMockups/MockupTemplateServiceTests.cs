@@ -791,6 +791,7 @@ public sealed class MockupTemplateServiceTests
         result.IsSuccess.Should().BeTrue();
         compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
             It.Is<MockupLayers?>(l => l!.DesignWidthPx == 1024 && l.DisplacementMapKey == $"mockup-templates/{templateId:N}-7-displace"
+                && l.GarmentMaskKey == $"mockup-templates/{templateId:N}-7-mask"
                 && l.GarmentColor == null && l.MultiplyDesign)), Times.Once);
     }
 
@@ -828,7 +829,7 @@ public sealed class MockupTemplateServiceTests
         await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
 
         compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
-            It.Is<MockupLayers?>(l => l!.DisplacementMapKey == null && !l.MultiplyDesign)), Times.Once);
+            It.Is<MockupLayers?>(l => l!.DisplacementMapKey == null && l.GarmentMaskKey == null && !l.MultiplyDesign)), Times.Once);
     }
 
     [TestMethod]

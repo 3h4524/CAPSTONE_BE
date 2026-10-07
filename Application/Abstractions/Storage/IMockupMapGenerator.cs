@@ -10,12 +10,16 @@ public interface IMockupMapGenerator
     /// <summary>Whether the model that finds the garment is installed; without it no photo can be processed.</summary>
     bool IsAvailable { get; }
 
-    /// <summary>The fabric relief at the photo's own size: R and G hold the shift, 128 is none.</summary>
+    /// <summary>
+    /// How the garment's folds shift a print, at the photo's own size: R holds the sideways shift
+    /// and G the vertical one, 128 is none. Neutral off the garment.
+    /// </summary>
     byte[] GenerateDisplacementMap(byte[] baseImage);
 
     /// <summary>
     /// Separates the garment from a plain background. The PNG's alpha is the garment and its gray
-    /// RGB the fabric's shading (white where the garment is brightest).
+    /// RGB the fabric's shading (white where the garment is brightest). When no garment could be
+    /// told apart, the whole photo is the garment.
     /// </summary>
     /// <param name="baseImage">The photo.</param>
     /// <param name="maxOutputSide">Scales the result down to this longest side, for a quick preview.</param>

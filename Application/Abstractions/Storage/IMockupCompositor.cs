@@ -35,8 +35,9 @@ public sealed record MockupPosition(int X, int Y, int Width, int Height);
 /// <param name="DesignHeightPx">The design image's own height.</param>
 /// <param name="DisplacementMapKey">Storage key of the template's displacement map.</param>
 /// <param name="GarmentMaskKey">
-/// Storage key of the template's garment mask (alpha = garment, gray = fabric shading), used with
-/// <paramref name="GarmentColor"/>.
+/// Storage key of the template's garment mask (alpha = garment, gray = fabric shading). The design
+/// is cut to it, so nothing is printed off the garment; with <paramref name="GarmentColor"/> it
+/// also recolors the garment.
 /// </param>
 /// <param name="GarmentColor">'#RRGGBB' to recolor the garment with.</param>
 /// <param name="MultiplyDesign">

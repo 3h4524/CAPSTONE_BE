@@ -94,7 +94,7 @@ public static class MockupRules
             designImage.ImageWidthPx,
             designImage.ImageHeightPx,
             prefix is null ? null : DisplacementMapKey(prefix),
-            recolor ? GarmentMaskKey(prefix!) : null,
+            prefix is null ? null : GarmentMaskKey(prefix),
             recolor ? garmentColor!.ToUpperInvariant() : null,
             MultiplyDesign: mapsReady && template.GarmentIsLight && !recolor);
     }

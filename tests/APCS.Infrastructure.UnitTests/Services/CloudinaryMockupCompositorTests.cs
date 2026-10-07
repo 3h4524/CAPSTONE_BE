@@ -70,8 +70,23 @@ public sealed class CloudinaryMockupCompositorTests
         url.Should().Be(
             "https://res.cloudinary.com/demo/image/upload/"
             + "l_apcs:design-images:d/c_scale,w_1039,h_1039/"
-            + "l_apcs:mockup-templates:t-displace/c_crop,g_north_west,x_1474,y_1475,w_1039,h_1039/e_displace,fl_layer_apply,x_52,y_52/"
+            + "l_apcs:mockup-templates:t-displace/c_crop,g_north_west,x_1474,y_1475,w_1039,h_1039/e_displace,fl_layer_apply,x_21,y_21/"
             + "fl_layer_apply,e_multiply,g_north_west,x_1474,y_1475/"
+            + "v1700000000/apcs/mockup-templates/t.webp");
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_WithGarmentMask_CutsTheBentDesignToTheGarment()
+    {
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(40, 60, 400, 200),
+            new MockupLayers(1000, 1000, "mockup-templates/t-displace", "mockup-templates/t-mask", null));
+
+        url.Should().Be(
+            "https://res.cloudinary.com/demo/image/upload/"
+            + "l_apcs:design-images:d/c_scale,w_200,h_200/"
+            + "l_apcs:mockup-templates:t-displace/c_crop,g_north_west,x_140,y_60,w_200,h_200/e_displace,fl_layer_apply,x_4,y_4/"
+            + "l_apcs:mockup-templates:t-mask/c_crop,g_north_west,x_140,y_60,w_200,h_200/fl_cutter,fl_layer_apply,g_north_west/"
+            + "fl_layer_apply,g_north_west,x_140,y_60/"
             + "v1700000000/apcs/mockup-templates/t.webp");
     }
 
@@ -91,10 +106,11 @@ public sealed class CloudinaryMockupCompositorTests
     public void BuildCompositeUrl_WithUnknownDesignSize_FallsBackToThePlainOverlay()
     {
         var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(10, 20, 300, 400),
-            new MockupLayers(0, 0, "mockup-templates/t-displace", null, null));
+            new MockupLayers(0, 0, "mockup-templates/t-displace", "mockup-templates/t-mask", null));
 
         url.Should().Contain("l_apcs:design-images:d,g_north_west,x_10,y_20,w_300,h_400,c_fit,fl_layer_apply/");
         url.Should().NotContain("e_displace");
+        url.Should().NotContain("fl_cutter");
     }
 
     [TestMethod]
@@ -106,7 +122,9 @@ public sealed class CloudinaryMockupCompositorTests
         url.Should().Be(
             "https://res.cloudinary.com/demo/image/upload/"
             + "l_apcs:mockup-templates:t-mask/e_colorize:100,co_rgb:1F2A44/fl_layer_apply,g_north_west,x_0,y_0/"
-            + "l_apcs:design-images:d/c_scale,w_100,h_100/fl_layer_apply,g_north_west,x_0,y_0/"
+            + "l_apcs:design-images:d/c_scale,w_100,h_100/"
+            + "l_apcs:mockup-templates:t-mask/c_crop,g_north_west,x_0,y_0,w_100,h_100/fl_cutter,fl_layer_apply,g_north_west/"
+            + "fl_layer_apply,g_north_west,x_0,y_0/"
             + "l_apcs:mockup-templates:t-mask/fl_layer_apply,e_multiply,g_north_west,x_0,y_0/"
             + "v1700000000/apcs/mockup-templates/t.webp");
     }
