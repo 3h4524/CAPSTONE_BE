@@ -52,7 +52,7 @@ public sealed class AdminSupportTicketsController(ISupportTicketService supportT
         {
             var result = await supportTicketService.ReplyAdminAsync(
                 id,
-                new CreateAdminTicketReplyRequestDto(form.ReplyText, form.IsInternalNote, uploads),
+                new CreateAdminTicketReplyRequestDto(form.ReplyText, uploads),
                 cancellationToken);
             return result.IsSuccess
                 ? CreatedAtAction(nameof(Get), new { id }, result.Value)
