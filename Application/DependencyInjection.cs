@@ -12,6 +12,7 @@ using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignTemplates;
+using APCS.Application.Features.Notifications;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -44,6 +45,7 @@ public static class DependencyInjection
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
+        services.AddScoped<INotificationService, NotificationService>();
 
         return services;
     }

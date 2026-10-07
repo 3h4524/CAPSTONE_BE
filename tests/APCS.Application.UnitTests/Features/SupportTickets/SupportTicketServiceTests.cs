@@ -244,6 +244,7 @@ public sealed class SupportTicketServiceTests
         var email = new Mock<IEmailService>();
         var currentUser = new Mock<ICurrentUser>();
         var notifier = new Mock<ISupportTicketNotifier>();
+        var notificationService = new Mock<APCS.Application.Features.Notifications.INotificationService>();
 
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(true);
         currentUser.SetupGet(user => user.UserId).Returns(SellerId);
@@ -277,6 +278,7 @@ public sealed class SupportTicketServiceTests
             new UpdateSupportTicketValidator(),
             new RateSupportTicketValidator(),
             notifier.Object,
+            notificationService.Object,
             NullLogger<SupportTicketService>.Instance);
 
         return new Fixture(
@@ -289,7 +291,8 @@ public sealed class SupportTicketServiceTests
             transaction,
             storage,
             email,
-            notifier);
+            notifier,
+            notificationService);
     }
 
     private static SupportTicket Ticket(string status) =>
@@ -318,5 +321,6 @@ public sealed class SupportTicketServiceTests
         Mock<IUnitOfWorkTransaction> Transaction,
         Mock<IFileStorageService> Storage,
         Mock<IEmailService> Email,
-        Mock<ISupportTicketNotifier> Notifier);
+        Mock<ISupportTicketNotifier> Notifier,
+        Mock<APCS.Application.Features.Notifications.INotificationService> NotificationService);
 }
