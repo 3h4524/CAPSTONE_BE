@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Storage;
+using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.BatchMockups.Common;
 
@@ -46,4 +47,55 @@ public static class MockupRules
 
     public static string SerializePrintArea(MockupPosition position) =>
         JsonSerializer.Serialize(new { x = position.X, y = position.Y, width = position.Width, height = position.Height, unit = "px" });
+
+    public static string BaseImageKey(Guid templateId) => $"mockup-templates/{templateId:N}";
+
+    /// <summary>Key prefix of one generation of helper images; a new version gives new URLs, so nothing stale is served from cache.</summary>
+    public static string HelperKeyPrefix(Guid templateId, long version) => $"{BaseImageKey(templateId)}-{version}";
+    public static string DisplacementMapKey(string helperKeyPrefix) => $"{helperKeyPrefix}-displace";
+    public static string GarmentMaskKey(string helperKeyPrefix) => $"{helperKeyPrefix}-mask";
+    public static string GarmentMaskKey(MockupTemplate template) => GarmentMaskKey(HelperKeyPrefix(template.Id, template.PrintMapsVersion ?? 0));
+
+    public const string GarmentColorPattern = "^#[0-9A-Fa-f]{6}$";
+    public const string GarmentColorsConfigKey = "mockupGarmentColors";
+    public const int MaximumGarmentColors = 5;
+
+    // Multiplying a color only darkens, so recoloring needs a light garment that the mask
+    // separated cleanly from a plain background.
+    public const double MinimumRecolorLuminance = 0.7;
+    public const double MinimumGarmentCoverage = 0.1;
+    public const double MaximumGarmentCoverage = 0.9;
+
+    /// <summary>Whether the mask separated a garment from the background at all.</summary>
+    public static bool IsSeparated(GarmentMaskStats mask) =>
+        mask.Coverage is >= MinimumGarmentCoverage and <= MaximumGarmentCoverage;
+
+    /// <summary>Why a photo with this mask can't be recolored, or <see langword="null"/> when it can.</summary>
+    public static string? RecolorProblem(GarmentMaskStats mask) =>
+        !IsSeparated(mask) ? "the garment could not be separated from the background."
+        : mask.Luminance < MinimumRecolorLuminance ? "the garment is too dark."
+        : null;
+
+    /// <summary>Whether the template's helper images were made from its current base photo.</summary>
+    public static bool HasCurrentMaps(MockupTemplate template) =>
+        template.PrintMapsVersion is not null
+        && !string.IsNullOrEmpty(template.PrintMapsSourceUrl) && template.PrintMapsSourceUrl == template.BaseImageUrl;
+
+    /// <summary>
+    /// The realism layers for compositing <paramref name="designImage"/> onto <paramref name="template"/>,
+    /// with the garment recolored when <paramref name="garmentColor"/> is given.
+    /// </summary>
+    public static MockupLayers Layers(MockupTemplate template, DesignImage designImage, string? garmentColor)
+    {
+        var mapsReady = HasCurrentMaps(template);
+        var recolor = mapsReady && template.AllowRecolor && garmentColor is not null;
+        var prefix = mapsReady ? HelperKeyPrefix(template.Id, template.PrintMapsVersion!.Value) : null;
+        return new MockupLayers(
+            designImage.ImageWidthPx,
+            designImage.ImageHeightPx,
+            prefix is null ? null : DisplacementMapKey(prefix),
+            recolor ? GarmentMaskKey(prefix!) : null,
+            recolor ? garmentColor!.ToUpperInvariant() : null,
+            MultiplyDesign: mapsReady && template.GarmentIsLight && !recolor);
+    }
 }

@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Common.Models;
@@ -24,6 +25,11 @@ public interface IMockupTemplateService
 
     /// <summary>Deactivates a personal mock-up template the current Seller owns (soft — no hard delete column exists).</summary>
     Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Previews a base photo before it is saved: its garment mask and whether it can be recolored.
+    /// </summary>
+    Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Composites a design image onto a mock-up template's base photo (SRS 3.5.9 execution). Uses the

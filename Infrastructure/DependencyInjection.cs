@@ -143,6 +143,15 @@ public static class DependencyInjection
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
         services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
+        services.AddOptions<MockupOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Mockups));
+        services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
+        services.AddHostedService<SegmentationModelInstaller>();
+        services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();
+        services.AddSingleton<IDesignBackgroundRemover, ImageSharpDesignBackgroundRemover>();
+        services.AddScoped<IMockupMapService, MockupMapService>();
+        services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

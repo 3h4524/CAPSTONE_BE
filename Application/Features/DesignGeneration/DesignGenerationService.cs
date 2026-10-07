@@ -35,12 +35,21 @@ public sealed class DesignGenerationService(
     IUsageStatisticRepository usageStatistics,
     IImageGenerationProvider imageProvider,
     IPublicImageService publicImages,
+    IDesignBackgroundRemover backgroundRemover,
     IDesignGenerationQueue queue,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<StartGenerationRequestDto> validator) : IDesignGenerationService
 {
     private const string GeminiProvider = "gemini";
+
+    // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
+    private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
+
+    // Sent with the prompt (not stored in it) so the result has a plain backdrop that can be removed.
+    private const string GraphicPrintInstruction =
+        "Output only the print-ready artwork, centered, on a plain solid white background. "
+        + "No t-shirt, mockup, fabric, paper or photo backdrop, and no drop shadow around the artwork.";
     private static readonly TimeSpan StepTimeout = TimeSpan.FromMinutes(3);
 
     public async Task<Result<StartGenerationResponseDto>> StartAsync(
@@ -315,6 +324,12 @@ public sealed class DesignGenerationService(
                 continue;
             }
 
+            var productType = row.ProductId is Guid productId
+                ? await products.Query().Where(p => p.Id == productId).Select(p => p.ProductType).FirstOrDefaultAsync(cancellationToken)
+                : null;
+            var graphicPrint = productType is not null && GraphicPrintTypes.Contains(productType);
+            var requestPrompt = graphicPrint ? $"{prompt.GeneratedPrompt}\n{GraphicPrintInstruction}" : prompt.GeneratedPrompt;
+
             var successCount = 0;
             for (var variation = 0; variation < variationCount; variation++)
             {
@@ -331,7 +346,7 @@ public sealed class DesignGenerationService(
                 ImageGenerationResult result;
                 try
                 {
-                    result = await imageProvider.GenerateAsync(apiKeyPlain, prompt.GeneratedPrompt, aspectRatio, stepTimeout.Token);
+                    result = await imageProvider.GenerateAsync(apiKeyPlain, requestPrompt, aspectRatio, stepTimeout.Token);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
@@ -350,17 +365,22 @@ public sealed class DesignGenerationService(
                     continue;
                 }
 
+                var (imageBytes, mimeType) = graphicPrint
+                    ? CutOutBackground(result.ImageBytes!, result.MimeType!)
+                    : (result.ImageBytes!, result.MimeType!);
+
                 // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
                 // and a later regenerate with the same prompt can never overwrite an existing image.
                 var designImageId = Guid.NewGuid();
                 var storageKey = $"design-images/{designImageId:N}";
-                string imageUrl;
-                using (var stream = new MemoryStream(result.ImageBytes!))
+                PublicImageUploadResult uploaded;
+                using (var stream = new MemoryStream(imageBytes))
                 {
                     try
                     {
-                        imageUrl = await publicImages.UploadImageAsync(
-                            new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(result.MimeType)}", result.MimeType!, stream.Length, stream),
+                        // Gemini returns JPEG, so the stored size comes from the upload rather than the bytes.
+                        uploaded = await publicImages.UploadImageWithMetadataAsync(
+                            new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
                             storageKey,
                             stepTimeout.Token);
                     }
@@ -388,7 +408,9 @@ public sealed class DesignGenerationService(
                 };
                 await apiUsageRecords.AddAsync(usageRecord, cancellationToken: cancellationToken);
 
-                var (width, height) = TryReadPngDimensions(result.ImageBytes!);
+                var (width, height) = uploaded.WidthPx > 0 && uploaded.HeightPx > 0
+                    ? (uploaded.WidthPx, uploaded.HeightPx)
+                    : TryReadPngDimensions(imageBytes);
                 await designImages.AddAsync(new DesignImage
                 {
                     Id = designImageId,
@@ -400,11 +422,11 @@ public sealed class DesignGenerationService(
                     ImageGeneratorModel = result.ModelUsed,
                     StorageProvider = "cloudinary",
                     StorageKey = storageKey,
-                    ImageUrl = imageUrl,
+                    ImageUrl = uploaded.Url,
                     ImageWidthPx = width,
                     ImageHeightPx = height,
-                    FileFormat = FileExtension(result.MimeType),
-                    FileSizeMb = Math.Round(result.ImageBytes!.Length / 1024m / 1024m, 3),
+                    FileFormat = FileExtension(mimeType),
+                    FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
                     ApprovalStatus = "pending",
                     // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead.
                     VariationIndex = variation + 1,
@@ -648,6 +670,20 @@ public sealed class DesignGenerationService(
     /// System.Drawing/ImageSharp dependency. Gemini's documented output format is PNG; any other
     /// format falls back to 0x0 rather than guessing.
     /// </summary>
+    // A transparent PNG when the backdrop could be removed; otherwise the image exactly as generated.
+    private (byte[] Bytes, string MimeType) CutOutBackground(byte[] bytes, string mimeType)
+    {
+        try
+        {
+            return backgroundRemover.RemoveBackground(bytes) is { } png ? (png, "image/png") : (bytes, mimeType);
+        }
+        catch (Exception)
+        {
+            // An image the processor can't read is still a valid design; keep it unchanged.
+            return (bytes, mimeType);
+        }
+    }
+
     private static (int Width, int Height) TryReadPngDimensions(byte[] bytes)
     {
         const string pngSignature = "\x89PNG\r\n\x1a\n";

@@ -15,6 +15,9 @@ public sealed class CreateMockupTemplateValidator : AbstractValidator<CreateMock
         RuleFor(x => x.Y).GreaterThanOrEqualTo(0);
         RuleFor(x => x.Width).GreaterThan(0);
         RuleFor(x => x.Height).GreaterThan(0);
+        RuleFor(x => x.GarmentColor)
+            .Matches(MockupRules.GarmentColorPattern).WithMessage("Garment color must look like #1F2A44.")
+            .When(x => x.GarmentColor is not null);
         RuleFor(x => x.BaseImage)
             .Cascade(CascadeMode.Stop)
             .NotNull().WithMessage("A base mock-up photo is required.")

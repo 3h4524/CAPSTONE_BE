@@ -42,6 +42,7 @@ public sealed class DesignGenerationProcessingTests
         var images = await db.DesignImages.ToListAsync();
         images.Should().HaveCount(3);
         images.Should().OnlyContain(i => i.StorageKey == $"design-images/{i.Id:N}");
+        images.Should().OnlyContain(i => i.ImageWidthPx == 1024 && i.ImageHeightPx == 768, "Gemini's JPEG size comes from the upload");
         (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
         (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
             .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.ImageReviewRequired);
@@ -104,10 +105,52 @@ public sealed class DesignGenerationProcessingTests
         result.Error.Code.Should().Be("DesignGeneration.NotRetryable");
     }
 
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TshirtDesign_AsksForAPlainBackdropAndStoresTheCutOut()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success([1, 2, 3], "image/jpeg", "test-model", 0.04m));
+        var remover = new Mock<IDesignBackgroundRemover>();
+        remover.Setup(x => x.RemoveBackground(It.IsAny<byte[]>())).Returns(Png);
+        var storage = new Mock<IPublicImageService>();
+
+        await CreateService(db, provider: provider, backgroundRemover: remover.Object, storage: storage).ProcessBatchJobAsync(jobId);
+
+        provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.Is<string>(p => p.Contains("plain solid white background")),
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        storage.Verify(x => x.UploadImageWithMetadataAsync(It.Is<UploadFileDto>(f => f.ContentType == "image/png"),
+            It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.SingleAsync()).FileFormat.Should().Be("png");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenTheCutOutFails_KeepsTheImageAsGenerated()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var remover = new Mock<IDesignBackgroundRemover>();
+        remover.Setup(x => x.RemoveBackground(It.IsAny<byte[]>())).Throws(new InvalidOperationException("unreadable"));
+
+        await CreateService(db, backgroundRemover: remover.Object).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
+    }
+
     private static AppDbContext CreateContext() =>
         new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
-    private static DesignGenerationService CreateService(AppDbContext db, IDesignGenerationQueue? queue = null)
+    private static DesignGenerationService CreateService(
+        AppDbContext db,
+        IDesignGenerationQueue? queue = null,
+        Mock<IImageGenerationProvider>? provider = null,
+        IDesignBackgroundRemover? backgroundRemover = null,
+        Mock<IPublicImageService>? storage = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -116,13 +159,16 @@ public sealed class DesignGenerationProcessingTests
         var credentials = new Mock<IApiKeyCredentials>();
         credentials.Setup(x => x.Unprotect(It.IsAny<string>())).Returns("plain-key");
 
-        var provider = new Mock<IImageGenerationProvider>();
-        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m));
+        if (provider is null)
+        {
+            provider = new Mock<IImageGenerationProvider>();
+            provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m));
+        }
 
-        var storage = new Mock<IPublicImageService>();
-        storage.Setup(x => x.UploadImageAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((UploadFileDto _, string key, CancellationToken _) => $"https://img.example/{key}.png");
+        storage ??= new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UploadFileDto _, string key, CancellationToken _) => new PublicImageUploadResult($"https://img.example/{key}.png", 1024, 768));
 
         return new DesignGenerationService(
             currentUser.Object,
@@ -130,7 +176,7 @@ public sealed class DesignGenerationProcessingTests
             new Repository<AiPrompt>(db), new Repository<DesignImage>(db), new Repository<ApiUsageRecord>(db), new Repository<BatchJobLog>(db),
             new Repository<DesignTemplate>(db), new Repository<StyleArtPreset>(db),
             new ApiKeyRepository(db), credentials.Object, new SubscriptionRepository(db), new UsageStatisticRepository(db),
-            provider.Object, storage.Object, queue ?? Mock.Of<IDesignGenerationQueue>(), db,
+            provider.Object, storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator());
     }
 

@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Segmentation model for mock-up photos (too large for the repository; see scripts/Get-SegmentationModel.ps1)
+models/*.onnx

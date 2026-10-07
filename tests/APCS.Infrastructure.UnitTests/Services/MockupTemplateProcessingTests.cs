@@ -37,7 +37,7 @@ public sealed class MockupTemplateProcessingTests
             designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.MockupImageUrl.Should().Contain("l_apcs:design-images:prompt-id:0,g_north_west,x_820,y_640,w_900,h_1100,c_fit,fl_layer_apply");
+        result.Value.MockupImageUrl.Should().Contain("l_apcs:design-images:prompt-id:0/c_scale,w_900,h_900/fl_layer_apply,g_north_west,x_820,y_740/", "a square design is centered in the 900x1100 print area");
 
         db.ChangeTracker.Clear();
         var saved = await db.MockupImages.SingleAsync();
@@ -110,7 +110,7 @@ public sealed class MockupTemplateProcessingTests
         result.Value.GeneratedCount.Should().Be(1);
         result.Value.Images.Should().HaveCount(2);
         result.Value.Images.Should().ContainSingle(i => i.MockupTemplateId == seed.TeeTemplateId)
-            .Which.MockupImageUrl.Should().Contain("x_500,y_400,w_600,h_700");
+            .Which.MockupImageUrl.Should().Contain("c_scale,w_600,h_600/fl_layer_apply,g_north_west,x_500,y_450/", "the edited 600x700 print area");
         db.ChangeTracker.Clear();
         (await db.MockupImages.CountAsync()).Should().Be(3);
     }
@@ -131,10 +131,12 @@ public sealed class MockupTemplateProcessingTests
             new Repository<MockupTemplate>(db), new Repository<BatchJob>(db), new Repository<BatchJobProduct>(db),
             new Repository<Product>(db), new Repository<DesignImage>(db), new Repository<MockupImage>(db),
             images, new CloudinaryMockupCompositor(Microsoft.Extensions.Options.Options.Create(new CloudinaryOptions { Folder = "apcs" })),
+            Mock.Of<IMockupMapService>(),
             db,
             new ApplyMockupTemplatesValidator(), new CreateMockupTemplateValidator(),
             new UpdateMockupTemplateValidator(), new GenerateMockupImageValidator(),
-            new FakeTimeProvider(UtcNow));
+            new FakeTimeProvider(UtcNow),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MockupTemplateService>.Instance);
     }
 
     private static (Guid BatchJobId, Guid TeeTemplateId, Guid MugTemplateId) SeedBatchJob(AppDbContext db)

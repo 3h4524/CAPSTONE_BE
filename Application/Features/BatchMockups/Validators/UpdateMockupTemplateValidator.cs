@@ -15,6 +15,9 @@ public sealed class UpdateMockupTemplateValidator : AbstractValidator<UpdateMock
         RuleFor(x => x.Y).GreaterThanOrEqualTo(0);
         RuleFor(x => x.Width).GreaterThan(0);
         RuleFor(x => x.Height).GreaterThan(0);
+        RuleFor(x => x.GarmentColor)
+            .Matches(MockupRules.GarmentColorPattern).WithMessage("Garment color must look like #1F2A44.")
+            .When(x => x.GarmentColor is not null);
         // Unlike Create, the photo is optional here — omitting it keeps the existing one.
         RuleFor(x => x.BaseImage)
             .Must(MockupImageValidators.IsSupportedImage).WithMessage("The base photo must be an image file.")

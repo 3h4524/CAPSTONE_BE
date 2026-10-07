@@ -6,6 +6,7 @@ using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Validators;
 using APCS.Domain.Entities;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using MockQueryable.Moq;
 using Moq;
 
@@ -297,8 +298,8 @@ public sealed class MockupTemplateServiceTests
         var mockupImages = MockRepo<MockupImage>();
         var captured = CaptureAdded(mockupImages);
         var compositor = new Mock<IMockupCompositor>();
-        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>()))
-            .Returns<string, string, MockupPosition>((baseUrl, overlay, position) => $"{baseUrl}?l={overlay}&x={position.X}");
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((baseUrl, overlay, position, _) => $"{baseUrl}?l={overlay}&x={position.X}");
 
         var result = await CreateService(userId, templates: templates, products: products, designImages: designImages,
                 mockupImages: mockupImages, compositor: compositor)
@@ -307,7 +308,7 @@ public sealed class MockupTemplateServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.MockupImageUrl.Should().Be("https://cdn/base.jpg?l=design-images/p/0&x=820");
         captured.Should().ContainSingle();
-        compositor.Verify(x => x.BuildCompositeUrl("https://cdn/base.jpg", "design-images/p/0", new MockupPosition(820, 640, 900, 1100)), Times.Once);
+        compositor.Verify(x => x.BuildCompositeUrl("https://cdn/base.jpg", "design-images/p/0", new MockupPosition(820, 640, 900, 1100), It.IsAny<MockupLayers?>()), Times.Once);
     }
 
     [TestMethod]
@@ -333,14 +334,14 @@ public sealed class MockupTemplateServiceTests
         var mockupImages = MockRepo<MockupImage>();
         CaptureAdded(mockupImages);
         var compositor = new Mock<IMockupCompositor>();
-        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>())).Returns("https://cdn/composed.jpg");
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>())).Returns("https://cdn/composed.jpg");
 
         var result = await CreateService(userId, templates: templates, products: products, designImages: designImages,
                 mockupImages: mockupImages, compositor: compositor)
             .GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, 50, 60, 300, 400));
 
         result.IsSuccess.Should().BeTrue();
-        compositor.Verify(x => x.BuildCompositeUrl("https://cdn/base.jpg", "design-images/p/0", new MockupPosition(50, 60, 300, 400)), Times.Once);
+        compositor.Verify(x => x.BuildCompositeUrl("https://cdn/base.jpg", "design-images/p/0", new MockupPosition(50, 60, 300, 400), It.IsAny<MockupLayers?>()), Times.Once);
     }
 
     [TestMethod]
@@ -367,7 +368,7 @@ public sealed class MockupTemplateServiceTests
             ImageWidthPx = 1024, ImageHeightPx = 1024, FileFormat = "png", FileSizeMb = 1, ApprovalStatus = "pending", VariationIndex = 0, GenerationTimeSeconds = 1
         });
         var compositor = new Mock<IMockupCompositor>();
-        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>()))
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
             .Throws(new InvalidOperationException("Base image URL does not contain an '/upload/' segment."));
 
         var result = await CreateService(userId, templates: templates, products: products, designImages: designImages, compositor: compositor)
@@ -568,6 +569,461 @@ public sealed class MockupTemplateServiceTests
 
     // ---- test infrastructure ----
 
+    // ---- Realistic print maps and garment recolor ----
+
+    [TestMethod]
+    public async Task CreateAsync_GeneratesPrintMapsAndMarksThemCurrent()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService();
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates,
+                images: MockImages(new PublicImageUploadResult("https://cdn/x.jpg", 2000, 2000)), mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Classic Tee", "tshirt", 100, 100, 500, 500, SampleFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RealisticPrintReady.Should().BeTrue();
+        added.Single().PrintMapsSourceUrl.Should().Be("https://cdn/x.jpg");
+        mapService.Verify(x => x.StoreHelpersAsync(It.Is<string>(p => p.StartsWith($"mockup-templates/{added.Single().Id:N}-")), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WhenMapGenerationFails_StillSavesThePlainTemplate()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService();
+        mapService.Setup(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("unknown image format"));
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Classic Tee", "tshirt", 100, 100, 500, 500, SampleFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RealisticPrintReady.Should().BeFalse();
+        added.Single().PrintMapsSourceUrl.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithRecolorOnADarkGarment_RejectsAndDeletesTheUpload()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var images = MockImages();
+        var mapService = MockMapService(luminance: 0.15);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, images: images, mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Black Tee", "tshirt", 100, 100, 500, 500, SampleFile(), AllowRecolor: true));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.NotRecolorable");
+        added.Should().BeEmpty();
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithRecolorOnALightGarment_AllowsRecolorAndExposesTheMask()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService();
+        var compositor = StubCompositor();
+        compositor.Setup(x => x.BuildAssetUrl(It.IsAny<string>(), It.IsAny<string>())).Returns<string, string>((_, key) => $"https://cdn/{key}.png");
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, compositor: compositor, mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("White Tee", "tshirt", 100, 100, 500, 500, SampleFile(), AllowRecolor: true));
+
+        result.IsSuccess.Should().BeTrue();
+        added.Single().AllowRecolor.Should().BeTrue();
+        result.Value.GarmentMaskUrl.Should().Be($"https://cdn/mockup-templates/{added.Single().Id:N}-{added.Single().PrintMapsVersion}-mask.png");
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithRecolorAndAColor_StoresTheTemplateColor()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService();
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, compositor: StubCompositor(), mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Navy Tee", "tshirt", 100, 100, 500, 500, SampleFile(), AllowRecolor: true, GarmentColor: "#1f2a44"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GarmentColor.Should().Be("#1F2A44");
+        added.Single().GarmentColor.Should().Be("#1F2A44");
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithAColorButNoRecolor_ReturnsConflict()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Navy Tee", "tshirt", 100, 100, 500, 500, SampleFile(), GarmentColor: "#1F2A44"));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.RecolorNotAllowed");
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_TurningRecolorOff_ClearsTheTemplateColor()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = 7;
+        template.AllowRecolor = true;
+        template.GarmentColor = "#1F2A44";
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+
+        var result = await CreateService(userId, templates: templates)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, null));
+
+        result.IsSuccess.Should().BeTrue();
+        template.AllowRecolor.Should().BeFalse();
+        template.GarmentColor.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WithoutBatchColors_UsesTheTemplatesOwnColor()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = 7;
+        template.AllowRecolor = true;
+        template.GarmentColor = "#1F2A44";
+
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"]}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: StubCompositor())
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().ContainSingle().Which.GarmentColor.Should().Be("#1F2A44");
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WhenMapsAreMissing_BackfillsThemWithoutANewPhoto()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var mapService = MockMapService();
+
+        var result = await CreateService(userId, templates: templates, mapService: mapService)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, null));
+
+        result.IsSuccess.Should().BeTrue();
+        template.PrintMapsSourceUrl.Should().Be(template.BaseImageUrl);
+        mapService.Verify(x => x.StoreHelpersAsync(It.Is<string>(p => p.StartsWith($"mockup-templates/{template.Id:N}-")), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_NewPhotoSmallerThanThePrintArea_IsRejectedBeforeAnythingIsStored()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var images = MockImages();
+        var mapService = MockMapService(width: 700, height: 700);
+
+        var result = await CreateService(userId, templates: templates, images: images, mapService: mapService)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 1418, 1475, 1152, 1039, SampleFile()));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        template.BaseImageUrl.Should().Be("https://cdn/base.jpg");
+        images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        mapService.Verify(x => x.StoreHelpersAsync(It.IsAny<string>(), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_PhotoAlreadyAnalyzed_IsNotAnalyzedAgainAndOnlyTheRecolorChoiceChanges()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        template.GarmentIsLight = true;
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = 7;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var images = MockImages();
+        var mapService = MockMapService();
+
+        var result = await CreateService(userId, templates: templates, images: images, mapService: mapService)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, null, AllowRecolor: true));
+
+        result.IsSuccess.Should().BeTrue();
+        template.AllowRecolor.Should().BeTrue();
+        template.PrintMapsVersion.Should().Be(7);
+        mapService.Verify(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_WithCurrentMaps_PassesMapKeysAndDesignSize()
+    {
+        var (service, compositor, templateId, designImageId) = CompositeCase(mapsCurrent: true, allowRecolor: false);
+
+        var result = await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
+
+        result.IsSuccess.Should().BeTrue();
+        compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
+            It.Is<MockupLayers?>(l => l!.DesignWidthPx == 1024 && l.DisplacementMapKey == $"mockup-templates/{templateId:N}-7-displace"
+                && l.GarmentColor == null && l.MultiplyDesign)), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_WithAColor_RecolorsInsteadOfMultiplyingTheDesign()
+    {
+        var (service, compositor, templateId, designImageId) = CompositeCase(mapsCurrent: true, allowRecolor: true);
+
+        await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null, "#1F2A44"));
+
+        compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
+            It.Is<MockupLayers?>(l => l!.GarmentColor == "#1F2A44" && !l.MultiplyDesign)), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_OnADarkGarment_DoesNotMultiplyDesigns()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService(luminance: 0.15);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Black Tee", "tshirt", 100, 100, 500, 500, SampleFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        added.Single().GarmentIsLight.Should().BeFalse();
+        added.Single().PrintMapsVersion.Should().NotBeNull();
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_WithStaleMaps_FallsBackToNoMaps()
+    {
+        var (service, compositor, templateId, designImageId) = CompositeCase(mapsCurrent: false, allowRecolor: false);
+
+        await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
+
+        compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
+            It.Is<MockupLayers?>(l => l!.DisplacementMapKey == null && !l.MultiplyDesign)), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_ColorOnATemplateWithoutRecolor_ReturnsConflict()
+    {
+        var (service, _, templateId, designImageId) = CompositeCase(mapsCurrent: true, allowRecolor: false);
+
+        var result = await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null, "#1F2A44"));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.RecolorNotAllowed");
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_ColorOnARecolorableTemplate_StoresTheColor()
+    {
+        var (service, compositor, templateId, designImageId) = CompositeCase(mapsCurrent: true, allowRecolor: true);
+
+        var result = await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null, "#1f2a44"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GarmentColor.Should().Be("#1F2A44");
+        compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
+            It.Is<MockupLayers?>(l => l!.GarmentMaskKey == $"mockup-templates/{templateId:N}-7-mask" && l.GarmentColor == "#1F2A44")), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WithColors_MakesOneMockupPerColorOnlyForRecolorableTemplates()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var recolorId = Guid.NewGuid();
+        var plainId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var recolorable = MakeTemplate(recolorId, "tshirt");
+        recolorable.PrintMapsSourceUrl = recolorable.BaseImageUrl;
+        recolorable.PrintMapsVersion = 7;
+        recolorable.AllowRecolor = true;
+
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{recolorId:D}\",\"{plainId:D}\"],\"mockupGarmentColors\":[\"#1F2A44\",\"#B22222\"]}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, _, _, layers) => $"https://cdn/{Guid.NewGuid():N}?c={layers?.GarmentColor}");
+
+        var result = await CreateService(userId, templates: TemplateRepository(recolorable, MakeTemplate(plainId, "tshirt")),
+                batches: batches, rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image),
+                mockupImages: mockupImages, compositor: compositor)
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GeneratedCount.Should().Be(3);
+        added.Where(m => m.MockupTemplateId == recolorId).Select(m => m.GarmentColor).Should().BeEquivalentTo(["#1F2A44", "#B22222"]);
+        added.Where(m => m.MockupTemplateId == plainId).Should().ContainSingle().Which.GarmentColor.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_StoresGarmentColorsUppercased()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var batch = new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "completed", Config = "{}" };
+        var batches = MockBatches(batch);
+        batches.Setup(r => r.UpdateAsync(It.IsAny<BatchJob>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: batches, rows: MockRows())
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([templateId], ["#1f2a44"]));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GarmentColors.Should().Equal("#1F2A44");
+        batch.Config.Should().Contain("\"mockupGarmentColors\":[\"#1F2A44\"]");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithAnInvalidColor_ReturnsValidationError()
+    {
+        var result = await CreateService(Guid.NewGuid())
+            .ApplyAsync(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto([Guid.NewGuid()], ["navy"]));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+    }
+
+    private static (MockupTemplateService Service, Mock<IMockupCompositor> Compositor, Guid TemplateId, Guid DesignImageId) CompositeCase(bool mapsCurrent, bool allowRecolor)
+    {
+        var userId = Guid.NewGuid();
+        var (_, product, image) = MakeProductRow(userId, Guid.NewGuid(), "tshirt");
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.PrintMapsSourceUrl = mapsCurrent ? template.BaseImageUrl : "https://cdn/an-older-photo.jpg";
+        template.PrintMapsVersion = 7;
+        template.AllowRecolor = allowRecolor;
+        template.GarmentIsLight = true;
+        var mockupImages = MockRepo<MockupImage>();
+        CaptureAdded(mockupImages);
+        var compositor = StubCompositor();
+
+        var service = CreateService(userId, templates: TemplateRepository(template), products: MockProducts(product),
+            designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: compositor);
+        return (service, compositor, template.Id, image.Id);
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_LightGarment_ReturnsTheMaskAsADataUrl()
+    {
+        var result = await CreateService(Guid.NewGuid(), mapService: MockMapService()).PreviewGarmentMaskAsync(SampleFile());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Recolorable.Should().BeTrue();
+        result.Value.Reason.Should().BeNull();
+        result.Value.MaskDataUrl.Should().Be("data:image/png;base64,CQgH");
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_DarkGarment_SaysWhyItCannotBeRecolored()
+    {
+        var result = await CreateService(Guid.NewGuid(), mapService: MockMapService(luminance: 0.2)).PreviewGarmentMaskAsync(SampleFile());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Recolorable.Should().BeFalse();
+        result.Value.Reason.Should().Contain("too dark");
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_UnreadablePhoto_IsNotRecolorableRatherThanAnError()
+    {
+        var mapService = MockMapService();
+        mapService.Setup(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("unknown format"));
+
+        var result = await CreateService(Guid.NewGuid(), mapService: mapService).PreviewGarmentMaskAsync(SampleFile());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Recolorable.Should().BeFalse();
+        result.Value.MaskDataUrl.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_ModelNotInstalled_IsRejectedBeforeAnythingIsStored()
+    {
+        var images = MockImages();
+        var templates = TemplateRepository();
+        var mapService = MockMapService();
+        mapService.SetupGet(x => x.IsAvailable).Returns(false);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, images: images, mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Tee", "tshirt", 10, 10, 100, 100, SampleFile()));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.ProcessingUnavailable");
+        images.Invocations.Should().BeEmpty();
+        mapService.Verify(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_ModelNotInstalled_SaysSo()
+    {
+        var mapService = MockMapService();
+        mapService.SetupGet(x => x.IsAvailable).Returns(false);
+
+        var result = await CreateService(Guid.NewGuid(), mapService: mapService).PreviewGarmentMaskAsync(SampleFile());
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.ProcessingUnavailable");
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_NotAnImage_ReturnsValidationError()
+    {
+        var file = new UploadFileDto("notes.txt", "text/plain", 4, new MemoryStream([1, 2, 3, 4]));
+
+        var result = await CreateService(Guid.NewGuid()).PreviewGarmentMaskAsync(file);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+    }
+
+    private static Mock<IMockupMapService> MockMapService(double coverage = 0.35, double luminance = 0.93, int width = 0, int height = 0)
+    {
+        var mapService = new Mock<IMockupMapService>();
+        mapService.SetupGet(x => x.IsAvailable).Returns(true);
+        mapService.Setup(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((byte[] _, bool preview, CancellationToken _) => new PreparedBasePhoto(
+                [9, 8, 7], preview ? null : [1], new GarmentMaskStats(coverage, luminance), width, height));
+        mapService.Setup(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync([1, 2, 3]);
+        mapService.Setup(x => x.StoreHelpersAsync(It.IsAny<string>(), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        return mapService;
+    }
+
     private static UploadFileDto SampleFile() => new("photo.jpg", "image/jpeg", 4, new MemoryStream([1, 2, 3, 4]));
 
     private static (BatchJobProduct Row, Product Product, DesignImage Image) MakeProductRow(Guid userId, Guid batchJobId, string productType)
@@ -595,7 +1051,7 @@ public sealed class MockupTemplateServiceTests
     private static Mock<IMockupCompositor> StubCompositor()
     {
         var compositor = new Mock<IMockupCompositor>();
-        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>()))
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
             .Returns("https://cdn/composed.jpg");
         return compositor;
     }
@@ -610,7 +1066,8 @@ public sealed class MockupTemplateServiceTests
         Mock<IRepository<MockupImage>>? mockupImages = null,
         Mock<IPublicImageService>? images = null,
         Mock<IMockupCompositor>? compositor = null,
-        Mock<IUnitOfWork>? unitOfWork = null)
+        Mock<IUnitOfWork>? unitOfWork = null,
+        Mock<IMockupMapService>? mapService = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(userId.HasValue);
@@ -626,12 +1083,14 @@ public sealed class MockupTemplateServiceTests
             (mockupImages ?? new Mock<IRepository<MockupImage>>()).Object,
             (images ?? MockImages()).Object,
             (compositor ?? new Mock<IMockupCompositor>()).Object,
+            (mapService ?? MockMapService()).Object,
             (unitOfWork ?? MockUnitOfWork()).Object,
             new ApplyMockupTemplatesValidator(),
             new CreateMockupTemplateValidator(),
             new UpdateMockupTemplateValidator(),
             new GenerateMockupImageValidator(),
-            TimeProvider.System);
+            TimeProvider.System,
+            NullLogger<MockupTemplateService>.Instance);
     }
 
     private static Mock<IRepository<MockupTemplate>> TemplateRepository(params MockupTemplate[] items)

@@ -1,3 +1,4 @@
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using FluentValidation;
 
@@ -17,5 +18,8 @@ public sealed class GenerateMockupImageValidator : AbstractValidator<GenerateMoc
         RuleFor(x => x.Y!.Value).GreaterThanOrEqualTo(0).When(x => x.Y is not null);
         RuleFor(x => x.Width!.Value).GreaterThan(0).When(x => x.Width is not null);
         RuleFor(x => x.Height!.Value).GreaterThan(0).When(x => x.Height is not null);
+        RuleFor(x => x.GarmentColor)
+            .Matches(MockupRules.GarmentColorPattern).WithMessage("Garment color must look like #1F2A44.")
+            .When(x => x.GarmentColor is not null);
     }
 }

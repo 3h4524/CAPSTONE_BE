@@ -30,7 +30,8 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
         try
         {
             var result = await service.CreateAsync(
-                new CreateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage),
+                new CreateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage, form.AllowRecolor,
+                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor),
                 cancellationToken);
             return result.ToActionResult(this);
         }
@@ -52,13 +53,32 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
         {
             var result = await service.UpdateAsync(
                 id,
-                new UpdateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage),
+                new UpdateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage, form.AllowRecolor,
+                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor),
                 cancellationToken);
             return result.ToActionResult(this);
         }
         finally
         {
             baseImage?.Content.Dispose();
+        }
+    }
+
+    /// <summary>Previews recoloring for a base photo that is not saved yet.</summary>
+    [HttpPost("garment-mask-preview")]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(GarmentMaskPreviewResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> PreviewGarmentMask(IFormFile? baseImage, CancellationToken cancellationToken)
+    {
+        var photo = baseImage.ToUploadFileDto();
+        try
+        {
+            return (await service.PreviewGarmentMaskAsync(photo, cancellationToken)).ToActionResult(this);
+        }
+        finally
+        {
+            photo?.Content.Dispose();
         }
     }
 

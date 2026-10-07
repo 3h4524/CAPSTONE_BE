@@ -1373,6 +1373,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("created_at");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.Property(e => e.DesignImageId).HasColumnName("design_image_id");
+            entity.Property(e => e.GarmentColor)
+                .HasMaxLength(7)
+                .HasColumnName("garment_color");
             entity.Property(e => e.GenerationTimeSeconds)
                 .HasPrecision(10, 2)
                 .HasColumnName("generation_time_seconds");
@@ -1431,10 +1434,22 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.AllowRecolor)
+                .HasDefaultValue(false)
+                .HasColumnName("allow_recolor");
+            entity.Property(e => e.BackgroundRemoved)
+                .HasDefaultValue(false)
+                .HasColumnName("background_removed");
             entity.Property(e => e.BaseImageUrl).HasColumnName("base_image_url");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
+            entity.Property(e => e.GarmentColor)
+                .HasMaxLength(7)
+                .HasColumnName("garment_color");
+            entity.Property(e => e.GarmentIsLight)
+                .HasDefaultValue(false)
+                .HasColumnName("garment_is_light");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
@@ -1451,6 +1466,8 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
                 .HasColumnName("print_area_config");
+            entity.Property(e => e.PrintMapsSourceUrl).HasColumnName("print_maps_source_url");
+            entity.Property(e => e.PrintMapsVersion).HasColumnName("print_maps_version");
             entity.Property(e => e.ProductType)
                 .HasMaxLength(50)
                 .HasColumnName("product_type");

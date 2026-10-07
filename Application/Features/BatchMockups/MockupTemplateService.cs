@@ -12,6 +12,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.BatchMockups;
 
@@ -26,12 +27,14 @@ public sealed class MockupTemplateService(
     IRepository<MockupImage> mockupImages,
     IPublicImageService images,
     IMockupCompositor compositor,
+    IMockupMapService mapService,
     IUnitOfWork unitOfWork,
     IValidator<ApplyMockupTemplatesRequestDto> applyValidator,
     IValidator<CreateMockupTemplateRequestDto> createValidator,
     IValidator<UpdateMockupTemplateRequestDto> updateValidator,
     IValidator<GenerateMockupImageRequestDto> generateValidator,
-    TimeProvider timeProvider) : IMockupTemplateService
+    TimeProvider timeProvider,
+    ILogger<MockupTemplateService> logger) : IMockupTemplateService
 {
     public async Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListAsync(string? productType, CancellationToken cancellationToken = default)
     {
@@ -46,21 +49,9 @@ public sealed class MockupTemplateService(
                 && (string.IsNullOrEmpty(normalizedType) || template.ProductType.ToLower() == normalizedType))
             .OrderByDescending(template => template.UsageCount)
             .ThenBy(template => template.Name)
-            .Select(template => new MockupTemplateResponseDto(
-                template.Id,
-                template.Name,
-                template.ProductType,
-                template.BaseImageUrl,
-                template.PreviewImageUrl,
-                template.PrintAreaConfig,
-                template.OutputWidthPx,
-                template.OutputHeightPx,
-                template.UsageCount ?? 0,
-                template.IsSystemTemplate == true,
-                template.UserId == userId))
             .ToListAsync(cancellationToken);
 
-        return Result.Success<IReadOnlyList<MockupTemplateResponseDto>>(items);
+        return Result.Success<IReadOnlyList<MockupTemplateResponseDto>>(items.Select(template => Map(template, userId)).ToList());
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> GetSelectionAsync(Guid batchJobId, CancellationToken cancellationToken = default)
@@ -72,7 +63,7 @@ public sealed class MockupTemplateService(
         if (batch is null)
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.BatchNotFound());
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, ReadSelection(batch.Config)));
+        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config)));
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default)
@@ -109,11 +100,12 @@ public sealed class MockupTemplateService(
         if (incompatible is not null)
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.IncompatibleTemplate(incompatible.Name));
 
-        batch.Config = WriteSelection(batch.Config, request.TemplateIds);
+        var colors = (request.GarmentColors ?? []).Select(color => color.ToUpperInvariant()).ToList();
+        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors);
         batch.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batches.UpdateAsync(batch, saveChange: true, cancellationToken);
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds));
+        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors));
     }
 
     public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default)
@@ -132,11 +124,20 @@ public sealed class MockupTemplateService(
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
         }
 
+        if (!mapService.IsAvailable)
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.ProcessingUnavailable());
+
         var templateId = Guid.NewGuid();
         var storageKey = StorageKey(templateId);
-        var uploaded = await images.UploadImageWithMetadataAsync(request.BaseImage!, storageKey, cancellationToken);
-
+        var photo = await ReadAllAsync(request.BaseImage!.Content, cancellationToken);
+        var prepared = await TryPrepareAsync(photo, cancellationToken);
         var position = new MockupPosition(request.X, request.Y, request.Width, request.Height);
+        // Checked against the analyzed photo first, so a rejected request leaves nothing stored.
+        if (prepared is { WidthPx: > 0, HeightPx: > 0 } && !FitsWithin(position, prepared.WidthPx, prepared.HeightPx))
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
+
+        var uploaded = await UploadPhotoAsync(request.BaseImage, photo, storageKey, cancellationToken);
+
         if (!FitsWithin(position, uploaded.WidthPx, uploaded.HeightPx))
         {
             await TryDeleteImageAsync(storageKey, cancellationToken);
@@ -160,6 +161,14 @@ public sealed class MockupTemplateService(
             CreatedAt = now,
             UpdatedAt = now
         };
+
+        var recolorError = await ApplyPreparedAsync(template, prepared, request.AllowRecolor, cancellationToken)
+            ?? ApplyGarmentColor(template, request.GarmentColor);
+        if (recolorError is not null)
+        {
+            await TryDeleteImageAsync(storageKey, cancellationToken);
+            return Result.Failure<MockupTemplateResponseDto>(recolorError);
+        }
 
         try
         {
@@ -211,19 +220,54 @@ public sealed class MockupTemplateService(
         var outputHeight = template.OutputHeightPx;
         var storageKey = StorageKey(template.Id);
 
+        // The helper images are derived once per photo: again only for a new photo, or when they are missing.
+        var reprocess = request.BaseImage is not null || !MockupRules.HasCurrentMaps(template);
+        if (reprocess && !mapService.IsAvailable)
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.ProcessingUnavailable());
+
+        byte[]? photo = null;
         if (request.BaseImage is not null)
-        {
-            var uploaded = await images.UploadImageWithMetadataAsync(request.BaseImage, storageKey, cancellationToken);
-            template.BaseImageUrl = uploaded.Url;
-            outputWidth = uploaded.WidthPx;
-            outputHeight = uploaded.HeightPx;
-        }
+            photo = await ReadAllAsync(request.BaseImage.Content, cancellationToken);
+        else if (reprocess)
+            photo = await TryDownloadAsync(template.BaseImageUrl, cancellationToken);
 
         var position = new MockupPosition(request.X, request.Y, request.Width, request.Height);
+        PreparedBasePhoto? prepared = null;
+        if (photo is not null)
+        {
+            prepared = await TryPrepareAsync(photo, cancellationToken);
+            // Checked before anything is stored, so a rejected request does not replace the photo.
+            if (prepared is { WidthPx: > 0, HeightPx: > 0 } && !FitsWithin(position, prepared.WidthPx, prepared.HeightPx))
+                return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
+
+            if (request.BaseImage is not null)
+            {
+                var uploaded = await UploadPhotoAsync(request.BaseImage, photo, storageKey, cancellationToken);
+                template.BaseImageUrl = uploaded.Url;
+                outputWidth = uploaded.WidthPx;
+                outputHeight = uploaded.HeightPx;
+            }
+        }
+
         if (!FitsWithin(position, outputWidth, outputHeight))
         {
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
         }
+
+        if (photo is not null)
+        {
+            if (await ApplyPreparedAsync(template, prepared, request.AllowRecolor, cancellationToken) is { } recolorError)
+                return Result.Failure<MockupTemplateResponseDto>(recolorError);
+        }
+        else
+        {
+            if (request.AllowRecolor && !template.GarmentIsLight)
+                return Result.Failure<MockupTemplateResponseDto>(MockupErrors.NotRecolorable("the garment is too dark or could not be separated from the background."));
+            template.AllowRecolor = request.AllowRecolor;
+        }
+
+        if (ApplyGarmentColor(template, request.GarmentColor) is { } colorError)
+            return Result.Failure<MockupTemplateResponseDto>(colorError);
 
         template.Name = request.Name.Trim();
         template.ProductType = request.ProductType;
@@ -305,10 +349,14 @@ public sealed class MockupTemplateService(
         if (position is null)
             return Result.Failure<MockupImageResponseDto>(MockupErrors.InvalidPrintArea());
 
+        var layers = MockupRules.Layers(template, designImage, request.GarmentColor);
+        if (request.GarmentColor is not null && layers.GarmentColor is null)
+            return Result.Failure<MockupImageResponseDto>(MockupErrors.RecolorNotAllowed(template.Name));
+
         string compositeUrl;
         try
         {
-            compositeUrl = compositor.BuildCompositeUrl(template.BaseImageUrl, designImage.StorageKey, position);
+            compositeUrl = compositor.BuildCompositeUrl(template.BaseImageUrl, designImage.StorageKey, position, layers);
         }
         catch (InvalidOperationException)
         {
@@ -334,6 +382,7 @@ public sealed class MockupTemplateService(
             GenerationTimeSeconds = 0,
             ApprovalStatus = "pending",
             BatchJobProductId = designImage.BatchJobProductId,
+            GarmentColor = layers.GarmentColor,
             CreatedAt = now
         };
 
@@ -359,6 +408,7 @@ public sealed class MockupTemplateService(
         var selectedIds = ReadSelection(batch.Config);
         if (selectedIds.Count == 0)
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.NoTemplatesSelected());
+        var selectedColors = ReadColors(batch.Config);
 
         var selectedTemplates = await templates.Query()
             .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true
@@ -432,42 +482,54 @@ public sealed class MockupTemplateService(
                     continue;
                 }
 
-                string compositeUrl;
-                try
-                {
-                    compositeUrl = compositor.BuildCompositeUrl(template.BaseImageUrl, designImage.StorageKey, position);
-                }
-                catch (InvalidOperationException)
-                {
-                    AddError($"{template.Name}: does not have a usable base photo yet.");
-                    continue;
-                }
+                // A recolorable template gets one mock-up per color picked for the batch, else its own
+                // color; any other template keeps the photo's color.
+                var recolorable = template.AllowRecolor && MockupRules.HasCurrentMaps(template);
+                var colors = recolorable && selectedColors.Count > 0
+                    ? selectedColors.Cast<string?>().ToList()
+                    : [recolorable ? template.GarmentColor : null];
 
-                if (existingByKey.TryGetValue((designImage.Id, template.Id, compositeUrl), out var upToDate))
+                foreach (var color in colors)
                 {
-                    current.Add(upToDate);
-                    continue;
-                }
+                    var layers = MockupRules.Layers(template, designImage, color);
+                    string compositeUrl;
+                    try
+                    {
+                        compositeUrl = compositor.BuildCompositeUrl(template.BaseImageUrl, designImage.StorageKey, position, layers);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        AddError($"{template.Name}: does not have a usable base photo yet.");
+                        break;
+                    }
 
-                var mockupImage = new MockupImage
-                {
-                    Id = Guid.NewGuid(),
-                    DesignImageId = designImage.Id,
-                    ProductId = product.Id,
-                    MockupTemplateId = template.Id,
-                    StorageProvider = "cloudinary",
-                    StorageKey = $"mockups/{template.Id:N}/{designImage.Id:N}",
-                    MockupImageUrl = compositeUrl,
-                    MockupWidthPx = template.OutputWidthPx,
-                    MockupHeightPx = template.OutputHeightPx,
-                    GenerationTimeSeconds = 0,
-                    ApprovalStatus = "pending",
-                    BatchJobProductId = designImage.BatchJobProductId,
-                    CreatedAt = now
-                };
-                created.Add(mockupImage);
-                current.Add(mockupImage);
-                usageIncrements[template.Id] = usageIncrements.GetValueOrDefault(template.Id) + 1;
+                    if (existingByKey.TryGetValue((designImage.Id, template.Id, compositeUrl), out var upToDate))
+                    {
+                        current.Add(upToDate);
+                        continue;
+                    }
+
+                    var mockupImage = new MockupImage
+                    {
+                        Id = Guid.NewGuid(),
+                        DesignImageId = designImage.Id,
+                        ProductId = product.Id,
+                        MockupTemplateId = template.Id,
+                        StorageProvider = "cloudinary",
+                        StorageKey = $"mockups/{template.Id:N}/{designImage.Id:N}",
+                        MockupImageUrl = compositeUrl,
+                        MockupWidthPx = template.OutputWidthPx,
+                        MockupHeightPx = template.OutputHeightPx,
+                        GenerationTimeSeconds = 0,
+                        ApprovalStatus = "pending",
+                        BatchJobProductId = designImage.BatchJobProductId,
+                        GarmentColor = layers.GarmentColor,
+                        CreatedAt = now
+                    };
+                    created.Add(mockupImage);
+                    current.Add(mockupImage);
+                    usageIncrements[template.Id] = usageIncrements.GetValueOrDefault(template.Id) + 1;
+                }
             }
         }
 
@@ -494,13 +556,123 @@ public sealed class MockupTemplateService(
 
     private static MockupImageResponseDto MapImage(MockupImage mockupImage) =>
         new(mockupImage.Id, mockupImage.ProductId, mockupImage.DesignImageId, mockupImage.MockupTemplateId,
-            mockupImage.MockupImageUrl, mockupImage.MockupWidthPx, mockupImage.MockupHeightPx, mockupImage.ApprovalStatus);
+            mockupImage.MockupImageUrl, mockupImage.MockupWidthPx, mockupImage.MockupHeightPx, mockupImage.ApprovalStatus,
+            mockupImage.GarmentColor);
 
     private async Task<bool> IsNameTakenAsync(string name, Guid? excludeId, CancellationToken cancellationToken)
     {
         var candidate = name.Trim().ToLowerInvariant();
         return await templates.Query()
             .AnyAsync(template => template.Name.ToLower() == candidate && template.Id != excludeId, cancellationToken);
+    }
+
+    private static async Task<byte[]> ReadAllAsync(Stream content, CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, cancellationToken);
+        return buffer.ToArray();
+    }
+
+    // Preparing only adds realism; a photo that cannot be analyzed is still a usable base photo.
+    private async Task<PreparedBasePhoto?> TryPrepareAsync(byte[] photo, CancellationToken cancellationToken, bool preview = false)
+    {
+        try
+        {
+            return await mapService.PrepareAsync(photo, preview, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not analyze a mock-up base photo.");
+            return null;
+        }
+    }
+
+    private async Task<byte[]?> TryDownloadAsync(string baseImageUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await mapService.DownloadAsync(baseImageUrl, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not download mock-up base photo {Url}.", baseImageUrl);
+            return null;
+        }
+    }
+
+    // The upload's stream was already read for analysis, so the photo is sent from its bytes.
+    private async Task<PublicImageUploadResult> UploadPhotoAsync(UploadFileDto upload, byte[] photo, string storageKey, CancellationToken cancellationToken)
+    {
+        using var stream = new MemoryStream(photo);
+        return await images.UploadImageWithMetadataAsync(new UploadFileDto(upload.FileName, upload.ContentType, stream.Length, stream), storageKey, cancellationToken);
+    }
+
+    /// <summary>
+    /// Stores the helper images prepared from the template's current photo and records what they
+    /// allow. A failure only turns the realism off; the returned error is set when recoloring was
+    /// requested but the photo is unsuitable.
+    /// </summary>
+    private async Task<Error?> ApplyPreparedAsync(MockupTemplate template, PreparedBasePhoto? prepared, bool allowRecolor, CancellationToken cancellationToken)
+    {
+        template.PrintMapsSourceUrl = null;
+        template.PrintMapsVersion = null;
+        template.AllowRecolor = false;
+        template.GarmentIsLight = false;
+        if (prepared is null)
+            return allowRecolor ? MockupErrors.NotRecolorable("the photo could not be analyzed.") : null;
+
+        var version = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        try
+        {
+            await mapService.StoreHelpersAsync(MockupRules.HelperKeyPrefix(template.Id, version), prepared, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not store print maps for mock-up template {TemplateId}.", template.Id);
+            return allowRecolor ? MockupErrors.NotRecolorable("the photo could not be analyzed.") : null;
+        }
+
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = version;
+
+        var problem = MockupRules.RecolorProblem(prepared.Stats);
+        template.GarmentIsLight = problem is null;
+        if (!allowRecolor)
+            return null;
+        if (problem is not null)
+            return MockupErrors.NotRecolorable(problem);
+
+        template.AllowRecolor = true;
+        return null;
+    }
+
+    public async Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid)
+            return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.Unauthenticated("preview"));
+        if (!MockupImageValidators.IsSupportedImage(photo) || !MockupImageValidators.IsWithinSizeLimit(photo))
+            return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.InvalidPreviewPhoto());
+        if (!mapService.IsAvailable)
+            return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.ProcessingUnavailable());
+
+        var bytes = await ReadAllAsync(photo!.Content, cancellationToken);
+        var prepared = await TryPrepareAsync(bytes, cancellationToken, preview: true);
+        if (prepared is null)
+            return Result.Success(new GarmentMaskPreviewResponseDto(false, "the photo could not be analyzed.", null));
+
+        var problem = MockupRules.RecolorProblem(prepared.Stats);
+        return Result.Success(new GarmentMaskPreviewResponseDto(
+            problem is null, problem,
+            $"data:image/png;base64,{Convert.ToBase64String(prepared.MaskPng)}"));
+    }
+
+    private static Error? ApplyGarmentColor(MockupTemplate template, string? garmentColor)
+    {
+        if (garmentColor is not null && !template.AllowRecolor)
+            return MockupErrors.RecolorNotAllowed(template.Name);
+
+        template.GarmentColor = template.AllowRecolor ? garmentColor?.ToUpperInvariant() : null;
+        return null;
     }
 
     private async Task TryDeleteImageAsync(string storageKey, CancellationToken cancellationToken)
@@ -519,12 +691,18 @@ public sealed class MockupTemplateService(
         position.X >= 0 && position.Y >= 0 && position.Width > 0 && position.Height > 0
         && position.X + position.Width <= outputWidth && position.Y + position.Height <= outputHeight;
 
-    private static string StorageKey(Guid templateId) => $"mockup-templates/{templateId:N}";
+    private static string StorageKey(Guid templateId) => MockupRules.BaseImageKey(templateId);
 
-    private static MockupTemplateResponseDto Map(MockupTemplate template, Guid userId) =>
-        new(template.Id, template.Name, template.ProductType, template.BaseImageUrl, template.PreviewImageUrl,
+    private MockupTemplateResponseDto Map(MockupTemplate template, Guid userId)
+    {
+        var mapsReady = MockupRules.HasCurrentMaps(template);
+        var recolor = mapsReady && template.AllowRecolor;
+        return new(template.Id, template.Name, template.ProductType, template.BaseImageUrl, template.PreviewImageUrl,
             template.PrintAreaConfig, template.OutputWidthPx, template.OutputHeightPx, template.UsageCount ?? 0,
-            template.IsSystemTemplate == true, template.UserId == userId);
+            template.IsSystemTemplate == true, template.UserId == userId, mapsReady, recolor,
+            mapsReady ? compositor.BuildAssetUrl(template.BaseImageUrl, MockupRules.GarmentMaskKey(template)) : null,
+            recolor ? template.GarmentColor : null);
+    }
 
     private async Task<BatchJob?> FindOwnedBatchAsync(Guid batchJobId, CancellationToken cancellationToken)
     {
@@ -575,7 +753,23 @@ public sealed class MockupTemplateService(
         }
     }
 
-    private static string WriteSelection(string config, IReadOnlyList<Guid> templateIds)
+    private static IReadOnlyList<string> ReadColors(string config)
+    {
+        try
+        {
+            return JsonNode.Parse(config)?[MockupRules.GarmentColorsConfigKey]?.AsArray()
+                .Select(color => color?.ToString())
+                .Where(color => color is not null && System.Text.RegularExpressions.Regex.IsMatch(color, MockupRules.GarmentColorPattern))
+                .Select(color => color!.ToUpperInvariant())
+                .ToList() ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string WriteSelection(string config, IReadOnlyList<Guid> templateIds, IReadOnlyList<string> garmentColors)
     {
         JsonObject root;
         try
@@ -594,6 +788,7 @@ public sealed class MockupTemplateService(
         }
 
         root[MockupRules.ConfigKey] = ids;
+        root[MockupRules.GarmentColorsConfigKey] = new JsonArray(garmentColors.Select(color => (JsonNode?)JsonValue.Create(color)).ToArray());
         return root.ToJsonString();
     }
 }

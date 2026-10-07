@@ -8,9 +8,11 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// <param name="Y">Optional override Y.</param>
 /// <param name="Width">Optional override width.</param>
 /// <param name="Height">Optional override height.</param>
+/// <param name="GarmentColor">Optional '#RRGGBB' to recolor the garment with; the template must allow recoloring.</param>
 public sealed record GenerateMockupImageRequestDto(
     Guid MockupTemplateId,
     int? X,
     int? Y,
     int? Width,
-    int? Height);
+    int? Height,
+    string? GarmentColor = null);

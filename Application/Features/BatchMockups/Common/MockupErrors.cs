@@ -44,6 +44,18 @@ public static class MockupErrors
     public static Error JobNotReady() =>
         Error.Conflict("BatchMockups.JobNotReady", "Mock-ups can only be generated after the batch job has produced images.");
 
+    public static Error ProcessingUnavailable() =>
+        Error.Conflict("BatchMockups.ProcessingUnavailable", "Mock-up photos can't be processed right now: the background-removal model is not installed on the server. Restart the API so it downloads the model, then try again.");
+
+    public static Error InvalidPreviewPhoto() =>
+        Error.Validation("Choose an image file of 10 MB or smaller.");
+
+    public static Error NotRecolorable(string reason) =>
+        Error.Conflict("BatchMockups.NotRecolorable", $"This photo can't be recolored: {reason} Use a white or light-gray garment on a plain background.");
+
+    public static Error RecolorNotAllowed(string name) =>
+        Error.Conflict("BatchMockups.RecolorNotAllowed", $"The template {name} does not support garment colors.");
+
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
 }

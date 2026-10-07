@@ -37,6 +37,8 @@ public partial class MockupImage
 
     public Guid? BatchJobProductId { get; set; }
 
+    public string? GarmentColor { get; set; }
+
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
 
     public virtual BatchJobProduct? BatchJobProduct { get; set; }

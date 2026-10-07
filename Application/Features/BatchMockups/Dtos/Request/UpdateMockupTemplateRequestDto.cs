@@ -10,4 +10,6 @@ public sealed record UpdateMockupTemplateRequestDto(
     int Y,
     int Width,
     int Height,
-    UploadFileDto? BaseImage);
+    UploadFileDto? BaseImage,
+    bool AllowRecolor = false,
+    string? GarmentColor = null);

@@ -12,6 +12,10 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// <param name="UsageCount">How often this template was used, for ordering.</param>
 /// <param name="IsSystemTemplate">Whether this is a system-provided template.</param>
 /// <param name="IsMine">Whether the current seller created this template.</param>
+/// <param name="RealisticPrintReady">Whether shading and fabric-relief maps exist for the current photo.</param>
+/// <param name="AllowRecolor">Whether the garment can be recolored.</param>
+/// <param name="GarmentMaskUrl">The garment mask image, for placing the print area and live recolor previews; null until the photo has been analyzed.</param>
+/// <param name="GarmentColor">The template's own garment color, used when a batch picks no colors; null keeps the photo's color.</param>
 public sealed record MockupTemplateResponseDto(
     Guid Id,
     string Name,
@@ -23,4 +27,8 @@ public sealed record MockupTemplateResponseDto(
     int OutputHeightPx,
     int UsageCount,
     bool IsSystemTemplate,
-    bool IsMine);
+    bool IsMine,
+    bool RealisticPrintReady,
+    bool AllowRecolor,
+    string? GarmentMaskUrl,
+    string? GarmentColor);

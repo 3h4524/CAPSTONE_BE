@@ -12,4 +12,6 @@ public sealed class CreateMockupTemplateForm
     public int Width { get; set; }
     public int Height { get; set; }
     public IFormFile? BaseImage { get; set; }
+    public bool AllowRecolor { get; set; }
+    public string? GarmentColor { get; set; }
 }

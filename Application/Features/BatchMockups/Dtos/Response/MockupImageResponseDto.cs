@@ -9,4 +9,5 @@ public sealed record MockupImageResponseDto(
     string MockupImageUrl,
     int MockupWidthPx,
     int MockupHeightPx,
-    string ApprovalStatus);
+    string ApprovalStatus,
+    string? GarmentColor);

@@ -153,7 +153,7 @@ public sealed class DesignGenerationServiceTests
             promptRepo.Object, imageRepo.Object, new Mock<IRepository<ApiUsageRecord>>().Object,
             new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
-            Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), queue.Object,
+            Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator());
 
         return new Fixture
