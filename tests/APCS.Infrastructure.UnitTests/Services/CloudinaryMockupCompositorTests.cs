@@ -76,6 +76,17 @@ public sealed class CloudinaryMockupCompositorTests
     }
 
     [TestMethod]
+    [DataRow(1152, 1039, "x_12,y_12", DisplayName = "A large design is bent by no more than the photo's folds allow")]
+    [DataRow(300, 300, "x_6,y_6", DisplayName = "A small design is bent by a share of its own size")]
+    public void BuildCompositeUrl_WithThePhotoSize_LimitsTheBendOfALargeDesign(int areaWidth, int areaHeight, string expected)
+    {
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(100, 100, areaWidth, areaHeight),
+            new MockupLayers(1024, 1024, "mockup-templates/t-displace", null, null, BasePhotoShortSidePx: 2000));
+
+        url.Should().Contain($"e_displace,fl_layer_apply,{expected}/");
+    }
+
+    [TestMethod]
     public void BuildCompositeUrl_WithGarmentMask_CutsTheBentDesignToTheGarment()
     {
         var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(40, 60, 400, 200),

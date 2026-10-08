@@ -26,6 +26,13 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
     /// </summary>
     internal const double DisplacementStrengthRatio = 0.02;
 
+    /// <summary>
+    /// The same limit as a share of the base photo's shorter side: about half the width of the
+    /// relief in the displacement map. A fold is no wider under a large design than under a small
+    /// one, so a shift that grew with the design would kink it there instead of bending it.
+    /// </summary>
+    internal const double DisplacementPhotoRatio = 0.006;
+
     private readonly CloudinaryOptions _options = options.Value;
 
     public string BuildCompositeUrl(string baseImageUrl, string overlayStorageKey, MockupPosition position, MockupLayers? layers = null)
@@ -69,7 +76,10 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
             {
                 components.Add($"l_{LayerToken(displacementKey)}");
                 components.Add($"c_crop,g_north_west,x_{fitted.X},y_{fitted.Y},w_{fitted.Width},h_{fitted.Height}");
-                var strength = Math.Max(2, (int)Math.Round(Math.Min(fitted.Width, fitted.Height) * DisplacementStrengthRatio));
+                var shift = Math.Min(fitted.Width, fitted.Height) * DisplacementStrengthRatio;
+                if (layers.BasePhotoShortSidePx is > 0 and var photoSide)
+                    shift = Math.Min(shift, photoSide * DisplacementPhotoRatio);
+                var strength = Math.Max(2, (int)Math.Round(shift));
                 components.Add($"e_displace,fl_layer_apply,x_{strength},y_{strength}");
             }
 

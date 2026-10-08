@@ -96,6 +96,7 @@ public static class MockupRules
             prefix is null ? null : DisplacementMapKey(prefix),
             prefix is null ? null : GarmentMaskKey(prefix),
             recolor ? garmentColor!.ToUpperInvariant() : null,
-            MultiplyDesign: mapsReady && template.GarmentIsLight && !recolor);
+            MultiplyDesign: mapsReady && template.GarmentIsLight && !recolor,
+            BasePhotoShortSidePx: Math.Min(template.OutputWidthPx, template.OutputHeightPx));
     }
 }

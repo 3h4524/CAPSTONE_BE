@@ -43,10 +43,15 @@ public sealed record MockupPosition(int X, int Y, int Width, int Height);
 /// <param name="MultiplyDesign">
 /// Blend the design with multiply, so a light garment's folds and texture show through it.
 /// </param>
+/// <param name="BasePhotoShortSidePx">
+/// The base photo's shorter side. Folds are as wide as the photo makes them, whatever the design's
+/// size, so this limits how far they shift a large design.
+/// </param>
 public sealed record MockupLayers(
     int? DesignWidthPx,
     int? DesignHeightPx,
     string? DisplacementMapKey,
     string? GarmentMaskKey,
     string? GarmentColor,
-    bool MultiplyDesign = false);
+    bool MultiplyDesign = false,
+    int? BasePhotoShortSidePx = null);
