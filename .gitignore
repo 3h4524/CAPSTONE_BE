@@ -482,3 +482,5 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+media-worker/node_modules/
+media-worker/artifacts/

@@ -552,7 +552,7 @@ public sealed class DesignTemplateService(
             template.StyleDescription,
             template.PreviewImageUrl,
             template.IsSystemTemplate == true,
-            template.UsageCount ?? 0,
+            template.UsageCount,
             ToUtcOffset(template.CreatedAt),
             ToUtcOffset(template.UpdatedAt));
 

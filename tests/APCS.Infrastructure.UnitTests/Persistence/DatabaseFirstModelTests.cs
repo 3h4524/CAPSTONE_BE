@@ -10,7 +10,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsFiftyTwoMappedTables()
+    public void Model_ReverseEngineeredPublicSchema_ContainsExactFiftySixMappedTablesIncludingWorkflowRuntime()
     {
         using var context = CreateContext();
 
@@ -20,8 +20,53 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(52);
-        mappedTables.Should().Contain(["users", "roles", "user_roles", "auth_tokens", "batches"]);
+        mappedTables.Should().HaveCount(56);
+        mappedTables.Should().BeEquivalentTo(new[]
+        {
+            "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
+            "batch_jobs", "batch_job_logs", "batch_job_products", "design_images", "design_templates",
+            "etsy_integrations", "etsy_upload_logs", "export_packages", "export_package_items", "invoices",
+            "listing_contents", "listing_descriptions", "listing_generation_history", "listing_tags",
+            "listing_tag_items", "listing_titles", "media_jobs", "mockup_images", "mockup_templates",
+            "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
+            "plan_features", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
+            "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
+            "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
+            "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
+            "video_templates", "workflows", "workflow_node_runs", "workflow_runs"
+        });
+    }
+
+    [TestMethod]
+    public void Model_VideoWorkflowSchema_MapsDurableSnapshotsLeaseAndOwnerScopedIdempotency()
+    {
+        using var context = CreateContext();
+        var run = context.Model.FindEntityType(typeof(WorkflowRun))!;
+        run.GetTableName().Should().Be("workflow_runs");
+        run.FindProperty(nameof(WorkflowRun.DefinitionSnapshot))!.GetColumnType().Should().Be("jsonb");
+        run.FindProperty(nameof(WorkflowRun.Revision))!.IsNullable.Should().BeFalse();
+        run.GetIndexes().Should().Contain(x => x.IsUnique && x.Properties.Select(p => p.Name).SequenceEqual(new[] { nameof(WorkflowRun.UserId), nameof(WorkflowRun.IdempotencyKey) }));
+        var job = context.Model.FindEntityType(typeof(MediaJob))!;
+        job.GetTableName().Should().Be("media_jobs");
+        job.FindProperty(nameof(MediaJob.Payload))!.GetColumnType().Should().Be("jsonb");
+        job.FindProperty(nameof(MediaJob.LeaseToken))!.IsNullable.Should().BeTrue();
+        job.FindProperty(nameof(MediaJob.LeaseExpiresAt))!.IsNullable.Should().BeTrue();
+        job.FindProperty(nameof(MediaJob.MaximumAttempts))!.IsNullable.Should().BeFalse();
+        context.Model.FindEntityType(typeof(WorkflowNodeRun))!.GetTableName().Should().Be("workflow_node_runs");
+        context.Model.FindEntityType(typeof(Workflow))!.GetTableName().Should().Be("workflows");
+    }
+
+    [TestMethod]
+    public void Model_UploadedMockup_DoesNotRequireDesignOrTemplateAndStoresApprovalRevision()
+    {
+        using var context = CreateContext();
+        var mockup = context.Model.FindEntityType(typeof(MockupImage))!;
+        mockup.FindProperty(nameof(MockupImage.DesignImageId))!.IsNullable.Should().BeTrue();
+        mockup.FindProperty(nameof(MockupImage.MockupTemplateId))!.IsNullable.Should().BeTrue();
+        mockup.FindProperty(nameof(MockupImage.MockupImageUrl))!.IsNullable.Should().BeTrue();
+        mockup.FindProperty(nameof(MockupImage.MetadataRevision))!.IsNullable.Should().BeFalse();
+        mockup.FindProperty(nameof(MockupImage.ApprovedRevision))!.IsNullable.Should().BeTrue();
+        mockup.FindProperty(nameof(MockupImage.Regions))!.GetColumnType().Should().Be("jsonb");
     }
 
     [TestMethod]

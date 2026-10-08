@@ -23,6 +23,16 @@ public partial class PromoVideoScene
 
     public DateTime? CreatedAt { get; set; }
 
+    public string GenerationStrategy { get; set; } = null!;
+
+    public long? SourceRevision { get; set; }
+
+    public string? SourceHash { get; set; }
+
+    public string SceneConfig { get; set; } = null!;
+
+    public string Warnings { get; set; } = null!;
+
     public virtual DesignImage? DesignImage { get; set; }
 
     public virtual MockupImage? MockupImage { get; set; }

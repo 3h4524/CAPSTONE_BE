@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$ConnectionName = "ConnectionStrings:DefaultConnection"
+    [string]$ConnectionName = "ConnectionStrings:DefaultConnection",
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Debug",
+    [switch]$NoBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,9 +32,13 @@ New-Item -ItemType Directory -Force -Path $stagingEntities, $stagingContext | Ou
 
 Push-Location $repositoryRoot
 try {
+    $buildArguments = @()
+    if ($NoBuild) { $buildArguments = @("--no-build") }
     & dotnet ef dbcontext scaffold "Name=$ConnectionName" Npgsql.EntityFrameworkCore.PostgreSQL `
+        @buildArguments `
         --project Infrastructure `
         --startup-project API `
+        --configuration $Configuration `
         --output-dir "..\artifacts\scaffold\$([IO.Path]::GetFileName($stagingRoot))\Entities" `
         --context-dir "..\artifacts\scaffold\$([IO.Path]::GetFileName($stagingRoot))\Context" `
         --context AppDbContext `

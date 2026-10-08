@@ -56,6 +56,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<ListingTitle> ListingTitles { get; set; }
 
+    public virtual DbSet<MediaJob> MediaJobs { get; set; }
+
     public virtual DbSet<MockupImage> MockupImages { get; set; }
 
     public virtual DbSet<MockupTemplate> MockupTemplates { get; set; }
@@ -115,6 +117,12 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<UserRole> UserRoles { get; set; }
 
     public virtual DbSet<VideoTemplate> VideoTemplates { get; set; }
+
+    public virtual DbSet<Workflow> Workflows { get; set; }
+
+    public virtual DbSet<WorkflowNodeRun> WorkflowNodeRuns { get; set; }
+
+    public virtual DbSet<WorkflowRun> WorkflowRuns { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -938,6 +946,10 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.FileSizeMb)
                 .HasPrecision(10, 2)
                 .HasColumnName("file_size_mb");
+            entity.Property(e => e.Manifest)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("manifest");
             entity.Property(e => e.Name)
                 .HasMaxLength(255)
                 .HasColumnName("name");
@@ -956,6 +968,7 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasColumnName("type");
             entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkflowRunId).HasColumnName("workflow_run_id");
 
             entity.HasOne(d => d.BatchJob).WithMany(p => p.ExportPackages)
                 .HasForeignKey(d => d.BatchJobId)
@@ -965,6 +978,10 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.ExportPackages)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("export_packages_user_id_fkey");
+
+            entity.HasOne(d => d.WorkflowRun).WithMany(p => p.ExportPackages)
+                .HasForeignKey(d => d.WorkflowRunId)
+                .HasConstraintName("export_packages_workflow_run_id_fkey");
         });
 
         modelBuilder.Entity<ExportPackageItem>(entity =>
@@ -1007,6 +1024,7 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("item_status");
             entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.PromoVideoId).HasColumnName("promo_video_id");
 
             entity.HasOne(d => d.ExportPackage).WithMany(p => p.ExportPackageItems)
                 .HasForeignKey(d => d.ExportPackageId)
@@ -1015,6 +1033,10 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Product).WithMany(p => p.ExportPackageItems)
                 .HasForeignKey(d => d.ProductId)
                 .HasConstraintName("export_package_items_product_id_fkey");
+
+            entity.HasOne(d => d.PromoVideo).WithMany(p => p.ExportPackageItems)
+                .HasForeignKey(d => d.PromoVideoId)
+                .HasConstraintName("export_package_items_promo_video_id_fkey");
         });
 
         modelBuilder.Entity<Invoice>(entity =>
@@ -1345,6 +1367,77 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("listing_titles_listing_content_id_fkey");
         });
 
+        modelBuilder.Entity<MediaJob>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("media_jobs_pkey");
+
+            entity.ToTable("media_jobs");
+
+            entity.HasIndex(e => new { e.Status, e.AvailableAt, e.LeaseExpiresAt }, "idx_media_jobs_claim");
+
+            entity.HasIndex(e => e.WorkflowNodeRunId, "uq_media_job_node_active")
+                .IsUnique()
+                .HasFilter("((status)::text = ANY ((ARRAY['queued'::character varying, 'leased'::character varying])::text[]))");
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.Attempt)
+                .HasDefaultValue(0)
+                .HasColumnName("attempt");
+            entity.Property(e => e.AvailableAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("available_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(1000)
+                .HasColumnName("error_message");
+            entity.Property(e => e.HeartbeatAt).HasColumnName("heartbeat_at");
+            entity.Property(e => e.Kind)
+                .HasMaxLength(20)
+                .HasColumnName("kind");
+            entity.Property(e => e.LeaseExpiresAt).HasColumnName("lease_expires_at");
+            entity.Property(e => e.LeaseToken).HasColumnName("lease_token");
+            entity.Property(e => e.MaximumAttempts)
+                .HasDefaultValue(3)
+                .HasColumnName("maximum_attempts");
+            entity.Property(e => e.Payload)
+                .HasColumnType("jsonb")
+                .HasColumnName("payload");
+            entity.Property(e => e.Progress)
+                .HasDefaultValue(0)
+                .HasColumnName("progress");
+            entity.Property(e => e.Stage)
+                .HasMaxLength(50)
+                .HasColumnName("stage");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkflowNodeRunId).HasColumnName("workflow_node_run_id");
+            entity.Property(e => e.WorkflowRunId).HasColumnName("workflow_run_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.MediaJobs)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("media_jobs_user_id_fkey");
+
+            entity.HasOne(d => d.WorkflowNodeRun).WithOne(p => p.MediaJob)
+                .HasForeignKey<MediaJob>(d => d.WorkflowNodeRunId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("media_jobs_workflow_node_run_id_fkey");
+
+            entity.HasOne(d => d.WorkflowRun).WithMany(p => p.MediaJobs)
+                .HasForeignKey(d => d.WorkflowRunId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("media_jobs_workflow_run_id_fkey");
+        });
+
         modelBuilder.Entity<MockupImage>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("mockup_images_pkey");
@@ -1367,7 +1460,16 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("approval_status");
+            entity.Property(e => e.ApprovedAt).HasColumnName("approved_at");
+            entity.Property(e => e.ApprovedBy).HasColumnName("approved_by");
+            entity.Property(e => e.ApprovedRevision).HasColumnName("approved_revision");
+            entity.Property(e => e.ArtworkGroupKey)
+                .HasMaxLength(100)
+                .HasColumnName("artwork_group_key");
             entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
+            entity.Property(e => e.ContentHash)
+                .HasMaxLength(64)
+                .HasColumnName("content_hash");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -1379,11 +1481,26 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.IsFinal)
                 .HasDefaultValue(true)
                 .HasColumnName("is_final");
+            entity.Property(e => e.MetadataRevision)
+                .HasDefaultValue(1L)
+                .HasColumnName("metadata_revision");
             entity.Property(e => e.MockupHeightPx).HasColumnName("mockup_height_px");
             entity.Property(e => e.MockupImageUrl).HasColumnName("mockup_image_url");
             entity.Property(e => e.MockupTemplateId).HasColumnName("mockup_template_id");
             entity.Property(e => e.MockupWidthPx).HasColumnName("mockup_width_px");
             entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.Regions)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("regions");
+            entity.Property(e => e.Role)
+                .HasMaxLength(30)
+                .HasDefaultValueSql("'Hero'::character varying")
+                .HasColumnName("role");
+            entity.Property(e => e.SourceType)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'generated'::character varying")
+                .HasColumnName("source_type");
             entity.Property(e => e.StorageKey)
                 .HasMaxLength(500)
                 .HasColumnName("storage_key");
@@ -1391,11 +1508,21 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'s3'::character varying")
                 .HasColumnName("storage_provider");
+            entity.Property(e => e.StorageVersion)
+                .HasMaxLength(40)
+                .HasColumnName("storage_version");
+            entity.Property(e => e.VariantKey)
+                .HasMaxLength(100)
+                .HasColumnName("variant_key");
 
             entity.HasOne(d => d.ApiUsageRecord).WithMany(p => p.MockupImages)
                 .HasForeignKey(d => d.ApiUsageRecordId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("mockup_images_api_usage_record_id_fkey");
+
+            entity.HasOne(d => d.ApprovedByNavigation).WithMany(p => p.MockupImages)
+                .HasForeignKey(d => d.ApprovedBy)
+                .HasConstraintName("mockup_images_approved_by_fkey");
 
             entity.HasOne(d => d.BatchJobProduct).WithMany(p => p.MockupImages)
                 .HasForeignKey(d => d.BatchJobProductId)
@@ -1404,6 +1531,7 @@ public partial class AppDbContext : DbContext
 
             entity.HasOne(d => d.DesignImage).WithMany(p => p.MockupImages)
                 .HasForeignKey(d => d.DesignImageId)
+                .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("mockup_images_design_image_id_fkey");
 
             entity.HasOne(d => d.MockupTemplate).WithMany(p => p.MockupImages)
@@ -1425,8 +1553,6 @@ public partial class AppDbContext : DbContext
             entity.HasIndex(e => e.IsActive, "idx_mockup_templates_is_active");
 
             entity.HasIndex(e => e.ProductType, "idx_mockup_templates_product_type");
-
-            entity.HasIndex(e => e.UserId, "idx_mockup_templates_user_id");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -1464,7 +1590,6 @@ public partial class AppDbContext : DbContext
 
             entity.HasOne(d => d.User).WithMany(p => p.MockupTemplates)
                 .HasForeignKey(d => d.UserId)
-                .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
@@ -1916,6 +2041,8 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("promo_videos");
 
+            entity.HasIndex(e => new { e.ProductId, e.Fingerprint }, "idx_promo_video_fingerprint");
+
             entity.HasIndex(e => e.ApprovalStatus, "idx_promo_videos_approval_status");
 
             entity.HasIndex(e => e.CreatedAt, "idx_promo_videos_created_at");
@@ -1926,6 +2053,10 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.Status, "idx_promo_videos_status");
 
+            entity.HasIndex(e => new { e.SeriesId, e.VersionNumber }, "uq_promo_video_series_version")
+                .IsUnique()
+                .HasFilter("(series_id IS NOT NULL)");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -1934,11 +2065,17 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("approval_status");
+            entity.Property(e => e.ApprovedAt).HasColumnName("approved_at");
+            entity.Property(e => e.ApprovedBy).HasColumnName("approved_by");
             entity.Property(e => e.AspectRatio)
                 .HasMaxLength(20)
                 .HasColumnName("aspect_ratio");
             entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
             entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
+            entity.Property(e => e.ConfigSnapshot)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("config_snapshot");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -1949,20 +2086,35 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.FileSizeMb)
                 .HasPrecision(10, 2)
                 .HasColumnName("file_size_mb");
+            entity.Property(e => e.Fingerprint)
+                .HasMaxLength(64)
+                .HasColumnName("fingerprint");
             entity.Property(e => e.GenerationTimeSeconds)
                 .HasPrecision(10, 2)
                 .HasColumnName("generation_time_seconds");
             entity.Property(e => e.IsFinal)
                 .HasDefaultValue(false)
                 .HasColumnName("is_final");
+            entity.Property(e => e.Mode)
+                .HasMaxLength(30)
+                .HasDefaultValueSql("'standard'::character varying")
+                .HasColumnName("mode");
             entity.Property(e => e.MusicTrackId).HasColumnName("music_track_id");
             entity.Property(e => e.PlatformTarget)
                 .HasMaxLength(50)
                 .HasColumnName("platform_target");
             entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.QaResult)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("qa_result");
             entity.Property(e => e.QualityScore)
                 .HasPrecision(3, 2)
                 .HasColumnName("quality_score");
+            entity.Property(e => e.ReviewRevision)
+                .HasDefaultValue(1L)
+                .HasColumnName("review_revision");
+            entity.Property(e => e.SeriesId).HasColumnName("series_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'pending'::character varying")
@@ -1974,6 +2126,12 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'s3'::character varying")
                 .HasColumnName("storage_provider");
+            entity.Property(e => e.StorageVersion)
+                .HasMaxLength(40)
+                .HasColumnName("storage_version");
+            entity.Property(e => e.TemplateVersion)
+                .HasDefaultValue(1)
+                .HasColumnName("template_version");
             entity.Property(e => e.TextOverlayColor)
                 .HasMaxLength(7)
                 .HasColumnName("text_overlay_color");
@@ -1981,21 +2139,35 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.TextOverlayFont)
                 .HasMaxLength(100)
                 .HasColumnName("text_overlay_font");
+            entity.Property(e => e.ThumbnailStorageKey)
+                .HasMaxLength(500)
+                .HasColumnName("thumbnail_storage_key");
+            entity.Property(e => e.ThumbnailStorageVersion)
+                .HasMaxLength(40)
+                .HasColumnName("thumbnail_storage_version");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
             entity.Property(e => e.UserRating).HasColumnName("user_rating");
+            entity.Property(e => e.VersionNumber)
+                .HasDefaultValue(1)
+                .HasColumnName("version_number");
             entity.Property(e => e.VideoDurationSeconds).HasColumnName("video_duration_seconds");
             entity.Property(e => e.VideoResolution)
                 .HasMaxLength(50)
                 .HasColumnName("video_resolution");
             entity.Property(e => e.VideoTemplateId).HasColumnName("video_template_id");
             entity.Property(e => e.VideoUrl).HasColumnName("video_url");
+            entity.Property(e => e.WorkflowRunId).HasColumnName("workflow_run_id");
 
             entity.HasOne(d => d.ApiUsageRecord).WithMany(p => p.PromoVideos)
                 .HasForeignKey(d => d.ApiUsageRecordId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("promo_videos_api_usage_record_id_fkey");
+
+            entity.HasOne(d => d.ApprovedByNavigation).WithMany(p => p.PromoVideos)
+                .HasForeignKey(d => d.ApprovedBy)
+                .HasConstraintName("promo_videos_approved_by_fkey");
 
             entity.HasOne(d => d.BatchJob).WithMany(p => p.PromoVideos)
                 .HasForeignKey(d => d.BatchJobId)
@@ -2020,6 +2192,10 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.VideoTemplateId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("promo_videos_video_template_id_fkey");
+
+            entity.HasOne(d => d.WorkflowRun).WithMany(p => p.PromoVideos)
+                .HasForeignKey(d => d.WorkflowRunId)
+                .HasConstraintName("promo_videos_workflow_run_id_fkey");
         });
 
         modelBuilder.Entity<PromoVideoScene>(entity =>
@@ -2045,13 +2221,29 @@ public partial class AppDbContext : DbContext
                 .HasPrecision(5, 2)
                 .HasDefaultValueSql("3")
                 .HasColumnName("duration_seconds");
+            entity.Property(e => e.GenerationStrategy)
+                .HasMaxLength(30)
+                .HasDefaultValueSql("'standard'::character varying")
+                .HasColumnName("generation_strategy");
             entity.Property(e => e.MockupImageId).HasColumnName("mockup_image_id");
             entity.Property(e => e.PromoVideoId).HasColumnName("promo_video_id");
+            entity.Property(e => e.SceneConfig)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("scene_config");
             entity.Property(e => e.SceneOrder).HasColumnName("scene_order");
+            entity.Property(e => e.SourceHash)
+                .HasMaxLength(64)
+                .HasColumnName("source_hash");
+            entity.Property(e => e.SourceRevision).HasColumnName("source_revision");
             entity.Property(e => e.TextOverlayContent).HasColumnName("text_overlay_content");
             entity.Property(e => e.TransitionEffect)
                 .HasMaxLength(50)
                 .HasColumnName("transition_effect");
+            entity.Property(e => e.Warnings)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("warnings");
 
             entity.HasOne(d => d.DesignImage).WithMany(p => p.PromoVideoScenes)
                 .HasForeignKey(d => d.DesignImageId)
@@ -2255,13 +2447,14 @@ public partial class AppDbContext : DbContext
             entity.ToTable("style_art_presets");
 
             entity.HasIndex(e => e.IsActive, "idx_style_art_presets_is_active");
+
             entity.HasIndex(e => e.UserId, "idx_style_art_presets_user_id");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
             entity.Property(e => e.Description).HasColumnName("description");
             entity.Property(e => e.IsActive)
@@ -2270,7 +2463,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.IsSystemTemplate)
                 .HasDefaultValue(true)
                 .HasColumnName("is_system_template");
-            entity.Property(e => e.Name).HasColumnName("name");
+            entity.Property(e => e.Name)
+                .HasColumnType("character varying")
+                .HasColumnName("name");
             entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
             entity.Property(e => e.Recommendations)
                 .HasDefaultValueSql("'[]'::jsonb")
@@ -2278,7 +2473,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("recommendations");
             entity.Property(e => e.StyleModifiers).HasColumnName("style_modifiers");
             entity.Property(e => e.UpdatedAt)
-                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
             entity.Property(e => e.UsageCount)
                 .HasDefaultValue(0)
@@ -2644,6 +2839,7 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'active'::character varying")
                 .HasColumnName("account_status");
             entity.Property(e => e.AvatarUrl).HasColumnName("avatar_url");
+            entity.Property(e => e.Birthday).HasColumnName("birthday");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -2668,6 +2864,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.PasswordHash)
                 .HasMaxLength(255)
                 .HasColumnName("password_hash");
+            entity.Property(e => e.SuspendedUntil).HasColumnName("suspended_until");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -2769,12 +2966,19 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.Type, "idx_video_templates_type");
 
+            entity.HasIndex(e => new { e.Code, e.TemplateVersion }, "uq_video_template_code_version")
+                .IsUnique()
+                .HasFilter("(code IS NOT NULL)");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
             entity.Property(e => e.AspectRatio)
                 .HasMaxLength(20)
                 .HasColumnName("aspect_ratio");
+            entity.Property(e => e.Code)
+                .HasMaxLength(50)
+                .HasColumnName("code");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -2799,12 +3003,173 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Resolution)
                 .HasMaxLength(50)
                 .HasColumnName("resolution");
+            entity.Property(e => e.TemplateVersion)
+                .HasDefaultValue(1)
+                .HasColumnName("template_version");
             entity.Property(e => e.Type)
                 .HasMaxLength(100)
                 .HasColumnName("type");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<Workflow>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workflows_pkey");
+
+            entity.ToTable("workflows");
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Definition)
+                .HasColumnType("jsonb")
+                .HasColumnName("definition");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.Description)
+                .HasMaxLength(500)
+                .HasDefaultValueSql("''::character varying")
+                .HasColumnName("description");
+            entity.Property(e => e.Name)
+                .HasMaxLength(120)
+                .HasColumnName("name");
+            entity.Property(e => e.Revision)
+                .HasDefaultValue(1L)
+                .HasColumnName("revision");
+            entity.Property(e => e.SchemaVersion)
+                .HasDefaultValue(2)
+                .HasColumnName("schema_version");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.Workflows)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflows_user_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkflowNodeRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workflow_node_runs_pkey");
+
+            entity.ToTable("workflow_node_runs");
+
+            entity.HasIndex(e => new { e.WorkflowRunId, e.NodeId }, "workflow_node_runs_workflow_run_id_node_id_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.Attempt)
+                .HasDefaultValue(1)
+                .HasColumnName("attempt");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(1000)
+                .HasColumnName("error_message");
+            entity.Property(e => e.InputSnapshot)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("input_snapshot");
+            entity.Property(e => e.NodeId)
+                .HasMaxLength(100)
+                .HasColumnName("node_id");
+            entity.Property(e => e.NodeType)
+                .HasMaxLength(50)
+                .HasColumnName("node_type");
+            entity.Property(e => e.OutputSnapshot)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("output_snapshot");
+            entity.Property(e => e.Progress)
+                .HasDefaultValue(0)
+                .HasColumnName("progress");
+            entity.Property(e => e.Stage)
+                .HasMaxLength(50)
+                .HasColumnName("stage");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasColumnName("status");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.WorkflowRunId).HasColumnName("workflow_run_id");
+
+            entity.HasOne(d => d.WorkflowRun).WithMany(p => p.WorkflowNodeRuns)
+                .HasForeignKey(d => d.WorkflowRunId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_node_runs_workflow_run_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkflowRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workflow_runs_pkey");
+
+            entity.ToTable("workflow_runs");
+
+            entity.HasIndex(e => new { e.UserId, e.WorkflowId, e.CreatedAt }, "idx_workflow_runs_owner_workflow").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.IdempotencyKey }, "workflow_runs_user_id_idempotency_key_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefinitionSnapshot)
+                .HasColumnType("jsonb")
+                .HasColumnName("definition_snapshot");
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(1000)
+                .HasColumnName("error_message");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(100)
+                .HasColumnName("idempotency_key");
+            entity.Property(e => e.ParentRunId).HasColumnName("parent_run_id");
+            entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.RequestHash)
+                .HasMaxLength(64)
+                .HasColumnName("request_hash");
+            entity.Property(e => e.Revision)
+                .HasDefaultValue(1L)
+                .HasColumnName("revision");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasColumnName("status");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkflowId).HasColumnName("workflow_id");
+            entity.Property(e => e.WorkflowRevision).HasColumnName("workflow_revision");
+
+            entity.HasOne(d => d.ParentRun).WithMany(p => p.InverseParentRun)
+                .HasForeignKey(d => d.ParentRunId)
+                .HasConstraintName("workflow_runs_parent_run_id_fkey");
+
+            entity.HasOne(d => d.Product).WithMany(p => p.WorkflowRuns)
+                .HasForeignKey(d => d.ProductId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_runs_product_id_fkey");
+
+            entity.HasOne(d => d.User).WithMany(p => p.WorkflowRuns)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_runs_user_id_fkey");
+
+            entity.HasOne(d => d.Workflow).WithMany(p => p.WorkflowRuns)
+                .HasForeignKey(d => d.WorkflowId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_runs_workflow_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

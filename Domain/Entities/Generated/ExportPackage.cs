@@ -35,9 +35,15 @@ public partial class ExportPackage
 
     public DateTime ExpiresAt { get; set; }
 
+    public Guid? WorkflowRunId { get; set; }
+
+    public string Manifest { get; set; } = null!;
+
     public virtual BatchJob? BatchJob { get; set; }
 
     public virtual ICollection<ExportPackageItem> ExportPackageItems { get; set; } = new List<ExportPackageItem>();
 
     public virtual User User { get; set; } = null!;
+
+    public virtual WorkflowRun? WorkflowRun { get; set; }
 }
