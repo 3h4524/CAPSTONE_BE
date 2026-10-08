@@ -14,6 +14,16 @@ New workflows default to Auto template version 2, 12 seconds, fade, Varied motio
 
 `GET /api/workflows/video-templates` returns the active version 2 catalog, preview asset URL, defaults and requirements. A rerender request should include `expectedStoryboardFingerprint` from a current preview. The API replans from current approved asset revisions and returns conflict instead of enqueuing when the fingerprint differs.
 
+## Combined with design generation
+
+The same workflow can generate the designs and mock-ups that the video is made from. Prompt Synthesis, Design Image and Design Approval (`design-approval`) may sit between Product Input and Apply Mockup, each at most once, so the full line is Product Input → Prompt Synthesis → Design Image → Design Approval → Apply Mockup → Mockup Approval → Generate Video → Review Video → Export ZIP. `WorkflowCapabilityRegistry.RunOrder` holds that order and `WorkflowGraphValidator` requires one edge between each pair of neighbouring steps that are present. The six video steps are still required exactly once.
+
+These design steps have no executor in a run. The canvas runs them first as a batch job for the whole batch (`api/batch-jobs`), and a run leaves their checkpoints `pending`. Design Approval reviews designs before mock-ups are composited; Mockup Approval (`approval-gate`) still reviews mock-ups before rendering. Product Input therefore carries a batch for the designs and one product for the video.
+
+Apply Mockup composites mock-ups as Cloudinary transformation URLs. Such a row (`source_type = 'generated'`) has no stored file or content hash, so it is not listed by `GET /api/products/{id}/mockup-assets` and cannot be planned or rendered. `POST /api/products/{id}/mockup-assets/import-generated` stores a PNG snapshot of each one (Cloudinary fetches the composite URL itself) and records its key, version, hash and size on the same row, at most 24 per call, newest first. Imported mock-ups stay `pending` and are approved at Mockup Approval like uploads. Their artwork group is the design image ID and their variant is the garment color, so a product with several approved designs has several groups and a video uses one of them. The canvas calls the import when the video part starts and from the Mockup Approval panel. A mock-up regenerated after its template changed becomes a new row; the older row keeps any import and approval it had.
+
+The frontend resolves `@apcs/video-composition` from `../CAPSTONE_BE/shared/video-composition`, and `Start-VideoDev.ps1` looks for the frontend in `../CAPSTONE_FE` first and `../../Frontend/CAPSTONE_FE` second. With npm the package must be installed as a copy (`install-links=true` in the frontend's `.npmrc`): Turbopack does not resolve a link that points outside the project.
+
 ## Setup
 
 For this Windows workspace, `./scripts/Start-VideoDev.ps1` starts the Release API at localhost:5191, frontend at localhost:3000 and local media worker using installed smoke-test binaries. It creates a shared ephemeral worker secret in child-process environments, not a file, and refuses occupied ports instead of stopping existing processes. Logs are in ignored `artifacts/video-dev`. Stop the returned processes before rerunning; the secret changes each launch. This convenience launcher does not replace production secret/container configuration.

@@ -14,6 +14,13 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
     public async Task<StoredMockup> UploadMockupAsync(Stream content, string fileName, string key, CancellationToken ct)
     {
         using var description = new FileDescription(fileName, content);
+        return await StoreMockupAsync(description, key, ct);
+    }
+    // Cloudinary fetches the URL itself, so the image never passes through this server.
+    public Task<StoredMockup> UploadMockupFromUrlAsync(string sourceUrl, string key, CancellationToken ct) =>
+        StoreMockupAsync(new FileDescription(sourceUrl), key, ct);
+    private async Task<StoredMockup> StoreMockupAsync(FileDescription description, string key, CancellationToken ct)
+    {
         var result = await Client.UploadAsync(new ImageUploadParams
         {
             File = description, PublicId = PublicId(key), Type = "authenticated", Overwrite = false,

@@ -22,7 +22,9 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
     public async Task<Result<IReadOnlyList<MockupResponse>>> ListAsync(Guid productId, CancellationToken ct)
     {
         if (!await OwnsAsync(productId, ct)) return Result.Failure<IReadOnlyList<MockupResponse>>(Missing());
-        return Result.Success<IReadOnlyList<MockupResponse>>((await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null, ct)).OrderByDescending(x => x.CreatedAt).Select(Map).ToArray());
+        // A composited mock-up is only a Cloudinary URL until it is imported as a video source (see GeneratedMockupSourceService):
+        // before that it has no stored file to preview, approve or render from.
+        return Result.Success<IReadOnlyList<MockupResponse>>((await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && (x.SourceType != "generated" || x.ContentHash != null), ct)).OrderByDescending(x => x.CreatedAt).Select(Map).ToArray());
     }
     public async Task<Result<MockupResponse>> UploadAsync(Guid productId, Stream content, string name, long length, CancellationToken ct)
     {

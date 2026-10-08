@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
+        services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
