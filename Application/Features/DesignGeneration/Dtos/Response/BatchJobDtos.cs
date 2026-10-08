@@ -38,7 +38,8 @@ public sealed record BatchJobDetailDto(
     int VariationCount,
     string AspectRatio,
     BatchJobCountersDto Counters,
-    IReadOnlyList<BatchJobProductResultDto> Products);
+    IReadOnlyList<BatchJobProductResultDto> Products,
+    bool? RequireApproval = null);
 
 /// <summary>A row in the job list of one batch.</summary>
 public sealed record BatchJobSummaryDto(
@@ -49,3 +50,7 @@ public sealed record BatchJobSummaryDto(
     int FailedProducts,
     DateTime? CreatedAt,
     DateTime? StartedAt);
+
+/// <summary>How the images of a batch job stand after an approval change.</summary>
+/// <param name="UpdatedCount">How many images changed status in this call.</param>
+public sealed record ImageApprovalResultDto(int UpdatedCount, int Pending, int Approved, int Rejected);

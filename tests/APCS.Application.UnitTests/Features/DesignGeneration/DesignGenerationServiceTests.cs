@@ -41,7 +41,8 @@ public sealed class DesignGenerationServiceTests
         bool hasOtherActiveJob = false,
         int imageGenerationQuota = 100,
         int alreadyUsedImages = 0,
-        bool withImage = false)
+        bool withImage = false,
+        int[]? existingPromptVersions = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -91,7 +92,14 @@ public sealed class DesignGenerationServiceTests
         var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
 
         var addedPrompts = new List<AiPrompt>();
+        // Prompts the product already has from an earlier job.
+        var existingPrompts = (existingPromptVersions ?? []).Select(version => new AiPrompt
+        {
+            Id = Guid.NewGuid(), ProductId = product.Id, VersionNumber = version, OriginalDescription = "d",
+            SystemPrompt = "s", GeneratedPrompt = $"old prompt {version}", CreatedAt = UtcNow.UtcDateTime
+        }).ToList();
         var promptRepo = new Mock<IRepository<AiPrompt>>();
+        promptRepo.Setup(x => x.Query()).Returns(existingPrompts.AsQueryable().BuildMock());
         promptRepo.Setup(x => x.AddAsync(It.IsAny<AiPrompt>(), false, It.IsAny<CancellationToken>()))
             .Callback<AiPrompt, bool, CancellationToken>((p, _, _) => addedPrompts.Add(p)).Returns(Task.CompletedTask);
 
@@ -233,6 +241,65 @@ public sealed class DesignGenerationServiceTests
         fixture.AddedPrompts.Should().ContainSingle(p => p.BatchJobProductId == fixture.Rows[0].Id);
         fixture.Queue.Verify(x => x.Enqueue(fixture.Job.Id), Times.Once);
         fixture.UnitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ForAProductThatAlreadyHasPrompts_NumbersTheNewPromptAfterTheLatestOne()
+    {
+        // The unique (product, version) index rejected a second "version 1" for the same product.
+        var fixture = CreateFixture(existingPromptVersions: [1, 2]);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.AddedPrompts.Should().ContainSingle().Which.VersionNumber.Should().Be(3);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ForAProductWithoutPrompts_StartsAtVersionOne()
+    {
+        var fixture = CreateFixture();
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.AddedPrompts.Should().ContainSingle().Which.VersionNumber.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithJobInstructions_AddsThemToEveryPromptAndKeepsThemOnTheJob()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", "  Use a vintage poster look  "));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().Contain("Use a vintage poster look");
+        fixture.Job.Config.Should().Contain("\"instructions\":\"Use a vintage poster look\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithoutJobInstructions_LeavesNoInstructionsOnTheJob()
+    {
+        var fixture = CreateFixture();
+        fixture.Job.Config = "{\"instructions\":\"left over\"}";
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.Job.Config.Should().NotContain("instructions");
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().NotContain("left over");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithTooLongInstructions_ReturnsValidationError()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", new string('x', 1001)));
+
+        result.IsFailure.Should().BeTrue();
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
     }
 
     [TestMethod]

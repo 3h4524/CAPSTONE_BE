@@ -1,3 +1,4 @@
+using APCS.Application.Features.BatchProductPrompts.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using FluentValidation;
 
@@ -13,5 +14,7 @@ public sealed class StartGenerationValidator : AbstractValidator<StartGeneration
             .WithMessage("Choose between 1 and 4 image variations per product.");
         RuleFor(x => x.AspectRatio).Must(x => AllowedAspectRatios.Contains(x))
             .WithMessage($"Aspect ratio must be one of: {string.Join(", ", AllowedAspectRatios)}.");
+        RuleFor(x => x.Instructions).MaximumLength(PromptRules.MaximumInstructionsLength)
+            .WithMessage($"Instructions cannot exceed {PromptRules.MaximumInstructionsLength} characters.");
     }
 }

@@ -7,6 +7,7 @@ using APCS.Application.Common.Validation;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
+using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -63,7 +64,8 @@ public sealed class MockupTemplateService(
         if (batch is null)
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.BatchNotFound());
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config)));
+        return Result.Success(new BatchMockupSelectionResponseDto(
+            batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config), ReadTemplateColors(batch.Config)));
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default)
@@ -101,11 +103,12 @@ public sealed class MockupTemplateService(
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.IncompatibleTemplate(incompatible.Name));
 
         var colors = (request.GarmentColors ?? []).Select(color => color.ToUpperInvariant()).ToList();
-        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors);
+        var colorsByTemplate = NormalizeTemplateColors(request.TemplateColors);
+        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors, colorsByTemplate);
         batch.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batches.UpdateAsync(batch, saveChange: true, cancellationToken);
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors));
+        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate));
     }
 
     public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default)
@@ -405,10 +408,32 @@ public sealed class MockupTemplateService(
         if (string.Equals(batch.Status, BatchJobStatuses.Draft, StringComparison.OrdinalIgnoreCase))
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.JobNotReady());
 
+        return await GenerateAllCoreAsync(batch, userId, cancellationToken);
+    }
+
+    public async Task<Result<GenerateAllMockupsResultDto>> GenerateAllForJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
+    {
+        var batch = await batches.Query()
+            .SingleOrDefaultAsync(job => job.Id == batchJobId && job.DeletedAt == null, cancellationToken);
+        if (batch is null)
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.BatchNotFound());
+        if (batch.Status is not (BatchJobStatuses.Completed or BatchJobStatuses.PartiallyCompleted))
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.JobNotReady());
+        // The Seller reviews the designs first and then asks for the mock-ups themselves.
+        if (ReadRequireApproval(batch.Config) == true)
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.ApprovalPending());
+
+        return await GenerateAllCoreAsync(batch, batch.UserId, cancellationToken);
+    }
+
+    private async Task<Result<GenerateAllMockupsResultDto>> GenerateAllCoreAsync(BatchJob batch, Guid userId, CancellationToken cancellationToken)
+    {
+        var batchJobId = batch.Id;
         var selectedIds = ReadSelection(batch.Config);
         if (selectedIds.Count == 0)
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.NoTemplatesSelected());
         var selectedColors = ReadColors(batch.Config);
+        var colorsByTemplate = ReadTemplateColors(batch.Config);
 
         var selectedTemplates = await templates.Query()
             .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true
@@ -424,13 +449,31 @@ public sealed class MockupTemplateService(
             .Where(image => image.BatchJobProductId != null && rowIds.Contains(image.BatchJobProductId!.Value) && image.DeletedAt == null)
             .ToListAsync(cancellationToken);
 
-        // One target image per product row: lowest variation index (then earliest), as a stand-in
-        // for "the approved one" until SRS 3.5.12 Approve/Reject Image exists.
-        var targetImages = candidateImages
-            .GroupBy(image => image.BatchJobProductId!.Value)
-            .Select(group => group.OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).First())
-            .ToList();
-        var noDesignImageCount = rowIds.Count - targetImages.Count;
+        List<DesignImage> targetImages;
+        int noDesignImageCount;
+        var noApprovedImageCount = 0;
+        if (ReadRequireApproval(batch.Config) is null)
+        {
+            // A job started before approval existed: one image per product row, the lowest variation
+            // index (then earliest), standing in for "the approved one".
+            targetImages = candidateImages
+                .GroupBy(image => image.BatchJobProductId!.Value)
+                .Select(group => group.OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).First())
+                .ToList();
+            noDesignImageCount = rowIds.Count - targetImages.Count;
+        }
+        else
+        {
+            // Every approved image gets its mock-ups, so a product with several approved variations has several.
+            targetImages = candidateImages
+                .Where(image => image.ApprovalStatus == ApprovalStatuses.Approved)
+                .OrderBy(image => image.VariationIndex)
+                .ThenBy(image => image.CreatedAt)
+                .ToList();
+            var rowsWithImages = candidateImages.Select(image => image.BatchJobProductId!.Value).Distinct().Count();
+            noDesignImageCount = rowIds.Count - rowsWithImages;
+            noApprovedImageCount = rowsWithImages - targetImages.Select(image => image.BatchJobProductId!.Value).Distinct().Count();
+        }
 
         var productIds = targetImages.Select(image => image.ProductId).Distinct().ToList();
         var productsById = (await products.Query().Where(product => productIds.Contains(product.Id)).ToListAsync(cancellationToken))
@@ -485,8 +528,10 @@ public sealed class MockupTemplateService(
                 // A recolorable template gets one mock-up per color picked for the batch, else its own
                 // color; any other template keeps the photo's color.
                 var recolorable = template.AllowRecolor && MockupRules.HasCurrentMaps(template);
-                var colors = recolorable && selectedColors.Count > 0
-                    ? selectedColors.Cast<string?>().ToList()
+                // The colors chosen for this template; templates without any of their own share the batch's list.
+                var palette = colorsByTemplate.TryGetValue(template.Id, out var ownColors) ? ownColors : selectedColors;
+                var colors = recolorable && palette.Count > 0
+                    ? palette.Cast<string?>().ToList()
                     : [recolorable ? template.GarmentColor : null];
 
                 foreach (var color in colors)
@@ -551,7 +596,7 @@ public sealed class MockupTemplateService(
         var allImages = current.Select(MapImage).ToList();
 
         return Result.Success(new GenerateAllMockupsResultDto(
-            created.Count, noDesignImageCount, noCompatibleTemplateCount, errors, allImages));
+            created.Count, noDesignImageCount, noCompatibleTemplateCount, errors, allImages, noApprovedImageCount));
     }
 
     private static MockupImageResponseDto MapImage(MockupImage mockupImage) =>
@@ -769,7 +814,63 @@ public sealed class MockupTemplateService(
         }
     }
 
-    private static string WriteSelection(string config, IReadOnlyList<Guid> templateIds, IReadOnlyList<string> garmentColors)
+    // Kept next to the selection in the job's config; written by ApplyAsync, read when mock-ups are made.
+    private const string TemplateColorsConfigKey = "mockupTemplateColors";
+
+    /// <summary>The job's approval mode, or null for a job started before approval existed.</summary>
+    private static bool? ReadRequireApproval(string config)
+    {
+        try
+        {
+            return (bool?)JsonNode.Parse(config)?[GenerationConfigKeys.RequireApproval];
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyDictionary<Guid, IReadOnlyList<string>> ReadTemplateColors(string config)
+    {
+        var result = new Dictionary<Guid, IReadOnlyList<string>>();
+        try
+        {
+            if (JsonNode.Parse(config)?[TemplateColorsConfigKey] is not JsonObject byTemplate)
+                return result;
+
+            foreach (var (key, value) in byTemplate)
+            {
+                if (!Guid.TryParse(key, out var templateId) || value is not JsonArray array)
+                    continue;
+
+                var colors = array
+                    .Select(color => color?.ToString())
+                    .Where(color => color is not null && System.Text.RegularExpressions.Regex.IsMatch(color, MockupRules.GarmentColorPattern))
+                    .Select(color => color!.ToUpperInvariant())
+                    .ToList();
+                if (colors.Count > 0)
+                    result[templateId] = colors;
+            }
+        }
+        catch (JsonException)
+        {
+            result.Clear();
+        }
+
+        return result;
+    }
+
+    // Uppercased, and without templates that were given no color (they use the shared list).
+    private static IReadOnlyDictionary<Guid, IReadOnlyList<string>> NormalizeTemplateColors(IReadOnlyDictionary<Guid, IReadOnlyList<string>>? requested) =>
+        (requested ?? new Dictionary<Guid, IReadOnlyList<string>>())
+            .Where(entry => entry.Value is { Count: > 0 })
+            .ToDictionary(entry => entry.Key, entry => (IReadOnlyList<string>)entry.Value.Select(color => color.ToUpperInvariant()).ToList());
+
+    private static string WriteSelection(
+        string config,
+        IReadOnlyList<Guid> templateIds,
+        IReadOnlyList<string> garmentColors,
+        IReadOnlyDictionary<Guid, IReadOnlyList<string>> colorsByTemplate)
     {
         JsonObject root;
         try
@@ -789,6 +890,19 @@ public sealed class MockupTemplateService(
 
         root[MockupRules.ConfigKey] = ids;
         root[MockupRules.GarmentColorsConfigKey] = new JsonArray(garmentColors.Select(color => (JsonNode?)JsonValue.Create(color)).ToArray());
+
+        if (colorsByTemplate.Count == 0)
+        {
+            root.Remove(TemplateColorsConfigKey);
+        }
+        else
+        {
+            var byTemplate = new JsonObject();
+            foreach (var (templateId, colors) in colorsByTemplate)
+                byTemplate[templateId.ToString()] = new JsonArray(colors.Select(color => (JsonNode?)JsonValue.Create(color)).ToArray());
+            root[TemplateColorsConfigKey] = byTemplate;
+        }
+
         return root.ToJsonString();
     }
 }

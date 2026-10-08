@@ -17,6 +17,15 @@ public static class DesignGenerationErrors
     public static Error NotRetryable() =>
         Error.Conflict("DesignGeneration.NotRetryable", "Failed products can only be retried after the job has finished.");
 
+    public static Error NotCancellable() =>
+        Error.Conflict("DesignGeneration.NotCancellable", "Only a queued or running job can be cancelled.");
+
+    public static Error ApprovalNotAvailable() =>
+        Error.Conflict("DesignGeneration.ApprovalNotAvailable", "Images can be approved or rejected once the job has finished generating.");
+
+    public static Error ImageNotFound() =>
+        Error.NotFound("DesignGeneration.ImageNotFound", "One of the images was not found in this job.");
+
     public static Error NoFailedProducts() =>
         Error.Conflict("DesignGeneration.NoFailedProducts", "This job has no failed products to retry.");
 

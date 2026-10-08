@@ -43,4 +43,11 @@ public interface IMockupTemplateService
     /// skipped, so it is safe to call again as more products finish.
     /// </summary>
     Task<Result<GenerateAllMockupsResultDto>> GenerateAllAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The same as <see cref="GenerateAllAsync"/> for a job that has just finished generating images, run by
+    /// the background worker as the job's owner (there is no signed-in user), so the mock-ups do not wait for
+    /// a browser. Fails without changing anything when the job is not finished or has no template selected.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GenerateAllForJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 }

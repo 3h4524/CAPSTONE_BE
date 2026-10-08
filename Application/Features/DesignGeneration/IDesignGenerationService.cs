@@ -34,6 +34,21 @@ public interface IDesignGenerationService
     /// </summary>
     Task<Result<StartGenerationResponseDto>> RetryFailedAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Asks a queued or running job to stop. The product being generated finishes; the ones after it are
+    /// failed as cancelled and can be generated again with "Retry failed products".
+    /// </summary>
+    Task<Result> CancelAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Approves or rejects generated design images of a finished job (SRS 3.5.12). With no image ids it changes every
+    /// image that is still pending. A product counts as approved while at least one of its images is.
+    /// </summary>
+    Task<Result<ImageApprovalResultDto>> SetImageApprovalAsync(
+        Guid batchJobId,
+        SetImageApprovalRequestDto request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns a batch job with per-product state and generated images (owner only, BR34).</summary>
     Task<Result<BatchJobDetailDto>> GetJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 

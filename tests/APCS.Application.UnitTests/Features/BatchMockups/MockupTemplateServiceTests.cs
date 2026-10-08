@@ -456,6 +456,67 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAllForJobAsync_WithoutASignedInUser_GeneratesForTheJobOwner()
+    {
+        var ownerId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(ownerId, batchJobId, "tshirt");
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = ownerId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"]}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        // The background worker has no request, so there is no signed-in user.
+        var result = await CreateService(null, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: batches,
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image),
+                mockupImages: mockupImages, compositor: StubCompositor())
+            .GenerateAllForJobAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GeneratedCount.Should().Be(1);
+        added.Should().ContainSingle(m => m.DesignImageId == image.Id && m.MockupTemplateId == templateId);
+    }
+
+    [TestMethod]
+    [DataRow("draft")]
+    [DataRow("queued")]
+    [DataRow("running")]
+    [DataRow("failed")]
+    public async Task GenerateAllForJobAsync_UnlessTheJobFinishedWithImages_ReturnsNotReady(string status)
+    {
+        var batchJobId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = Guid.NewGuid(), Name = "B", Status = status,
+            Config = $"{{\"mockupTemplateIds\":[\"{Guid.NewGuid():D}\"]}}"
+        });
+
+        var result = await CreateService(null, batches: batches).GenerateAllForJobAsync(batchJobId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("BatchMockups.JobNotReady");
+    }
+
+    [TestMethod]
+    public async Task GenerateAllForJobAsync_WhenNoTemplatesSelected_ChangesNothing()
+    {
+        var batchJobId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob { Id = batchJobId, UserId = Guid.NewGuid(), Name = "B", Status = "completed", Config = "{}" });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(null, batches: batches, mockupImages: mockupImages).GenerateAllForJobAsync(batchJobId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("BatchMockups.NoTemplatesSelected");
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task GenerateAllAsync_WithMixedProductTypes_EachProductGetsItsCompatibleTemplate()
     {
         var userId = Guid.NewGuid();
@@ -792,7 +853,7 @@ public sealed class MockupTemplateServiceTests
         compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(),
             It.Is<MockupLayers?>(l => l!.DesignWidthPx == 1024 && l.DisplacementMapKey == $"mockup-templates/{templateId:N}-7-displace"
                 && l.GarmentMaskKey == $"mockup-templates/{templateId:N}-7-mask"
-                && l.GarmentColor == null && l.MultiplyDesign)), Times.Once);
+                && l.GarmentColor == null && l.MultiplyDesign && l.BasePhotoShortSidePx == 2000)), Times.Once);
     }
 
     [TestMethod]
@@ -907,6 +968,261 @@ public sealed class MockupTemplateServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.GarmentColors.Should().Equal("#1F2A44");
         batch.Config.Should().Contain("\"mockupGarmentColors\":[\"#1F2A44\"]");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_StoresColorsPerTemplate_AndReturnsThemUppercased()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var teeId = Guid.NewGuid();
+        var hoodieId = Guid.NewGuid();
+        var batch = new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "completed", Config = "{}" };
+        var batches = MockBatches(batch);
+        batches.Setup(r => r.UpdateAsync(It.IsAny<BatchJob>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        var colors = new Dictionary<Guid, IReadOnlyList<string>>
+        {
+            [teeId] = ["#1f2a44", "#b22222"],
+            [hoodieId] = ["#2f4f3a"],
+        };
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(teeId, "tshirt"), MakeTemplate(hoodieId, "hoodie")),
+                batches: batches, rows: MockRows())
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([teeId, hoodieId], TemplateColors: colors));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.TemplateColors![teeId].Should().Equal("#1F2A44", "#B22222");
+        result.Value.TemplateColors[hoodieId].Should().Equal("#2F4F3A");
+        batch.Config.Should().Contain("mockupTemplateColors").And.Contain("#1F2A44");
+
+        // What was stored is what a later read returns.
+        var read = await CreateService(userId, batches: batches).GetSelectionAsync(batchId);
+        read.Value.TemplateColors![teeId].Should().Equal("#1F2A44", "#B22222");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithoutPerTemplateColors_RemovesTheOnesStoredBefore()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var batch = new BatchJob
+        {
+            Id = batchId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateColors\":{{\"{templateId:D}\":[\"#1F2A44\"]}}}}"
+        };
+        var batches = MockBatches(batch);
+        batches.Setup(r => r.UpdateAsync(It.IsAny<BatchJob>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: batches, rows: MockRows())
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([templateId]));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.TemplateColors.Should().BeEmpty();
+        batch.Config.Should().NotContain("mockupTemplateColors");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithColorsForATemplateThatIsNotSelected_ReturnsValidationError()
+    {
+        var selected = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var colors = new Dictionary<Guid, IReadOnlyList<string>> { [other] = ["#1F2A44"] };
+
+        var result = await CreateService(Guid.NewGuid())
+            .ApplyAsync(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto([selected], TemplateColors: colors));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithTooManyOrRepeatedColorsForATemplate_ReturnsValidationError()
+    {
+        var templateId = Guid.NewGuid();
+        var tooMany = new Dictionary<Guid, IReadOnlyList<string>>
+        {
+            [templateId] = ["#111111", "#222222", "#333333", "#444444", "#555555", "#666666"],
+        };
+        var repeated = new Dictionary<Guid, IReadOnlyList<string>> { [templateId] = ["#111111", "#111111"] };
+        var invalid = new Dictionary<Guid, IReadOnlyList<string>> { [templateId] = ["navy"] };
+        var service = CreateService(Guid.NewGuid());
+
+        foreach (var colors in new[] { tooMany, repeated, invalid })
+        {
+            var result = await service.ApplyAsync(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto([templateId], TemplateColors: colors));
+
+            result.IsFailure.Should().BeTrue();
+            result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        }
+    }
+
+    // ---- Approval: which design images get mock-ups ----
+
+    private static DesignImage AnotherVariation(DesignImage image, int variation, string approval) => new()
+    {
+        Id = Guid.NewGuid(), ProductId = image.ProductId, AiPromptId = image.AiPromptId, BatchJobProductId = image.BatchJobProductId,
+        StorageKey = $"{image.StorageKey}/{variation}", ImageGeneratorModel = "m", StorageProvider = "cloudinary",
+        ImageUrl = $"https://cdn/design-{variation}.png", ImageWidthPx = 1024, ImageHeightPx = 1024, FileFormat = "png",
+        FileSizeMb = 1, ApprovalStatus = approval, VariationIndex = variation, GenerationTimeSeconds = 1
+    };
+
+    private static async Task<(APCS.Common.Models.Result<APCS.Application.Features.BatchMockups.Dtos.Response.GenerateAllMockupsResultDto> Result, List<MockupImage> Added)> GenerateWithApprovalAsync(
+        string? requireApproval, params (int Variation, string Approval)[] images)
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, first) = MakeProductRow(userId, batchJobId, "tshirt");
+        var designs = images.Select(entry => AnotherVariation(first, entry.Variation, entry.Approval)).ToArray();
+        var approvalKey = requireApproval is null ? string.Empty : $",\"requireApproval\":{requireApproval}";
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"]{approvalKey}}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(designs), mockupImages: mockupImages, compositor: ColorAwareCompositor())
+            .GenerateAllAsync(batchJobId);
+        return (result, added);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WhenApprovalIsRequired_MakesMockupsOnlyForApprovedImages()
+    {
+        var (result, added) = await GenerateWithApprovalAsync("true", (1, "approved"), (2, "pending"), (3, "rejected"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GeneratedCount.Should().Be(1);
+        added.Should().ContainSingle();
+        result.Value.NoApprovedImageCount.Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WhenSeveralImagesAreApproved_EachOneGetsItsMockups()
+    {
+        var (result, added) = await GenerateWithApprovalAsync("true", (1, "approved"), (2, "approved"), (3, "rejected"));
+
+        result.Value.GeneratedCount.Should().Be(2);
+        added.Select(m => m.DesignImageId).Distinct().Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WhenNoImageOfAProductIsApproved_CountsItAndMakesNothing()
+    {
+        var (result, added) = await GenerateWithApprovalAsync("true", (1, "pending"), (2, "rejected"));
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().BeEmpty();
+        result.Value.NoApprovedImageCount.Should().Be(1);
+        result.Value.NoDesignImageCount.Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WhenApprovalIsAutomatic_MakesMockupsForEveryApprovedImage()
+    {
+        var (result, added) = await GenerateWithApprovalAsync("false", (1, "approved"), (2, "approved"));
+
+        result.Value.GeneratedCount.Should().Be(2);
+        added.Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_ForAJobFromBeforeApprovalExisted_StillUsesTheFirstVariationOnly()
+    {
+        var (result, added) = await GenerateWithApprovalAsync(null, (2, "pending"), (1, "pending"));
+
+        result.Value.GeneratedCount.Should().Be(1);
+        added.Should().ContainSingle().Which.DesignImageId.Should().NotBeEmpty();
+    }
+
+    [TestMethod]
+    public async Task GenerateAllForJobAsync_WhenApprovalIsRequired_LeavesTheMockupsToTheSeller()
+    {
+        var batchJobId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = Guid.NewGuid(), Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{Guid.NewGuid():D}\"],\"requireApproval\":true}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(null, batches: batches, mockupImages: mockupImages).GenerateAllForJobAsync(batchJobId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("BatchMockups.ApprovalPending");
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WithPerTemplateColors_EachTemplateIsMadeOnlyInItsOwnColors()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var (teeAId, teeBId) = (Guid.NewGuid(), Guid.NewGuid());
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var teeA = RecolorableTemplate(teeAId);
+        var teeB = RecolorableTemplate(teeBId);
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{teeAId:D}\",\"{teeBId:D}\"],\"mockupTemplateColors\":{{\"{teeAId:D}\":[\"#1F2A44\"],\"{teeBId:D}\":[\"#B22222\",\"#2F4F3A\"]}}}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(teeA, teeB), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: ColorAwareCompositor())
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Where(m => m.MockupTemplateId == teeAId).Select(m => m.GarmentColor).Should().BeEquivalentTo(["#1F2A44"]);
+        added.Where(m => m.MockupTemplateId == teeBId).Select(m => m.GarmentColor).Should().BeEquivalentTo(["#B22222", "#2F4F3A"]);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_TemplateWithoutItsOwnColors_UsesTheSharedColorList()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var (teeAId, teeBId) = (Guid.NewGuid(), Guid.NewGuid());
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{teeAId:D}\",\"{teeBId:D}\"],\"mockupGarmentColors\":[\"#2B4FA3\"],\"mockupTemplateColors\":{{\"{teeAId:D}\":[\"#1F2A44\"]}}}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        await CreateService(userId, templates: TemplateRepository(RecolorableTemplate(teeAId), RecolorableTemplate(teeBId)), batches: batches,
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages,
+                compositor: ColorAwareCompositor())
+            .GenerateAllAsync(batchJobId);
+
+        added.Single(m => m.MockupTemplateId == teeAId).GarmentColor.Should().Be("#1F2A44");
+        added.Single(m => m.MockupTemplateId == teeBId).GarmentColor.Should().Be("#2B4FA3");
+    }
+
+    private static MockupTemplate RecolorableTemplate(Guid id)
+    {
+        var template = MakeTemplate(id, "tshirt");
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = 7;
+        template.AllowRecolor = true;
+        return template;
+    }
+
+    private static Mock<IMockupCompositor> ColorAwareCompositor()
+    {
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, _, _, layers) => $"https://cdn/{Guid.NewGuid():N}?c={layers?.GarmentColor}");
+        return compositor;
     }
 
     [TestMethod]

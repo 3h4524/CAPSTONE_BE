@@ -16,5 +16,8 @@ public static class BatchJobProductStatuses
     /// <summary>Images were generated and now wait for the Seller to approve/reject them.</summary>
     public const string ImageReviewRequired = "image_review_required";
 
+    /// <summary>The Seller approved at least one image of the product (or approval was automatic).</summary>
+    public const string Approved = "approved";
+
     public const string Failed = "failed";
 }

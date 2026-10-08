@@ -56,6 +56,9 @@ public static class MockupErrors
     public static Error RecolorNotAllowed(string name) =>
         Error.Conflict("BatchMockups.RecolorNotAllowed", $"The template {name} does not support garment colors.");
 
+    public static Error ApprovalPending() =>
+        Error.Conflict("BatchMockups.ApprovalPending", "Mock-ups are made after the designs are approved.");
+
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
 }

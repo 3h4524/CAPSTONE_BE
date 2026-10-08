@@ -95,6 +95,7 @@ public static class DependencyInjection
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
 
         return services;
     }

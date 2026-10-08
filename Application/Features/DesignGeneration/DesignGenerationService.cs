@@ -52,6 +52,10 @@ public sealed class DesignGenerationService(
         + "No t-shirt, mockup, fabric, paper or photo backdrop, and no drop shadow around the artwork.";
     private static readonly TimeSpan StepTimeout = TimeSpan.FromMinutes(3);
 
+    private const string CancelRequestedEvent = "cancel_requested";
+    private const string CancelHonoredEvent = "cancel_honored";
+    private const string CancelledMessage = "Cancelled by the user.";
+
     public async Task<Result<StartGenerationResponseDto>> StartAsync(
         Guid batchJobId,
         StartGenerationRequestDto request,
@@ -127,6 +131,15 @@ public sealed class DesignGenerationService(
             await products.UpdateAsync(product, cancellationToken: cancellationToken);
         }
 
+        // A product keeps one prompt per version (unique per product), and it may already have prompts from
+        // an earlier job, so each new prompt takes the next number instead of always claiming version 1.
+        var latestVersionByProduct = (await aiPrompts.Query()
+                .Where(p => productIds.Contains(p.ProductId))
+                .Select(p => new { p.ProductId, p.VersionNumber })
+                .ToListAsync(cancellationToken))
+            .GroupBy(p => p.ProductId)
+            .ToDictionary(group => group.Key, group => group.Max(p => p.VersionNumber));
+
         // Synthesize and persist the effective AI prompt for every pending row (SRS 3.5.10).
         foreach (var row in rows)
         {
@@ -138,22 +151,27 @@ public sealed class DesignGenerationService(
                 ArtStyle = row.CustomArtStyle ?? defaults.ArtStyle,
                 MoodTone = row.CustomMoodTone ?? defaults.MoodTone,
                 NegativeTerms = row.CustomNegativeTerms ?? string.Empty,
-                Instructions = row.CustomInstructions ?? string.Empty
+                // The job-level wording applies to products that have no instructions of their own.
+                Instructions = row.CustomInstructions ?? request.Instructions?.Trim() ?? string.Empty
             };
             var generatedPrompt = PromptComposer.Compose(
                 defaults.BasePrompt, effective.Subject, effective.ArtStyle, effective.MoodTone,
                 effective.NegativeTerms, effective.Instructions, defaults.Niche, defaults.StyleModifiers,
                 defaults.Keywords, defaults.Description);
 
+            var promptProductId = row.ProductId!.Value;
+            var promptVersion = latestVersionByProduct.GetValueOrDefault(promptProductId) + 1;
+            latestVersionByProduct[promptProductId] = promptVersion;
+
             await aiPrompts.AddAsync(new AiPrompt
             {
                 Id = Guid.NewGuid(),
-                ProductId = row.ProductId!.Value,
+                ProductId = promptProductId,
                 DesignTemplateId = product?.DesignTemplateId,
                 OriginalDescription = product?.InputDescription ?? string.Empty,
                 SystemPrompt = defaults.BasePrompt,
                 GeneratedPrompt = generatedPrompt,
-                VersionNumber = 1,
+                VersionNumber = promptVersion,
                 BatchJobProductId = row.Id,
                 CreatedAt = now
             }, cancellationToken: cancellationToken);
@@ -165,7 +183,7 @@ public sealed class DesignGenerationService(
         }
 
         job.Status = BatchJobStatuses.Queued;
-        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio);
+        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio, request.Instructions, request.RequireApproval);
         job.StartedAt = now;
         job.UpdatedAt = now;
         await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
@@ -290,6 +308,9 @@ public sealed class DesignGenerationService(
             return;
         }
         var apiKeyPlain = apiKeyCredentials.Unprotect(geminiKey.KeyValueEncrypted);
+        var requireApproval = ReadRequireApproval(job.Config);
+        // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
+        var reviewedStatus = requireApproval == false ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
         var (variationCount, aspectRatio) = ReadConfig(job.Config);
 
         job.Status = BatchJobStatuses.Running;
@@ -302,8 +323,17 @@ public sealed class DesignGenerationService(
             .OrderBy(x => x.SequenceOrder)
             .ToListAsync(cancellationToken);
 
+        // Once the user cancels, the product being generated finishes and every one after it is failed.
+        var cancelled = false;
         foreach (var row in rows)
         {
+            cancelled = cancelled || await CancelPendingAsync(job.Id, cancellationToken);
+            if (cancelled)
+            {
+                await CancelRowAsync(job, row, cancellationToken);
+                continue;
+            }
+
             var prompt = await aiPrompts.Query()
                 .Where(p => p.BatchJobProductId == row.Id)
                 .OrderByDescending(p => p.VersionNumber)
@@ -427,7 +457,7 @@ public sealed class DesignGenerationService(
                     ImageHeightPx = height,
                     FileFormat = FileExtension(mimeType),
                     FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
-                    ApprovalStatus = "pending",
+                    ApprovalStatus = requireApproval == false ? ApprovalStatuses.Approved : ApprovalStatuses.Pending,
                     // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead.
                     VariationIndex = variation + 1,
                     GenerationTimeSeconds = elapsedSeconds,
@@ -437,7 +467,7 @@ public sealed class DesignGenerationService(
                 successCount++;
             }
 
-            row.Status = successCount > 0 ? BatchJobProductStatuses.ImageReviewRequired : BatchJobProductStatuses.Failed;
+            row.Status = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
             row.ErrorMessage = successCount == 0 ? "All requested variations failed or were blocked." : null;
             row.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
             row.UpdatedAt = row.CompletedAt;
@@ -448,7 +478,7 @@ public sealed class DesignGenerationService(
                 var product = await products.Query().SingleOrDefaultAsync(p => p.Id == row.ProductId.Value, cancellationToken);
                 if (product is not null)
                 {
-                    product.ProcessingStatus = successCount > 0 ? BatchJobProductStatuses.ImageReviewRequired : BatchJobProductStatuses.Failed;
+                    product.ProcessingStatus = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
                     product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
                     await products.UpdateAsync(product, cancellationToken: cancellationToken);
                 }
@@ -467,6 +497,10 @@ public sealed class DesignGenerationService(
             // Persist per-row: partial progress survives even if a later row throws or the process stops.
             await unitOfWork.SaveChangesAsync(cancellationToken);
         }
+
+        // A cancel that arrived during the last product is consumed too, so a later retry is not stopped by it.
+        if (cancelled || await CancelPendingAsync(job.Id, cancellationToken))
+            await LogAsync(job.Id, null, "info", CancelHonoredEvent, "Generation stopped at the user's request.", cancellationToken);
 
         var failed = job.FailedProducts ?? 0;
         job.Status = failed == 0 ? BatchJobStatuses.Completed
@@ -529,7 +563,7 @@ public sealed class DesignGenerationService(
         var counters = new BatchJobCountersDto(
             rows.Count(r => r.Status is BatchJobProductStatuses.Pending or BatchJobProductStatuses.Queued),
             rows.Count(r => r.Status == BatchJobProductStatuses.GeneratingImage),
-            rows.Count(r => r.Status == BatchJobProductStatuses.ImageReviewRequired),
+            rows.Count(r => r.Status is BatchJobProductStatuses.ImageReviewRequired or BatchJobProductStatuses.Approved),
             rows.Count(r => r.Status == BatchJobProductStatuses.Failed));
 
         var (variationCount, aspectRatio) = ReadConfig(job.Config);
@@ -537,7 +571,7 @@ public sealed class DesignGenerationService(
             job.Id, job.BatchId, batchName, job.Status,
             job.TotalProducts ?? rows.Count, job.ProcessedProducts ?? 0, job.FailedProducts ?? 0,
             job.ProgressPercentage ?? 0, job.StartedAt, job.CompletedAt,
-            variationCount, aspectRatio, counters, rowDtos));
+            variationCount, aspectRatio, counters, rowDtos, ReadRequireApproval(job.Config)));
     }
 
     public async Task<Result<IReadOnlyList<BatchJobSummaryDto>>> ListJobsForBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
@@ -637,7 +671,7 @@ public sealed class DesignGenerationService(
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         }, cancellationToken: cancellationToken);
 
-    private static string WriteConfig(string config, int variationCount, string aspectRatio)
+    private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval)
     {
         JsonObject root;
         try { root = JsonNode.Parse(config)?.AsObject() ?? new JsonObject(); }
@@ -645,7 +679,179 @@ public sealed class DesignGenerationService(
 
         root[GenerationConfigKeys.VariationCount] = variationCount;
         root[GenerationConfigKeys.AspectRatio] = aspectRatio;
+        if (string.IsNullOrWhiteSpace(instructions)) root.Remove(GenerationConfigKeys.Instructions);
+        else root[GenerationConfigKeys.Instructions] = instructions.Trim();
+        if (requireApproval is null) root.Remove(GenerationConfigKeys.RequireApproval);
+        else root[GenerationConfigKeys.RequireApproval] = requireApproval.Value;
         return root.ToJsonString();
+    }
+
+    /// <summary>
+    /// A cancel request is a log row, not a job column: the worker rewrites the whole job row after
+    /// every product, so a flag stored on the job would be overwritten before it was seen.
+    /// It stays pending until the worker records that it honored it.
+    /// </summary>
+    private async Task<bool> CancelPendingAsync(Guid batchJobId, CancellationToken cancellationToken)
+    {
+        var events = await batchJobLogs.Query()
+            .Where(log => log.BatchJobId == batchJobId && (log.EventType == CancelRequestedEvent || log.EventType == CancelHonoredEvent))
+            .Select(log => new { log.EventType, log.CreatedAt })
+            .ToListAsync(cancellationToken);
+        var requestedAt = events.Where(e => e.EventType == CancelRequestedEvent).Max(e => e.CreatedAt);
+        var honoredAt = events.Where(e => e.EventType == CancelHonoredEvent).Max(e => e.CreatedAt);
+        return requestedAt is not null && (honoredAt is null || requestedAt > honoredAt);
+    }
+
+    // Fails one product that was still waiting when its job was cancelled; "Retry failed" can run it again.
+    private async Task CancelRowAsync(BatchJob job, BatchJobProduct row, CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        row.Status = BatchJobProductStatuses.Failed;
+        row.ErrorMessage = CancelledMessage;
+        row.CompletedAt = now;
+        row.UpdatedAt = now;
+        await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+
+        if (row.ProductId.HasValue)
+        {
+            var product = await products.Query().SingleOrDefaultAsync(p => p.Id == row.ProductId.Value, cancellationToken);
+            if (product is not null)
+            {
+                product.ProcessingStatus = BatchJobProductStatuses.Failed;
+                product.UpdatedAt = now;
+                await products.UpdateAsync(product, cancellationToken: cancellationToken);
+            }
+        }
+
+        job.FailedProducts = (job.FailedProducts ?? 0) + 1;
+        job.ProcessedProducts = (job.ProcessedProducts ?? 0) + 1;
+        job.ProgressPercentage = job.TotalProducts is > 0
+            ? Math.Round(100m * job.ProcessedProducts.Value / job.TotalProducts.Value, 0)
+            : job.ProgressPercentage;
+        job.UpdatedAt = now;
+        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private const int MaximumApprovalBatch = 500;
+
+    public async Task<Result<ImageApprovalResultDto>> SetImageApprovalAsync(
+        Guid batchJobId,
+        SetImageApprovalRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.Unauthenticated("review"));
+
+        var status = request.Status?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (!ApprovalStatuses.All.Contains(status))
+            return Result.Failure<ImageApprovalResultDto>(Error.Validation($"Status must be one of: {string.Join(", ", ApprovalStatuses.All)}."));
+        var requestedIds = request.DesignImageIds?.Distinct().ToList();
+        if (requestedIds is not null && (requestedIds.Count is 0 or > MaximumApprovalBatch))
+            return Result.Failure<ImageApprovalResultDto>(Error.Validation($"Choose between 1 and {MaximumApprovalBatch} images."));
+
+        var job = await batchJobs.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
+        if (job is null) return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.JobNotFound());
+        // Images keep arriving while the job runs, and a retry replaces failed ones, so decisions wait for the job to settle.
+        if (job.Status is not (BatchJobStatuses.Completed or BatchJobStatuses.PartiallyCompleted))
+            return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.ApprovalNotAvailable());
+
+        var images = await designImages.Query()
+            .Where(image => image.BatchJobId == job.Id && image.DeletedAt == null)
+            .ToListAsync(cancellationToken);
+
+        List<DesignImage> targets;
+        if (requestedIds is null)
+        {
+            targets = images.Where(image => image.ApprovalStatus == ApprovalStatuses.Pending).ToList();
+        }
+        else
+        {
+            targets = images.Where(image => requestedIds.Contains(image.Id)).ToList();
+            if (targets.Count != requestedIds.Count)
+                return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.ImageNotFound());
+        }
+
+        var changed = targets.Where(image => image.ApprovalStatus != status).ToList();
+        foreach (var image in changed)
+        {
+            image.ApprovalStatus = status;
+            await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+        }
+
+        await RefreshReviewStatusAsync(images, changed, cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success(new ImageApprovalResultDto(
+            changed.Count,
+            images.Count(image => image.ApprovalStatus == ApprovalStatuses.Pending),
+            images.Count(image => image.ApprovalStatus == ApprovalStatuses.Approved),
+            images.Count(image => image.ApprovalStatus == ApprovalStatuses.Rejected)));
+    }
+
+    // A product counts as approved while at least one of its images is, and goes back to waiting for review when
+    // the last approved one is taken back. Products that failed or are still being generated are left alone.
+    private async Task RefreshReviewStatusAsync(IReadOnlyList<DesignImage> images, IReadOnlyList<DesignImage> changed, CancellationToken cancellationToken)
+    {
+        var rowIds = changed.Where(image => image.BatchJobProductId.HasValue).Select(image => image.BatchJobProductId!.Value).Distinct().ToList();
+        if (rowIds.Count == 0) return;
+
+        var rows = await batchJobProducts.Query().Where(row => rowIds.Contains(row.Id)).ToListAsync(cancellationToken);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var row in rows)
+        {
+            if (row.Status is not (BatchJobProductStatuses.ImageReviewRequired or BatchJobProductStatuses.Approved)) continue;
+
+            var hasApproved = images.Any(image => image.BatchJobProductId == row.Id && image.ApprovalStatus == ApprovalStatuses.Approved);
+            var status = hasApproved ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
+            if (row.Status == status) continue;
+
+            row.Status = status;
+            row.UpdatedAt = now;
+            await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+
+            if (!row.ProductId.HasValue) continue;
+            var product = await products.Query().SingleOrDefaultAsync(item => item.Id == row.ProductId.Value, cancellationToken);
+            if (product is null) continue;
+            product.ProcessingStatus = status;
+            product.UpdatedAt = now;
+            await products.UpdateAsync(product, cancellationToken: cancellationToken);
+        }
+    }
+
+    public async Task<Result> CancelAsync(Guid batchJobId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure(DesignGenerationErrors.Unauthenticated("cancel"));
+
+        var job = await batchJobs.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
+        if (job is null) return Result.Failure(DesignGenerationErrors.JobNotFound());
+        if (job.Status is not (BatchJobStatuses.Queued or BatchJobStatuses.Running))
+            return Result.Failure(DesignGenerationErrors.NotCancellable());
+
+        // Asking twice changes nothing: the worker is already going to stop.
+        if (!await CancelPendingAsync(job.Id, cancellationToken))
+        {
+            await LogAsync(job.Id, null, "info", CancelRequestedEvent, "Cancellation requested by the user.", cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>The job's approval mode: null for jobs started before approval existed.</summary>
+    private static bool? ReadRequireApproval(string config)
+    {
+        try
+        {
+            return (bool?)JsonNode.Parse(config)?[GenerationConfigKeys.RequireApproval];
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
     }
 
     private static (int VariationCount, string AspectRatio) ReadConfig(string config)

@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.DesignGeneration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,6 +38,7 @@ public sealed class DesignGenerationWorker(
                 using var scope = serviceProvider.CreateScope();
                 var service = scope.ServiceProvider.GetRequiredService<IDesignGenerationService>();
                 await service.ProcessBatchJobAsync(batchJobId, stoppingToken);
+                await GenerateMockupsAsync(scope.ServiceProvider, batchJobId, stoppingToken);
             }
             catch (Exception ex)
             {
@@ -57,5 +59,25 @@ public sealed class DesignGenerationWorker(
         }
 
         logger.LogInformation("DesignGenerationWorker is stopping.");
+    }
+
+    // The designs are saved by now, so a failure here must never fail the job: the mock-ups can
+    // still be generated from the app (the call is idempotent).
+    private async Task GenerateMockupsAsync(IServiceProvider scopedServices, Guid batchJobId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var mockups = scopedServices.GetRequiredService<IMockupTemplateService>();
+            var result = await mockups.GenerateAllForJobAsync(batchJobId, cancellationToken);
+            if (result.IsSuccess)
+                logger.LogInformation("Generated {Count} mock-up(s) for batch job {BatchJobId}.", result.Value.GeneratedCount, batchJobId);
+            else
+                // Expected when the job failed or no template was selected.
+                logger.LogDebug("No mock-ups generated for batch job {BatchJobId}: {Code}.", batchJobId, result.Error.Code);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not generate mock-ups for batch job {BatchJobId}.", batchJobId);
+        }
     }
 }
