@@ -3,7 +3,9 @@ param([int]$ApiPort = 5191, [int]$FrontendPort = 3000)
 
 $ErrorActionPreference = 'Stop'
 $videoBackendRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$videoFrontendRoot = [IO.Path]::GetFullPath((Join-Path $videoBackendRoot '../../Frontend/CAPSTONE_FE'))
+# The frontend is either beside this repository or under a sibling Frontend folder; the first one found is used.
+$videoFrontendCandidates = @('../CAPSTONE_FE', '../../Frontend/CAPSTONE_FE') | ForEach-Object { [IO.Path]::GetFullPath((Join-Path $videoBackendRoot $_)) }
+$videoFrontendRoot = @($videoFrontendCandidates | Where-Object { Test-Path -LiteralPath $_ }) + $videoFrontendCandidates[-1] | Select-Object -First 1
 $videoWorkerRoot = Join-Path $videoBackendRoot 'media-worker'
 $videoOutputRoot = Join-Path $videoBackendRoot 'artifacts/video-dev'
 $videoApiAssembly = Join-Path $videoBackendRoot 'API/bin/Release/net8.0/APCS.Api.dll'
