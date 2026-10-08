@@ -116,6 +116,7 @@ public static class DependencyInjection
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
+        services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 
         return services;
     }
@@ -153,6 +154,8 @@ public static class DependencyInjection
         services.AddSingleton<IDesignBackgroundRemover, ImageSharpDesignBackgroundRemover>();
         services.AddScoped<IMockupMapService, MockupMapService>();
         services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

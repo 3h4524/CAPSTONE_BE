@@ -70,6 +70,7 @@ try {
         "+APCS.Application.Common.Behaviours.*",
         "+APCS.Application.Features.Auth.*",
         "+APCS.Application.Features.ApiKeys.*",
+        "+APCS.Application.Features.Workflows.*",
         "+APCS.Common.*",
         "+APCS.Domain.Common.SoftDeletableEntity",
         "+APCS.Domain.Entities.AuthToken",

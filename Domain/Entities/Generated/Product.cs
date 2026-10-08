@@ -70,4 +70,6 @@ public partial class Product
     public virtual ICollection<SocialMediaShare> SocialMediaShares { get; set; } = new List<SocialMediaShare>();
 
     public virtual User User { get; set; } = null!;
+
+    public virtual ICollection<WorkflowRun> WorkflowRuns { get; set; } = new List<WorkflowRun>();
 }

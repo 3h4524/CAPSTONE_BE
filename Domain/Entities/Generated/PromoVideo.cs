@@ -61,11 +61,43 @@ public partial class PromoVideo
 
     public Guid? BatchJobProductId { get; set; }
 
+    public string Mode { get; set; } = null!;
+
+    public Guid? SeriesId { get; set; }
+
+    public int VersionNumber { get; set; }
+
+    public Guid? WorkflowRunId { get; set; }
+
+    public string? Fingerprint { get; set; }
+
+    public int TemplateVersion { get; set; }
+
+    public string ConfigSnapshot { get; set; } = null!;
+
+    public string QaResult { get; set; } = null!;
+
+    public long ReviewRevision { get; set; }
+
+    public Guid? ApprovedBy { get; set; }
+
+    public DateTime? ApprovedAt { get; set; }
+
+    public string? ThumbnailStorageKey { get; set; }
+
+    public string? StorageVersion { get; set; }
+
+    public string? ThumbnailStorageVersion { get; set; }
+
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
+
+    public virtual User? ApprovedByNavigation { get; set; }
 
     public virtual BatchJob? BatchJob { get; set; }
 
     public virtual BatchJobProduct? BatchJobProduct { get; set; }
+
+    public virtual ICollection<ExportPackageItem> ExportPackageItems { get; set; } = new List<ExportPackageItem>();
 
     public virtual MusicTrack? MusicTrack { get; set; }
 
@@ -76,4 +108,6 @@ public partial class PromoVideo
     public virtual ICollection<SocialMediaShare> SocialMediaShares { get; set; } = new List<SocialMediaShare>();
 
     public virtual VideoTemplate VideoTemplate { get; set; } = null!;
+
+    public virtual WorkflowRun? WorkflowRun { get; set; }
 }

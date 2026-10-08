@@ -780,6 +780,42 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAllAsync_MarksEachMockupAsCompositedFromItsDesign()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintMapsSourceUrl = template.BaseImageUrl;
+        template.PrintMapsVersion = 7;
+        template.AllowRecolor = true;
+        template.GarmentColor = "#1F2A44";
+
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"]}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        await CreateService(userId, templates: TemplateRepository(template), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: StubCompositor())
+            .GenerateAllAsync(batchJobId);
+
+        // What a video source needs to know: where the mock-up came from, which design it shows and which color variant it is.
+        var mockup = added.Should().ContainSingle().Subject;
+        mockup.SourceType.Should().Be("generated");
+        mockup.ArtworkGroupKey.Should().Be(image.Id.ToString());
+        mockup.VariantKey.Should().Be("#1F2A44");
+        mockup.Role.Should().Be("Hero");
+        mockup.Regions.Should().Be("{}");
+        mockup.MetadataRevision.Should().Be(1);
+        mockup.ContentHash.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task UpdateAsync_WhenMapsAreMissing_BackfillsThemWithoutANewPhoto()
     {
         var userId = Guid.NewGuid();

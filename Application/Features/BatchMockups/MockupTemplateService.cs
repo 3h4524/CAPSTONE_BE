@@ -386,6 +386,12 @@ public sealed class MockupTemplateService(
             ApprovalStatus = "pending",
             BatchJobProductId = designImage.BatchJobProductId,
             GarmentColor = layers.GarmentColor,
+            SourceType = MockupSources.Generated,
+            MetadataRevision = MockupSources.FirstRevision,
+            Role = MockupSources.DefaultRole,
+            Regions = MockupSources.NoRegions,
+            ArtworkGroupKey = MockupSources.ArtworkGroupKey(designImage.Id),
+            VariantKey = layers.GarmentColor,
             CreatedAt = now
         };
 
@@ -482,7 +488,8 @@ public sealed class MockupTemplateService(
         var designImageIds = targetImages.Select(image => image.Id).ToList();
         var selectedTemplateIds = selectedTemplates.Select(template => template.Id).ToHashSet();
         var existingImages = await mockupImages.Query()
-            .Where(image => designImageIds.Contains(image.DesignImageId) && selectedTemplateIds.Contains(image.MockupTemplateId))
+            .Where(image => image.DesignImageId != null && designImageIds.Contains(image.DesignImageId.Value)
+                && image.MockupTemplateId != null && selectedTemplateIds.Contains(image.MockupTemplateId.Value))
             .ToListAsync(cancellationToken);
         // Keyed by the composite URL too: the URL encodes the template's base photo and print area,
         // so a row made before the template was edited no longer matches and gets regenerated.
@@ -569,6 +576,12 @@ public sealed class MockupTemplateService(
                         ApprovalStatus = "pending",
                         BatchJobProductId = designImage.BatchJobProductId,
                         GarmentColor = layers.GarmentColor,
+                        SourceType = MockupSources.Generated,
+                        MetadataRevision = MockupSources.FirstRevision,
+                        Role = MockupSources.DefaultRole,
+                        Regions = MockupSources.NoRegions,
+                        ArtworkGroupKey = MockupSources.ArtworkGroupKey(designImage.Id),
+                        VariantKey = layers.GarmentColor,
                         CreatedAt = now
                     };
                     created.Add(mockupImage);
@@ -600,8 +613,9 @@ public sealed class MockupTemplateService(
     }
 
     private static MockupImageResponseDto MapImage(MockupImage mockupImage) =>
-        new(mockupImage.Id, mockupImage.ProductId, mockupImage.DesignImageId, mockupImage.MockupTemplateId,
-            mockupImage.MockupImageUrl, mockupImage.MockupWidthPx, mockupImage.MockupHeightPx, mockupImage.ApprovalStatus,
+        // A composited mock-up always has its design, template and URL; only an uploaded one may lack them.
+        new(mockupImage.Id, mockupImage.ProductId, mockupImage.DesignImageId!.Value, mockupImage.MockupTemplateId!.Value,
+            mockupImage.MockupImageUrl!, mockupImage.MockupWidthPx, mockupImage.MockupHeightPx, mockupImage.ApprovalStatus,
             mockupImage.GarmentColor);
 
     private async Task<bool> IsNameTakenAsync(string name, Guid? excludeId, CancellationToken cancellationToken)

@@ -1,0 +1,33 @@
+{
+  "name": "apcs-media-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/worker.ts",
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "browser": "remotion browser ensure",
+    "smoke": "tsx test/render-smoke.ts"
+  },
+  "dependencies": {
+    "@apcs/video-composition": "file:../shared/video-composition",
+    "@remotion/bundler": "4.0.533",
+    "@remotion/cli": "4.0.533",
+    "@remotion/renderer": "4.0.533",
+    "archiver": "7.0.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.533",
+    "tsx": "4.20.6",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/archiver": "6.0.3",
+    "@types/node": "22.19.0",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "typescript": "5.9.3"
+  }
+}
