@@ -7,6 +7,7 @@ using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Validators;
 using APCS.Common.Constants;
 using APCS.Domain.Entities;
+using APCS.Infrastructure.BackgroundServices;
 using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using FluentAssertions;
@@ -405,6 +406,78 @@ public sealed class DesignGenerationProcessingTests
         details.RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["providerMs", "cutOutMs", "uploadMs"]);
     }
 
+    // ---- One worker per job ----
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_JobAnotherWorkerIsOn_IsLeftAlone()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0);
+        await SetReportedAsync(db, jobId, minutesAgo: 1);
+
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
+            .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.GeneratingImage, "the other worker still has them");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_JobItsWorkerAbandoned_IsResumed()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0);
+        await SetReportedAsync(db, jobId, minutesAgo: 10);
+
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+        var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
+        job.Status.Should().Be(BatchJobStatuses.Completed);
+        job.UpdatedAt.Should().Be(UtcNow.UtcDateTime, "the worker reports on the job while it works");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_JobThatAlreadyFinished_IsNotRunAgain()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 2, variations: 1, requireApproval: false);
+
+        // It can still be in a queue: every instance puts unfinished jobs back when it starts.
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithoutAGeminiKey_FailsTheJobInsteadOfLeavingItQueued()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, jobStatus: BatchJobStatuses.Queued);
+        db.ApiKeys.RemoveRange(await db.ApiKeys.ToListAsync());
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Failed);
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
+            .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.Failed && r.ErrorMessage!.Contains("Gemini API key"));
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+    }
+
+    private static async Task SetReportedAsync(AppDbContext db, Guid jobId, int minutesAgo)
+    {
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).UpdatedAt = UtcNow.AddMinutes(-minutesAgo).UtcDateTime;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
     // ---- Setting products back to pending ----
 
     [TestMethod]
@@ -547,7 +620,8 @@ public sealed class DesignGenerationProcessingTests
             new Repository<AiPrompt>(db), new Repository<DesignImage>(db), new Repository<ApiUsageRecord>(db), new Repository<BatchJobLog>(db),
             new Repository<DesignTemplate>(db), new Repository<StyleArtPreset>(db),
             new ApiKeyRepository(db), credentials.Object, new SubscriptionRepository(db), new UsageStatisticRepository(db),
-            provider.Object, storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(), db,
+            provider.Object, storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(),
+            new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator());
     }
 

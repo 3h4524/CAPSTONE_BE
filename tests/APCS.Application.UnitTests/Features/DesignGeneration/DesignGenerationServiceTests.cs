@@ -162,7 +162,7 @@ public sealed class DesignGenerationServiceTests
             new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
             Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
-            unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator());
+            Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator());
 
         return new Fixture
         {

@@ -86,6 +86,7 @@ public static class DependencyInjection
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);

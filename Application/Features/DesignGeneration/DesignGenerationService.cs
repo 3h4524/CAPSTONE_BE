@@ -37,6 +37,7 @@ public sealed class DesignGenerationService(
     IPublicImageService publicImages,
     IDesignBackgroundRemover backgroundRemover,
     IDesignGenerationQueue queue,
+    IBatchJobClaims claims,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<StartGenerationRequestDto> validator) : IDesignGenerationService
@@ -319,9 +320,9 @@ public sealed class DesignGenerationService(
             string.Equals(key.ServiceProvider, GeminiProvider, StringComparison.OrdinalIgnoreCase) && key.IsActive == true);
         if (geminiKey is null)
         {
-            // Defensive only: StartAsync already required a valid key moments earlier.
-            await LogAsync(job.Id, null, "error", "generation_aborted", "Gemini API key is no longer available.", cancellationToken);
-            await unitOfWork.SaveChangesAsync(cancellationToken);
+            // Defensive only: StartAsync already required a valid key moments earlier. The job is failed rather
+            // than left queued, where nothing would ever finish it.
+            await FailJobAsync(job.Id, "The Gemini API key is no longer available.", cancellationToken);
             return;
         }
         var apiKeyPlain = apiKeyCredentials.Unprotect(geminiKey.KeyValueEncrypted);
@@ -330,10 +331,12 @@ public sealed class DesignGenerationService(
         var reviewedStatus = requireApproval == false ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
         var (variationCount, aspectRatio) = ReadConfig(job.Config);
 
+        // The same job can be waiting in the queue of more than one application instance. The claim is made
+        // in the database, so only one of them goes on; it also marks the job as running.
+        if (!await claims.TryClaimAsync(job.Id, cancellationToken))
+            return;
         job.Status = BatchJobStatuses.Running;
         job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var rows = await batchJobProducts.Query()
             .Where(x => x.BatchJobId == job.Id && x.Status == BatchJobProductStatuses.GeneratingImage)
@@ -386,6 +389,9 @@ public sealed class DesignGenerationService(
                 using var stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 stepTimeout.CancelAfter(StepTimeout);
 
+                // Saved with the log entry below: the job's update time tells other workers it is still being worked on.
+                job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+                await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
                 await LogAsync(job.Id, row.Id, "info", "generation_started",
                     $"Requesting image {variation + 1}/{variationCount} from the provider.", cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
