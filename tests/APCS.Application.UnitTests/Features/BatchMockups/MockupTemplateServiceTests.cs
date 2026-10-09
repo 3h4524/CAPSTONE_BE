@@ -629,6 +629,96 @@ public sealed class MockupTemplateServiceTests
         if (expectedGenerated == 0) result.Value.Images.Single().Id.Should().Be(existing.Id);
     }
 
+    [TestMethod]
+    public async Task GetJobMockupsAsync_ReturnsTheMockupsAlreadyMadeAndMakesNone()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var madeId = Guid.NewGuid();
+        var notMadeId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var templates = TemplateRepository(MakeTemplate(madeId, "tshirt"), MakeTemplate(notMadeId, "tshirt"));
+        var existing = ExistingMockup(image, product, madeId, "https://cdn/composed.jpg");
+        var mockupImages = MockRepo(existing);
+        var added = CaptureAdded(mockupImages);
+        var unitOfWork = MockUnitOfWork();
+
+        var result = await CreateService(userId, templates: templates,
+                batches: MockBatches(CompletedJob(batchJobId, userId, madeId, notMadeId)), rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages,
+                compositor: StubCompositor(), unitOfWork: unitOfWork)
+            .GetJobMockupsAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GeneratedCount.Should().Be(0);
+        // The second template has no mock-up yet: reading does not make it.
+        result.Value.Images.Should().ContainSingle().Which.Id.Should().Be(existing.Id);
+        added.Should().BeEmpty();
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        templates.Verify(x => x.UpdateAsync(It.IsAny<MockupTemplate>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GetJobMockupsAsync_MockupFromBeforeTheTemplateWasEdited_IsLeftOut()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var stale = ExistingMockup(image, product, templateId, "https://cdn/made-before-the-template-was-edited.jpg");
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")),
+                batches: MockBatches(CompletedJob(batchJobId, userId, templateId)), rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo(stale),
+                compositor: StubCompositor())
+            .GetJobMockupsAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Images.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow("draft", true, DisplayName = "not started yet")]
+    [DataRow("completed", false, DisplayName = "no template selected")]
+    public async Task GetJobMockupsAsync_JobThatCannotHaveMockupsYet_HasNoneRatherThanAnError(string status, bool withTemplate)
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var job = CompletedJob(batchJobId, userId, withTemplate ? [Guid.NewGuid()] : []);
+        job.Status = status;
+
+        var result = await CreateService(userId, batches: MockBatches(job)).GetJobMockupsAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Images.Should().BeEmpty();
+        result.Value.Errors.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task GetJobMockupsAsync_SomeoneElsesJob_IsNotFound()
+    {
+        var batchJobId = Guid.NewGuid();
+        var job = CompletedJob(batchJobId, Guid.NewGuid(), Guid.NewGuid());
+
+        var result = await CreateService(Guid.NewGuid(), batches: MockBatches(job)).GetJobMockupsAsync(batchJobId);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
+    }
+
+    private static BatchJob CompletedJob(Guid id, Guid userId, params Guid[] templateIds) => new()
+    {
+        Id = id, UserId = userId, Name = "B", Status = "completed",
+        Config = $"{{\"mockupTemplateIds\":[{string.Join(",", templateIds.Select(templateId => $"\"{templateId:D}\""))}]}}"
+    };
+
+    private static MockupImage ExistingMockup(DesignImage image, Product product, Guid templateId, string url) => new()
+    {
+        Id = Guid.NewGuid(), DesignImageId = image.Id, ProductId = product.Id, MockupTemplateId = templateId,
+        StorageProvider = "cloudinary", StorageKey = "mockups/x/y", MockupImageUrl = url,
+        MockupWidthPx = 2000, MockupHeightPx = 2000, ApprovalStatus = "pending"
+    };
+
     // ---- test infrastructure ----
 
     // ---- Realistic print maps and garment recolor ----

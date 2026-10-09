@@ -426,6 +426,21 @@ public sealed class MockupTemplateService(
         return await GenerateAllCoreAsync(batch, userId, cancellationToken);
     }
 
+    public async Task<Result<GenerateAllMockupsResultDto>> GetJobMockupsAsync(Guid batchJobId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.Unauthenticated("view"));
+
+        var batch = await FindOwnedBatchAsync(batchJobId, cancellationToken);
+        if (batch is null)
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.BatchNotFound());
+        // Nothing can have been made yet: an answer, not an error, since this is asked when a page opens.
+        if (string.Equals(batch.Status, BatchJobStatuses.Draft, StringComparison.OrdinalIgnoreCase) || ReadSelection(batch.Config).Count == 0)
+            return Result.Success(new GenerateAllMockupsResultDto(0, 0, 0, [], []));
+
+        return await GenerateAllCoreAsync(batch, userId, cancellationToken, create: false);
+    }
+
     public async Task<Result<GenerateAllMockupsResultDto>> GenerateAllForJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
     {
         var batch = await batches.Query()
@@ -441,7 +456,8 @@ public sealed class MockupTemplateService(
         return await GenerateAllCoreAsync(batch, batch.UserId, cancellationToken);
     }
 
-    private async Task<Result<GenerateAllMockupsResultDto>> GenerateAllCoreAsync(BatchJob batch, Guid userId, CancellationToken cancellationToken)
+    // With `create` off nothing is written: the result holds only the mock-ups that already exist and are up to date.
+    private async Task<Result<GenerateAllMockupsResultDto>> GenerateAllCoreAsync(BatchJob batch, Guid userId, CancellationToken cancellationToken, bool create = true)
     {
         var batchJobId = batch.Id;
         var selectedIds = ReadSelection(batch.Config);
@@ -569,6 +585,9 @@ public sealed class MockupTemplateService(
                         current.Add(upToDate);
                         continue;
                     }
+
+                    if (!create)
+                        continue;
 
                     var mockupImage = new MockupImage
                     {

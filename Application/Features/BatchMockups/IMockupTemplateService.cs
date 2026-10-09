@@ -45,6 +45,13 @@ public interface IMockupTemplateService
     Task<Result<GenerateAllMockupsResultDto>> GenerateAllAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The mock-ups the job already has for its current template selection, in the shape
+    /// <see cref="GenerateAllAsync"/> returns them, without making any. Lets a page show a job's
+    /// mock-ups again after a reload. A job with no template selected, or not started yet, has none.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GetJobMockupsAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The same as <see cref="GenerateAllAsync"/> for a job that has just finished generating images, run by
     /// the background worker as the job's owner (there is no signed-in user), so the mock-ups do not wait for
     /// a browser. Fails without changing anything when the job is not finished or has no template selected.

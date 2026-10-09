@@ -30,6 +30,13 @@ public sealed class BatchMockupsController(IMockupTemplateService service) : Con
         CancellationToken cancellationToken) =>
         (await service.ApplyAsync(batchJobId, request, cancellationToken)).ToActionResult(this);
 
+    /// <summary>The mock-ups the job already has for its selected templates. Makes none.</summary>
+    [HttpGet("images")]
+    [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetImages(Guid batchJobId, CancellationToken cancellationToken) =>
+        (await service.GetJobMockupsAsync(batchJobId, cancellationToken)).ToActionResult(this);
+
     /// <summary>Composites mock-ups for every product in the batch job at once. Safe to call again.</summary>
     [HttpPost("generate")]
     [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
