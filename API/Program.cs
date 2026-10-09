@@ -173,3 +173,9 @@ app.MapControllers();
 app.MapHealthChecks("/health");
 
 app.Run();
+
+// Exposes the entry point so tests/APCS.IntegrationTests can host the real pipeline
+// through WebApplicationFactory<Program>.
+public partial class Program
+{
+}
