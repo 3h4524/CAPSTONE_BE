@@ -172,6 +172,11 @@ public sealed class AuthorizationMatrixTests
     public static string[][] AuthorizedEndpoints =>
         Combine(AdminGatedEndpoints, SellerGatedEndpoints, MultiRoleAdminEndpoints, IdentityOnlyEndpoints);
 
+    /// <summary>Gets every endpoint gated on exactly one role.</summary>
+    /// <returns>The routes whose gate lists a single role and therefore cannot accept a second one.</returns>
+    public static string[][] SingleRoleGatedEndpoints =>
+        Combine(AdminGatedEndpoints, SellerGatedEndpoints);
+
     [ClassInitialize]
     public static async Task StartHostAsync(TestContext testContext)
     {
@@ -313,6 +318,25 @@ public sealed class AuthorizationMatrixTests
         using var response = await SendAsync(client, method, path);
 
         ShouldReachTheController(response, method, path, SellerRole);
+    }
+
+    [TestMethod]
+    [DynamicData(nameof(SingleRoleGatedEndpoints))]
+    public async Task SingleRoleGatedEndpoint_WhenTheTokenCarriesTheSuperAdminRole_ReturnsForbidden(
+        string method,
+        string path)
+    {
+        _host.EnsureAvailable();
+        var token = TestAuth.MintToken([SuperAdminRole], _superAdminUserId);
+        using var client = _host.Factory.CreateAuthenticatedClient(token);
+
+        using var response = await SendAsync(client, method, path);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "{0} {1} lists a single role, which the super administrator claim is not; only AdminUsersController accepts it",
+            method,
+            path);
     }
 
     [TestMethod]
