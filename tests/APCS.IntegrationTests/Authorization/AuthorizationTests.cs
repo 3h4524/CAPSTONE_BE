@@ -11,7 +11,7 @@ namespace APCS.IntegrationTests.Authorization;
 /// </summary>
 /// <remarks>
 /// Every production controller except <c>AuthController</c>, <c>PayOsWebhookController</c>, and the
-/// development-only endpoints sits behind <c>[Authorize]</c>, and thirteen of them add a role gate.
+/// development-only endpoints sits behind <c>[Authorize]</c>, and fourteen of them add a role gate.
 /// Until now that had only been asserted against isolated controller instances, which never exercises
 /// the authentication handler, the role gate, or the endpoint routing. An unauthenticated request
 /// that reaches a controller is the failure mode worth locking down, so that is what this class
