@@ -55,6 +55,7 @@ public sealed class DesignGenerationService(
     private const string CancelRequestedEvent = "cancel_requested";
     private const string CancelHonoredEvent = "cancel_honored";
     private const string CancelledMessage = "Cancelled by the user.";
+    internal const string ImageTimingEvent = "image_timing";
 
     public async Task<Result<StartGenerationResponseDto>> StartAsync(
         Guid batchJobId,
@@ -411,15 +412,18 @@ public sealed class DesignGenerationService(
                     continue;
                 }
 
+                var cutOutStarted = timeProvider.GetTimestamp();
                 var (imageBytes, mimeType) = graphicPrint
                     ? CutOutBackground(result.ImageBytes!, result.MimeType!)
                     : (result.ImageBytes!, result.MimeType!);
+                var cutOutTime = timeProvider.GetElapsedTime(cutOutStarted);
 
                 // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
                 // and a later regenerate with the same prompt can never overwrite an existing image.
                 var designImageId = Guid.NewGuid();
                 var storageKey = $"design-images/{designImageId:N}";
                 PublicImageUploadResult uploaded;
+                var uploadStarted = timeProvider.GetTimestamp();
                 using (var stream = new MemoryStream(imageBytes))
                 {
                     try
@@ -437,6 +441,7 @@ public sealed class DesignGenerationService(
                         continue;
                     }
                 }
+                var uploadTime = timeProvider.GetElapsedTime(uploadStarted);
 
                 var usageRecord = new ApiUsageRecord
                 {
@@ -479,6 +484,8 @@ public sealed class DesignGenerationService(
                     GenerationTimeSeconds = elapsedSeconds,
                     CreatedAt = timeProvider.GetUtcNow().UtcDateTime
                 }, cancellationToken: cancellationToken);
+                await LogTimingAsync(job.Id, row.Id, variation + 1, variationCount,
+                    TimeSpan.FromSeconds((double)elapsedSeconds), cutOutTime, uploadTime, cancellationToken);
 
                 successCount++;
             }
@@ -688,6 +695,31 @@ public sealed class DesignGenerationService(
             LogLevel = level,
             EventType = eventType,
             Message = message,
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        }, cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Records where the time of one image went, so a slow job can be explained from its log: the provider
+    /// call, removing the backdrop, and storing the image.
+    /// </summary>
+    private async Task LogTimingAsync(Guid batchJobId, Guid batchJobProductId, int variation, int variationCount,
+        TimeSpan provider, TimeSpan cutOut, TimeSpan upload, CancellationToken cancellationToken) =>
+        await batchJobLogs.AddAsync(new BatchJobLog
+        {
+            Id = Guid.NewGuid(),
+            BatchJobId = batchJobId,
+            BatchJobProductId = batchJobProductId,
+            LogLevel = "debug",
+            EventType = ImageTimingEvent,
+            Message = FormattableString.Invariant(
+                $"Image {variation}/{variationCount}: provider {provider.TotalSeconds:0.0}s, cut-out {cutOut.TotalSeconds:0.0}s, upload {upload.TotalSeconds:0.0}s."),
+            Details = new JsonObject
+            {
+                ["providerMs"] = (long)provider.TotalMilliseconds,
+                ["cutOutMs"] = (long)cutOut.TotalMilliseconds,
+                ["uploadMs"] = (long)upload.TotalMilliseconds,
+            }.ToJsonString(),
+            DurationMs = (int)(provider + cutOut + upload).TotalMilliseconds,
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         }, cancellationToken: cancellationToken);
 

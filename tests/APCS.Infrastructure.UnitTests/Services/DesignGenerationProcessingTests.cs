@@ -390,6 +390,21 @@ public sealed class DesignGenerationProcessingTests
         (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
     }
 
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_RecordsWhereTheTimeOfEachImageWent()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 2, variations: 2, requireApproval: false);
+
+        var timings = await db.BatchJobLogs.Where(l => l.BatchJobId == jobId && l.EventType == "image_timing").ToListAsync();
+
+        timings.Should().HaveCount(4, "one entry for each image that was saved");
+        timings.Should().OnlyContain(l => l.LogLevel == "debug" && l.BatchJobProductId != null && l.DurationMs >= 0);
+        timings.Select(l => l.Message).Should().Contain(m => m.StartsWith("Image 1/2: provider ") && m.Contains("cut-out ") && m.Contains("upload "));
+        using var details = System.Text.Json.JsonDocument.Parse(timings[0].Details!);
+        details.RootElement.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["providerMs", "cutOutMs", "uploadMs"]);
+    }
+
     // ---- Setting products back to pending ----
 
     [TestMethod]
