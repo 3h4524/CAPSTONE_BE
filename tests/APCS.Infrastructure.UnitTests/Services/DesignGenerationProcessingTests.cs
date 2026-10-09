@@ -390,6 +390,114 @@ public sealed class DesignGenerationProcessingTests
         (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Completed);
     }
 
+    // ---- Setting products back to pending ----
+
+    [TestMethod]
+    public async Task ResetProductsAsync_FailedProducts_GoBackToPendingAndTheirOldJobStopsRetryingThem()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFailedJobAsync(db, products: 2);
+        var batchId = (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).BatchId;
+        db.ChangeTracker.Clear();
+
+        var result = await CreateService(db).ResetProductsAsync(batchId, new ResetProductsRequestDto());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.ResetCount.Should().Be(2);
+        db.ChangeTracker.Clear();
+        (await db.Products.ToListAsync()).Should().OnlyContain(p => p.ProcessingStatus == BatchJobProductStatuses.Pending);
+        // What the job recorded is kept: it still shows that both failed in it.
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync()).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.Failed);
+
+        db.ChangeTracker.Clear();
+        (await CreateService(db).RetryFailedAsync(jobId)).Error.Code.Should().Be("DesignGeneration.NoFailedProducts");
+    }
+
+    [TestMethod]
+    public async Task ResetProductsAsync_OneOfTwoFailedProducts_TheJobRetriesOnlyTheOther()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFailedJobAsync(db, products: 2);
+        var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
+        var resetProductId = (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).FirstAsync()).ProductId!.Value;
+        db.ChangeTracker.Clear();
+
+        (await CreateService(db).ResetProductsAsync(job.BatchId, new ResetProductsRequestDto([resetProductId]))).Value.ResetCount.Should().Be(1);
+        db.ChangeTracker.Clear();
+        var retry = await CreateService(db).RetryFailedAsync(jobId);
+
+        retry.Value.QueuedProductCount.Should().Be(1);
+        db.ChangeTracker.Clear();
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).FailedProducts.Should().Be(1, "the product that was reset still failed in this job");
+        (await db.Products.FindAsync(resetProductId))!.ProcessingStatus.Should().Be(BatchJobProductStatuses.Pending);
+    }
+
+    [TestMethod]
+    public async Task ResetProductsAsync_ProductWhoseDesignsWereAllRejected_GoesBackToPendingAndOneStillInReviewDoesNot()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 2, variations: 2, requireApproval: true);
+        var batchId = (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).BatchId;
+        var rows = await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).ToListAsync();
+        var rejected = await db.DesignImages.Where(i => i.BatchJobProductId == rows[0].Id).Select(i => i.Id).ToListAsync();
+        db.ChangeTracker.Clear();
+        await CreateService(db).SetImageApprovalAsync(jobId, new SetImageApprovalRequestDto(rejected, "rejected"));
+        db.ChangeTracker.Clear();
+
+        // Asked for by name, the product whose designs still wait for a decision is refused.
+        var refused = await CreateService(db).ResetProductsAsync(batchId, new ResetProductsRequestDto([rows[1].ProductId!.Value]));
+        db.ChangeTracker.Clear();
+        var result = await CreateService(db).ResetProductsAsync(batchId, new ResetProductsRequestDto());
+
+        refused.Error.Code.Should().Be("DesignGeneration.NotResettable");
+        result.Value.ResetCount.Should().Be(1);
+        db.ChangeTracker.Clear();
+        (await db.Products.FindAsync(rows[0].ProductId))!.ProcessingStatus.Should().Be(BatchJobProductStatuses.Pending);
+        (await db.Products.FindAsync(rows[1].ProductId))!.ProcessingStatus.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
+        (await db.DesignImages.CountAsync()).Should().Be(4, "the rejected designs are kept");
+    }
+
+    [TestMethod]
+    public async Task ResetProductsAsync_WhileAJobOfTheBatchIsRunning_ReturnsMsg36()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var batchId = (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).BatchId;
+        db.ChangeTracker.Clear();
+
+        var result = await CreateService(db).ResetProductsAsync(batchId, new ResetProductsRequestDto());
+
+        result.Error.Code.Should().Be("MSG36");
+    }
+
+    [TestMethod]
+    public async Task ResetProductsAsync_NothingToResetOrAnUnknownProductOrBatch_ChangesNothing()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 1, variations: 1, requireApproval: false);
+        var batchId = (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).BatchId;
+        db.ChangeTracker.Clear();
+        var service = CreateService(db);
+
+        (await service.ResetProductsAsync(batchId, new ResetProductsRequestDto())).Error.Code.Should().Be("DesignGeneration.NothingToReset");
+        (await service.ResetProductsAsync(batchId, new ResetProductsRequestDto([Guid.NewGuid()]))).Error.Code.Should().Be("DesignGeneration.ProductNotFound");
+        (await service.ResetProductsAsync(batchId, new ResetProductsRequestDto([]))).Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        (await service.ResetProductsAsync(Guid.NewGuid(), new ResetProductsRequestDto())).Error.Code.Should().Be("DesignGeneration.BatchNotFound");
+        db.ChangeTracker.Clear();
+        (await db.Products.SingleAsync()).ProcessingStatus.Should().Be(BatchJobProductStatuses.Approved);
+    }
+
+    // A job in which every product failed, with the products marked failed as the worker leaves them.
+    private static async Task<Guid> SeedFailedJobAsync(AppDbContext db, int products)
+    {
+        var jobId = Seed(db, productCount: products, existingUsage: 0, jobStatus: BatchJobStatuses.Failed, rowStatus: BatchJobProductStatuses.Failed);
+        foreach (var product in await db.Products.ToListAsync())
+            product.ProcessingStatus = BatchJobProductStatuses.Failed;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        return jobId;
+    }
+
     private static AppDbContext CreateContext() =>
         new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 

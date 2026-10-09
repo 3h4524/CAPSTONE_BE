@@ -279,6 +279,32 @@ public sealed class DesignGenerationServiceTests
     }
 
     [TestMethod]
+    public async Task StartAsync_FromAWorkflow_RecordsItOnTheJobAndListsItWithTheJob()
+    {
+        var fixture = CreateFixture();
+        var workflowId = Guid.NewGuid();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", WorkflowId: workflowId));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain($"\"workflowId\":\"{workflowId}\"");
+        (await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId)).Value.Single().WorkflowId.Should().Be(workflowId);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_OutsideAWorkflow_LeavesNoWorkflowOnTheJob()
+    {
+        var fixture = CreateFixture();
+        fixture.Job.Config = $"{{\"workflowId\":\"{Guid.NewGuid()}\"}}";
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.Job.Config.Should().NotContain("workflowId");
+        (await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId)).Value.Single().WorkflowId.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task StartAsync_WithoutJobInstructions_LeavesNoInstructionsOnTheJob()
     {
         var fixture = CreateFixture();

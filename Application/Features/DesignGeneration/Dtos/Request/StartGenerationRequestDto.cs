@@ -10,10 +10,12 @@ namespace APCS.Application.Features.DesignGeneration.Dtos.Request;
 /// <see langword="true"/> holds the finished designs for the Seller's approval before mock-ups are made; <see langword="false"/> approves
 /// them automatically. Omit it to keep the behavior from before approval existed.
 /// </param>
+/// <param name="WorkflowId">Optional: the workflow this job is started from. It is only recorded on the job.</param>
 public sealed record StartGenerationRequestDto(
     Guid? DesignTemplateId,
     Guid? StyleArtPresetId,
     int VariationCount,
     string AspectRatio,
     string? Instructions = null,
-    bool? RequireApproval = null);
+    bool? RequireApproval = null,
+    Guid? WorkflowId = null);

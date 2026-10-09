@@ -29,6 +29,16 @@ public static class DesignGenerationErrors
     public static Error NoFailedProducts() =>
         Error.Conflict("DesignGeneration.NoFailedProducts", "This job has no failed products to retry.");
 
+    public static Error NotResettable() =>
+        Error.Conflict("DesignGeneration.NotResettable",
+            "Only a failed product, or one whose designs were all rejected, can be set back to pending. Reject the designs that are still waiting first.");
+
+    public static Error NothingToReset() =>
+        Error.Conflict("DesignGeneration.NothingToReset", "This batch has no failed product, and none whose designs were all rejected.");
+
+    public static Error ProductNotFound() =>
+        Error.NotFound("DesignGeneration.ProductNotFound", "One of the products was not found in this batch.");
+
     public static Error NotDraft() =>
         Error.Conflict("DesignGeneration.NotDraft", "Image generation can only be started from a draft batch job.");
 

@@ -42,6 +42,14 @@ public sealed class BatchJobsController(IDesignGenerationService service) : Cont
     public async Task<IActionResult> Cancel(Guid batchJobId, CancellationToken cancellationToken) =>
         (await service.CancelAsync(batchJobId, cancellationToken)).ToActionResult(this);
 
+    /// <summary>Sets failed products, or ones whose designs were all rejected, back to pending for the next job.</summary>
+    [HttpPost("api/batches/{batchId:guid}/products/reset")]
+    public async Task<IActionResult> ResetProducts(
+        Guid batchId,
+        ResetProductsRequestDto request,
+        CancellationToken cancellationToken) =>
+        (await service.ResetProductsAsync(batchId, request, cancellationToken)).ToActionResult(this);
+
     /// <summary>SRS 3.4.10 "Retry failed products": re-queues only the failed products of a finished job.</summary>
     [HttpPost("api/batch-jobs/{batchJobId:guid}/retry-failed")]
     public async Task<IActionResult> RetryFailed(Guid batchJobId, CancellationToken cancellationToken) =>

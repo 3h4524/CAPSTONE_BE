@@ -39,9 +39,11 @@ public sealed record BatchJobDetailDto(
     string AspectRatio,
     BatchJobCountersDto Counters,
     IReadOnlyList<BatchJobProductResultDto> Products,
-    bool? RequireApproval = null);
+    bool? RequireApproval = null,
+    Guid? WorkflowId = null);
 
 /// <summary>A row in the job list of one batch.</summary>
+/// <param name="WorkflowId">The workflow the job was started from; null when it was started outside one, or before this was recorded.</param>
 public sealed record BatchJobSummaryDto(
     Guid Id,
     string Status,
@@ -49,7 +51,11 @@ public sealed record BatchJobSummaryDto(
     int ProcessedProducts,
     int FailedProducts,
     DateTime? CreatedAt,
-    DateTime? StartedAt);
+    DateTime? StartedAt,
+    Guid? WorkflowId = null);
+
+/// <summary>How many products went back to pending.</summary>
+public sealed record ResetProductsResultDto(int ResetCount);
 
 /// <summary>How the images of a batch job stand after an approval change.</summary>
 /// <param name="UpdatedCount">How many images changed status in this call.</param>

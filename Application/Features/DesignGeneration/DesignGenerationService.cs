@@ -183,7 +183,7 @@ public sealed class DesignGenerationService(
         }
 
         job.Status = BatchJobStatuses.Queued;
-        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio, request.Instructions, request.RequireApproval);
+        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio, request.Instructions, request.RequireApproval, request.WorkflowId);
         job.StartedAt = now;
         job.UpdatedAt = now;
         await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
@@ -224,6 +224,22 @@ public sealed class DesignGenerationService(
             .Where(x => x.BatchJobId == job.Id && x.Status == BatchJobProductStatuses.Failed)
             .OrderBy(x => x.SequenceOrder)
             .ToListAsync(cancellationToken);
+        // A product that was set back to pending, or already put into a later job, is no longer this job's to retry.
+        var failedProductIds = failedRows.Where(row => row.ProductId.HasValue).Select(row => row.ProductId!.Value).ToList();
+        var resetIds = await products.Query()
+            .Where(p => failedProductIds.Contains(p.Id) && p.ProcessingStatus == BatchJobProductStatuses.Pending)
+            .Select(p => p.Id)
+            .ToListAsync(cancellationToken);
+        var takenOverIds = await batchJobProducts.Query()
+            .Where(row => row.BatchJobId != job.Id && row.ProductId != null && failedProductIds.Contains(row.ProductId.Value)
+                && row.CreatedAt > job.CreatedAt)
+            .Select(row => row.ProductId!.Value)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var failedRowCount = failedRows.Count;
+        failedRows = failedRows
+            .Where(row => row.ProductId is not Guid productId || (!resetIds.Contains(productId) && !takenOverIds.Contains(productId)))
+            .ToList();
         if (failedRows.Count == 0) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoFailedProducts());
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
@@ -268,7 +284,7 @@ public sealed class DesignGenerationService(
 
         var total = job.TotalProducts ?? failedRows.Count;
         job.ProcessedProducts = Math.Max(0, (job.ProcessedProducts ?? 0) - failedRows.Count);
-        job.FailedProducts = 0;
+        job.FailedProducts = failedRowCount - failedRows.Count;
         job.ProgressPercentage = total > 0 ? Math.Round(100m * job.ProcessedProducts.Value / total, 0) : 0;
         job.Status = BatchJobStatuses.Queued;
         job.CompletedAt = null;
@@ -571,7 +587,7 @@ public sealed class DesignGenerationService(
             job.Id, job.BatchId, batchName, job.Status,
             job.TotalProducts ?? rows.Count, job.ProcessedProducts ?? 0, job.FailedProducts ?? 0,
             job.ProgressPercentage ?? 0, job.StartedAt, job.CompletedAt,
-            variationCount, aspectRatio, counters, rowDtos, ReadRequireApproval(job.Config)));
+            variationCount, aspectRatio, counters, rowDtos, ReadRequireApproval(job.Config), ReadWorkflowId(job.Config)));
     }
 
     public async Task<Result<IReadOnlyList<BatchJobSummaryDto>>> ListJobsForBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
@@ -585,9 +601,13 @@ public sealed class DesignGenerationService(
         var list = await batchJobs.Query()
             .Where(j => j.BatchId == batchId && j.UserId == userId && j.DeletedAt == null)
             .OrderByDescending(j => j.CreatedAt)
-            .Select(j => new BatchJobSummaryDto(j.Id, j.Status, j.TotalProducts ?? 0, j.ProcessedProducts ?? 0, j.FailedProducts ?? 0, j.CreatedAt, j.StartedAt))
+            .Select(j => new { j.Id, j.Status, j.TotalProducts, j.ProcessedProducts, j.FailedProducts, j.CreatedAt, j.StartedAt, j.Config })
             .ToListAsync(cancellationToken);
-        return Result.Success<IReadOnlyList<BatchJobSummaryDto>>(list);
+        // The workflow sits inside the config JSON, so it is read here rather than in the query.
+        return Result.Success<IReadOnlyList<BatchJobSummaryDto>>(list
+            .Select(j => new BatchJobSummaryDto(j.Id, j.Status, j.TotalProducts ?? 0, j.ProcessedProducts ?? 0, j.FailedProducts ?? 0,
+                j.CreatedAt, j.StartedAt, ReadWorkflowId(j.Config)))
+            .ToList());
     }
 
     // One job processes many products with the same DbContext. The usage row must therefore be
@@ -671,7 +691,7 @@ public sealed class DesignGenerationService(
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         }, cancellationToken: cancellationToken);
 
-    private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval)
+    private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval, Guid? workflowId)
     {
         JsonObject root;
         try { root = JsonNode.Parse(config)?.AsObject() ?? new JsonObject(); }
@@ -683,6 +703,8 @@ public sealed class DesignGenerationService(
         else root[GenerationConfigKeys.Instructions] = instructions.Trim();
         if (requireApproval is null) root.Remove(GenerationConfigKeys.RequireApproval);
         else root[GenerationConfigKeys.RequireApproval] = requireApproval.Value;
+        if (workflowId is null) root.Remove(GenerationConfigKeys.WorkflowId);
+        else root[GenerationConfigKeys.WorkflowId] = workflowId.Value.ToString();
         return root.ToJsonString();
     }
 
@@ -734,6 +756,66 @@ public sealed class DesignGenerationService(
     }
 
     private const int MaximumApprovalBatch = 500;
+
+    public async Task<Result<ResetProductsResultDto>> ResetProductsAsync(
+        Guid batchId,
+        ResetProductsRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.Unauthenticated("reset"));
+
+        var requestedIds = request.ProductIds?.Distinct().ToList();
+        if (requestedIds is not null && (requestedIds.Count is 0 or > MaximumApprovalBatch))
+            return Result.Failure<ResetProductsResultDto>(Error.Validation($"Choose between 1 and {MaximumApprovalBatch} products."));
+
+        if (!await batches.Query().AnyAsync(b => b.Id == batchId && b.UserId == userId && b.DeletedAt == null, cancellationToken))
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.BatchNotFound());
+        // A running job is still writing the status of its products.
+        if (await batchJobs.Query().AnyAsync(x => x.BatchId == batchId && x.DeletedAt == null
+                && BatchJobStatuses.Active.Contains(x.Status.ToLower()), cancellationToken))
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.ActiveJobExists());
+
+        var candidates = await products.Query()
+            .Where(p => p.BatchId == batchId && p.UserId == userId && p.DeletedAt == null
+                && (requestedIds == null || requestedIds.Contains(p.Id)))
+            .ToListAsync(cancellationToken);
+        if (requestedIds is not null && candidates.Count != requestedIds.Count)
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.ProductNotFound());
+
+        // A product under review is resettable once nothing of it is left to decide: every design rejected.
+        var underReviewIds = candidates
+            .Where(p => p.ProcessingStatus == BatchJobProductStatuses.ImageReviewRequired)
+            .Select(p => p.Id)
+            .ToList();
+        var undecidedIds = await designImages.Query()
+            .Where(image => underReviewIds.Contains(image.ProductId) && image.DeletedAt == null
+                && image.ApprovalStatus != ApprovalStatuses.Rejected)
+            .Select(image => image.ProductId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var resettable = candidates
+            .Where(p => p.ProcessingStatus == BatchJobProductStatuses.Failed
+                || (p.ProcessingStatus == BatchJobProductStatuses.ImageReviewRequired && !undecidedIds.Contains(p.Id)))
+            .ToList();
+
+        // Products named one by one must all qualify; "every product" takes the ones that do.
+        if (requestedIds is not null && resettable.Count != candidates.Count)
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.NotResettable());
+        if (resettable.Count == 0)
+            return Result.Failure<ResetProductsResultDto>(DesignGenerationErrors.NothingToReset());
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var product in resettable)
+        {
+            product.ProcessingStatus = BatchJobProductStatuses.Pending;
+            product.UpdatedAt = now;
+            await products.UpdateAsync(product, cancellationToken: cancellationToken);
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return Result.Success(new ResetProductsResultDto(resettable.Count));
+    }
 
     public async Task<Result<ImageApprovalResultDto>> SetImageApprovalAsync(
         Guid batchJobId,
@@ -847,6 +929,19 @@ public sealed class DesignGenerationService(
         try
         {
             return (bool?)JsonNode.Parse(config)?[GenerationConfigKeys.RequireApproval];
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The workflow the job was started from: null when it was started outside one.</summary>
+    private static Guid? ReadWorkflowId(string config)
+    {
+        try
+        {
+            return Guid.TryParse((string?)JsonNode.Parse(config)?[GenerationConfigKeys.WorkflowId], out var workflowId) ? workflowId : null;
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
         {

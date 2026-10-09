@@ -17,6 +17,12 @@ public static class GenerationConfigKeys
     /// </summary>
     public const string RequireApproval = "requireApproval";
 
+    /// <summary>
+    /// The workflow the job was started from, so its runs can be told apart from other jobs of the same
+    /// batch. Absent on a job started outside a workflow.
+    /// </summary>
+    public const string WorkflowId = "workflowId";
+
     public const int DefaultVariationCount = 1;
     public const string DefaultAspectRatio = "1:1";
 }

@@ -49,6 +49,16 @@ public interface IDesignGenerationService
         SetImageApprovalRequestDto request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Sets products of a batch back to pending, so they can be edited and the next job generates designs for
+    /// them again. Only a failed product, or one whose designs were all rejected, can be reset; its earlier
+    /// designs and jobs are kept. Refused while a job of the batch is running.
+    /// </summary>
+    Task<Result<ResetProductsResultDto>> ResetProductsAsync(
+        Guid batchId,
+        ResetProductsRequestDto request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns a batch job with per-product state and generated images (owner only, BR34).</summary>
     Task<Result<BatchJobDetailDto>> GetJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 
