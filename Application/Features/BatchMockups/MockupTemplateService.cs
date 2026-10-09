@@ -225,7 +225,14 @@ public sealed class MockupTemplateService(
 
         var outputWidth = template.OutputWidthPx;
         var outputHeight = template.OutputHeightPx;
-        var storageKey = StorageKey(template.Id);
+        // Set once a new photo is stored. A refused update removes it again; the photo in use is never touched.
+        string? replacementKey = null;
+        async Task<Result<MockupTemplateResponseDto>> RefuseAsync(Error error)
+        {
+            if (replacementKey is not null)
+                await TryDeleteImageAsync(replacementKey, cancellationToken);
+            return Result.Failure<MockupTemplateResponseDto>(error);
+        }
 
         // The helper images are derived once per photo: again only for a new photo, or when they are missing.
         var reprocess = request.BaseImage is not null || !MockupRules.HasCurrentMaps(template);
@@ -252,7 +259,8 @@ public sealed class MockupTemplateService(
 
             if (request.BaseImage is not null)
             {
-                var uploaded = await UploadPhotoAsync(request.BaseImage, photo, storageKey, cancellationToken);
+                replacementKey = MockupRules.ReplacementImageKey(template.Id, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+                var uploaded = await UploadPhotoAsync(request.BaseImage, photo, replacementKey, cancellationToken);
                 template.BaseImageUrl = uploaded.Url;
                 outputWidth = uploaded.WidthPx;
                 outputHeight = uploaded.HeightPx;
@@ -263,13 +271,13 @@ public sealed class MockupTemplateService(
 
         if (!FitsWithin(position, outputWidth, outputHeight))
         {
-            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
+            return await RefuseAsync(MockupErrors.InvalidPrintArea());
         }
 
         if (photo is not null)
         {
             if (await ApplyPreparedAsync(template, prepared, request.AllowRecolor, cancellationToken) is { } recolorError)
-                return Result.Failure<MockupTemplateResponseDto>(recolorError);
+                return await RefuseAsync(recolorError);
         }
         else
         {
@@ -279,7 +287,7 @@ public sealed class MockupTemplateService(
         }
 
         if (ApplyGarmentColor(template, request.GarmentColor) is { } colorError)
-            return Result.Failure<MockupTemplateResponseDto>(colorError);
+            return await RefuseAsync(colorError);
 
         template.Name = request.Name.Trim();
         template.ProductType = request.ProductType;
@@ -296,7 +304,7 @@ public sealed class MockupTemplateService(
         {
             if (await IsNameTakenAsync(request.Name, id, cancellationToken))
             {
-                return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
+                return await RefuseAsync(MockupErrors.DuplicateName());
             }
 
             throw;

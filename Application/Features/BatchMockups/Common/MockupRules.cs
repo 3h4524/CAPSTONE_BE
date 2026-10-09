@@ -50,6 +50,13 @@ public static class MockupRules
 
     public static string BaseImageKey(Guid templateId) => $"mockup-templates/{templateId:N}";
 
+    /// <summary>
+    /// Where a photo that replaces the template's current one is stored. Each replacement gets its own key:
+    /// a mock-up is a URL that composites onto the photo it was made from, so overwriting that photo would
+    /// change every mock-up already made.
+    /// </summary>
+    public static string ReplacementImageKey(Guid templateId, long version) => $"{BaseImageKey(templateId)}-{version}-photo";
+
     /// <summary>Key prefix of one generation of helper images; a new version gives new URLs, so nothing stale is served from cache.</summary>
     public static string HelperKeyPrefix(Guid templateId, long version) => $"{BaseImageKey(templateId)}-{version}";
     public static string DisplacementMapKey(string helperKeyPrefix) => $"{helperKeyPrefix}-displace";

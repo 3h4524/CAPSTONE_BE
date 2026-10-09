@@ -773,6 +773,59 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task UpdateAsync_NewPhoto_IsStoredBesideTheOldOneSoEarlierMockupsKeepTheirs()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var images = MockImages(new PublicImageUploadResult("https://cdn/second.jpg", 2000, 2000));
+        var keys = new List<string>();
+        images.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((UploadFileDto _, string key, CancellationToken _) => keys.Add(key))
+            .ReturnsAsync(new PublicImageUploadResult("https://cdn/second.jpg", 2000, 2000));
+
+        var result = await CreateService(userId, templates: templates, images: images)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, SampleFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        template.BaseImageUrl.Should().Be("https://cdn/second.jpg");
+        keys.Should().ContainSingle().Which.Should().StartWith($"mockup-templates/{template.Id:N}-").And.EndWith("-photo")
+            .And.NotBe(MockupRules.BaseImageKey(template.Id), "the first photo is not overwritten");
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_RefusedAfterTheNewPhotoWasStored_RemovesOnlyThatPhoto()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var images = MockImages(new PublicImageUploadResult("https://cdn/second.jpg", 2000, 2000));
+        var stored = new List<string>();
+        var deleted = new List<string>();
+        images.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((UploadFileDto _, string key, CancellationToken _) => stored.Add(key))
+            .ReturnsAsync(new PublicImageUploadResult("https://cdn/second.jpg", 2000, 2000));
+        images.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((string key, CancellationToken _) => deleted.Add(key))
+            .Returns(Task.CompletedTask);
+
+        // Recoloring is asked for, but the new photo shows a dark garment.
+        var result = await CreateService(userId, templates: templates, images: images, mapService: MockMapService(luminance: 0.15))
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, SampleFile(), AllowRecolor: true));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.NotRecolorable");
+        deleted.Should().Equal(stored);
+        deleted.Should().NotContain(MockupRules.BaseImageKey(template.Id));
+        templates.Verify(x => x.UpdateAsync(It.IsAny<MockupTemplate>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task UpdateAsync_NewPhotoInAnotherFormat_IsAnalyzedFromItsStoredJpeg()
     {
         var userId = Guid.NewGuid();
