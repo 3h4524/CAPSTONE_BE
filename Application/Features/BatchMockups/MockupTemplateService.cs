@@ -133,7 +133,8 @@ public sealed class MockupTemplateService(
         var templateId = Guid.NewGuid();
         var storageKey = StorageKey(templateId);
         var photo = await ReadAllAsync(request.BaseImage!.Content, cancellationToken);
-        var prepared = await TryPrepareAsync(photo, cancellationToken);
+        var readable = MockupImageValidators.IsDirectlyReadable(photo);
+        var prepared = readable ? await TryPrepareAsync(photo, cancellationToken) : null;
         var position = new MockupPosition(request.X, request.Y, request.Width, request.Height);
         // Checked against the analyzed photo first, so a rejected request leaves nothing stored.
         if (prepared is { WidthPx: > 0, HeightPx: > 0 } && !FitsWithin(position, prepared.WidthPx, prepared.HeightPx))
@@ -146,6 +147,9 @@ public sealed class MockupTemplateService(
             await TryDeleteImageAsync(storageKey, cancellationToken);
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
         }
+
+        if (!readable)
+            prepared = await TryPrepareStoredAsync(uploaded.Url, cancellationToken);
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var template = new MockupTemplate
@@ -238,7 +242,10 @@ public sealed class MockupTemplateService(
         PreparedBasePhoto? prepared = null;
         if (photo is not null)
         {
-            prepared = await TryPrepareAsync(photo, cancellationToken);
+            // A photo that was not uploaded just now is the JPEG the CDN keeps of it, which is always read.
+            var readable = request.BaseImage is null || MockupImageValidators.IsDirectlyReadable(photo);
+            if (readable)
+                prepared = await TryPrepareAsync(photo, cancellationToken);
             // Checked before anything is stored, so a rejected request does not replace the photo.
             if (prepared is { WidthPx: > 0, HeightPx: > 0 } && !FitsWithin(position, prepared.WidthPx, prepared.HeightPx))
                 return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
@@ -249,6 +256,8 @@ public sealed class MockupTemplateService(
                 template.BaseImageUrl = uploaded.Url;
                 outputWidth = uploaded.WidthPx;
                 outputHeight = uploaded.HeightPx;
+                if (!readable)
+                    prepared = await TryPrepareStoredAsync(uploaded.Url, cancellationToken);
             }
         }
 
@@ -646,6 +655,10 @@ public sealed class MockupTemplateService(
         }
     }
 
+    // For a photo in a format that is not analyzed as uploaded: its JPEG from the CDN is.
+    private async Task<PreparedBasePhoto?> TryPrepareStoredAsync(string baseImageUrl, CancellationToken cancellationToken) =>
+        await TryDownloadAsync(baseImageUrl, cancellationToken) is { } jpeg ? await TryPrepareAsync(jpeg, cancellationToken) : null;
+
     private async Task<byte[]?> TryDownloadAsync(string baseImageUrl, CancellationToken cancellationToken)
     {
         try
@@ -715,7 +728,10 @@ public sealed class MockupTemplateService(
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.ProcessingUnavailable());
 
         var bytes = await ReadAllAsync(photo!.Content, cancellationToken);
-        var prepared = await TryPrepareAsync(bytes, cancellationToken, preview: true);
+        // Nothing is stored for a preview, so a format that is only read from the CDN's JPEG has none to read.
+        var prepared = MockupImageValidators.IsDirectlyReadable(bytes)
+            ? await TryPrepareAsync(bytes, cancellationToken, preview: true)
+            : null;
         if (prepared is null)
             return Result.Success(new GarmentMaskPreviewResponseDto(false, "the photo could not be analyzed.", null));
 

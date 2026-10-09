@@ -1,6 +1,14 @@
+using System.Buffers.Binary;
+using System.Text;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Bmp;
+using SixLabors.ImageSharp.Formats.Gif;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Tiff;
+using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace APCS.Infrastructure.UnitTests.Services;
@@ -164,6 +172,47 @@ public sealed class ImageSharpMockupMapGeneratorTests
         new ImageSharpMockupMapGenerator(new FakeGarmentSegmenter(null, available: false)).IsAvailable.Should().BeFalse();
     }
 
+    [TestMethod]
+    [DataRow("jpeg")]
+    [DataRow("webp")]
+    public void GenerateGarmentMask_JpegOrWebpPhoto_IsRead(string format)
+    {
+        var photo = Encoded(format, 200, 200);
+
+        var result = _generator.GenerateGarmentMask(photo);
+
+        (result.WidthPx, result.HeightPx).Should().Be((200, 200));
+        _generator.GenerateDisplacementMap(photo).Should().NotBeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow("tiff")]
+    [DataRow("bmp")]
+    [DataRow("gif")]
+    public void GenerateMaps_PhotoInAFormatThatIsNotRead_IsRefused(string format)
+    {
+        var photo = Encoded(format, 120, 120);
+
+        var mask = () => _generator.GenerateGarmentMask(photo);
+        var displacement = () => _generator.GenerateDisplacementMap(photo);
+
+        mask.Should().Throw<UnknownImageFormatException>("an uploaded file is never handed to that decoder");
+        displacement.Should().Throw<UnknownImageFormatException>();
+    }
+
+    [TestMethod]
+    public void GenerateMaps_FileThatDeclaresAHugePicture_IsRefusedBeforeItIsDecoded()
+    {
+        // Fifty megapixels in under sixty bytes: only the header is real, so decoding would allocate 200 MB.
+        var photo = PngHeaderOnly(10_000, 5_000);
+
+        var mask = () => _generator.GenerateGarmentMask(photo);
+        var displacement = () => _generator.GenerateDisplacementMap(photo);
+
+        mask.Should().Throw<InvalidOperationException>().WithMessage("*10000 x 5000*");
+        displacement.Should().Throw<InvalidOperationException>();
+    }
+
     private static byte[] Png(int width, int height, Func<int, int, Rgba32> color)
     {
         using var image = new Image<Rgba32>(width, height);
@@ -174,6 +223,64 @@ public sealed class ImageSharpMockupMapGeneratorTests
         using var output = new MemoryStream();
         image.SaveAsPng(output);
         return output.ToArray();
+    }
+
+    // A light-gray photo in the given format.
+    internal static byte[] Encoded(string format, int width, int height)
+    {
+        using var image = new Image<Rgba32>(width, height, new Rgba32(230, 230, 230));
+        IImageEncoder encoder = format switch
+        {
+            "jpeg" => new JpegEncoder(),
+            "webp" => new WebpEncoder(),
+            "tiff" => new TiffEncoder(),
+            "bmp" => new BmpEncoder(),
+            "gif" => new GifEncoder(),
+            _ => throw new ArgumentOutOfRangeException(nameof(format)),
+        };
+        using var output = new MemoryStream();
+        image.Save(output, encoder);
+        return output.ToArray();
+    }
+
+    // A PNG that is only its header and end marker: it declares a size without holding any pixels.
+    private static byte[] PngHeaderOnly(int width, int height)
+    {
+        var header = new byte[13];
+        BinaryPrimitives.WriteInt32BigEndian(header, width);
+        BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4), height);
+        header[8] = 8; // bits per channel
+        header[9] = 6; // RGBA
+
+        using var output = new MemoryStream();
+        output.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        WriteChunk(output, "IHDR", header);
+        WriteChunk(output, "IEND", []);
+        return output.ToArray();
+    }
+
+    private static void WriteChunk(Stream output, string type, byte[] data)
+    {
+        byte[] typed = [.. Encoding.ASCII.GetBytes(type), .. data];
+        Span<byte> number = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(number, data.Length);
+        output.Write(number);
+        output.Write(typed);
+        BinaryPrimitives.WriteUInt32BigEndian(number, Crc32(typed));
+        output.Write(number);
+    }
+
+    private static uint Crc32(ReadOnlySpan<byte> bytes)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var value in bytes)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+        }
+
+        return ~crc;
     }
 }
 

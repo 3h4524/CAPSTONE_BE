@@ -20,7 +20,7 @@ public sealed class ImageSharpDesignBackgroundRemover : IDesignBackgroundRemover
 
     public byte[]? RemoveBackground(byte[] image)
     {
-        using var source = Image.Load<Rgba32>(image);
+        using var source = LoadPhoto(image);
         var (width, height) = (source.Width, source.Height);
         using var working = ScaledCopy(source, MaskWorkingMaxSide);
         var (w, h) = (working.Width, working.Height);

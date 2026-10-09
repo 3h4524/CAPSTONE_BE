@@ -2,6 +2,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Validators;
 using APCS.Domain.Entities;
@@ -648,6 +649,86 @@ public sealed class MockupTemplateServiceTests
         added.Single().PrintMapsSourceUrl.Should().Be("https://cdn/x.jpg");
         mapService.Verify(x => x.StoreHelpersAsync(It.Is<string>(p => p.StartsWith($"mockup-templates/{added.Single().Id:N}-")), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [TestMethod]
+    public async Task CreateAsync_PhotoInAnotherFormat_IsAnalyzedFromItsStoredJpegAndNeverAsUploaded()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var mapService = MockMapService();
+
+        // A TIFF sent as "image/png": what the file is decides, not what it was labelled.
+        var result = await CreateService(Guid.NewGuid(), templates: templates,
+                images: MockImages(new PublicImageUploadResult("https://cdn/x.tiff", 2000, 2000)), mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Classic Tee", "tshirt", 100, 100, 500, 500, TiffFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RealisticPrintReady.Should().BeTrue();
+        added.Single().PrintMapsSourceUrl.Should().Be("https://cdn/x.tiff");
+        mapService.Verify(x => x.PrepareAsync(It.Is<byte[]>(bytes => bytes.SequenceEqual(TiffBytes)), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        mapService.Verify(x => x.DownloadAsync("https://cdn/x.tiff", It.IsAny<CancellationToken>()), Times.Once);
+        mapService.Verify(x => x.PrepareAsync(It.Is<byte[]>(bytes => bytes.SequenceEqual(new byte[] { 1, 2, 3 })), false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_PhotoThatIsReadAsUploaded_IsNotDownloadedAgain()
+    {
+        var mapService = MockMapService();
+
+        await CreateService(Guid.NewGuid(), templates: TemplateRepository(), mapService: mapService)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Classic Tee", "tshirt", 100, 100, 500, 500, SampleFile()));
+
+        mapService.Verify(x => x.PrepareAsync(It.IsAny<byte[]>(), false, It.IsAny<CancellationToken>()), Times.Once);
+        mapService.Verify(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_NewPhotoInAnotherFormat_IsAnalyzedFromItsStoredJpeg()
+    {
+        var userId = Guid.NewGuid();
+        var template = MakeTemplate(Guid.NewGuid(), "tshirt");
+        template.UserId = userId;
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, template.Id);
+        var mapService = MockMapService();
+
+        var result = await CreateService(userId, templates: templates,
+                images: MockImages(new PublicImageUploadResult("https://cdn/new.tiff", 2000, 2000)), mapService: mapService)
+            .UpdateAsync(template.Id, new UpdateMockupTemplateRequestDto("Tee", "tshirt", 0, 0, 100, 100, TiffFile()));
+
+        result.IsSuccess.Should().BeTrue();
+        template.PrintMapsSourceUrl.Should().Be("https://cdn/new.tiff");
+        mapService.Verify(x => x.PrepareAsync(It.Is<byte[]>(bytes => bytes.SequenceEqual(TiffBytes)), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        mapService.Verify(x => x.DownloadAsync("https://cdn/new.tiff", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task PreviewGarmentMaskAsync_PhotoInAnotherFormat_IsNotAnalyzed()
+    {
+        var mapService = MockMapService();
+
+        var result = await CreateService(Guid.NewGuid(), mapService: mapService).PreviewGarmentMaskAsync(TiffFile());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Recolorable.Should().BeFalse();
+        result.Value.MaskDataUrl.Should().BeNull();
+        mapService.Verify(x => x.PrepareAsync(It.IsAny<byte[]>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        mapService.Verify(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0 }, true, DisplayName = "PNG")]
+    [DataRow(new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 }, true, DisplayName = "JPEG")]
+    [DataRow(new byte[] { 0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x45, 0x42, 0x50 }, true, DisplayName = "WebP")]
+    [DataRow(new byte[] { 0x49, 0x49, 0x2A, 0x00, 8, 0, 0, 0 }, false, DisplayName = "TIFF")]
+    [DataRow(new byte[] { 0x49, 0x49, 0x2B, 0x00, 8, 0, 0, 0 }, false, DisplayName = "BigTIFF")]
+    [DataRow(new byte[] { 0x42, 0x4D, 0, 0, 0, 0 }, false, DisplayName = "BMP")]
+    [DataRow(new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 }, false, DisplayName = "GIF")]
+    [DataRow(new byte[] { 0x52, 0x49, 0x46, 0x46, 1, 2, 3, 4, 0x57, 0x41, 0x56, 0x45 }, false, DisplayName = "another RIFF file")]
+    [DataRow(new byte[] { 0x89, 0x50 }, false, DisplayName = "cut short")]
+    [DataRow(new byte[] { }, false, DisplayName = "empty")]
+    public void IsDirectlyReadable_GoesByTheFirstBytesOfTheFile(byte[] photo, bool expected) =>
+        MockupImageValidators.IsDirectlyReadable(photo).Should().Be(expected);
 
     [TestMethod]
     public async Task CreateAsync_WhenMapGenerationFails_StillSavesThePlainTemplate()
@@ -1377,7 +1458,12 @@ public sealed class MockupTemplateServiceTests
         return mapService;
     }
 
-    private static UploadFileDto SampleFile() => new("photo.jpg", "image/jpeg", 4, new MemoryStream([1, 2, 3, 4]));
+    private static UploadFileDto SampleFile() => new("photo.jpg", "image/jpeg", 4, new MemoryStream([0xFF, 0xD8, 0xFF, 0xE0]));
+
+    private static readonly byte[] TiffBytes = [0x49, 0x49, 0x2A, 0x00, 8, 0, 0, 0];
+
+    // A TIFF by its first bytes, labelled as a PNG the way a crafted upload would be.
+    private static UploadFileDto TiffFile() => new("photo.png", "image/png", TiffBytes.Length, new MemoryStream(TiffBytes));
 
     private static (BatchJobProduct Row, Product Product, DesignImage Image) MakeProductRow(Guid userId, Guid batchJobId, string productType)
     {

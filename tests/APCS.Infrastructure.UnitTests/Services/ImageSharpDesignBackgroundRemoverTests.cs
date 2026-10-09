@@ -40,6 +40,14 @@ public sealed class ImageSharpDesignBackgroundRemoverTests
         _remover.RemoveBackground(image).Should().BeNull();
     }
 
+    [TestMethod]
+    public void RemoveBackground_ImageInAFormatThatIsNotRead_IsRefused()
+    {
+        var remove = () => _remover.RemoveBackground(ImageSharpMockupMapGeneratorTests.Encoded("tiff", 120, 120));
+
+        remove.Should().Throw<UnknownImageFormatException>("the caller keeps such an image as it was generated");
+    }
+
     private static byte[] Png(int width, int height, Func<int, int, Rgba32> color)
     {
         using var image = new Image<Rgba32>(width, height);

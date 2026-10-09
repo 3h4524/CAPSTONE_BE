@@ -1,5 +1,8 @@
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 
@@ -30,6 +33,31 @@ internal static class ImageMaskOps
 
     // Masks are found at this size so the pixel thresholds above hold for any image.
     internal const int MaskWorkingMaxSide = 800;
+
+    // A photo is held uncompressed while it is analyzed (4 bytes per pixel, more than once), so a
+    // small file that declares a huge picture is refused instead of filling the memory.
+    internal const long MaximumPhotoPixels = 40_000_000;
+
+    // The only formats read here, and only their first frame. A photo comes from an upload, so the
+    // library's rarely used decoders (TIFF and the like) are kept away from it; a photo in another
+    // format is read from the JPEG the CDN makes of it instead.
+    private static readonly DecoderOptions PhotoDecoding = new()
+    {
+        Configuration = new Configuration(new PngConfigurationModule(), new JpegConfigurationModule(), new WebpConfigurationModule()),
+        MaxFrames = 1,
+    };
+
+    /// <summary>Opens a PNG, JPEG or WebP photo of at most <see cref="MaximumPhotoPixels"/> pixels.</summary>
+    /// <exception cref="UnknownImageFormatException">The bytes are in none of those formats.</exception>
+    /// <exception cref="InvalidOperationException">The photo has too many pixels.</exception>
+    internal static Image<Rgba32> LoadPhoto(byte[] bytes)
+    {
+        var info = Image.Identify(PhotoDecoding, bytes);
+        if ((long)info.Width * info.Height > MaximumPhotoPixels)
+            throw new InvalidOperationException($"The photo is {info.Width} x {info.Height} pixels, more than can be analyzed.");
+
+        return Image.Load<Rgba32>(PhotoDecoding, bytes);
+    }
 
     internal static Image<Rgba32> ScaledCopy(Image<Rgba32> source, int maxSide)
     {

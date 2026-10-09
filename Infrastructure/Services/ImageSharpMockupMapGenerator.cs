@@ -32,7 +32,7 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter) 
 
     public byte[] GenerateDisplacementMap(byte[] baseImage)
     {
-        using var source = Image.Load<Rgba32>(baseImage);
+        using var source = LoadPhoto(baseImage);
         using var working = ScaledCopy(source, WorkingMaxSide);
         var (w, h) = (working.Width, working.Height);
 
@@ -74,7 +74,7 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter) 
 
     public GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null)
     {
-        using var loaded = Image.Load<Rgba32>(baseImage);
+        using var loaded = LoadPhoto(baseImage);
         using var scaled = maxOutputSide is int limit ? ScaledCopy(loaded, limit) : null;
         var source = scaled ?? loaded;
         var (width, height) = (source.Width, source.Height);
