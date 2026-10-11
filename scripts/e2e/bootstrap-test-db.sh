@@ -24,6 +24,12 @@ if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ]; then
   from_conn="$(printf '%s' "${APCS_TEST_CONNECTION_STRING}" | sed -n 's/.*[;]Database=\([^;]*\).*/\1/p')"
   [ -n "${from_conn}" ] && TEST_DB="${from_conn}"
 fi
+# Port cũng phải theo connection string, nếu không sẽ nối vào cổng mặc định của
+# compose thay vì service container mà CI cấp.
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ]; then
+  port_conn="$(printf '%s' "${APCS_TEST_CONNECTION_STRING}" | sed -n 's/.*[;]Port=\([^;]*\).*/\1/p')"
+  [ -n "${port_conn}" ] && TEST_PG_PORT="${port_conn}"
+fi
 TEST_DB_USER="${TEST_DB_USER:-apcs}"
 TEST_DB_PASSWORD="${TEST_DB_PASSWORD:-apcs}"
 TEST_PG_PORT="${TEST_PG_PORT:-55432}"
@@ -75,6 +81,7 @@ TABLES="$(sql "${TEST_DB}" "SELECT count(*) FROM information_schema.tables WHERE
 if [ "${TABLES:-0}" -lt 40 ]; then
   say "nạp schema (${TABLES:-0}/52 bảng hiện tại)"
   # pg_dump sinh \restrict / \unrestrict, chỉ có từ psql 17; client cũ từ chối.
+  # Không nuốt stderr: exit code của psql là thứ duy nhất chỉ ra lỗi thật.
   sed '/^\\restrict /d; /^\\unrestrict /d' "${BOOTSTRAP_SQL}" \
     | { if [ "${USE_HOST_PSQL}" = "yes" ]; then
           PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
@@ -82,7 +89,7 @@ if [ "${TABLES:-0}" -lt 40 ]; then
         else
           compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
             psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}"
-        fi; } >/dev/null
+        fi; }
 else
   say "schema đã đủ ${TABLES} bảng"
 fi
