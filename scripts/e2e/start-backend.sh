@@ -57,6 +57,30 @@ cleanup_failed_start() {
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
 PYTHON=""
 # Không ghim đường dẫn của máy nào cả: .NET được cài ở chỗ khác nhau trên mỗi OS.
+# global.json ghim một SDK cụ thể. Nếu máy chỉ có SDK khác phiên bản, dotnet
+# in ra cả khối lỗi khó đọc; kiểm tra trước để báo đúng thứ cần cài.
+require_matching_sdk() {
+  local required installed found
+  required="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${REPO_ROOT}/global.json" 2>/dev/null | head -1)"
+  [ -n "${required}" ] || return 0
+
+  if "${DOTNET}" --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  installed="$("${DOTNET}" --list-sdks 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+  die "global.json yêu cầu .NET SDK ${required} nhưng máy này không có.
+     SDK đang có: ${installed:-không có SDK nào}
+
+     Cài đúng bản:
+       Windows : winget install Microsoft.DotNet.SDK.8
+       macOS   : brew install --cask dotnet-sdk
+       Ubuntu  : https://dotnet.microsoft.com/download
+
+     Hoặc sửa scripts/sau đó bằng SDK hiện có, nhưng đừng đổi global.json —
+     file đó khóa phiên bản cho cả CI."
+}
+
 resolve_dotnet() {
   local candidate
   if command -v dotnet >/dev/null 2>&1; then
@@ -336,6 +360,7 @@ start_api() {
 main() {
   resolve_python
   resolve_dotnet
+  require_matching_sdk
   trap cleanup_failed_start EXIT
 
   require curl
