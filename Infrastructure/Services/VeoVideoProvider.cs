@@ -40,14 +40,24 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
         if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "start", ct);
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var name = body.RootElement.TryGetProperty("name", out var value) ? value.GetString() : null;
-        if (string.IsNullOrWhiteSpace(name) || !name.StartsWith("operations/", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(name) || !OperationName.IsMatch(name))
+        {
+            // Google accepted the request, so a clip is being made; without a usable name it cannot be followed.
+            logger.LogWarning("Veo accepted the request but named its operation unexpectedly: {Name}", name);
             throw new VeoProviderException(502);
+        }
+
         return name;
     }
 
+    // What the operation of an accepted request is called: "models/<model>/operations/<id>" on this API,
+    // or the bare "operations/<id>". Nothing else may be appended to the base address.
+    private static readonly System.Text.RegularExpressions.Regex OperationName = new(
+        @"^(models/[A-Za-z0-9._-]+/)?operations/[A-Za-z0-9._-]+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     public async Task<VeoOperationResult> PollAsync(string apiKey, string operationName, CancellationToken ct)
     {
-        if (!operationName.StartsWith("operations/", StringComparison.Ordinal) || operationName.Contains("..", StringComparison.Ordinal))
+        if (!OperationName.IsMatch(operationName) || operationName.Contains("..", StringComparison.Ordinal))
             throw new ArgumentException("Invalid Veo operation name.");
         using var request = new HttpRequestMessage(HttpMethod.Get, Base + operationName);
         request.Headers.Add("x-goog-api-key", apiKey);
