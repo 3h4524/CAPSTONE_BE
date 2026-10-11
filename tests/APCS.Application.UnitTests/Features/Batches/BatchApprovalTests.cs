@@ -85,6 +85,60 @@ public sealed class BatchApprovalTests
         batch.Name.Should().Be("New");
         batch.DefaultNiche.Should().Be("hiking");
         result.Value.Description.Should().Be("Description");
+        result.Value.Status.Should().Be("draft");
+    }
+
+    [TestMethod]
+    [DataRow("pending", "completed", "draft", DisplayName = "A product is waiting to run")]
+    [DataRow("approved", "completed", "completed", DisplayName = "Every product has run")]
+    [DataRow("failed", "partially_completed", "completed", DisplayName = "A failed product is not waiting to run")]
+    [DataRow("image_review_required", "completed", "completed", DisplayName = "A product in review is not waiting to run")]
+    [DataRow("queued", "queued", "processing", DisplayName = "A job is queued")]
+    [DataRow("pending", "running", "processing", DisplayName = "A job is running, whatever else waits")]
+    public async Task ListAsync_WorksOutTheStatusFromJobsAndProducts(string productStatus, string jobStatus, string expected)
+    {
+        var userId = Guid.NewGuid();
+        // The stored status disagrees with the expected one, to show it is not what is returned.
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = expected == "completed" ? "draft" : "completed" };
+        var product = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Mug", ProcessingStatus = productStatus };
+        batch.Products.Add(product);
+        var jobRepo = MockRepository(new[] { new BatchJob { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Status = jobStatus } });
+        var service = CreateService(userId, MockRepository(new[] { batch }), MockRepository(new[] { product }), jobRepo: jobRepo);
+
+        var result = await service.ListAsync();
+
+        result.Value.Should().ContainSingle().Which.Status.Should().Be(expected);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_IgnoresDeletedProductsAndJobs()
+    {
+        var userId = Guid.NewGuid();
+        var deletedAt = DateTime.Parse("2026-09-17T00:00:00Z").ToUniversalTime();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "processing" };
+        var kept = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Mug", ProcessingStatus = "approved" };
+        var deleted = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Tee", ProcessingStatus = "pending", DeletedAt = deletedAt };
+        batch.Products.Add(kept);
+        batch.Products.Add(deleted);
+        var jobRepo = MockRepository(new[] { new BatchJob { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Status = "running", DeletedAt = deletedAt } });
+        var service = CreateService(userId, MockRepository(new[] { batch }), MockRepository(new[] { kept, deleted }), jobRepo: jobRepo);
+
+        var result = await service.ListAsync();
+
+        result.Value.Should().ContainSingle().Which.Status.Should().Be("completed");
+        result.Value[0].ProductCount.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_WithoutProducts_IsADraft()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Empty", Status = "completed" };
+        var service = CreateService(userId, MockRepository(new[] { batch }), MockRepository(Array.Empty<Product>()));
+
+        var result = await service.ListAsync();
+
+        result.Value.Should().ContainSingle().Which.Status.Should().Be("draft");
     }
 
     [TestMethod]
@@ -153,7 +207,7 @@ public sealed class BatchApprovalTests
 
         return new BatchService(
             currentUser.Object, accounts.Object, batchRepo.Object,
-            (jobRepo ?? new Mock<IRepository<BatchJob>>()).Object,
+            (jobRepo ?? MockRepository(Array.Empty<BatchJob>())).Object,
             (itemRepo ?? new Mock<IRepository<BatchJobProduct>>()).Object,
             productRepo.Object, unitOfWork?.Object ?? new Mock<IUnitOfWork>().Object,
             new FakeTimeProvider(DateTimeOffset.Parse("2026-09-18T00:00:00Z")),

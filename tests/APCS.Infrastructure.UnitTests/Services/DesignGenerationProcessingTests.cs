@@ -355,6 +355,26 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    public async Task ProcessBatchJobAsync_WhileAnImageIsMade_OnlyThatProductIsBeingGenerated()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0);
+        // What the Batches page would read while the provider works on each product in turn.
+        var seen = new List<string>();
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                seen.Add(string.Join(", ", db.Products.AsNoTracking().OrderBy(p => p.Name).Select(p => p.ProcessingStatus)));
+                return ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m);
+            });
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        seen.Should().Equal("generating_image, queued", "image_review_required, generating_image");
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_TshirtDesign_AsksForAPlainBackdropAndStoresTheCutOut()
     {
         await using var db = CreateContext();

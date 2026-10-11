@@ -193,7 +193,7 @@ public sealed class DesignGenerationService(
         var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
         if (batch is not null)
         {
-            batch.Status = "processing";
+            batch.Status = BatchStatuses.Processing;
             batch.UpdatedAt = now;
             await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         }
@@ -296,7 +296,7 @@ public sealed class DesignGenerationService(
         var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
         if (batch is not null)
         {
-            batch.Status = "processing";
+            batch.Status = BatchStatuses.Processing;
             batch.UpdatedAt = now;
             await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         }
@@ -374,11 +374,19 @@ public sealed class DesignGenerationService(
                 continue;
             }
 
-            var productType = row.ProductId is Guid productId
-                ? await products.Query().Where(p => p.Id == productId).Select(p => p.ProductType).FirstOrDefaultAsync(cancellationToken)
+            var product = row.ProductId is Guid productId
+                ? await products.Query().SingleOrDefaultAsync(p => p.Id == productId, cancellationToken)
                 : null;
-            var graphicPrint = productType is not null && GraphicPrintTypes.Contains(productType);
+            var graphicPrint = product is not null && GraphicPrintTypes.Contains(product.ProductType);
             var requestPrompt = graphicPrint ? $"{prompt.GeneratedPrompt}\n{GraphicPrintInstruction}" : prompt.GeneratedPrompt;
+
+            // Until now the product was only waiting its turn. Saved with the first log entry of the loop below.
+            if (product is not null)
+            {
+                product.ProcessingStatus = BatchJobProductStatuses.GeneratingImage;
+                product.UpdatedAt = now;
+                await products.UpdateAsync(product, cancellationToken: cancellationToken);
+            }
 
             var successCount = 0;
             for (var variation = 0; variation < variationCount; variation++)
@@ -502,15 +510,11 @@ public sealed class DesignGenerationService(
             row.UpdatedAt = row.CompletedAt;
             await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
 
-            if (row.ProductId.HasValue)
+            if (product is not null)
             {
-                var product = await products.Query().SingleOrDefaultAsync(p => p.Id == row.ProductId.Value, cancellationToken);
-                if (product is not null)
-                {
-                    product.ProcessingStatus = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
-                    product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-                    await products.UpdateAsync(product, cancellationToken: cancellationToken);
-                }
+                product.ProcessingStatus = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
+                product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+                await products.UpdateAsync(product, cancellationToken: cancellationToken);
             }
 
             if (successCount > 0) await IncrementImagesGeneratedAsync(job.UserId, successCount, cancellationToken);
@@ -542,7 +546,7 @@ public sealed class DesignGenerationService(
         var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
         if (batch is not null)
         {
-            batch.Status = "completed";
+            batch.Status = BatchStatuses.Completed;
             batch.UpdatedAt = job.CompletedAt;
             await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         }
