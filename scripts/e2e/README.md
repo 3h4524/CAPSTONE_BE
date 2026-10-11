@@ -12,11 +12,13 @@ Mọi người chạy **cùng một lệnh**, không phân biệt Windows / macO
 
 | Hệ điều hành | Cài gì |
 |---|---|
-| Windows | [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) → bật **WSL integration** cho distro của bạn (Settings → Resources → WSL Integration → tick) |
-| macOS | [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/) |
-| Linux | [Docker Engine](https://docs.docker.com/engine/install/) |
+| Windows | [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) · [Git for Windows](https://git-scm.com/download/win) (để có `bash`) · Python 3 · .NET 8 SDK · Node 22 + pnpm |
+| macOS | [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/) · `bash`, Python 3, .NET 8, Node 22 |
+| Linux | [Docker Engine](https://docs.docker.com/engine/install/) · `bash`, Python 3, .NET 8, Node 22 |
 
-Chỉ Docker là khác biệt giữa các OS. Toàn bộ phần còn lại dùng `curl`, `python3`, `dotnet` và `pnpm` — có sẵn trên cả ba.
+Docker là khác biệt duy nhất giữa các OS. Script chạy trên **Git Bash** ở Windows nên không cần WSL và không cần PowerShell.
+
+Trên Windows hãy mở **Git Bash** rồi chạy script, đừng chạy trong PowerShell.
 
 ## Các lệnh
 

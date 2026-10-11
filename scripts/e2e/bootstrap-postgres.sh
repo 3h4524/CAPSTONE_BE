@@ -30,6 +30,16 @@ compose() {
   fi
 }
 
+# Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
+# không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
+PYTHON=""
+resolve_python() {
+  PYTHON="$(command -v python3 || command -v python || true)"
+  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+}
+
+
+
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     bad "không tìm thấy lệnh 'docker'"
@@ -53,6 +63,7 @@ require_docker() {
   fi
 }
 
+resolve_python
 require_docker
 ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') sẵn sàng"
 
@@ -61,7 +72,7 @@ ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '
 # khác đang giữ port đó. Vì vậy phải kiểm tra trước khi khởi động.
 port_free() {
   local port="$1"
-  python3 - "$port" <<'PY'
+  ${PYTHON} - "$port" <<'PY'
 import socket, sys
 port = int(sys.argv[1])
 probe = socket.socket()
@@ -70,9 +81,17 @@ sys.exit(1 if probe.connect_ex(("127.0.0.1", port)) == 0 else 0)
 PY
 }
 
-for pair in "${TEST_PG_PORT}:PostgreSQL" "${TEST_REDIS_PORT}:Redis"; do
+for pair in "${TEST_PG_PORT}:PostgreSQL:apcs-e2e-postgres" "${TEST_REDIS_PORT}:Redis:apcs-e2e-redis"; do
   port="${pair%%:*}"
-  label="${pair##*:}"
+  rest="${pair#*:}"
+  label="${rest%%:*}"
+  container="${rest##*:}"
+
+  # Port đang bị container của chính lần chạy này giữ thì không phải xung đột.
+  if [ "$(docker ps --filter "name=^/${container}$" --filter status=running -q | wc -l | tr -d ' ')" != "0" ]; then
+    continue
+  fi
+
   if ! port_free "${port}"; then
     bad "port ${port} (${label}) đã bị dịch vụ khác chiếm."
     printf '\n'

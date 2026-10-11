@@ -53,6 +53,16 @@ cleanup_failed_start() {
   exit "${code}"
 }
 
+# Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
+# không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
+PYTHON=""
+resolve_python() {
+  PYTHON="$(command -v python3 || command -v python || true)"
+  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+}
+
+
+
 stop_pid() {
   local pid_file="$1"
   local label="$2"
@@ -100,7 +110,7 @@ pg_query() {
 port_open() {
   # An explicit connect timeout is required: on this host a closed loopback port drops the SYN
   # instead of refusing it, so a bare /dev/tcp connect blocks for minutes.
-  python3 - "${1:-}" "${2:-}" <<'PY'
+  ${PYTHON} - "${1:-}" "${2:-}" <<'PY'
 import socket
 import sys
 
@@ -223,7 +233,7 @@ start_smtp_sink() {
   fi
 
   log "starting smtp sink on 127.0.0.1:${SMTP_PORT} -> ${SMTP_FILE}"
-  python3 "${SCRIPT_DIR}/smtp-sink.py" \
+  ${PYTHON} "${SCRIPT_DIR}/smtp-sink.py" \
     --host 127.0.0.1 --port "${SMTP_PORT}" --out "${SMTP_FILE}" \
     --pid-file "${RUN_DIR}/smtp.pid" --reset \
     >"${RUN_DIR}/smtp.log" 2>&1 &
@@ -281,6 +291,7 @@ start_api() {
 }
 
 main() {
+  resolve_python
   trap cleanup_failed_start EXIT
 
   require curl
