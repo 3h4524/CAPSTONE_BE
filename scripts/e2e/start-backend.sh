@@ -13,20 +13,16 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 RUN_DIR="${E2E_RUN_DIR:-${SCRIPT_DIR}/.run}"
 mkdir -p "${RUN_DIR}"
 
-PG_PORT="${E2E_PG_PORT:-55432}"
+PG_PORT="${TEST_PG_PORT:-55432}"
 PG_HOST="127.0.0.1"
-PG_DATA_DIR="${E2E_PG_DATA_DIR:-/tmp/opencode/pgdata18}"
-PG_ROOT="${E2E_PG_ROOT:-/tmp/opencode/pg18}"
-PG_BIN="${PG_ROOT}/root2404/usr/lib/postgresql/18/bin"
-PG_LIB="${PG_ROOT}/root2404/usr/lib/x86_64-linux-gnu"
-PG_LOG="${RUN_DIR}/postgres.log"
+COMPOSE_FILE="${REPO_ROOT}/scripts/e2e/docker-compose.yml"
 E2E_DB="${E2E_DB:-apcs_e2e}"
 E2E_DB_USER="${E2E_DB_USER:-apcs_e2e}"
 E2E_DB_PASSWORD="${E2E_DB_PASSWORD:-apcs_e2e}"
 PG_SUPERUSER="${E2E_PG_SUPERUSER:-apcs}"
 PG_SUPERPASSWORD="${E2E_PG_SUPERPASSWORD:-apcs}"
 
-REDIS_PORT="${E2E_REDIS_PORT:-56379}"
+REDIS_PORT="${TEST_REDIS_PORT:-56379}"
 SMTP_PORT="${E2E_SMTP_PORT:-2525}"
 SMTP_FILE="${E2E_SMTP_FILE:-${RUN_DIR}/mail.jsonl}"
 API_PORT="${E2E_API_PORT:-5191}"
@@ -41,8 +37,6 @@ export DOTNET_ROOT="${DOTNET_ROOT:-/home/nhat/.dotnet}"
 
 API_PID=""
 SMTP_PID=""
-REDIS_STARTED_BY_US="no"
-PG_STARTED_BY_US="no"
 
 log()  { printf '\033[1;34m[e2e]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[e2e]\033[0m %s\n' "$*" >&2; }
@@ -54,14 +48,7 @@ cleanup_failed_start() {
     warn "startup failed (exit ${code}); stopping whatever this run had already started"
     stop_pid "${RUN_DIR}/api.pid" "API"
     stop_pid "${RUN_DIR}/smtp.pid" "SMTP sink"
-    if [ "${PG_STARTED_BY_US}" = "yes" ]; then
-      stop_postgres
-    fi
-    if [ "${REDIS_STARTED_BY_US}" = "yes" ]; then
-      redis-cli -p "${REDIS_PORT}" shutdown nosave >/dev/null 2>&1 || true
-      warn "redis stopped (it was started by this run)"
-    fi
-    warn "logs: ${RUN_DIR}/api.log ${RUN_DIR}/smtp.log ${PG_LOG}"
+    warn "logs: ${RUN_DIR}/api.log ${RUN_DIR}/smtp.log"
   fi
   exit "${code}"
 }
@@ -91,19 +78,23 @@ require() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
-pg_super_psql() {
-  # Runs a statement as a superuser. `postgres` is tried first because a fresh initdb has no
-  # application role at all; the documented local superuser is the fallback.
-  PGPASSWORD="" psql -v ON_ERROR_STOP=1 -qtAX \
-    -h "${PG_HOST}" -p "${PG_PORT}" -U postgres -d postgres -c "$1" >/dev/null 2>&1 && return 0
+# Mọi thao tác SQL đi qua container thay vì psql trên host. psql là binary của
+# Postgres, không có sẵn trên Windows; docker compose thì có ở cả ba OS. Nhờ vậy
+# script này không cần cài gì ngoài Docker.
+psql_exec() {
+  local user="$1" db="$2" statement="$3"
+  TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+    e2e_compose exec -T postgres \
+      env PGPASSWORD="${E2E_DB_PASSWORD}" \
+      psql -v ON_ERROR_STOP=1 -qtAX -U "${user}" -d "${db}" -c "${statement}"
+}
 
-  PGPASSWORD="${PG_SUPERPASSWORD}" psql -v ON_ERROR_STOP=1 -qtAX \
-    -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_SUPERUSER}" -d postgres -c "$1"
+pg_super_psql() {
+  psql_exec "${E2E_SUPERUSER:-apcs}" postgres "$1"
 }
 
 pg_query() {
-  PGPASSWORD="${E2E_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -qtAX \
-    -h "${PG_HOST}" -p "${PG_PORT}" -U "${E2E_DB_USER}" -d "$1" -c "$2"
+  psql_exec "${E2E_DB_USER}" "$1" "$2"
 }
 
 port_open() {
@@ -122,60 +113,48 @@ except OSError:
 PY
 }
 
-stop_postgres() {
-  LD_LIBRARY_PATH="${PG_LIB}" "${PG_BIN}/pg_ctl" -D "${PG_DATA_DIR}" -m fast stop >/dev/null 2>&1 || true
+# Postgres và Redis do bootstrap-postgres.sh quản lý qua Docker. Script này chỉ
+# chờ chúng sẵn sàng — không tự khởi động, để không có hai nơi cùng sở hữu vòng
+# đời của container.
+e2e_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+      docker compose -f "${COMPOSE_FILE}" "$@"
+  else
+    TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+      docker-compose -f "${COMPOSE_FILE}" "$@"
+  fi
+}
+
+require_docker() {
+  command -v docker >/dev/null 2>&1 \
+    || die "docker chưa được cài. Xem bootstrap-postgres.sh để biết cách cài cho OS của bạn."
+  docker info >/dev/null 2>&1 \
+    || die "Docker daemon chưa chạy. Mở Docker Desktop (hoặc: sudo systemctl start docker)."
 }
 
 ensure_postgres() {
-  [ -d "${PG_DATA_DIR}" ] || die "PostgreSQL data directory is missing: ${PG_DATA_DIR}
-    Re-extract the PostgreSQL 18 packages into ${PG_ROOT} before running E2E.
-    The bootstrap dump needs PG 17+ (it sets transaction_timeout)."
-
-  if port_open "${PG_HOST}" "${PG_PORT}"; then
-    log "postgres already listening on ${PG_HOST}:${PG_PORT}"
-    return 0
-  fi
-
-  [ -x "${PG_BIN}/pg_ctl" ] || die "pg_ctl is missing under ${PG_BIN}; the PostgreSQL 18 install is incomplete."
-
-  log "starting postgres on ${PG_HOST}:${PG_PORT}"
-  LD_LIBRARY_PATH="${PG_LIB}" "${PG_BIN}/pg_ctl" \
-    -D "${PG_DATA_DIR}" \
-    -o "-p ${PG_PORT} -c listen_addresses=${PG_HOST} -c unix_socket_directories=/tmp/opencode" \
-    -l "${PG_LOG}" -w start >/dev/null \
-    || die "postgres failed to start; see ${PG_LOG}"
-
-  PG_STARTED_BY_US="yes"
-
   local attempt
-  for attempt in $(seq 1 30); do
-    port_open "${PG_HOST}" "${PG_PORT}" && { log "postgres ready"; return 0; }
-    sleep 0.5
+  for attempt in $(seq 1 60); do
+    if e2e_compose exec -T postgres pg_isready -U "${E2E_DB_USER}" -d postgres >/dev/null 2>&1; then
+      log "postgres container sẵn sàng trên ${PG_HOST}:${PG_PORT}"
+      return 0
+    fi
+    sleep 1
   done
-
-  die "postgres did not accept connections on ${PG_PORT}; see ${PG_LOG}"
+  die "postgres container không sẵn sàng sau 60s. Chạy: ${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh"
 }
 
 ensure_redis() {
-  if redis-cli -p "${REDIS_PORT}" ping 2>/dev/null | grep -q PONG; then
-    log "redis already listening on 127.0.0.1:${REDIS_PORT}"
-    return 0
-  fi
-
-  log "starting redis on 127.0.0.1:${REDIS_PORT}"
-  redis-server --port "${REDIS_PORT}" --daemonize yes --dir "${RUN_DIR}" --save '' \
-    --pidfile "${RUN_DIR}/redis.pid" --logfile "${RUN_DIR}/redis.log" \
-    || die "redis-server failed to start; see ${RUN_DIR}/redis.log"
-
-  REDIS_STARTED_BY_US="yes"
-
   local attempt
   for attempt in $(seq 1 30); do
-    redis-cli -p "${REDIS_PORT}" ping 2>/dev/null | grep -q PONG && { log "redis ready"; return 0; }
-    sleep 0.5
+    if e2e_compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
+      log "redis container sẵn sàng trên 127.0.0.1:${REDIS_PORT}"
+      return 0
+    fi
+    sleep 1
   done
-
-  die "redis did not answer PING on ${REDIS_PORT}; see ${RUN_DIR}/redis.log"
+  die "redis container không trả lời PING sau 30s"
 }
 
 ensure_database() {
@@ -225,8 +204,9 @@ ensure_schema() {
   # is not always the same major version as the server.
   log "loading ${BOOTSTRAP_SQL##*/} into ${E2E_DB}"
   sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' "${BOOTSTRAP_SQL}" \
-    | PGPASSWORD="${E2E_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
-        -h "${PG_HOST}" -p "${PG_PORT}" -U "${E2E_DB_USER}" -d "${E2E_DB}" >"${RUN_DIR}/schema.log" 2>&1 \
+    | e2e_compose exec -T postgres \
+        env PGPASSWORD="${E2E_DB_PASSWORD}" \
+        psql -v ON_ERROR_STOP=1 -q -U "${E2E_DB_USER}" -d "${E2E_DB}" >"${RUN_DIR}/schema.log" 2>&1 \
     || { tail -20 "${RUN_DIR}/schema.log" >&2; die "bootstrap schema load failed; see ${RUN_DIR}/schema.log"; }
 
   tables="$(pg_query "${E2E_DB}" \
@@ -304,10 +284,8 @@ main() {
   trap cleanup_failed_start EXIT
 
   require curl
-  require psql
   require python3
-  require redis-cli
-  require redis-server
+  require_docker
 
   [ -f "${API_PROJECT}" ] || die "API project not found: ${API_PROJECT}"
   [ -x "${DOTNET_ROOT}/dotnet" ] || die "dotnet not found under DOTNET_ROOT=${DOTNET_ROOT}"

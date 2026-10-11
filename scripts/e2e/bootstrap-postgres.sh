@@ -1,90 +1,123 @@
 #!/usr/bin/env bash
-# Dựng PostgreSQL 18 cho test E2E mà KHÔNG cần root.
+# Bật PostgreSQL 18 + Redis cho test, qua Docker.
 #
-# Máy chỉ có postgresql-client (16). Dump schema của repo chứa
-# "SET transaction_timeout" — Postgres 17+ — nên client 16 từ chối, và
-# server 16 cũng không replay được. Cách duy nhất không cần sudo là giải
-# nén .deb của PGDG vào /tmp rồi chạy initdb từ đó.
+# Đây là điểm khác biệt DUY NHẤT giữa các hệ điều hành. Mọi script còn lại chỉ
+# dùng curl, python3, dotnet và pnpm — tức là chạy giống nhau trên Windows,
+# macOS và Linux. Docker Desktop có sẵn cho cả ba nên không cần ai phải cài
+# Postgres thủ công, và /tmp bị dọn cũng không ảnh hưởng.
 #
-# /tmp hay bị dọn, nên script này idempotent: chạy lại là khôi phục.
+# Cũ trước đây script này tải .deb của PostgreSQL rồi chạy initdb — chỉ chạy
+# được trên Linux.
 
 set -euo pipefail
 
-PG_BASE="${PG_BASE:-/tmp/opencode/pg}"
-PG_DATA="${PG_DATA:-/tmp/opencode/pgdata18}"
-PG_PORT="${PG_PORT:-55432}"
-PG_BIN="${PG_BASE}/usr/lib/postgresql/18/bin"
-PG_LIB="${PG_BASE}/usr/lib/x86_64-linux-gnu"
-DEB_INDEX="https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-18/"
-LIBURING_INDEX="http://archive.ubuntu.com/ubuntu/pool/main/libu/liburing/"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+COMPOSE_FILE="${REPO_ROOT}/scripts/e2e/docker-compose.yml"
+TEST_PG_PORT="${TEST_PG_PORT:-55432}"
+TEST_REDIS_PORT="${TEST_REDIS_PORT:-56379}"
 
-log() { printf '[pg-bootstrap] %s\n' "$*"; }
-die() { printf '[pg-bootstrap] FATAL: %s\n' "$*" >&2; exit 1; }
+say()  { printf '\033[1;34m[e2e]\033[0m %s\n' "$*"; }
+ok()   { printf '   \033[32m%s\033[0m\n' "$*"; }
+bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
 
-if [ -x "${PG_BIN}/pg_ctl" ] && [ -x "${PG_BIN}/initdb" ]; then
-  log "binary PostgreSQL 18 đã có ở ${PG_BIN}"
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    TEST_PG_PORT="${TEST_PG_PORT}" TEST_REDIS_PORT="${TEST_REDIS_PORT}" \
+      docker compose -f "${COMPOSE_FILE}" "$@"
+  else
+    TEST_PG_PORT="${TEST_PG_PORT}" TEST_REDIS_PORT="${TEST_REDIS_PORT}" \
+      docker-compose -f "${COMPOSE_FILE}" "$@"
+  fi
+}
+
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    bad "không tìm thấy lệnh 'docker'"
+    printf '\n'
+    printf '   Cài Docker:\n'
+    printf '     Windows / macOS : https://docs.docker.com/desktop/\n'
+    printf '     Linux           : https://docs.docker.com/engine/install/\n'
+    printf '\n   Trên Windows, sau khi cài còn phải bật WSL integration cho distro của bạn:\n'
+    printf '     Docker Desktop > Settings > Resources > WSL Integration > tick distro > Apply & Restart\n'
+    printf '\n   Sau đó chạy lại: %s\n' "$0"
+    exit 1
+  fi
+
+  if ! docker info >/dev/null 2>&1; then
+    bad "Docker có lệnh nhưng daemon chưa chạy"
+    printf '\n'
+    printf '   Windows / macOS : mở app Docker Desktop và đợi tới khi Engine chạy\n'
+    printf '   Linux           : sudo systemctl start docker\n'
+    printf '\n   Nếu bạn ở trong WSL mà vẫn lỗi, xem phần WSL integration ở trên.\n'
+    exit 1
+  fi
+}
+
+require_docker
+ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') sẵn sàng"
+
+# Docker không báo lỗi khi không bind được port đã bị chiếm — container vẫn
+# "healthy" nhưng `docker port` rỗng và mọi kết nối từ host đều rơi vào dịch vụ
+# khác đang giữ port đó. Vì vậy phải kiểm tra trước khi khởi động.
+port_free() {
+  local port="$1"
+  python3 - "$port" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+probe = socket.socket()
+probe.settimeout(1)
+sys.exit(1 if probe.connect_ex(("127.0.0.1", port)) == 0 else 0)
+PY
+}
+
+for pair in "${TEST_PG_PORT}:PostgreSQL" "${TEST_REDIS_PORT}:Redis"; do
+  port="${pair%%:*}"
+  label="${pair##*:}"
+  if ! port_free "${port}"; then
+    bad "port ${port} (${label}) đã bị dịch vụ khác chiếm."
+    printf '\n'
+    printf '   Docker sẽ không publish được port này và mọi kết nối sẽ rơi nhầm vào\n'
+    printf '   dịch vụ đang chiếm. Chọn port khác, ví dụ:\n'
+    printf '\n     TEST_PG_PORT=55432 TEST_REDIS_PORT=56379 %s\n' "$0"
+    printf '\n   Hoặc dừng dịch vụ đang dùng port %s.\n' "${port}"
+    printf '   Xem ai đang giữ: ss -ltnp (Linux/macOS) hoặc netstat -ano (Windows)\n'
+    exit 1
+  fi
+done
+
+say "khởi động PostgreSQL 18 + Redis"
+compose up -d --remove-orphans >/dev/null 2>&1 \
+  || { bad "docker compose up thất bại"; exit 1; }
+
+say "chờ PostgreSQL nhận kết nối"
+for _ in $(seq 1 60); do
+  if compose exec -T postgres pg_isready -U "${TEST_DB_USER:-apcs}" -d postgres >/dev/null 2>&1; then
+    ok "postgres 127.0.0.1:${TEST_PG_PORT}"
+    break
+  fi
+  sleep 1
+done
+
+say "chờ Redis nhận kết nối"
+for _ in $(seq 1 30); do
+  if compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
+    ok "redis 127.0.0.1:${TEST_REDIS_PORT}"
+    break
+  fi
+  sleep 1
+done
+
+compose ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null | sed 's/^/   /' || true
+
+# Container healthy chưa chắc host đã publish được port — xác nhận bằng cách thử
+# kết nối thật từ ngoài container.
+if ! port_free "${TEST_PG_PORT}"; then
+  ok "postgres container nhận kết nối trên 127.0.0.1:${TEST_PG_PORT}"
 else
-  log "tìm bản PostgreSQL 18 mới nhất cho ubuntu 24.04"
-  DEB_URL="$(curl -fsSL --max-time 120 "${DEB_INDEX}" \
-    | grep -oE 'postgresql-18_1[0-9.]+-[^"]*pgdg24\.04%2B1_amd64\.deb' \
-    | sort -V | tail -1)" \
-    || die "đọc ${DEB_INDEX} thất bại"
-  [ -n "${DEB_URL}" ] || die "không tìm thấy .deb pgdg24.04 trong ${DEB_INDEX}"
-  DEB_URL="${DEB_INDEX}${DEB_URL}"
-  log "  ${DEB_URL##*/}"
-
-  log "tải PostgreSQL 18 (không cần root)"
-  rm -rf "${PG_BASE}" "${PG_BASE}.deb"
-  curl -fsSL --max-time 300 -o "${PG_BASE}.deb" "${DEB_URL}" \
-    || die "tải ${DEB_URL} thất bại — kiểm tra mạng"
-  log "giải nén vào ${PG_BASE}"
-  mkdir -p "${PG_BASE}"
-  dpkg-deb -x "${PG_BASE}.deb" "${PG_BASE}"
-  rm -f "${PG_BASE}.deb"
+  bad "postgres container healthy nhưng port ${TEST_PG_PORT} không nhận kết nối từ host."
+  bad "Docker Desktop có thể chưa publish được port. Kiểm tra: docker port apcs-e2e-postgres"
+  exit 1
 fi
 
-# PostgreSQL 18 liên kết liburing.so.2, mà Ubuntu 24.04 mặc định không có.
-# Không sudo nên giải nén luôn rồi trỏ LD_LIBRARY_PATH vào đó.
-if ! LD_LIBRARY_PATH="${PG_LIB}" ldconfig -p 2>/dev/null | grep -q liburing.so.2 \
-  && [ ! -e "${PG_LIB}/liburing.so.2" ]; then
-  log "máy thiếu liburing.so.2 — tải liburing2 từ Ubuntu archive"
-  LIBURING_DEB="$(curl -fsSL --max-time 120 "${LIBURING_INDEX}" \
-    | grep -oE 'liburing2_[^"]*amd64\.deb' | sort -V | tail -1)" \
-    || die "đọc ${LIBURING_INDEX} thất bại"
-  [ -n "${LIBURING_DEB}" ] || die "không tìm thấy liburing2 trong ${LIBURING_INDEX}"
-  curl -fsSL --max-time 300 -o "${PG_BASE}.liburing.deb" "${LIBURING_INDEX}${LIBURING_DEB}" \
-    || die "tải liburing2 thất bại"
-  dpkg-deb -x "${PG_BASE}.liburing.deb" "${PG_BASE}"
-  rm -f "${PG_BASE}.liburing.deb"
-  log "  liburing2 đã giải nén vào ${PG_LIB}"
-fi
-
-[ -x "${PG_BIN}/pg_ctl" ] || die "giải nén xong nhưng không thấy ${PG_BIN}/pg_ctl"
-
-if [ -s "${PG_DATA}/PG_VERSION" ]; then
-  log "data directory đã có ở ${PG_DATA}"
-else
-  log "initdb → ${PG_DATA}"
-  rm -rf "${PG_DATA}"
-  mkdir -p "${PG_DATA}"
-  LD_LIBRARY_PATH="${PG_LIB}" "${PG_BIN}/initdb" \
-    -D "${PG_DATA}" -U apcs -E UTF8 --locale=C \
-    -A trust >/dev/null \
-    || die "initdb thất bại"
-fi
-
-if "${PG_BIN}/pg_ctl" -D "${PG_DATA}" status >/dev/null 2>&1; then
-  log "postgres đang chạy sẵn"
-else
-  log "khởi động postgres trên 127.0.0.1:${PG_PORT}"
-  # unix_socket_directories phải trỏ vào /tmp: /var/run/postgresql không tồn tại khi
-  # không chạy dưới systemd và ta không có quyền root để tạo.
-  LD_LIBRARY_PATH="${PG_LIB}" "${PG_BIN}/pg_ctl" -D "${PG_DATA}" \
-    -o "-p ${PG_PORT} -c listen_addresses=127.0.0.1 -c unix_socket_directories=/tmp" \
-    -l "${PG_DATA}/postgres.log" -w start >/dev/null \
-    || die "pg_ctl start thất bại — xem ${PG_DATA}/postgres.log"
-fi
-
-log "sẵn sàng. Kiểm tra:"
-log "  export PGHOST=127.0.0.1 PGPORT=${PG_PORT} PGUSER=apcs"
-log "  ${PG_BIN}/psql -c 'select version()'"
+printf '\n'
+ok "hạ tầng sẵn sàng"

@@ -21,7 +21,7 @@ bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
 bring_up() {
   say "1/4 PostgreSQL 18 + Redis"
   "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >/dev/null 2>&1 \
-    && ok "postgres 55432 + redis 56379" \
+    && ok "postgres + redis (docker)" \
     || { bad "bootstrap-postgres thất bại — chạy nó thủ công để xem lỗi"; return 1; }
 
   say "2/4 Backend API + SMTP sink"
