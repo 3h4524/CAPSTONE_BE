@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Common.Models;
@@ -15,4 +16,45 @@ public interface IMockupTemplateService
 
     /// <summary>Stores the mock-up selection on a draft batch.</summary>
     Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Creates a personal mock-up template with a real uploaded base photo.</summary>
+    Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Updates a personal mock-up template the current Seller owns.</summary>
+    Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Deactivates a personal mock-up template the current Seller owns (soft — no hard delete column exists).</summary>
+    Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Previews a base photo before it is saved: its garment mask and whether it can be recolored.
+    /// </summary>
+    Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Composites a design image onto a mock-up template's base photo (SRS 3.5.9 execution). Uses the
+    /// template's stored print area unless the request overrides it (the "advanced" positioning path).
+    /// </summary>
+    Task<Result<MockupImageResponseDto>> GenerateCompositeAsync(Guid designImageId, GenerateMockupImageRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Composites mock-ups for every product in the batch job at once, using each product's selected,
+    /// compatible template(s) and its earliest design image. Idempotent — already-generated pairs are
+    /// skipped, so it is safe to call again as more products finish.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GenerateAllAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The mock-ups the job already has for its current template selection, in the shape
+    /// <see cref="GenerateAllAsync"/> returns them, without making any. Lets a page show a job's
+    /// mock-ups again after a reload. A job with no template selected, or not started yet, has none.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GetJobMockupsAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The same as <see cref="GenerateAllAsync"/> for a job that has just finished generating images, run by
+    /// the background worker as the job's owner (there is no signed-in user), so the mock-ups do not wait for
+    /// a browser. Fails without changing anything when the job is not finished or has no template selected.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> GenerateAllForJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 }

@@ -133,7 +133,7 @@ public sealed class DesignTemplateRepository(AppDbContext dbContext) : IDesignTe
             .ExecuteUpdateAsync(
                 setters => setters.SetProperty(
                     template => template.UsageCount,
-                    template => (template.UsageCount ?? 0) + 1),
+                    template => template.UsageCount + 1),
                 cancellationToken);
 
     private static bool IsPersonalNameConflict(DbUpdateException exception) =>
