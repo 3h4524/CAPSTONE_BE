@@ -53,6 +53,9 @@ public static class MockupErrors
     public static Error NotRecolorable(string reason) =>
         Error.Conflict("BatchMockups.NotRecolorable", $"This photo can't be recolored: {reason} Use a white or light-gray garment on a plain background.");
 
+    public static Error BackgroundNotAllowed(string name) =>
+        Error.Conflict("BatchMockups.BackgroundNotAllowed", $"The background of the template {name} can't be changed: its garment could not be separated from the photo's background.");
+
     public static Error RecolorNotAllowed(string name) =>
         Error.Conflict("BatchMockups.RecolorNotAllowed", $"The template {name} does not support garment colors.");
 

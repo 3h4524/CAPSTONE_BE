@@ -10,4 +10,5 @@ public sealed record MockupImageResponseDto(
     int MockupWidthPx,
     int MockupHeightPx,
     string ApprovalStatus,
-    string? GarmentColor);
+    string? GarmentColor,
+    string? BackgroundColor = null);

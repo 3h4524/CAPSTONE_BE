@@ -39,6 +39,8 @@ public partial class MockupImage
 
     public string? GarmentColor { get; set; }
 
+    public string? BackgroundColor { get; set; }
+
     public string SourceType { get; set; } = null!;
 
     public string? ContentHash { get; set; }

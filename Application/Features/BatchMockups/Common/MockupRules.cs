@@ -62,6 +62,11 @@ public static class MockupRules
     public static string DisplacementMapKey(string helperKeyPrefix) => $"{helperKeyPrefix}-displace";
     public static string GarmentMaskKey(string helperKeyPrefix) => $"{helperKeyPrefix}-mask";
     public static string GarmentMaskKey(MockupTemplate template) => GarmentMaskKey(HelperKeyPrefix(template.Id, template.PrintMapsVersion ?? 0));
+    public static string CutMaskKey(string helperKeyPrefix) => $"{helperKeyPrefix}-cut";
+    public static string CutMaskKey(MockupTemplate template) => CutMaskKey(HelperKeyPrefix(template.Id, template.PrintMapsVersion ?? 0));
+
+    /// <summary>Per template, the '#RRGGBB' background its mock-ups of a job are put on; a template without one keeps its photo's background.</summary>
+    public const string TemplateBackgroundsConfigKey = "mockupTemplateBackgrounds";
 
     public const string GarmentColorPattern = "^#[0-9A-Fa-f]{6}$";
     public const string GarmentColorsConfigKey = "mockupGarmentColors";
@@ -90,13 +95,15 @@ public static class MockupRules
 
     /// <summary>
     /// The realism layers for compositing <paramref name="designImage"/> onto <paramref name="template"/>,
-    /// with the garment recolored when <paramref name="garmentColor"/> is given.
+    /// with the garment recolored when <paramref name="garmentColor"/> is given and lifted onto
+    /// <paramref name="backgroundColor"/> when that is. The caller makes sure the cut mask exists first.
     /// </summary>
-    public static MockupLayers Layers(MockupTemplate template, DesignImage designImage, string? garmentColor)
+    public static MockupLayers Layers(MockupTemplate template, DesignImage designImage, string? garmentColor, string? backgroundColor = null)
     {
         var mapsReady = HasCurrentMaps(template);
         var recolor = mapsReady && template.AllowRecolor && garmentColor is not null;
         var prefix = mapsReady ? HelperKeyPrefix(template.Id, template.PrintMapsVersion!.Value) : null;
+        var background = prefix is not null && backgroundColor is not null;
         return new MockupLayers(
             designImage.ImageWidthPx,
             designImage.ImageHeightPx,
@@ -104,6 +111,10 @@ public static class MockupRules
             prefix is null ? null : GarmentMaskKey(prefix),
             recolor ? garmentColor!.ToUpperInvariant() : null,
             MultiplyDesign: mapsReady && template.GarmentIsLight && !recolor,
-            BasePhotoShortSidePx: Math.Min(template.OutputWidthPx, template.OutputHeightPx));
+            BasePhotoShortSidePx: Math.Min(template.OutputWidthPx, template.OutputHeightPx),
+            CutMaskKey: background ? CutMaskKey(prefix!) : null,
+            BackgroundColor: background ? backgroundColor!.ToUpperInvariant() : null,
+            BasePhotoWidthPx: template.OutputWidthPx,
+            BasePhotoHeightPx: template.OutputHeightPx);
     }
 }

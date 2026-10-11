@@ -7,7 +7,12 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// Garment colors chosen per template (up to 5 each, '#RRGGBB'), keyed by template id. A recolorable template that
 /// appears here is made in these colors only; one that does not falls back to <paramref name="GarmentColors"/>.
 /// </param>
+/// <param name="TemplateBackgrounds">
+/// The '#RRGGBB' background chosen per template, keyed by template id. A template that appears here has its garment
+/// lifted onto that color; one that does not keeps its photo's background.
+/// </param>
 public sealed record ApplyMockupTemplatesRequestDto(
     IReadOnlyList<Guid> TemplateIds,
     IReadOnlyList<string>? GarmentColors = null,
-    IReadOnlyDictionary<Guid, IReadOnlyList<string>>? TemplateColors = null);
+    IReadOnlyDictionary<Guid, IReadOnlyList<string>>? TemplateColors = null,
+    IReadOnlyDictionary<Guid, string>? TemplateBackgrounds = null);

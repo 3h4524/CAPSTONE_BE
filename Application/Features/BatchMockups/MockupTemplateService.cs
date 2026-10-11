@@ -65,7 +65,7 @@ public sealed class MockupTemplateService(
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.BatchNotFound());
 
         return Result.Success(new BatchMockupSelectionResponseDto(
-            batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config), ReadTemplateColors(batch.Config)));
+            batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config), ReadTemplateColors(batch.Config), ReadTemplateBackgrounds(batch.Config)));
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default)
@@ -89,7 +89,6 @@ public sealed class MockupTemplateService(
 
         var candidates = await templates.Query()
             .Where(template => request.TemplateIds.Contains(template.Id) && template.IsActive == true)
-            .Select(template => new { template.Id, template.Name, template.ProductType })
             .ToListAsync(cancellationToken);
 
         if (candidates.Count != request.TemplateIds.Count)
@@ -104,11 +103,20 @@ public sealed class MockupTemplateService(
 
         var colors = (request.GarmentColors ?? []).Select(color => color.ToUpperInvariant()).ToList();
         var colorsByTemplate = NormalizeTemplateColors(request.TemplateColors);
-        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors, colorsByTemplate);
+        var backgrounds = (request.TemplateBackgrounds ?? new Dictionary<Guid, string>())
+            .ToDictionary(entry => entry.Key, entry => entry.Value.ToUpperInvariant());
+        // The cut mask is made now, so the mock-ups made later are plain URLs like every other one.
+        foreach (var template in candidates.Where(template => backgrounds.ContainsKey(template.Id)))
+        {
+            if (!await TryEnsureCutMaskAsync(template, cancellationToken))
+                return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.BackgroundNotAllowed(template.Name));
+        }
+
+        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors, colorsByTemplate, backgrounds);
         batch.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batches.UpdateAsync(batch, saveChange: true, cancellationToken);
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate));
+        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate, backgrounds));
     }
 
     public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default)
@@ -473,6 +481,7 @@ public sealed class MockupTemplateService(
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.NoTemplatesSelected());
         var selectedColors = ReadColors(batch.Config);
         var colorsByTemplate = ReadTemplateColors(batch.Config);
+        var backgrounds = ReadTemplateBackgrounds(batch.Config);
 
         var selectedTemplates = await templates.Query()
             .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true
@@ -576,7 +585,7 @@ public sealed class MockupTemplateService(
 
                 foreach (var color in colors)
                 {
-                    var layers = MockupRules.Layers(template, designImage, color);
+                    var layers = MockupRules.Layers(template, designImage, color, backgrounds.GetValueOrDefault(template.Id));
                     string compositeUrl;
                     try
                     {
@@ -612,6 +621,7 @@ public sealed class MockupTemplateService(
                         ApprovalStatus = "pending",
                         BatchJobProductId = designImage.BatchJobProductId,
                         GarmentColor = layers.GarmentColor,
+                        BackgroundColor = layers.BackgroundColor,
                         SourceType = MockupSources.Generated,
                         MetadataRevision = MockupSources.FirstRevision,
                         Role = MockupSources.DefaultRole,
@@ -652,7 +662,28 @@ public sealed class MockupTemplateService(
         // A composited mock-up always has its design, template and URL; only an uploaded one may lack them.
         new(mockupImage.Id, mockupImage.ProductId, mockupImage.DesignImageId!.Value, mockupImage.MockupTemplateId!.Value,
             mockupImage.MockupImageUrl!, mockupImage.MockupWidthPx, mockupImage.MockupHeightPx, mockupImage.ApprovalStatus,
-            mockupImage.GarmentColor);
+            mockupImage.GarmentColor, mockupImage.BackgroundColor);
+
+    // Whether the template's garment can be lifted off its photo. A template analyzed before cut masks
+    // were made gets its cut mask here, from the garment mask it already has.
+    private async Task<bool> TryEnsureCutMaskAsync(MockupTemplate template, CancellationToken cancellationToken)
+    {
+        if (!MockupRules.HasCurrentMaps(template))
+            return false;
+
+        try
+        {
+            return await mapService.EnsureCutMaskAsync(
+                compositor.BuildAssetUrl(template.BaseImageUrl, MockupRules.GarmentMaskKey(template)),
+                compositor.BuildAssetUrl(template.BaseImageUrl, MockupRules.CutMaskKey(template)),
+                MockupRules.CutMaskKey(template), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not prepare the cut mask of mock-up template {TemplateId}.", template.Id);
+            return false;
+        }
+    }
 
     private async Task<bool> IsNameTakenAsync(string name, Guid? excludeId, CancellationToken cancellationToken)
     {
@@ -803,7 +834,8 @@ public sealed class MockupTemplateService(
             template.PrintAreaConfig, template.OutputWidthPx, template.OutputHeightPx, template.UsageCount ?? 0,
             template.IsSystemTemplate == true, template.UserId == userId, mapsReady, recolor,
             mapsReady ? compositor.BuildAssetUrl(template.BaseImageUrl, MockupRules.GarmentMaskKey(template)) : null,
-            recolor ? template.GarmentColor : null);
+            recolor ? template.GarmentColor : null,
+            AllowBackground: mapsReady);
     }
 
     private async Task<BatchJob?> FindOwnedBatchAsync(Guid batchJobId, CancellationToken cancellationToken)
@@ -917,6 +949,30 @@ public sealed class MockupTemplateService(
         return result;
     }
 
+    private static IReadOnlyDictionary<Guid, string> ReadTemplateBackgrounds(string config)
+    {
+        var result = new Dictionary<Guid, string>();
+        try
+        {
+            if (JsonNode.Parse(config)?[MockupRules.TemplateBackgroundsConfigKey] is not JsonObject byTemplate)
+                return result;
+
+            foreach (var (key, value) in byTemplate)
+            {
+                var color = value?.ToString();
+                if (Guid.TryParse(key, out var templateId) && color is not null
+                    && System.Text.RegularExpressions.Regex.IsMatch(color, MockupRules.GarmentColorPattern))
+                    result[templateId] = color.ToUpperInvariant();
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            result.Clear();
+        }
+
+        return result;
+    }
+
     // Uppercased, and without templates that were given no color (they use the shared list).
     private static IReadOnlyDictionary<Guid, IReadOnlyList<string>> NormalizeTemplateColors(IReadOnlyDictionary<Guid, IReadOnlyList<string>>? requested) =>
         (requested ?? new Dictionary<Guid, IReadOnlyList<string>>())
@@ -927,7 +983,8 @@ public sealed class MockupTemplateService(
         string config,
         IReadOnlyList<Guid> templateIds,
         IReadOnlyList<string> garmentColors,
-        IReadOnlyDictionary<Guid, IReadOnlyList<string>> colorsByTemplate)
+        IReadOnlyDictionary<Guid, IReadOnlyList<string>> colorsByTemplate,
+        IReadOnlyDictionary<Guid, string> backgrounds)
     {
         JsonObject root;
         try
@@ -958,6 +1015,18 @@ public sealed class MockupTemplateService(
             foreach (var (templateId, colors) in colorsByTemplate)
                 byTemplate[templateId.ToString()] = new JsonArray(colors.Select(color => (JsonNode?)JsonValue.Create(color)).ToArray());
             root[TemplateColorsConfigKey] = byTemplate;
+        }
+
+        if (backgrounds.Count == 0)
+        {
+            root.Remove(MockupRules.TemplateBackgroundsConfigKey);
+        }
+        else
+        {
+            var byTemplate = new JsonObject();
+            foreach (var (templateId, color) in backgrounds)
+                byTemplate[templateId.ToString()] = color;
+            root[MockupRules.TemplateBackgroundsConfigKey] = byTemplate;
         }
 
         return root.ToJsonString();

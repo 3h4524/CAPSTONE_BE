@@ -1468,6 +1468,127 @@ public sealed class MockupTemplateServiceTests
         added.Single(m => m.MockupTemplateId == teeBId).GarmentColor.Should().Be("#2B4FA3");
     }
 
+    // ---- Backgrounds ----
+
+    private static (Mock<IRepository<BatchJob>> Batches, BatchJob Job, Mock<IRepository<BatchJobProduct>> Rows, Mock<IRepository<Product>> Products) DraftJobWithATee(Guid userId)
+    {
+        var productId = Guid.NewGuid();
+        var job = new BatchJob { Id = Guid.NewGuid(), UserId = userId, Name = "B", Status = "draft", Config = "{}" };
+        return (MockBatches(job), job,
+            MockRows(new BatchJobProduct { Id = Guid.NewGuid(), BatchJobId = job.Id, ProductId = productId, Status = "pending" }),
+            MockProducts(new Product { Id = productId, UserId = userId, Name = "P", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending" }));
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithABackground_MakesTheCutMaskAndStoresTheChoice()
+    {
+        var userId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (batches, job, rows, products) = DraftJobWithATee(userId);
+        var mapService = MockMapService();
+        mapService.Setup(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        var result = await CreateService(userId, TemplateRepository(RecolorableTemplate(templateId)), batches, rows, products, mapService: mapService)
+            .ApplyAsync(job.Id, new ApplyMockupTemplatesRequestDto([templateId], TemplateBackgrounds: new Dictionary<Guid, string> { [templateId] = "#ede6da" }));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.TemplateBackgrounds.Should().Contain(templateId, "#EDE6DA");
+        job.Config.Should().Contain("\"mockupTemplateBackgrounds\"").And.Contain("#EDE6DA");
+        mapService.Verify(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), $"mockup-templates/{templateId:N}-7-cut", It.IsAny<CancellationToken>()), Times.Once);
+
+        var read = await CreateService(userId, TemplateRepository(RecolorableTemplate(templateId)), batches, rows, products).GetSelectionAsync(job.Id);
+        read.Value.TemplateBackgrounds.Should().Contain(templateId, "#EDE6DA");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_WithoutABackground_RemovesAnEarlierChoiceAndMakesNoCutMask()
+    {
+        var userId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (batches, job, rows, products) = DraftJobWithATee(userId);
+        job.Config = $"{{\"mockupTemplateBackgrounds\":{{\"{templateId:D}\":\"#EDE6DA\"}}}}";
+        var mapService = MockMapService();
+
+        var result = await CreateService(userId, TemplateRepository(RecolorableTemplate(templateId)), batches, rows, products, mapService: mapService)
+            .ApplyAsync(job.Id, new ApplyMockupTemplatesRequestDto([templateId]));
+
+        result.IsSuccess.Should().BeTrue();
+        job.Config.Should().NotContain("mockupTemplateBackgrounds");
+        mapService.Verify(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow(true, DisplayName = "The garment could not be separated from the photo's background")]
+    [DataRow(false, DisplayName = "The photo was never analyzed")]
+    public async Task ApplyAsync_WhenTheGarmentCannotBeCutOut_RefusesTheBackground(bool analyzed)
+    {
+        var userId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (batches, job, rows, products) = DraftJobWithATee(userId);
+        var mapService = MockMapService();
+        mapService.Setup(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        var template = analyzed ? RecolorableTemplate(templateId) : MakeTemplate(templateId, "tshirt");
+
+        var result = await CreateService(userId, TemplateRepository(template), batches, rows, products, mapService: mapService)
+            .ApplyAsync(job.Id, new ApplyMockupTemplatesRequestDto([templateId], TemplateBackgrounds: new Dictionary<Guid, string> { [templateId] = "#EDE6DA" }));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("BatchMockups.BackgroundNotAllowed");
+        job.Config.Should().Be("{}");
+    }
+
+    [TestMethod]
+    [DataRow("EDE6DA", DisplayName = "Not a color")]
+    [DataRow(null, DisplayName = "A template that is not selected")]
+    public async Task ApplyAsync_WithABadBackgroundRequest_ReturnsValidationFailure(string? color)
+    {
+        var userId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (batches, job, rows, products) = DraftJobWithATee(userId);
+        var backgrounds = color is null
+            ? new Dictionary<Guid, string> { [Guid.NewGuid()] = "#EDE6DA" }
+            : new Dictionary<Guid, string> { [templateId] = color };
+
+        var result = await CreateService(userId, TemplateRepository(RecolorableTemplate(templateId)), batches, rows, products)
+            .ApplyAsync(job.Id, new ApplyMockupTemplatesRequestDto([templateId], TemplateBackgrounds: backgrounds));
+
+        result.IsFailure.Should().BeTrue();
+        job.Config.Should().Be("{}");
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_WithABackground_CompositesOnItAndRecordsIt()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var withBackground = Guid.NewGuid();
+        var plain = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{withBackground:D}\",\"{plain:D}\"],\"mockupTemplateBackgrounds\":{{\"{withBackground:D}\":\"#22262E\"}}}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+        var seen = new List<MockupLayers?>();
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, _, _, layers) => { seen.Add(layers); return $"https://cdn/{Guid.NewGuid():N}.jpg"; });
+
+        var result = await CreateService(userId, templates: TemplateRepository(RecolorableTemplate(withBackground), RecolorableTemplate(plain)), batches: batches,
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: compositor)
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Single(m => m.MockupTemplateId == withBackground).BackgroundColor.Should().Be("#22262E");
+        added.Single(m => m.MockupTemplateId == plain).BackgroundColor.Should().BeNull();
+        seen.Should().ContainSingle(layers => layers!.BackgroundColor == "#22262E")
+            .Which!.CutMaskKey.Should().Be($"mockup-templates/{withBackground:N}-7-cut");
+        seen.Should().ContainSingle(layers => layers!.BackgroundColor == null).Which!.CutMaskKey.Should().BeNull();
+        result.Value.Images.Should().ContainSingle(i => i.BackgroundColor == "#22262E");
+    }
+
     private static MockupTemplate RecolorableTemplate(Guid id)
     {
         var template = MakeTemplate(id, "tshirt");
