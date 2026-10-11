@@ -17,7 +17,8 @@ public sealed class VideoStoryboardPlanner
             return Result.Failure<Storyboard>(Error.Validation("All selected mockups must share an artwork group."));
         var templateVersion = config.TemplateVersion ?? 1;
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
-        var template = ResolveTemplate(config.Template, eligible, templateVersion);
+        var template = config.Mode == "ai_shot" && config.AiShotOptions?.Coverage == "full_video"
+            ? "product_showcase" : ResolveTemplate(config.Template, eligible, templateVersion);
         if (templateVersion >= 2 && template == "design_detail" &&
             !eligible.Any(x => x.Role == "ArtworkDetail" || WorkflowJson.Read<MockupRegions>(x.Regions).Detail != null))
             return Result.Failure<Storyboard>(Error.Validation("Design Detail requires an artwork-detail image or a marked detail region."));
@@ -55,8 +56,94 @@ public sealed class VideoStoryboardPlanner
             scenes[1] = scenes[1] with { Motion = scenes[0].Motion == "static" ? "contain_gentle" : "static" };
         var rendererVersion = templateVersion >= 2 ? "standard-v2" : "standard-v1";
         var fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { product.Id, config, template, templateVersion, rendererVersion, scenes }));
-        return Result.Success(new Storyboard(template, templateVersion, config.DurationSeconds, product.ProductType, scenes, fingerprint,
-            output.Format, output.Width, output.Height, output.AspectRatio));
+        var standard = new Storyboard(template, templateVersion, config.DurationSeconds, product.ProductType, scenes, fingerprint,
+            output.Format, output.Width, output.Height, output.AspectRatio);
+        return config.Mode == "ai_shot" ? PlanAiShot(standard, eligible, config) : Result.Success(standard);
+    }
+
+    private Result<Storyboard> PlanAiShot(Storyboard standard, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config)
+    {
+        var options = config.AiShotOptions;
+        if (options == null) return Result.Failure<Storyboard>(Error.Validation("Choose AI Shot settings."));
+        var source = options.MockupId.HasValue ? eligible.FirstOrDefault(x => x.Id == options.MockupId.Value) : null;
+        if (options.MockupId.HasValue && source == null)
+            return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
+        source ??= options.Concept switch
+        {
+            "material_detail" => eligible.FirstOrDefault(x => HasDetail(x)),
+            "lifestyle_motion" or "product_in_use" => eligible.FirstOrDefault(x => x.Role == "Lifestyle"),
+            _ => eligible.FirstOrDefault(x => x.Role == "Hero") ?? eligible[0]
+        };
+        if (source == null || !eligible.Any(x => x.Id == source.Id))
+            return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
+        if (options.Concept == "material_detail" && !HasDetail(source))
+            return Result.Failure<Storyboard>(Error.Validation("Material Detail needs an approved detail image or marked detail region."));
+        if (options.Concept is "lifestyle_motion" or "product_in_use" && (source.Role != "Lifestyle" || !options.RightsConfirmed))
+            return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need an approved Lifestyle image and image-rights confirmation."));
+        var model = "veo-3.1-lite-generate-preview";
+        var aspect = config.OutputFormat == "landscape" ? "16:9" : "9:16";
+        var prompt = BuildPrompt(options.Concept, options.Prompt);
+        AiShotPlan Shot(int index, MockupImage asset, int seconds)
+        {
+            var direction = options.Coverage == "full_video" && config.DurationSeconds == 15
+                ? index == 0 ? " Opening shot with a slow reveal." : " Closing shot from a complementary camera direction." : "";
+            var shotPrompt = prompt + direction;
+            var hash = WorkflowJson.Hash(WorkflowJson.Write(new { asset.Id, asset.ContentHash, asset.MetadataRevision, asset.Role, model, options.Concept, shotPrompt, seconds, aspect, index }));
+            return new(index, asset.Id, asset.ContentHash!, model, options.Concept, shotPrompt, seconds, hash);
+        }
+        if (options.Coverage == "single_scene")
+        {
+            if (options.SceneIndex >= standard.Scenes.Count)
+                return Result.Failure<Storyboard>(Error.Validation("Choose an existing storyboard scene for the AI Shot."));
+            var stillCount = standard.Scenes.Count - 1;
+            if (stillCount < 1) return Result.Failure<Storyboard>(Error.Validation("A mixed video needs at least one Standard scene."));
+            var remaining = standard.DurationSeconds * 30 - 180;
+            var stillPosition = 0;
+            var scenes = standard.Scenes.Select((scene, index) => index == options.SceneIndex
+                ? CreateScene(source, standard.ProductType, config, index, 180) with { GenerationStrategy = "ai_shot", Motion = "static" }
+                : scene with { DurationFrames = remaining / stillCount + (stillPosition++ < remaining % stillCount ? 1 : 0) }).ToArray();
+            var shots = new[] { Shot(options.SceneIndex, source, 6) };
+            return Result.Success(standard with { Scenes = scenes, Mode = "ai_shot", AiShots = shots,
+                Fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { standard.Fingerprint, scenes, shots })) });
+        }
+        if (options.Coverage != "full_video" || config.DurationSeconds is not (8 or 15))
+            return Result.Failure<Storyboard>(Error.Validation("Full AI videos must be 8 or 15 seconds."));
+        var count = config.DurationSeconds == 8 ? 1 : 2;
+        var allSources = new List<MockupImage>();
+        for (var index = 0; index < count; index++)
+        {
+            var requested = options.FullSceneMockupIds is { Count: > 0 } ids && index < ids.Count
+                ? eligible.FirstOrDefault(x => x.Id == ids[index]) : null;
+            if (options.FullSceneMockupIds is { Count: > 0 } supplied && index < supplied.Count && requested == null)
+                return Result.Failure<Storyboard>(Error.Validation("An AI scene uses an unavailable mockup."));
+            var chosen = requested ?? (index == 0 && count == 2 && options.Concept == "product_cinematic"
+                ? eligible.FirstOrDefault(x => x.Role == "Hero") ?? source : source);
+            if (options.Concept is "lifestyle_motion" or "product_in_use" && chosen.Role != "Lifestyle")
+                return Result.Failure<Storyboard>(Error.Validation("Every lifestyle AI scene needs a Lifestyle image with a visible adult."));
+            if (options.Concept == "material_detail" && !HasDetail(chosen))
+                return Result.Failure<Storyboard>(Error.Validation("Every material-detail AI scene needs a detail image or region."));
+            allSources.Add(chosen);
+        }
+        var fullScenes = allSources.Select((asset, index) => CreateScene(asset, standard.ProductType, config, index, 240) with
+        { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 && count == 2 ? "fade" : "cut" }).ToArray();
+        var fullShots = allSources.Select((asset, index) => Shot(index, asset, 8)).ToArray();
+        return Result.Success(standard with { Scenes = fullScenes, Mode = "ai_shot", AiShots = fullShots,
+            TransitionOverlapFrames = count == 2 ? 30 : 0,
+            Fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { standard.Fingerprint, fullScenes, fullShots })) });
+    }
+
+    private static string BuildPrompt(string concept, string? instruction)
+    {
+        var motion = concept switch
+        {
+            "material_detail" => "A smooth macro camera glide across the visible product material and printed artwork.",
+            "lifestyle_motion" => "The adult person already visible in the image moves naturally and subtly while wearing the same product.",
+            "product_in_use" => "The adult person already visible in the image naturally uses the same product, with gentle camera motion.",
+            _ => "A cinematic, smooth, subtle camera dolly and gentle angle reveal of the product."
+        };
+        return $"{motion} Start from the supplied image. Keep the exact visible product, colors, print, text and composition unchanged. " +
+            "Do not invent hidden product details, new logos or extra people. No dialogue. " +
+            (string.IsNullOrWhiteSpace(instruction) ? "" : instruction.Trim());
     }
 
     public ScenePlan CreateScene(MockupImage asset, string productType, GenerateVideoConfig config, int index, int frames)

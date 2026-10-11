@@ -9,8 +9,11 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Authorize(Roles = AuthConstants.UserRole)]
 [Route("api/workflow-runs")]
-public sealed class WorkflowRunsController(IWorkflowRunService runs, IVideoArtifactService media) : ControllerBase
+public sealed class WorkflowRunsController(IWorkflowRunService runs, IVideoArtifactService media, IAiShotQuoteService quotes) : ControllerBase
 {
+    [HttpPost("{id:guid}/ai-shot-quote")]
+    public async Task<IActionResult> Quote(Guid id, AiShotQuoteRequest request, CancellationToken ct) =>
+        (await quotes.QuoteAsync(id, request, ct)).ToActionResult(this);
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) => (await runs.GetAsync(id, ct)).ToActionResult(this);
     [HttpPost("{id:guid}/actions")]

@@ -324,4 +324,114 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.Scenes.Select(x => x.Motion).Should().Equal("pan_down", "pan_left", "zoom_out");
         result.Value.Scenes.Select(x => x.MockupId).Should().Equal(assets.Select(x => x.Id));
     }
+
+    [TestMethod]
+    public void Plan_SingleAiShot_ReplacesOnlyChosenSceneAndPreservesTotalFrames()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var angle = fixture.AddAsset(product, "AlternativeAngle");
+        var lifestyle = fixture.AddAsset(product, "Lifestyle");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 13,
+            SceneOrder: [hero.Id, angle.Id, lifestyle.Id], TextOverlay: "Keep standard text",
+            AiShotOptions: new(SceneIndex: 1, MockupId: angle.Id));
+
+        var result = _planner.Plan(product, [hero, angle, lifestyle], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var board = result.Value;
+        board.Mode.Should().Be("ai_shot");
+        board.Scenes.Select(x => x.GenerationStrategy).Should().Equal("standard", "ai_shot", "standard");
+        board.Scenes.Select(x => x.DurationFrames).Should().Equal(105, 180, 105);
+        board.Scenes[1].MockupId.Should().Be(angle.Id);
+        board.Scenes[1].Text.Should().Be("Keep standard text");
+        board.Scenes[0].Text.Should().Be("Keep standard text");
+        board.AiShots.Should().ContainSingle().Which.Should().Match<AiShotPlan>(x =>
+            x.SceneOrder == 1 && x.MockupId == angle.Id && x.DurationSeconds == 6 && x.Model == "veo-3.1-lite-generate-preview");
+    }
+
+    [TestMethod]
+    [DataRow(8, 1, 0)]
+    [DataRow(15, 2, 30)]
+    public void Plan_FullAiVideo_UsesEightSecondClipsAndExpectedOverlap(int duration, int clipCount, int overlap)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var angle = fixture.AddAsset(product, "AlternativeAngle");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: duration,
+            AiShotOptions: new(Coverage: "full_video", FullSceneMockupIds: [hero.Id, angle.Id]));
+
+        var result = _planner.Plan(product, [hero, angle], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("ai_shot");
+        result.Value.Scenes.Should().HaveCount(clipCount).And.OnlyContain(x =>
+            x.GenerationStrategy == "ai_shot" && x.DurationFrames == 240 && x.Motion == "static");
+        result.Value.AiShots.Should().HaveCount(clipCount).And.OnlyContain(x => x.DurationSeconds == 8);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap).Should().Be(duration * 30);
+        if (clipCount == 2) result.Value.Scenes.Select(x => x.MockupId).Should().Equal(hero.Id, angle.Id);
+    }
+
+    [TestMethod]
+    public void Plan_AiShotSourceRevisionOrPromptChange_ChangesClipAndStoryboardFingerprints()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(MockupId: asset.Id));
+        var original = _planner.Plan(product, [asset], config).Value;
+        var prompted = _planner.Plan(product, [asset], config with { AiShotOptions = config.AiShotOptions! with { Prompt = "Slow tracking" } }).Value;
+        asset.ContentHash = new string('b', 64);
+        asset.MetadataRevision++;
+        asset.ApprovedRevision++;
+        var changedSource = _planner.Plan(product, [asset], config).Value;
+
+        prompted.Fingerprint.Should().NotBe(original.Fingerprint);
+        prompted.AiShots![0].Fingerprint.Should().NotBe(original.AiShots![0].Fingerprint);
+        changedSource.Fingerprint.Should().NotBe(original.Fingerprint);
+        changedSource.AiShots![0].Fingerprint.Should().NotBe(original.AiShots![0].Fingerprint);
+    }
+
+    [TestMethod]
+    public void Plan_MaterialDetailWithoutDetailSource_RejectsAiShot()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var result = _planner.Plan(product, [hero], new(Mode: "ai_shot",
+            AiShotOptions: new(Concept: "material_detail", MockupId: hero.Id)));
+        result.Error.Message.Should().Contain("Material Detail");
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public void Plan_LifestyleConceptWithoutRightsOrLifestyleSource_Rejects(bool lifestyleSource, bool rights)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, lifestyleSource ? "Lifestyle" : "Hero");
+        var result = _planner.Plan(product, [source], new(Mode: "ai_shot",
+            AiShotOptions: new(Concept: "lifestyle_motion", MockupId: source.Id, RightsConfirmed: rights)));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Lifestyle");
+    }
+
+    [TestMethod]
+    public void Plan_FullLifestyleShotWithNonLifestyleSecondSource_RejectsWholeStoryboard()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var lifestyle = fixture.AddAsset(product, "Lifestyle");
+        var hero = fixture.AddAsset(product);
+        var result = _planner.Plan(product, [lifestyle, hero], new(Mode: "ai_shot", DurationSeconds: 15,
+            AiShotOptions: new(Coverage: "full_video", Concept: "product_in_use", MockupId: lifestyle.Id,
+                RightsConfirmed: true, FullSceneMockupIds: [lifestyle.Id, hero.Id])));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Every lifestyle AI scene");
+    }
 }

@@ -19,15 +19,22 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    [DataRow("ai_background")]
-    [DataRow("ai_shot")]
-    public void Validate_DisabledAiMode_ReturnsUnsupportedVideoMode(string mode)
+    public void Validate_LegacyAiBackground_ReturnsUnsupportedVideoMode()
     {
-        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct(), new(Mode: mode));
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct(), new(Mode: "ai_background"));
         _validator.Validate(definition)!.Code.Should().Be("UnsupportedVideoMode");
     }
 
     [TestMethod]
+    public void Validate_AiShotWithOptions_AllowsWorkflow()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct(),
+            new(Mode: "ai_shot", AiShotOptions: new()));
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    [DataRow("generate-listing")]
     [DataRow("publish-etsy")]
     [DataRow("publish-printify")]
     public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode(string type)
@@ -115,13 +122,14 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    public void Capabilities_StandardMvp_DeclaresFutureModesDisabled()
+    public void Capabilities_StandardAndAiShot_ExcludesAiBackground()
     {
         var capabilities = new WorkflowCapabilityRegistry().Get();
         capabilities.DefinitionVersion.Should().Be(2);
         capabilities.VideoModes.Single(x => x.Mode == "standard").Enabled.Should().BeTrue();
-        capabilities.VideoModes.Where(x => x.Mode != "standard").Should().HaveCount(2)
-            .And.OnlyContain(x => !x.Enabled && x.Availability == "coming_soon" && x.SupportsFallback);
-        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps).Append("generate-listing"));
+        capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
+            x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
+        capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps));
     }
 }
