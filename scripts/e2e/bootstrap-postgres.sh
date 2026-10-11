@@ -18,6 +18,7 @@ TEST_REDIS_PORT="${TEST_REDIS_PORT:-56379}"
 
 say()  { printf '\033[1;34m[e2e]\033[0m %s\n' "$*"; }
 ok()   { printf '   \033[32m%s\033[0m\n' "$*"; }
+die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
 
 compose() {
@@ -35,7 +36,24 @@ compose() {
 PYTHON=""
 resolve_python() {
   PYTHON="$(command -v python3 || command -v python || true)"
-  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+  [ -n "${PYTHON}" ] || die "cần Python 3.
+     Trên Windows: winget install Python.Python.3.12   (tick 'Add to PATH' khi cài)
+     Git Bash có thể không nhìn thấy Python đã cài — kiểm tra bằng: python --version"
+}
+
+# Chẩn đoán khi Docker hoặc Python thiếu. Trên Windows cả hai thường cài xong mà
+# chưa mở lại terminal, nên PATH của Git Bash vẫn cũ.
+diagnose() {
+  printf '\n   Chẩn đoán:\n'
+  printf '     docker   : %s\n' "$(command -v docker >/dev/null 2>&1 && echo 'có' || echo 'KHÔNG có trong PATH')"
+  printf '     python   : %s\n' "$(command -v python3 >/dev/null 2>&1 && echo 'python3' || (command -v python >/dev/null 2>&1 && echo 'python' || echo 'KHÔNG có trong PATH'))"
+  printf '     hệ điều hành: %s\n' "$(uname -s 2>/dev/null || echo '?')"
+  printf '\n'
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    printf '   Docker Desktop có đang chạy không? Mở app và đợi tới khi Engine xanh.\n'
+    printf '   Nếu vừa cài, hãy mở lại Git Bash — PATH chỉ cập nhật ở terminal mới.\n'
+  fi
+  printf '\n'
 }
 
 
@@ -47,8 +65,8 @@ require_docker() {
     printf '   Cài Docker:\n'
     printf '     Windows / macOS : https://docs.docker.com/desktop/\n'
     printf '     Linux           : https://docs.docker.com/engine/install/\n'
-    printf '\n   Trên Windows, sau khi cài còn phải bật WSL integration cho distro của bạn:\n'
-    printf '     Docker Desktop > Settings > Resources > WSL Integration > tick distro > Apply & Restart\n'
+    printf '\n   Chạy trong Git Bash trên Windows, không cần WSL.\n'
+    printf '   Sau khi cài, mở lại Git Bash để PATH được cập nhật.\n'
     printf '\n   Sau đó chạy lại: %s\n' "$0"
     exit 1
   fi
@@ -63,8 +81,8 @@ require_docker() {
   fi
 }
 
-resolve_python
-require_docker
+resolve_python || { diagnose; exit 1; }
+require_docker || { diagnose; exit 1; }
 ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') sẵn sàng"
 
 # Docker không báo lỗi khi không bind được port đã bị chiếm — container vẫn

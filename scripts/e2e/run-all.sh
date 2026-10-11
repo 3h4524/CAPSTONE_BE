@@ -21,9 +21,13 @@ bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
 bring_up() {
   resolve_python
   say "1/4 PostgreSQL 18 + Redis"
-  "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >/dev/null 2>&1 \
-    && ok "postgres + redis (docker)" \
-    || { bad "bootstrap-postgres thất bại — chạy nó thủ công để xem lỗi"; return 1; }
+  # Giữ log thật: nuốt output khiến lỗi không hiện ra thì không ai sửa được.
+  if ! "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >"${RUN_DIR}/bootstrap.log" 2>&1; then
+    bad "bootstrap-postgres thất bại:"
+    sed 's/^/     /' "${RUN_DIR}/bootstrap.log"
+    return 1
+  fi
+  ok "postgres + redis (docker)"
 
   say "2/4 Backend API + SMTP sink"
   # start-backend.sh từ chối chạy khi API của lần trước còn sống, nên phải dừng trước.
@@ -61,6 +65,7 @@ bring_up() {
       || { bad "frontend không lên — xem ${RUN_DIR}/fe.log (chạy 'pnpm build' trước)"; return 1; }
   fi
 }
+die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.

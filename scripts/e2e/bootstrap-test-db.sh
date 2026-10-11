@@ -34,6 +34,7 @@ compose() {
       docker-compose -f "${COMPOSE_FILE}" "$@"
   fi
 }
+die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 
 sql() {
   compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
