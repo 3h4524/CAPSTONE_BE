@@ -43,8 +43,12 @@ public sealed class ApplyMockupTemplatesValidator : AbstractValidator<ApplyMocku
         RuleFor(request => request.TemplateBackgrounds!)
             .Must((request, byTemplate) => byTemplate.Keys.All(id => request.TemplateIds is not null && request.TemplateIds.Contains(id)))
             .WithMessage("A background can only be set for the selected templates.")
-            .Must(byTemplate => byTemplate.Values.All(color => color is not null && System.Text.RegularExpressions.Regex.IsMatch(color, MockupRules.GarmentColorPattern)))
+            .Must(byTemplate => byTemplate.Values.All(byColor => byColor is { Count: > 0 and <= MockupRules.MaximumGarmentColors + 1 }
+                && byColor.All(entry => entry.Value is not null && System.Text.RegularExpressions.Regex.IsMatch(entry.Value, MockupRules.GarmentColorPattern))))
             .WithMessage("Background color must look like #EDE6DA.")
+            .Must(byTemplate => byTemplate.Values.All(byColor => byColor is null || byColor.Keys.All(key =>
+                key == MockupRules.DefaultBackgroundKey || System.Text.RegularExpressions.Regex.IsMatch(key, MockupRules.GarmentColorPattern))))
+            .WithMessage("A background goes with a garment color like #1F2A44, or with \"default\".")
             .When(request => request.TemplateBackgrounds is not null);
     }
 }

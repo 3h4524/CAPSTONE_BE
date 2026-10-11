@@ -65,8 +65,20 @@ public static class MockupRules
     public static string CutMaskKey(string helperKeyPrefix) => $"{helperKeyPrefix}-cut";
     public static string CutMaskKey(MockupTemplate template) => CutMaskKey(HelperKeyPrefix(template.Id, template.PrintMapsVersion ?? 0));
 
-    /// <summary>Per template, the '#RRGGBB' background its mock-ups of a job are put on; a template without one keeps its photo's background.</summary>
+    /// <summary>
+    /// Per template and garment color, the '#RRGGBB' background the mock-ups of a job are put on; a mock-up
+    /// without one keeps its photo's background.
+    /// </summary>
     public const string TemplateBackgroundsConfigKey = "mockupTemplateBackgrounds";
+
+    /// <summary>The key of the background for every garment color that has none of its own, the photo's own color included.</summary>
+    public const string DefaultBackgroundKey = "default";
+
+    /// <summary>The background chosen for a template's mock-up in <paramref name="garmentColor"/>, or <see langword="null"/> to keep the photo's.</summary>
+    public static string? ResolveBackground(IReadOnlyDictionary<string, string>? byColor, string? garmentColor) =>
+        byColor is null ? null
+        : garmentColor is not null && byColor.TryGetValue(garmentColor.ToUpperInvariant(), out var own) ? own
+        : byColor.GetValueOrDefault(DefaultBackgroundKey);
 
     public const string GarmentColorPattern = "^#[0-9A-Fa-f]{6}$";
     public const string GarmentColorsConfigKey = "mockupGarmentColors";

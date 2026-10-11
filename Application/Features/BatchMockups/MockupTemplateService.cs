@@ -103,8 +103,7 @@ public sealed class MockupTemplateService(
 
         var colors = (request.GarmentColors ?? []).Select(color => color.ToUpperInvariant()).ToList();
         var colorsByTemplate = NormalizeTemplateColors(request.TemplateColors);
-        var backgrounds = (request.TemplateBackgrounds ?? new Dictionary<Guid, string>())
-            .ToDictionary(entry => entry.Key, entry => entry.Value.ToUpperInvariant());
+        var backgrounds = NormalizeTemplateBackgrounds(request.TemplateBackgrounds);
         // The cut mask is made now, so the mock-ups made later are plain URLs like every other one.
         foreach (var template in candidates.Where(template => backgrounds.ContainsKey(template.Id)))
         {
@@ -585,7 +584,8 @@ public sealed class MockupTemplateService(
 
                 foreach (var color in colors)
                 {
-                    var layers = MockupRules.Layers(template, designImage, color, backgrounds.GetValueOrDefault(template.Id));
+                    var layers = MockupRules.Layers(template, designImage, color,
+                        MockupRules.ResolveBackground(backgrounds.GetValueOrDefault(template.Id), color));
                     string compositeUrl;
                     try
                     {
@@ -949,9 +949,10 @@ public sealed class MockupTemplateService(
         return result;
     }
 
-    private static IReadOnlyDictionary<Guid, string> ReadTemplateBackgrounds(string config)
+    private static IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>> ReadTemplateBackgrounds(string config)
     {
-        var result = new Dictionary<Guid, string>();
+        var result = new Dictionary<Guid, IReadOnlyDictionary<string, string>>();
+        static bool IsColor(string? value) => value is not null && System.Text.RegularExpressions.Regex.IsMatch(value, MockupRules.GarmentColorPattern);
         try
         {
             if (JsonNode.Parse(config)?[MockupRules.TemplateBackgroundsConfigKey] is not JsonObject byTemplate)
@@ -959,10 +960,27 @@ public sealed class MockupTemplateService(
 
             foreach (var (key, value) in byTemplate)
             {
-                var color = value?.ToString();
-                if (Guid.TryParse(key, out var templateId) && color is not null
-                    && System.Text.RegularExpressions.Regex.IsMatch(color, MockupRules.GarmentColorPattern))
-                    result[templateId] = color.ToUpperInvariant();
+                if (!Guid.TryParse(key, out var templateId))
+                    continue;
+
+                var byColor = new Dictionary<string, string>();
+                if (value is JsonObject colors)
+                {
+                    foreach (var (garment, background) in colors)
+                    {
+                        var hex = background?.ToString();
+                        if ((garment == MockupRules.DefaultBackgroundKey || IsColor(garment)) && IsColor(hex))
+                            byColor[garment == MockupRules.DefaultBackgroundKey ? garment : garment.ToUpperInvariant()] = hex!.ToUpperInvariant();
+                    }
+                }
+                else if (IsColor(value?.ToString()))
+                {
+                    // Saved before backgrounds went per garment color: one color for the whole template.
+                    byColor[MockupRules.DefaultBackgroundKey] = value!.ToString().ToUpperInvariant();
+                }
+
+                if (byColor.Count > 0)
+                    result[templateId] = byColor;
             }
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
@@ -972,6 +990,13 @@ public sealed class MockupTemplateService(
 
         return result;
     }
+
+    private static IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>> NormalizeTemplateBackgrounds(IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>>? requested) =>
+        (requested ?? new Dictionary<Guid, IReadOnlyDictionary<string, string>>())
+            .Where(entry => entry.Value is { Count: > 0 })
+            .ToDictionary(entry => entry.Key, entry => (IReadOnlyDictionary<string, string>)entry.Value.ToDictionary(
+                color => color.Key == MockupRules.DefaultBackgroundKey ? color.Key : color.Key.ToUpperInvariant(),
+                color => color.Value.ToUpperInvariant()));
 
     // Uppercased, and without templates that were given no color (they use the shared list).
     private static IReadOnlyDictionary<Guid, IReadOnlyList<string>> NormalizeTemplateColors(IReadOnlyDictionary<Guid, IReadOnlyList<string>>? requested) =>
@@ -984,7 +1009,7 @@ public sealed class MockupTemplateService(
         IReadOnlyList<Guid> templateIds,
         IReadOnlyList<string> garmentColors,
         IReadOnlyDictionary<Guid, IReadOnlyList<string>> colorsByTemplate,
-        IReadOnlyDictionary<Guid, string> backgrounds)
+        IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>> backgrounds)
     {
         JsonObject root;
         try
@@ -1024,8 +1049,13 @@ public sealed class MockupTemplateService(
         else
         {
             var byTemplate = new JsonObject();
-            foreach (var (templateId, color) in backgrounds)
-                byTemplate[templateId.ToString()] = color;
+            foreach (var (templateId, byColor) in backgrounds)
+            {
+                var colors = new JsonObject();
+                foreach (var (garment, background) in byColor)
+                    colors[garment] = background;
+                byTemplate[templateId.ToString()] = colors;
+            }
             root[MockupRules.TemplateBackgroundsConfigKey] = byTemplate;
         }
 
