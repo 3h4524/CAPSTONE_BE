@@ -17,7 +17,13 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/scripts/e2e/docker-compose.yml"
 BOOTSTRAP_SQL="${REPO_ROOT}/scripts/sql/000-bootstrap-schema.sql"
+# Khi CI cấp sẵn connection string thì lấy tên database từ đó, nếu không sẽ tạo
+# nhầm một database khác với cái test dùng.
 TEST_DB="${TEST_DB:-apcs_test}"
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ]; then
+  from_conn="$(printf '%s' "${APCS_TEST_CONNECTION_STRING}" | sed -n 's/.*[;]Database=\([^;]*\).*/\1/p')"
+  [ -n "${from_conn}" ] && TEST_DB="${from_conn}"
+fi
 TEST_DB_USER="${TEST_DB_USER:-apcs}"
 TEST_DB_PASSWORD="${TEST_DB_PASSWORD:-apcs}"
 TEST_PG_PORT="${TEST_PG_PORT:-55432}"
