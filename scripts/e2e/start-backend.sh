@@ -33,7 +33,7 @@ JWT_SIGNING_KEY="${E2E_JWT_SIGNING_KEY:-apcs.e2e.signing.key.0123456789abcdef}"
 
 BOOTSTRAP_SQL="${REPO_ROOT}/scripts/sql/000-bootstrap-schema.sql"
 API_PROJECT="${REPO_ROOT}/API/API.csproj"
-export DOTNET_ROOT="${DOTNET_ROOT:-/home/nhat/.dotnet}"
+DOTNET=""
 
 API_PID=""
 SMTP_PID=""
@@ -56,6 +56,27 @@ cleanup_failed_start() {
 # Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
 PYTHON=""
+# Không ghim đường dẫn của máy nào cả: .NET được cài ở chỗ khác nhau trên mỗi OS.
+resolve_dotnet() {
+  local candidate
+  if command -v dotnet >/dev/null 2>&1; then
+    DOTNET="$(command -v dotnet)"
+    return 0
+  fi
+  for candidate in \
+    "/c/Program Files/dotnet/dotnet.exe" \
+    "/usr/share/dotnet/dotnet" \
+    "${HOME}/.dotnet/dotnet"; do
+    if [ -x "${candidate}" ]; then
+      DOTNET="${candidate}"
+      return 0
+    fi
+  done
+  die "không tìm thấy dotnet.
+     Cài .NET 8 SDK: https://dotnet.microsoft.com/download
+     Nếu đã cài nhưng vẫn báo lỗi, hãy mở lại terminal."
+}
+
 resolve_python() {
   # `command -v` là chưa đủ: Windows có sẵn shim trỏ tới Microsoft Store, tên
   # lệnh là "python" nhưng chạy ra thông báo "Python was not found". Phải thực
@@ -279,12 +300,12 @@ start_api() {
   fi
 
   log "building API (restore happens here, once, so the running API never touches the network)"
-  "${DOTNET_ROOT}/dotnet" build "${API_PROJECT}" -v quiet -p:NuGetAudit=false \
+  "${DOTNET}" build "${API_PROJECT}" -v quiet -p:NuGetAudit=false \
     >"${RUN_DIR}/build.log" 2>&1 \
     || { tail -30 "${RUN_DIR}/build.log" >&2; die "dotnet build failed; see ${RUN_DIR}/build.log"; }
 
   log "starting API on http://localhost:${API_PORT} (environment ${API_ENVIRONMENT})"
-  nohup "${DOTNET_ROOT}/dotnet" run --project "${API_PROJECT}" --no-build --no-launch-profile \
+  nohup "${DOTNET}" run --project "${API_PROJECT}" --no-build --no-launch-profile \
     >"${RUN_DIR}/api.log" 2>&1 &
   API_PID=$!
   echo "${API_PID}" >"${RUN_DIR}/api.pid"
@@ -314,6 +335,7 @@ start_api() {
 
 main() {
   resolve_python
+  resolve_dotnet
   trap cleanup_failed_start EXIT
 
   require curl
@@ -321,7 +343,7 @@ main() {
   require_docker
 
   [ -f "${API_PROJECT}" ] || die "API project not found: ${API_PROJECT}"
-  [ -x "${DOTNET_ROOT}/dotnet" ] || die "dotnet not found under DOTNET_ROOT=${DOTNET_ROOT}"
+  [ -n "${DOTNET}" ] || die "dotnet chưa được dò thấy"
 
   ensure_postgres
   ensure_redis
