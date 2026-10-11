@@ -117,76 +117,66 @@ resolve_python || { diagnose; exit 1; }
 require_docker || { diagnose; exit 1; }
 ok "Docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') sẵn sàng"
 
-# Docker không báo lỗi khi không bind được port đã bị chiếm — container vẫn
-# "healthy" nhưng `docker port` rỗng và mọi kết nối từ host đều rơi vào dịch vụ
-# khác đang giữ port đó. Vì vậy phải kiểm tra trước khi khởi động.
-port_free() {
+# Chặn port trước khi khởi động là sai: một container đang `docker compose down`
+# vẫn giữ port thêm vài trăm ms, và socket TIME_WAIT của lần chạy trước làm
+# check sai. Cách đúng là khởi động trước rồi mới kiểm tra bằng kết nối thật.
+# Lưu ý: chỉ container cần dừng mới đây là container của chính lần chạy này,
+# không đụng tới dịch vụ nào khác — script không bao giờ tự kill process lạ.
+
+# connect_ex chỉ trả 0 khi thật sự có ai listen. Socket TIME_WAIT của lần chạy
+# trước không làm sai kết quả này, nên đây là cách kiểm tra đáng tin hơn việc
+# đọc netstat.
+host_accepts_connections() {
   local port="$1"
-  ${PYTHON} - "$port" <<'PY'
+  ${PYTHON} - "${port}" <<'PYEOF_SOCKET'
 import socket, sys
-port = int(sys.argv[1])
 probe = socket.socket()
-probe.settimeout(1)
-sys.exit(1 if probe.connect_ex(("127.0.0.1", port)) == 0 else 0)
-PY
+probe.settimeout(2)
+sys.exit(0 if probe.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+PYEOF_SOCKET
 }
-
-for pair in "${TEST_PG_PORT}:PostgreSQL:apcs-e2e-postgres" "${TEST_REDIS_PORT}:Redis:apcs-e2e-redis"; do
-  port="${pair%%:*}"
-  rest="${pair#*:}"
-  label="${rest%%:*}"
-  container="${rest##*:}"
-
-  # Port đang bị container của chính lần chạy này giữ thì không phải xung đột.
-  if [ "$(docker ps --filter "name=^/${container}$" --filter status=running -q | wc -l | tr -d ' ')" != "0" ]; then
-    continue
-  fi
-
-  if ! port_free "${port}"; then
-    bad "port ${port} (${label}) đã bị dịch vụ khác chiếm."
-    printf '\n'
-    printf '   Docker sẽ không publish được port này và mọi kết nối sẽ rơi nhầm vào\n'
-    printf '   dịch vụ đang chiếm. Chọn port khác, ví dụ:\n'
-    printf '\n     TEST_PG_PORT=55432 TEST_REDIS_PORT=56379 %s\n' "$0"
-    printf '\n   Hoặc dừng dịch vụ đang dùng port %s.\n' "${port}"
-    printf '   Xem ai đang giữ: ss -ltnp (Linux/macOS) hoặc netstat -ano (Windows)\n'
-    exit 1
-  fi
-done
 
 say "khởi động PostgreSQL 18 + Redis"
 compose up -d --remove-orphans >/dev/null 2>&1 \
   || { bad "docker compose up thất bại"; exit 1; }
 
-say "chờ PostgreSQL nhận kết nối"
+# Đợi Postgres nhận kết nối.
 for _ in $(seq 1 60); do
   if compose exec -T postgres pg_isready -U "${TEST_DB_USER:-apcs}" -d postgres >/dev/null 2>&1; then
-    ok "postgres 127.0.0.1:${TEST_PG_PORT}"
     break
   fi
   sleep 1
 done
 
-say "chờ Redis nhận kết nối"
+# Đợi Redis trả lời.
 for _ in $(seq 1 30); do
   if compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; then
-    ok "redis 127.0.0.1:${TEST_REDIS_PORT}"
     break
   fi
   sleep 1
+done
+
+# Container healthy chưa chắc host đã publish được port. Nếu port đã bị dịch vụ
+# khác giữ, Docker không báo lỗi mà bỏ qua, và mọi kết nối rơi nhầm vào đó —
+# nên phải thử nối thật từ host sau khi container đã healthy.
+for pair in "${TEST_PG_PORT}:PostgreSQL" "${TEST_REDIS_PORT}:Redis"; do
+  port="${pair%%:*}"
+  label="${pair##*:}"
+  if host_accepts_connections "${port}"; then
+    ok "${label} nhận kết nối trên 127.0.0.1:${port}"
+  else
+    bad "port ${port} (${label}) đang bị dịch vụ khác chiếm — container đã lên"
+    bad "nhưng mọi kết nối sẽ rơi vào dịch vụ đó, không phải vào container."
+    printf '\n'
+    printf '   Chọn port khác:\n'
+    printf '     TEST_PG_PORT=%s TEST_REDIS_PORT=%s %s\n' "$((TEST_PG_PORT + 8))" "$((TEST_REDIS_PORT + 8))" "$0"
+    printf '\n   Hoặc dừng dịch vụ đang dùng port %s rồi chạy lại.\n' "${port}"
+    printf '   Windows : netstat -ano | findstr LISTENING | findstr :%s\n' "${port}"
+    printf '   Linux   : ss -ltnp | grep :%s\n' "${port}"
+    exit 1
+  fi
 done
 
 compose ps --format 'table {{.Name}}\t{{.Status}}' 2>/dev/null | sed 's/^/   /' || true
-
-# Container healthy chưa chắc host đã publish được port — xác nhận bằng cách thử
-# kết nối thật từ ngoài container.
-if ! port_free "${TEST_PG_PORT}"; then
-  ok "postgres container nhận kết nối trên 127.0.0.1:${TEST_PG_PORT}"
-else
-  bad "postgres container healthy nhưng port ${TEST_PG_PORT} không nhận kết nối từ host."
-  bad "Docker Desktop có thể chưa publish được port. Kiểm tra: docker port apcs-e2e-postgres"
-  exit 1
-fi
-
 printf '\n'
 ok "hạ tầng sẵn sàng"
