@@ -5,6 +5,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.Workflows.Validators;
+using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
@@ -41,6 +42,7 @@ internal sealed class WorkflowTestData
     public Mock<IWorkflowStateRepository> State { get; } = new();
     public Mock<IUnitOfWork> Unit { get; } = new();
     public Mock<IUnitOfWorkTransaction> Transaction { get; } = new();
+    public Mock<IAiShotQuoteService> Quotes { get; } = new();
     public Mock<IMediaStorage> Storage { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
@@ -72,13 +74,15 @@ internal sealed class WorkflowTestData
         State.Setup(x => x.LockMockupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Guid id, CancellationToken _) => AssetRows.SingleOrDefault(x => x.Id == id));
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
+        Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
+            It.IsAny<bool>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
             Jobs.Object, Exports.Object, Items.Object, new(), Time);
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
-            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Time);
+            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time);
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);

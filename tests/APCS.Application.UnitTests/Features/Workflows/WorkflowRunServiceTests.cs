@@ -43,13 +43,11 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
-    [DataRow("ai_background")]
-    [DataRow("ai_shot")]
-    public async Task ActionAsync_DisabledAiRerender_DoesNotBypassModeCapability(string mode)
+    public async Task ActionAsync_LegacyAiBackgroundRerender_DoesNotBypassModeCapability()
     {
         var fixture = new WorkflowTestData();
         var run = PrepareReview(fixture);
-        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(Mode: mode)), default);
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(Mode: "ai_background")), default);
         result.Error.Code.Should().Be("UnsupportedVideoMode");
         fixture.VideoRows.Should().HaveCount(1);
         fixture.JobRows.Should().BeEmpty();
@@ -121,16 +119,29 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
-    [DataRow("ai_background")]
-    [DataRow("ai_shot")]
-    public async Task StartAsync_ManualDisabledAiRequest_RejectsBeforeCreatingRun(string mode)
+    public async Task StartAsync_LegacyAiBackgroundRequest_RejectsBeforeCreatingRun()
     {
         var fixture = new WorkflowTestData();
-        var workflow = fixture.AddWorkflow(fixture.AddProduct(), new(Mode: mode));
+        var workflow = fixture.AddWorkflow(fixture.AddProduct(), new(Mode: "ai_background"));
         var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "ai-request"), default);
         result.Error.Code.Should().Be("UnsupportedVideoMode");
         fixture.RunRows.Should().BeEmpty();
         fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AiShotWorkflow_PausesAtApprovalWithoutChargingOrQueuingJob()
+    {
+        var fixture = new WorkflowTestData();
+        var workflow = fixture.AddWorkflow(fixture.AddProduct(), new(Mode: "ai_shot", AiShotOptions: new()));
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "ai-request"), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be("waiting_for_input");
+        fixture.JobRows.Should().BeEmpty();
+        fixture.Quotes.Verify(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(),
+            It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

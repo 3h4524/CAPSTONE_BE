@@ -7,7 +7,8 @@
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "browser": "remotion browser ensure",
-    "smoke": "tsx test/render-smoke.ts"
+    "smoke": "tsx test/render-smoke.ts",
+    "smoke:ai": "tsx test/render-ai-smoke.ts"
   },
   "dependencies": {
     "@apcs/video-composition": "file:../shared/video-composition",

@@ -117,7 +117,10 @@ ON CONFLICT(id) DO NOTHING;
 
 ALTER TABLE public.promo_videos DROP CONSTRAINT IF EXISTS chk_promo_videos_duration;
 ALTER TABLE public.promo_videos ADD CONSTRAINT chk_promo_videos_duration CHECK (video_duration_seconds BETWEEN 3 AND 30);
-ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS mode varchar(30) NOT NULL DEFAULT 'standard' CHECK (mode = 'standard');
+ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS mode varchar(30) NOT NULL DEFAULT 'standard';
+ALTER TABLE public.promo_videos DROP CONSTRAINT IF EXISTS promo_videos_mode_check;
+ALTER TABLE public.promo_videos DROP CONSTRAINT IF EXISTS chk_promo_videos_mode;
+ALTER TABLE public.promo_videos ADD CONSTRAINT chk_promo_videos_mode CHECK (mode IN ('standard', 'ai_shot'));
 ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS series_id uuid;
 ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS version_number integer NOT NULL DEFAULT 1;
 ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS workflow_run_id uuid REFERENCES public.workflow_runs(id);
