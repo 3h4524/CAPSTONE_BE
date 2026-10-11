@@ -17,9 +17,14 @@ FE_PORT="${FE_PORT:-4010}"
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '   \033[32m%s\033[0m\n' "$*"; }
 bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
+log()  { printf '   → %s\n' "$*"; }
 
 bring_up() {
   resolve_python
+  # Clone mới chưa có .run/, mà các bước sau ghi log vào đó. Tạo trước để lần
+  # chạy đầu tiên không chết ngay ở bước 1.
+  mkdir -p "${RUN_DIR}"
+
   say "1/4 PostgreSQL 18 + Redis"
   # Giữ log thật: nuốt output khiến lỗi không hiện ra thì không ai sửa được.
   if ! "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >"${RUN_DIR}/bootstrap.log" 2>&1; then
@@ -53,16 +58,41 @@ bring_up() {
   say "4/4 Frontend (production build)"
   if curl -sf -o /dev/null --max-time 3 "http://localhost:${FE_PORT}"; then
     ok "đã có server trên ${FE_PORT} — dùng lại, khỏi build"
+    return 0
+  fi
+
+  if [ ! -d "${FE_ROOT}/node_modules" ]; then
+    bad "CAPSTONE_FE chưa cài dependency:"
+    printf '     cd %s && pnpm install\n' "${FE_ROOT}"
+    return 1
+  fi
+
+  # next start cần .next có sẵn, và PORT phải khớp với E2E_BASE_URL — Next mặc
+  # định là 3000, còn Playwright trỏ 4010.
+  log "building frontend (lần đầu mất vài phút)"
+  if ! (cd "${FE_ROOT}" && "${PNPM}" build) >"${RUN_DIR}/fe-build.log" 2>&1; then
+    bad "pnpm build thất bại:"
+    tail -n 15 "${RUN_DIR}/fe-build.log" | sed 's/^/     /'
+    return 1
+  fi
+
+  log "starting frontend trên port ${FE_PORT}"
+  (cd "${FE_ROOT}" \
+    && PORT="${FE_PORT}" \
+       NEXT_PUBLIC_API_BASE_URL="${E2E_API_BASE_URL:-http://localhost:5191}" \
+       NEXT_PUBLIC_GOOGLE_CLIENT_ID="" \
+       nohup "${PNPM}" start >"${RUN_DIR}/fe.log" 2>&1 &)
+
+  for _ in $(seq 1 60); do
+    curl -sf -o /dev/null --max-time 2 "http://localhost:${FE_PORT}" && break
+    sleep 1
+  done
+
+  if curl -sf -o /dev/null --max-time 3 "http://localhost:${FE_PORT}"; then
+    ok "frontend sẵn sàng ở http://localhost:${FE_PORT}"
   else
-    (cd "${FE_ROOT}" && NEXT_PUBLIC_API_BASE_URL=http://localhost:5191 NEXT_PUBLIC_GOOGLE_CLIENT_ID= \
-      nohup "${PNPM}" start >"${RUN_DIR}/fe.log" 2>&1 &)
-    for _ in $(seq 1 40); do
-      curl -sf -o /dev/null --max-time 2 "http://localhost:${FE_PORT}" && break
-      sleep 1
-    done
-    curl -sf -o /dev/null --max-time 3 "http://localhost:${FE_PORT}" \
-      && ok "frontend sẵn sàng ở http://localhost:${FE_PORT}" \
-      || { bad "frontend không lên — xem ${RUN_DIR}/fe.log (chạy 'pnpm build' trước)"; return 1; }
+    bad "frontend không lên — xem ${RUN_DIR}/fe.log"
+    return 1
   fi
 }
 die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }

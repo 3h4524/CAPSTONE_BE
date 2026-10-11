@@ -35,8 +35,30 @@ collect_process_tree() {
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
 PYTHON=""
 resolve_python() {
-  PYTHON="$(command -v python3 || command -v python || true)"
-  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+  # `command -v` là chưa đủ: Windows có sẵn shim trỏ tới Microsoft Store, tên
+  # lệnh là "python" nhưng chạy ra thông báo "Python was not found". Phải thực
+  # sự chạy thật rồi mới tin.
+  local candidate
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+  for candidate in \
+    "/c/Python312/python.exe" "/c/Python313/python.exe" "/c/Python311/python.exe" \
+    "/c/Program Files/Python312/python.exe" "/c/Program Files/Python313/python.exe"; do
+    if [ -x "${candidate}" ] && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+  die "không tìm thấy Python 3.
+     Windows: winget install Python.Python.3.12
+     macOS  : brew install python
+     Ubuntu : sudo apt install python3
+
+     Nếu đã cài nhưng vẫn báo lỗi, hãy mở lại terminal — PATH chỉ cập nhật ở terminal mới."
 }
 
 
