@@ -11,7 +11,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FE_ROOT="$(cd "${REPO_ROOT}/../CAPSTONE_FE" && pwd)"
 RUN_DIR="${REPO_ROOT}/scripts/e2e/.run"
-PNPM="/home/nhat/.nvm/versions/node/v22.20.0/bin/pnpm"
+PNPM=""
+DOTNET=""
 FE_PORT="${FE_PORT:-4010}"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -21,6 +22,7 @@ log()  { printf '   → %s\n' "$*"; }
 
 bring_up() {
   resolve_python
+  resolve_toolchain
   # Clone mới chưa có .run/, mà các bước sau ghi log vào đó. Tạo trước để lần
   # chạy đầu tiên không chết ngay ở bước 1.
   mkdir -p "${RUN_DIR}"
@@ -100,10 +102,56 @@ die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 # Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
 PYTHON=""
+
 resolve_python() {
-  PYTHON="$(command -v python3 || command -v python || true)"
-  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+  # `command -v` là chưa đủ: Windows có sẵn shim trỏ tới Microsoft Store, tên
+  # lệnh là "python" nhưng chạy ra thông báo "Python was not found". Phải thực
+  # sự chạy thật rồi mới tin.
+  local candidate
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+  for candidate in \
+    "/c/Python312/python.exe" "/c/Python313/python.exe" "/c/Python311/python.exe" \
+    "/c/Program Files/Python312/python.exe" "/c/Program Files/Python313/python.exe"; do
+    if [ -x "${candidate}" ] && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+  die "không tìm thấy Python 3.
+     Windows: winget install Python.Python.3.12
+     macOS  : brew install python
+     Ubuntu : sudo apt install python3
+
+     Nếu đã cài nhưng vẫn báo lỗi, hãy mở lại terminal — PATH chỉ cập nhật ở terminal mới."
 }
+
+# Không ghim đường dẫn của máy nào cả: mỗi người cài toolchain ở chỗ khác nhau.
+resolve_toolchain() {
+  local candidate
+  for candidate in pnpm; do
+    if command -v "${candidate}" >/dev/null 2>&1; then PNPM="$(command -v "${candidate}")"; return 0; fi
+  done
+  for candidate in "${HOME}/.local/share/pnpm/pnpm" "/c/Users/${USERNAME:-}/AppData/Local/pnpm/pnpm.exe"; do
+    [ -x "${candidate}" ] && { PNPM="${candidate}"; return 0; }
+  done
+  if command -v corepack >/dev/null 2>&1; then PNPM="corepack pnpm"; return 0; fi
+  die "không tìm thấy pnpm. Cài: npm i -g pnpm   (hoặc: corepack enable pnpm)"
+
+  for candidate in dotnet; do
+    if command -v "${candidate}" >/dev/null 2>&1; then DOTNET="$(command -v "${candidate}")"; return 0; fi
+  done
+  for candidate in \
+    "/c/Program Files/dotnet/dotnet.exe" "/usr/share/dotnet/dotnet" "${HOME}/.dotnet/dotnet"; do
+    [ -x "${candidate}" ] && { DOTNET="${candidate}"; return 0; }
+  done
+  die "không tìm thấy dotnet. Cài .NET 8 SDK: https://dotnet.microsoft.com/download"
+}
+
 
 
 
@@ -118,17 +166,20 @@ print('export E2E_SELLER_PASSWORD=%s' % d['password'])
 }
 
 run_unit() {
+  resolve_toolchain
   say "FE unit test"
   (cd "${FE_ROOT}" && "${PNPM}" test 2>&1 | tail -4)
 }
 
 run_be_unit() {
+  resolve_toolchain
   say "BE unit test (707 test + coverage gate)"
-  (cd "${REPO_ROOT}" && export DOTNET_ROOT="${HOME}/.dotnet" \
-    && dotnet test Capstone.sln -c Debug 2>&1 | grep -E "Passed!|Failed!" | sed 's/^/   /')
+  (cd "${REPO_ROOT}" && DOTNET_ROOT="${HOME}/.dotnet" \
+    && "${DOTNET}" test Capstone.sln -c Debug 2>&1 | grep -E "Passed!|Failed!" | sed 's/^/   /')
 }
 
 run_be_integration() {
+  resolve_toolchain
   say "BE integration test (database riêng, tự wipe mỗi class)"
   if ! curl -sf -o /dev/null --max-time 3 http://localhost:5191/health; then
     bad "backend chưa chạy — dùng 'run-all.sh' không có tham số để dựng"; return 1
@@ -137,12 +188,13 @@ run_be_integration() {
   # đếm/so sánh sai.
   eval "$("${REPO_ROOT}/scripts/e2e/bootstrap-test-db.sh" 2>/dev/null | grep '^export ')" \
     || { bad "bootstrap-test-db thất bại"; return 1; }
-  (cd "${REPO_ROOT}" && export DOTNET_ROOT="${HOME}/.dotnet" \
-    && dotnet test Capstone.sln -c Debug 2>&1 \
+  (cd "${REPO_ROOT}" && DOTNET_ROOT="${HOME}/.dotnet" \
+    && "${DOTNET}" test Capstone.sln -c Debug 2>&1 \
       | grep -E "Passed!|Failed!|error" | sed 's/^/   /')
 }
 
 run_e2e() {
+  resolve_toolchain
   say "FE E2E (54 test)"
   load_credentials || { bad "chưa có seller.json — chạy 'seed-seller.sh' trước"; return 1; }
   (cd "${FE_ROOT}" && "${PNPM}" test:e2e 2>&1 | tail -6)
