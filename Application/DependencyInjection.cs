@@ -13,6 +13,7 @@ using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignTemplates;
+using APCS.Application.Features.ListingContent;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -60,6 +61,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();
         services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
+        services.AddScoped<IListingContentService, ListingContentService>();
 
         return services;
     }

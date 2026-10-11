@@ -14,9 +14,9 @@ public sealed class ApiKeyCredentials(IDataProtectionProvider protection, IHttpC
     {
         var url = provider switch
         {
+            "gemini" => "https://generativelanguage.googleapis.com/v1beta/models",
             "openai" => "https://api.openai.com/v1/models",
             "replicate" => "https://api.replicate.com/v1/account",
-            "gemini" => "https://generativelanguage.googleapis.com/v1beta/models",
             "printify" => "https://api.printify.com/v1/shops.json",
             _ => null
         };

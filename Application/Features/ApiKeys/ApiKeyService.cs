@@ -67,7 +67,7 @@ public sealed class ApiKeyService(
             return Result.Failure<IReadOnlyList<ApiKeyProviderResponseDto>>(error);
         return Result.Success<IReadOnlyList<ApiKeyProviderResponseDto>>(new ApiKeyProviderResponseDto[]
         {
-            new("openai", "OpenAI", true, ["Read models (connection check)", "Model inference for listing content", "No billing, admin or fine-tuning permissions needed"]),
+            new("gemini", "Google Gemini", true, ["Read models (connection check)", "Model inference for listing content"]),
             new("replicate", "Replicate", true, ["Read account (connection check)", "Run predictions for image generation"]),
             new("gemini", "Google Gemini", true, ["List models (connection check)", "Generate design images (Nano Banana)"]),
             new("printify", "Printify", true, ["Read shops (connection check)", "Manage and publish products", "No order or payment access needed"]),
@@ -197,9 +197,11 @@ public sealed class ApiKeyService(
     {
         var provider = key.Provider.Trim().ToLowerInvariant() switch
         {
-            "openai" => ("OpenAI", "Listing content"),
+            "gemini" => ("Google Gemini", "Listing content"),
+            // Keep existing OpenAI credentials readable for existing accounts. New listing
+            // generation code uses Gemini exclusively.
+            "openai" => ("OpenAI (legacy)", "Listing content"),
             "replicate" => ("Replicate", "Image generation"),
-            "gemini" => ("Google Gemini", "Image generation"),
             "printify" => ("Printify", "Product publishing"),
             "etsy" => ("Etsy", "Listing publishing"),
             _ => (key.Provider, "Other service")
