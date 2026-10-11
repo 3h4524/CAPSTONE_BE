@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
@@ -22,6 +23,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.Infrastructure;
 
@@ -87,10 +89,20 @@ public static class DependencyInjection
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
+        services.AddOptions<GeminiEmbeddingOptions>()
+            .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
+        services.AddOptions<GeminiTextGenerationOptions>()
+            .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.PostConfigure<GeminiTextGenerationOptions>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(options.ApiKey))
+                options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
+        });
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseNpgsql(connectionString, npgsql => npgsql.UseVector()));
 
         services.AddRepositories();
         services.AddApplicationServices(configuration);
@@ -157,6 +169,25 @@ public static class DependencyInjection
         services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
+        services.AddHttpClient<GeminiEmbeddingProvider>((provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<GeminiEmbeddingOptions>>().Value;
+            client.BaseAddress = new Uri(options.Endpoint);
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
+        services.AddHttpClient<GeminiTextGenerationProvider>((provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
+            client.BaseAddress = new Uri(options.Endpoint);
+            client.Timeout = TimeSpan.FromSeconds(90);
+        });
+        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
+        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
+        services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
+        services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();
+        services.AddScoped<IPolicyContextRetriever, PolicyContextRetriever>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()

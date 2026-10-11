@@ -3,6 +3,7 @@ using APCS.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.Infrastructure.UnitTests.Persistence;
 
@@ -10,7 +11,7 @@ namespace APCS.Infrastructure.UnitTests.Persistence;
 public sealed class DatabaseFirstModelTests
 {
     [TestMethod]
-    public void Model_ReverseEngineeredPublicSchema_ContainsExactFiftySixMappedTablesIncludingWorkflowRuntime()
+    public void Model_ReverseEngineeredPublicSchema_ContainsMappedTablesIncludingWorkflowRuntimeAndRag()
     {
         using var context = CreateContext();
 
@@ -20,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(56);
+        mappedTables.Should().HaveCount(59);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
@@ -33,7 +34,8 @@ public sealed class DatabaseFirstModelTests
             "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
             "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
-            "video_templates", "workflows", "workflow_node_runs", "workflow_runs"
+            "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
+            "rag_documents", "rag_chunks", "rag_embeddings"
         });
     }
 
@@ -154,7 +156,9 @@ public sealed class DatabaseFirstModelTests
     private static AppDbContext CreateContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql("Host=localhost;Database=model_metadata;Username=postgres;Password=not-used")
+            .UseNpgsql(
+                "Host=localhost;Database=model_metadata;Username=postgres;Password=not-used",
+                npgsql => npgsql.UseVector())
             .Options;
 
         return new AppDbContext(options);

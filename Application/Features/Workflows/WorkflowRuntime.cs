@@ -1,5 +1,6 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.ListingContent;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -8,7 +9,7 @@ namespace APCS.Application.Features.Workflows;
 public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IRepository<Product> products,
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
-    IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, TimeProvider time)
+    IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -25,6 +26,43 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     {
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
+        var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
+        if (listing is not null && listing.Status == "pending")
+        {
+            var input = checkpoints.Single(x => x.NodeType == "product-input");
+            if (input.Status != "succeeded")
+            {
+                input.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId });
+                input.Status = "succeeded";
+                input.Progress = 100;
+            }
+            listing.Status = "running";
+            listing.Stage = "Generating listing content";
+            listing.Progress = 10;
+            var result = await listingContent.GenerateAsync(run.ProductId, ct);
+            if (result.IsFailure)
+            {
+                listing.Status = "failed";
+                listing.ErrorMessage = result.Error.Message;
+                run.Status = "failed";
+                run.ErrorMessage = result.Error.Message;
+                return;
+            }
+            listing.OutputSnapshot = WorkflowJson.Write(result.Value);
+            listing.Status = "succeeded";
+            listing.Stage = "Generated";
+            listing.Progress = 100;
+        }
+        if (!definition.Nodes.Any(x => x.Type == "generate-video"))
+        {
+            if (listing is null) return;
+            if (listing.Status == "succeeded")
+            {
+                run.Status = "completed";
+                run.CompletedAt = time.GetUtcNow().UtcDateTime;
+            }
+            return;
+        }
         foreach (var type in WorkflowCapabilityRegistry.Pipeline)
         {
             var node = checkpoints.Single(x => x.NodeType == type);
