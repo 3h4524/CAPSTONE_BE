@@ -35,10 +35,38 @@ compose() {
 # không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
 PYTHON=""
 resolve_python() {
-  PYTHON="$(command -v python3 || command -v python || true)"
-  [ -n "${PYTHON}" ] || die "cần Python 3.
-     Trên Windows: winget install Python.Python.3.12   (tick 'Add to PATH' khi cài)
-     Git Bash có thể không nhìn thấy Python đã cài — kiểm tra bằng: python --version"
+  # `command -v` là chưa đủ: Windows có sẵn một shim trỏ tới Microsoft Store, tên
+  # lệnh là "python" nhưng chạy ra thông báo "Python was not found". Phải thực
+  # sự chạy thật rồi mới tin.
+  local candidate
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+
+  # Git Bash đôi khi không thấy Python đã cài dù PATH đã có; thử lần nữa qua
+  # đường dẫn cài mặc định của Windows.
+  for candidate in \
+    "/c/Python312/python.exe" \
+    "/c/Python313/python.exe" \
+    "/c/Python311/python.exe" \
+    "/c/Program Files/Python312/python.exe" \
+    "/c/Program Files/Python313/python.exe"; do
+    if [ -x "${candidate}" ] && "${candidate}" --version >/dev/null 2>&1; then
+      PYTHON="${candidate}"
+      return 0
+    fi
+  done
+
+  die "không tìm thấy Python 3.
+     Windows: winget install Python.Python.3.12
+     macOS  : brew install python
+     Ubuntu : sudo apt install python3
+
+     Nếu đã cài nhưng vẫn báo lỗi, hãy mở lại terminal — PATH chỉ cập nhật ở
+     terminal mới."
 }
 
 # Chẩn đoán khi Docker hoặc Python thiếu. Trên Windows cả hai thường cài xong mà
@@ -46,7 +74,11 @@ resolve_python() {
 diagnose() {
   printf '\n   Chẩn đoán:\n'
   printf '     docker   : %s\n' "$(command -v docker >/dev/null 2>&1 && echo 'có' || echo 'KHÔNG có trong PATH')"
-  printf '     python   : %s\n' "$(command -v python3 >/dev/null 2>&1 && echo 'python3' || (command -v python >/dev/null 2>&1 && echo 'python' || echo 'KHÔNG có trong PATH'))"
+  if [ -n "${PYTHON}" ]; then
+    printf '     python   : %s (%s)\n' "${PYTHON}" "$("${PYTHON}" --version 2>&1)"
+  else
+    printf '     python   : KHÔNG chạy được\n'
+  fi
   printf '     hệ điều hành: %s\n' "$(uname -s 2>/dev/null || echo '?')"
   printf '\n'
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then

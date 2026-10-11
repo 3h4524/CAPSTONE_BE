@@ -20,6 +20,15 @@ Docker là khác biệt duy nhất giữa các OS. Script chạy trên **Git Bas
 
 Trên Windows hãy mở **Git Bash** rồi chạy script, đừng chạy trong PowerShell.
 
+## Lần đầu: cài dependency
+
+```bash
+cd ~/fpt/CAPSTONE_FE
+pnpm install
+```
+
+Backend không cần cài gì thêm — script tự `dotnet build`.
+
 ## Các lệnh
 
 ```bash
