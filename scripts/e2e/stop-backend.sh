@@ -31,6 +31,16 @@ collect_process_tree() {
   done < <(pgrep -P "${pid}" 2>/dev/null || true)
 }
 
+# Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
+# không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
+PYTHON=""
+resolve_python() {
+  PYTHON="$(command -v python3 || command -v python || true)"
+  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+}
+
+
+
 stop_pid_file() {
   local pid_file="$1" label="$2"
 
@@ -77,7 +87,7 @@ stop_pid_file() {
 port_open() {
   # An explicit connect timeout is required: on this host a closed loopback port drops the SYN
   # instead of refusing it, so a bare /dev/tcp connect blocks for minutes.
-  python3 - "${1:-}" <<'PY'
+  ${PYTHON} - "${1:-}" <<'PY'
 import socket
 import sys
 
@@ -115,6 +125,7 @@ stop_services() {
 }
 
 main() {
+  resolve_python
   [ -d "${RUN_DIR}" ] || { log "no run directory at ${RUN_DIR}, nothing to stop"; exit 0; }
 
   stop_pid_file "${RUN_DIR}/api.pid" "API"

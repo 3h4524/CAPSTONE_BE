@@ -19,6 +19,7 @@ ok()   { printf '   \033[32m%s\033[0m\n' "$*"; }
 bad()  { printf '   \033[31m%s\033[0m\n' "$*"; }
 
 bring_up() {
+  resolve_python
   say "1/4 PostgreSQL 18 + Redis"
   "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >/dev/null 2>&1 \
     && ok "postgres + redis (docker)" \
@@ -61,9 +62,19 @@ bring_up() {
   fi
 }
 
+# Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
+# không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
+PYTHON=""
+resolve_python() {
+  PYTHON="$(command -v python3 || command -v python || true)"
+  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+}
+
+
+
 load_credentials() {
   [ -f "${RUN_DIR}/seller.json" ] || return 1
-  eval "$(python3 -c "
+  eval "$(${PYTHON} -c "
 import json
 d = json.load(open('${RUN_DIR}/seller.json'))
 print('export E2E_SELLER_EMAIL=%s' % d['email'])

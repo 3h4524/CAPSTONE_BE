@@ -57,6 +57,16 @@ psql_run() {
       psql -v ON_ERROR_STOP=1 -qtAX -U "${E2E_DB_USER}" -d "${E2E_DB}" -c "$1"
 }
 
+# Windows chỉ có lệnh "python"; các bản phân phối khác dùng "python3". Git Bash
+# không tự ánh xạ giữa hai tên này, nên phải tự dò trước.
+PYTHON=""
+resolve_python() {
+  PYTHON="$(command -v python3 || command -v python || true)"
+  [ -n "${PYTHON}" ] || die "cần Python 3 (cài từ python.org hoặc: winget install Python.Python.3.12)"
+}
+
+
+
 sink_line_count() {
   [ -f "${SMTP_FILE}" ] || { echo 0; return; }
   grep -c . "${SMTP_FILE}" || true
@@ -74,7 +84,7 @@ request() {
 }
 
 read_json_field() {
-  python3 -c 'import json,sys
+  ${PYTHON} -c 'import json,sys
 try:
     print(json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2], "") or "")
 except Exception:
@@ -83,14 +93,14 @@ except Exception:
 
 read_set_cookie() {
   # Cookie values are extracted but never printed; only the name reaches the log.
-  python3 -c 'import re,sys
+  ${PYTHON} -c 'import re,sys
 headers = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 match = re.search(r"(?im)^set-cookie:\s*" + re.escape(sys.argv[2]) + r"=([^;]*)", headers)
 print(match.group(1) if match else "")' "${TMP_HEADERS}" "$1"
 }
 
 cookie_is_httponly() {
-  python3 -c 'import re,sys
+  ${PYTHON} -c 'import re,sys
 headers = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 match = re.search(r"(?im)^set-cookie:\s*" + re.escape(sys.argv[2]) + r"=([^;]*)(.*)$", headers)
 flags = match.group(2).lower() if match else ""
@@ -103,7 +113,7 @@ wait_for_verification_token() {
   local since="$1" target="$2" attempt
   for attempt in $(seq 1 "${LOGIN_WAIT_SECONDS}"); do
     local token
-    token="$(python3 -c 'import json,re,sys,urllib.parse
+    token="$(${PYTHON} -c 'import json,re,sys,urllib.parse
 path, since, target = sys.argv[1], int(sys.argv[2]), sys.argv[3].lower()
 try:
     lines = open(path, encoding="utf-8").read().splitlines()
@@ -139,7 +149,7 @@ seed_via_api() {
   log "mode=api: registering ${EMAIL}"
 
   status="$(request POST /api/auth/register \
-    "$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2],"fullName":sys.argv[3]}))' \
+    "$(${PYTHON} -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2],"fullName":sys.argv[3]}))' \
       "${EMAIL}" "${PASSWORD}" "${FULL_NAME}")")"
 
   if [ "${status}" = "409" ]; then
@@ -155,7 +165,7 @@ seed_via_api() {
 
   log "mode=api: redeeming the verification token"
   status="$(request POST /api/auth/verify-email \
-    "$(python3 -c 'import json,sys; print(json.dumps({"token":sys.argv[1]}))' "${token}")")"
+    "$(${PYTHON} -c 'import json,sys; print(json.dumps({"token":sys.argv[1]}))' "${token}")")"
 
   case "${status}" in
     204) log "mode=api: email verified" ;;
@@ -167,7 +177,7 @@ seed_via_api() {
 seed_via_sql() {
   local hash
 
-  hash="$(python3 "${SCRIPT_DIR}/identity_hash.py" "${PASSWORD}")" \
+  hash="$(${PYTHON} "${SCRIPT_DIR}/identity_hash.py" "${PASSWORD}")" \
     || die "could not produce an Identity password hash"
 
   log "mode=sql: writing roles, users and user_roles"
@@ -199,7 +209,7 @@ login_and_capture_cookies() {
 
   log "signing in to capture the session cookies"
   status="$(request POST /api/auth/login \
-    "$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' \
+    "$(${PYTHON} -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' \
       "${EMAIL}" "${PASSWORD}")")"
 
   if [ "${status}" != "200" ]; then
@@ -226,13 +236,14 @@ login_and_capture_cookies() {
 }
 
 main() {
+  resolve_python
   case "${SEED_MODE}" in
     api|sql) ;;
     *) die "unknown E2E_SEED_MODE '${SEED_MODE}'; expected 'api' or 'sql'" ;;
   esac
 
   command -v curl >/dev/null 2>&1 || die "curl is required"
-  command -v python3 >/dev/null 2>&1 || die "python3 is required"
+  resolve_python
   [ "${SEED_MODE}" != "sql" ] || command -v docker >/dev/null 2>&1 || die "docker is required for E2E_SEED_MODE=sql"
 
   curl -sS -o /dev/null --max-time 5 "${BASE_URL}/health" \
@@ -247,7 +258,7 @@ main() {
 
   # The password reaches stdout because the JSON document is the artefact E2E consumes; it is a
   # test-only credential for a loopback database and is never a real secret.
-  python3 -c 'import json,os,sys
+  ${PYTHON} -c 'import json,os,sys
 document = {
     "email": sys.argv[1],
     "password": sys.argv[2],
