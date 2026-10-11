@@ -80,16 +80,32 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
-    [DataRow("ai_background")]
-    [DataRow("ai_shot")]
-    public async Task PreviewAsync_DisabledMode_RejectsBeforeReadingAssets(string mode)
+    public async Task PreviewAsync_LegacyAiBackground_RejectsBeforeReadingAssets()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
-        var result = await Service(fixture).PreviewAsync(product.Id, new(new(Mode: mode), [], null), default);
+        var result = await Service(fixture).PreviewAsync(product.Id, new(new(Mode: "ai_background"), [], null), default);
         result.Error.Code.Should().Be("UnsupportedVideoMode");
         fixture.Assets.Verify(x => x.FindAsync(It.IsAny<Expression<Func<MockupImage, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
         fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_AiShotWithApprovedMockup_ReturnsMixedStoryboardWithoutQueuingJob()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(MockupId: source.Id));
+
+        var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], null), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("ai_shot");
+        result.Value.AiShots.Should().ContainSingle().Which.MockupId.Should().Be(source.Id);
+        result.Value.Scenes.Count(x => x.GenerationStrategy == "ai_shot").Should().Be(1);
+        fixture.JobRows.Should().BeEmpty();
+        fixture.VideoRows.Should().BeEmpty();
     }
 
     [TestMethod]

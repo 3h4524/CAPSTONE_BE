@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,10 +19,20 @@ async function api(path: string, payload: unknown, signal: AbortSignal) {
   if (!response.ok) throw new Error(`Internal API rejected request (${response.status})`);
   return response.status === 204 ? null : response.json();
 }
+async function aiShotBytes(job: WorkerJob, order: number, signal: AbortSignal) {
+  const response = await fetch(new URL(`/internal/media-jobs/${job.id}/ai-shots/${order}/download`, baseUrl), {
+    method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key },
+    body: JSON.stringify({ leaseToken: job.leaseToken }), signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+  });
+  if (!response.ok) throw new Error(`AI Shot download failed (${response.status})`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 100 * 1024 * 1024) throw new Error("Invalid AI Shot clip size");
+  return bytes;
+}
 async function execute(job: WorkerJob) {
   const directory = await mkdtemp(join(tmpdir(), "apcs-media-"));
   const abort = new AbortController();
-  const signal = AbortSignal.any([abort.signal, shutdown.signal, AbortSignal.timeout(10 * 60_000)]);
+  const signal = AbortSignal.any([abort.signal, shutdown.signal, AbortSignal.timeout(30 * 60_000)]);
   let stage = "Planning", progress = 5;
   let heartbeatRunning = false;
   const heartbeat = setInterval(() => {
@@ -36,13 +46,33 @@ async function execute(job: WorkerJob) {
     if (job.kind === "render") {
       const payload = renderPayloadSchema.parse(job.payload);
       const sources: RenderProps["sources"] = {};
+      const clips: NonNullable<RenderProps["clips"]> = {};
       for (const scene of payload.storyboard.scenes) {
         const asset = assets.get(`mockups/${scene.mockupId}.png`);
         if (!asset) throw new Error("Missing source mockup");
         sources[scene.mockupId] = pngSource(asset.data, scene.sourceHash);
       }
+      for (const shot of payload.storyboard.aiShots ?? []) {
+        const stored = assets.get(`ai-shots/${shot.sceneOrder}.mp4`);
+        if (stored) { clips[shot.sceneOrder] = stored.file; continue; }
+        stage = "Generating Assets"; progress = Math.max(progress, 15);
+        const request = { leaseToken: job.leaseToken };
+        let state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string };
+        for (let check = 0; check < 240 && state.status === "polling"; check++) {
+          await delay(5_000, undefined, { signal });
+          state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/poll`, request, signal) as { status: string };
+        }
+        if (state.status !== "ready") throw new Error(`AI Shot scene ${shot.sceneOrder + 1} did not finish`);
+        const file = join(directory, `ai-shot-${shot.sceneOrder}.mp4`);
+        await writeFile(file, await aiShotBytes(job, shot.sceneOrder, signal));
+        const grant = job.uploads[`ai-shot-${shot.sceneOrder}`];
+        if (!grant) throw new Error("Missing AI Shot upload grant");
+        const result = await uploadFile(grant, file, signal);
+        await api(`${job.id}/ai-shots/${shot.sceneOrder}/stored`, { ...request, ...result }, signal);
+        clips[shot.sceneOrder] = file;
+      }
       stage = "Rendering";
-      const result = await renderer.render({ storyboard: payload.storyboard, sources }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
+      const result = await renderer.render({ storyboard: payload.storyboard, sources, clips }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
       stage = "Uploading"; progress = 90;
       if (!job.uploads.video || !job.uploads.thumbnail) throw new Error("Missing upload grants");
       const video = await uploadFile(job.uploads.video, result.video, signal);
@@ -64,9 +94,13 @@ async function execute(job: WorkerJob) {
       await api(`${job.id}/complete`, { leaseToken: job.leaseToken, ...output }, signal);
     }
     process.stdout.write(`Media job ${job.id} completed.\n`);
-  } catch {
-    await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message: "Media processing failed." }, shutdown.signal).catch(() => {});
-    process.stderr.write(`Media job ${job.id} did not complete.\n`);
+  } catch (error) {
+    const message = stage === "Generating Assets" && job.kind === "render"
+      ? error instanceof Error && error.message.includes("(409)") ? "VeoSubmissionUncertain"
+        : error instanceof Error && error.message.includes("(400)") ? "AiShotRejected" : "AiShotFailed"
+      : "MediaProcessingFailed";
+    await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message }, shutdown.signal).catch(() => {});
+    process.stderr.write(`Media job ${job.id} did not complete: ${error instanceof Error ? error.message : "unknown error"}.\n`);
   } finally {
     clearInterval(heartbeat); abort.abort();
     if (resolve(directory).startsWith(resolve(tmpdir()) + (process.platform === "win32" ? "\\" : "/")) && directory.includes("apcs-media-")) await rm(directory, { recursive: true, force: true });
