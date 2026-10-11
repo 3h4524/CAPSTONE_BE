@@ -34,7 +34,6 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    [DataRow("generate-listing")]
     [DataRow("publish-etsy")]
     [DataRow("publish-printify")]
     public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode(string type)
@@ -130,6 +129,6 @@ public sealed class WorkflowGraphValidatorTests
         capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
             x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
         capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
-        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps));
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps).Concat(WorkflowCapabilityRegistry.ListingSteps));
     }
 }
