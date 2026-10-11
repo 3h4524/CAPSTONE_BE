@@ -338,7 +338,7 @@ main() {
   export App__VerifyEmailPath="/verify-email"
   export App__ResetPasswordPath="/reset-password"
 
-  export Cors__AllowedOrigins="${E2E_CORS_ORIGINS:-http://localhost:4010,http://localhost:4020}"
+  export Cors__AllowedOrigins="${E2E_CORS_ORIGINS:-http://localhost:4010;http://localhost:4020}"
 
   # Points at the loopback sink. Username and Password are required by SmtpOptions.IsConfigured,
   # so without them the service would take the "log only" branch and the token would be lost.
@@ -403,7 +403,7 @@ export E2E_DB="${E2E_DB}"
 export E2E_DB_USER="${E2E_DB_USER}"
 export E2E_DB_PASSWORD="${E2E_DB_PASSWORD}"
 export E2E_APP_BASE_URL="${E2E_APP_BASE_URL:-http://localhost:4010}"
-export E2E_CORS_ORIGINS="${E2E_CORS_ORIGINS:-http://localhost:4010,http://localhost:4020}"
+export E2E_CORS_ORIGINS="${E2E_CORS_ORIGINS:-http://localhost:4010;http://localhost:4020}"
 EOF
 
   trap - EXIT
