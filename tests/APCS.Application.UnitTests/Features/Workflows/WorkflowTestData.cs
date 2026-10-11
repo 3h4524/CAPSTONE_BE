@@ -4,6 +4,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -43,6 +44,7 @@ internal sealed class WorkflowTestData
     public Mock<IUnitOfWork> Unit { get; } = new();
     public Mock<IUnitOfWorkTransaction> Transaction { get; } = new();
     public Mock<IAiShotQuoteService> Quotes { get; } = new();
+    public Mock<IListingContentService> ListingContent { get; } = new();
     public Mock<IMediaStorage> Storage { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
@@ -79,7 +81,7 @@ internal sealed class WorkflowTestData
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
-            Jobs.Object, Exports.Object, Items.Object, new(), Time);
+            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time);
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time);
