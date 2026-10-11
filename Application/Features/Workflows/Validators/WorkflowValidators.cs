@@ -7,7 +7,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
 {
     public GenerateVideoConfigValidator()
     {
-        RuleFor(x => x.Mode).Must(x => new[] { "standard", "ai_background", "ai_shot" }.Contains(x));
+        RuleFor(x => x.Mode).Must(x => x is "standard" or "ai_shot");
         RuleFor(x => x.Target).Equal("etsy");
         RuleFor(x => x.Template).Must(x => new[] { "auto", "product_showcase", "design_detail", "variant_showcase" }.Contains(x));
         RuleFor(x => x.TemplateVersion).Must(x => x is null or 1 or 2);
@@ -17,8 +17,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.SelectedMockupIds).Must(x => x is null || x.Count <= 8 && x.Distinct().Count() == x.Count);
         RuleFor(x => x.SceneOrder).Must(x => x is null || x.Count <= 4 && x.Distinct().Count() == x.Count);
         RuleFor(x => x.TextOverlay).NotNull().MaximumLength(120);
-        RuleFor(x => x.AiBackgroundOptions).Null().When(x => x.Mode != "ai_background");
-        RuleFor(x => x.AiShotOptions).Null().When(x => x.Mode != "ai_shot");
+        RuleFor(x => x.AiShotOptions).NotNull().When(x => x.Mode == "ai_shot");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
             new[] { "varied", "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
@@ -27,7 +26,18 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.SceneMotionPresets).Must(x => x is null || x.Count <= 4 && x.All(m => m is null ||
             new[] { "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
                 "diagonal_up_right", "diagonal_up_left", "diagonal_down_right", "diagonal_down_left" }.Contains(m)));
-        RuleFor(x => x.AiShotOptions).Must(x => x is null || x.SceneIndex >= 0 && x.SceneIndex <= 3 && x.MaximumAttempts is >= 1 and <= 2);
+        RuleFor(x => x.AiShotOptions).Must(x => x is null ||
+            x.Coverage is "single_scene" or "full_video" &&
+            x.Concept is "product_cinematic" or "material_detail" or "lifestyle_motion" or "product_in_use" &&
+            x.SceneIndex is >= 0 and <= 3 &&
+            x.Prompt is null or { Length: <= 500 } &&
+            (x.FullSceneMockupIds is null || x.FullSceneMockupIds.Count <= 2 && x.FullSceneMockupIds.All(id => id != Guid.Empty)));
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
+            .WithMessage("Full AI videos must be 8 or 15 seconds.");
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
+            .WithMessage("Confirm rights to use the adult Lifestyle image for AI video generation.");
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
+            .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }
 }
 

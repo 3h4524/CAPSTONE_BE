@@ -38,6 +38,17 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                 { await FailAsync(job.Id, new(token, "Source mockup approval or revision changed. Review mockups again."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"mockups/{asset.Id}.png"));
             }
+            if (payload.Storyboard.Mode == "ai_shot")
+            {
+                var ai = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+                foreach (var shot in ai.Storyboard.AiShots ?? [])
+                {
+                    var clip = ai.AiShotStates.SingleOrDefault(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint);
+                    if (clip is { Status: "stored", StorageKey: not null, StorageVersion: not null })
+                        workerAssets.Add(new(Guid.Empty, storage.SignRead(clip.StorageKey, "video", clip.StorageVersion), $"ai-shots/{shot.SceneOrder}.mp4"));
+                    else uploads[$"ai-shot-{shot.SceneOrder}"] = storage.CreateUploadGrant(AiShotJobService.OutputKey(job, token, shot.SceneOrder), "video");
+                }
+            }
             uploads["video"] = storage.CreateUploadGrant(OutputKey(job, token, "video"), "video");
             uploads["thumbnail"] = storage.CreateUploadGrant(OutputKey(job, token, "thumbnail"), "image");
         }
@@ -89,6 +100,12 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (job.Kind == "render")
         {
             var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
+            if (payload.Storyboard.Mode == "ai_shot")
+            {
+                var ai = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+                if ((ai.Storyboard.AiShots ?? []).Any(shot => !ai.AiShotStates.Any(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint && x.Status == "stored" && x.StorageKey != null)))
+                    return Result.Failure(Error.Conflict("AiShotIncomplete", "All AI Shot clips must be stored before render completion."));
+            }
             var output = VideoOutputFormats.Resolve(payload.Storyboard.OutputFormat);
             var width = payload.Storyboard.Width > 0 ? payload.Storyboard.Width : output.Width;
             var height = payload.Storyboard.Height > 0 ? payload.Storyboard.Height : output.Height;
@@ -136,9 +153,15 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
         var job = await state.LockJobAsync(id, ct);
         if (!ValidLease(job, request.LeaseToken, run)) return Result.Failure(LeaseError());
-        job!.ErrorMessage = "Worker could not finish media processing. Retry or review source assets.";
+        job!.ErrorMessage = request.Message switch
+        {
+            "VeoSubmissionUncertain" => "Veo request status is uncertain. Retry will not submit it again; choose Regenerate AI clips after checking your Google usage.",
+            "AiShotRejected" => "Veo rejected this AI scene. Change its approved source or motion instruction, then regenerate AI clips.",
+            "AiShotFailed" => "AI Shot could not finish. Review the approved source or prompt, then regenerate AI clips if needed.",
+            _ => "Worker could not finish media processing. Retry or review source assets."
+        };
         job.LeaseToken = null; job.LeaseExpiresAt = null;
-        job.Status = job.Attempt < job.MaximumAttempts ? "queued" : "failed";
+        job.Status = request.Message is "VeoSubmissionUncertain" or "AiShotRejected" || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
         job.AvailableAt = time.GetUtcNow().AddSeconds(5 * job.Attempt).UtcDateTime;
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();

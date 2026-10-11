@@ -37,13 +37,13 @@ public static class VideoOutputFormats
         _ => new(Default, 1080, 2160, "1:2"),
     };
 }
-public sealed record AiBackgroundOptions(string Preset, string? Prompt, IReadOnlyList<int> SceneIndices);
-public sealed record AiShotOptions(int SceneIndex, Guid MockupId, string CameraPreset, string? Prompt, int MaximumAttempts = 2);
+public sealed record AiShotOptions(string Coverage = "single_scene", string Concept = "product_cinematic", int SceneIndex = 0,
+    Guid? MockupId = null, string? Prompt = null, bool RightsConfirmed = false, IReadOnlyList<Guid>? FullSceneMockupIds = null);
 public sealed record GenerateVideoConfig(
     string Mode = "standard", string Target = "etsy", string Template = "auto", int DurationSeconds = 12,
     string AssetSelection = "automatic", IReadOnlyList<Guid>? SelectedMockupIds = null,
     IReadOnlyList<Guid>? SceneOrder = null, string TextOverlay = "", StandardOptions? StandardOptions = null,
-    AiBackgroundOptions? AiBackgroundOptions = null, AiShotOptions? AiShotOptions = null, bool FallbackToStandard = true,
+    AiShotOptions? AiShotOptions = null, bool FallbackToStandard = true,
     IReadOnlyList<string?>? SceneMotionPresets = null, int? TemplateVersion = null, string OutputFormat = VideoOutputFormats.Default);
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
@@ -55,15 +55,17 @@ public sealed record NodeCapability(string Type, bool Enabled, string Descriptio
 public sealed record WorkflowCapabilities(int DefinitionVersion, IReadOnlyList<NodeCapability> Nodes, IReadOnlyList<VideoModeCapability> VideoModes);
 public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey);
 public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid? VideoId = null, long? ReviewRevision = null,
-    GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null);
+    GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings);
 public sealed record ScenePlan(Guid MockupId, long SourceRevision, string SourceHash, string Role, int SceneOrder, int DurationFrames, Region Crop, Region EndCrop, string Motion, string Transition, string Text, string GenerationStrategy, IReadOnlyList<string> Warnings);
+public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash, string Model, string Preset, string Prompt, int DurationSeconds, string Fingerprint);
 public sealed record Storyboard(string Template, int TemplateVersion, int DurationSeconds, string ProductType, IReadOnlyList<ScenePlan> Scenes, string Fingerprint,
-    string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 2160, string AspectRatio = "1:2");
+    string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 2160, string AspectRatio = "1:2",
+    string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null);
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 2160, string AspectRatio = "1:2");
 public sealed record WorkerAsset(Guid MockupId, string Url, string FileName);
@@ -74,4 +76,7 @@ public sealed record MediaQa(string Codec, string PixelFormat, int Width, int He
 public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa);
 public sealed record JobFailure(Guid LeaseToken, string Message);
 public sealed record RenderJobPayload(Guid VideoId, Storyboard Storyboard);
+public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
+    string? StorageKey = null, string? StorageVersion = null, string Status = "pending");
+public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates);
 public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion, string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest);

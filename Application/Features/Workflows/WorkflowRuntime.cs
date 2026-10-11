@@ -46,18 +46,32 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     var reuse = previous is { Status: "failed" } && previous.Fingerprint == board.Fingerprint && node.Attempt == previous.VersionNumber;
                     var video = reuse ? previous! : new PromoVideo { Id = Guid.NewGuid(), ProductId = run.ProductId, WorkflowRunId = run.Id,
                         VideoTemplateId = (await templates.FindAsync(x => x.Code == board.Template && x.TemplateVersion == board.TemplateVersion, ct)).Single().Id,
-                        Mode = "standard", SeriesId = series, VersionNumber = (previous?.VersionNumber ?? 0) + 1, ReviewRevision = 1,
+                        Mode = board.Mode, SeriesId = series, VersionNumber = (previous?.VersionNumber ?? 0) + 1, ReviewRevision = 1,
                         Fingerprint = board.Fingerprint, TemplateVersion = board.TemplateVersion, ConfigSnapshot = WorkflowJson.Write(new { config, storyboard = board }),
                         QaResult = "{}", VideoDurationSeconds = config.DurationSeconds, VideoResolution = $"{board.Width}x{board.Height}", AspectRatio = board.AspectRatio,
                         FileFormat = "mp4", PlatformTarget = "etsy", Status = "queued", ApprovalStatus = "pending", IsFinal = false, CreatedAt = time.GetUtcNow().UtcDateTime };
                     if (!reuse) await videos.AddAsync(video, cancellationToken: ct);
                     video.Status = "queued";
                     foreach (var scene in reuse ? Array.Empty<ScenePlan>() : board.Scenes) await scenes.AddAsync(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = scene.MockupId,
-                        SceneOrder = scene.SceneOrder + 1, DurationSeconds = scene.DurationFrames / 30m, GenerationStrategy = "standard", SourceRevision = scene.SourceRevision,
+                        SceneOrder = scene.SceneOrder + 1, DurationSeconds = scene.DurationFrames / 30m, GenerationStrategy = scene.GenerationStrategy, SourceRevision = scene.SourceRevision,
                         SourceHash = scene.SourceHash, SceneConfig = WorkflowJson.Write(scene), Warnings = WorkflowJson.Write(scene.Warnings), TransitionEffect = scene.Transition,
                         TextOverlayContent = scene.Text, CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
                     node.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id)); node.Status = "running"; node.Stage = "Planning"; node.Progress = 5;
-                    await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct); return;
+                    if (board.Mode == "ai_shot")
+                    {
+                        AiShotJobState[] retained = [];
+                        var oldJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
+                        if (oldJob?.Kind == "render")
+                        {
+                            try { retained = WorkflowJson.Read<AiRenderJobPayload>(oldJob.Payload).AiShotStates?.ToArray() ?? []; }
+                            catch (JsonException) { /* The previous render used the Standard payload. */ }
+                        }
+                        var states = (board.AiShots ?? []).Select(shot => retained.FirstOrDefault(x => x.Fingerprint == shot.Fingerprint)
+                            is { } existing ? existing with { SceneOrder = shot.SceneOrder } : new AiShotJobState(shot.SceneOrder, shot.Fingerprint)).ToArray();
+                        await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct);
+                    }
+                    else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct);
+                    return;
                 case "review-video":
                     node.OutputSnapshot = checkpoints.Single(x => x.NodeType == "generate-video").OutputSnapshot;
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;

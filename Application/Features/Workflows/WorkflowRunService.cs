@@ -18,7 +18,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<WorkflowNodeRun> nodes, IRepository<Product> products,
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
-    WorkflowCapabilityRegistry capabilities, TimeProvider time) : IWorkflowRunService
+    WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -86,6 +86,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var config = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
             var approved = await runtime.ApprovedAssetsAsync(run, config, ct);
             if (approved.Count == 0) return Result.Failure<RunResponse>(Error.Conflict("WaitingForInput", "Select and approve at least one current mockup."));
+            var generate = checkpoints.Single(x => x.NodeType == "generate-video");
+            var consent = await quotes.VerifyAsync(run, WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot), request.AiShotQuoteToken, false, ct);
+            if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             gate.Status = "succeeded"; gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision) });
             run.Status = "running"; await runtime.AdvanceAsync(run, ct);
         }
@@ -104,17 +107,17 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
             else { review.Status = "waiting_for_review"; run.Status = "waiting_for_review"; }
         }
-        else if (request.Action is "rerender" or "retry")
+        else if (request.Action is "rerender" or "retry" or "regenerate_ai_shot")
         {
             if (run.Status is not ("waiting_for_review" or "failed" or "waiting_for_input")) return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "Cancel an active render before changing configuration."));
             var generate = checkpoints.Single(x => x.NodeType == "generate-video");
             if (request.Config != null)
             {
-                if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<RunResponse>(new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation));
+                if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<RunResponse>(new("UnsupportedVideoMode", "This video mode is unavailable.", ErrorType.Validation));
                 var validation = await validator.ValidateAsync(request.Config, ct);
                 if (!validation.IsValid) return Result.Failure<RunResponse>(Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage))));
             }
-            if (request.Action == "rerender" && request.ExpectedStoryboardFingerprint != null)
+            if (request.Action is "rerender" or "regenerate_ai_shot" && request.ExpectedStoryboardFingerprint != null)
             {
                 var candidateConfig = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
                 var preview = await runtime.PlanAsync(run, candidateConfig, ct);
@@ -122,12 +125,26 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 if (!string.Equals(preview.Value.Fingerprint, request.ExpectedStoryboardFingerprint, StringComparison.Ordinal))
                     return Result.Failure<RunResponse>(Error.Conflict("StoryboardChanged", "Storyboard changed. Preview again before rendering."));
             }
+            var selectedConfig = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+            var failedExportOnly = request.Action == "retry" && checkpoints.Single(x => x.NodeType == "export-zip").Status == "failed";
+            if (!failedExportOnly)
+            {
+                if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
+                    return Result.Failure<RunResponse>(Error.Validation("Regeneration requires AI Shot mode."));
+                var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", ct);
+                if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
+            }
             if (request.Config != null) generate.InputSnapshot = WorkflowJson.Write(request.Config);
             var failedExport = checkpoints.Single(x => x.NodeType == "export-zip");
             if (request.Action == "retry" && failedExport.Status == "failed") failedExport.Status = "pending";
             else
             {
-                generate.Status = "pending"; if (request.Action == "rerender" || request.Config != null) generate.Attempt++; generate.OutputSnapshot = "{}"; generate.ErrorMessage = null;
+                generate.Status = "pending"; if (request.Action is "rerender" or "regenerate_ai_shot" || request.Config != null) generate.Attempt++; generate.OutputSnapshot = "{}"; generate.ErrorMessage = null;
+                if (request.Action == "regenerate_ai_shot")
+                {
+                    var previousJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id, ct)).SingleOrDefault();
+                    if (previousJob?.Kind == "render") previousJob.Payload = "{}";
+                }
                 checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";

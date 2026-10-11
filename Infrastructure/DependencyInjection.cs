@@ -85,6 +85,11 @@ public static class DependencyInjection
         services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
+        services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
+            .RedactLoggedHeaders(new[] { "x-goog-api-key" })
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
+        services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
 
