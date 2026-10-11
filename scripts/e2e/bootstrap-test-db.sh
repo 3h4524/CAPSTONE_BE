@@ -34,11 +34,27 @@ compose() {
       docker-compose -f "${COMPOSE_FILE}" "$@"
   fi
 }
+
+# GitHub Actions cung cấp Postgres qua service container, không phải compose file
+# của repo. Khi đó chạy psql trên host thay vì exec trong container.
+USE_HOST_PSQL="no"
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ] && ! docker compose ps -q postgres >/dev/null 2>&1; then
+  USE_HOST_PSQL="yes"
+fi
+
+sql_host() {
+  PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -qtAX \
+    -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+}
 die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 
 sql() {
-  compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-    psql -v ON_ERROR_STOP=1 -qtAX -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+  if [ "${USE_HOST_PSQL}" = "yes" ]; then
+    sql_host "$1" "$2"
+  else
+    compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
+      psql -v ON_ERROR_STOP=1 -qtAX -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+  fi
 }
 
 if [ "$(sql postgres "SELECT 1 FROM pg_database WHERE datname='${TEST_DB}'")" != "1" ]; then
@@ -54,8 +70,13 @@ if [ "${TABLES:-0}" -lt 40 ]; then
   say "nạp schema (${TABLES:-0}/52 bảng hiện tại)"
   # pg_dump sinh \restrict / \unrestrict, chỉ có từ psql 17; client cũ từ chối.
   sed '/^\\restrict /d; /^\\unrestrict /d' "${BOOTSTRAP_SQL}" \
-    | compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-        psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}" >/dev/null
+    | { if [ "${USE_HOST_PSQL}" = "yes" ]; then
+          PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
+            -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "${TEST_DB}"
+        else
+          compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
+            psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}"
+        fi; } >/dev/null
 else
   say "schema đã đủ ${TABLES} bảng"
 fi
