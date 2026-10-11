@@ -1,11 +1,21 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using APCS.Application.Abstractions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Infrastructure.Services;
 
-public sealed class VeoVideoProvider(IHttpClientFactory clients) : IVeoVideoProvider
+public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVideoProvider> logger) : IVeoVideoProvider
 {
+    // Google says why it refused a request in the response body; without it every refusal looks the same.
+    private async Task<VeoProviderException> RefusedAsync(HttpResponseMessage response, string step, CancellationToken ct)
+    {
+        var body = await response.Content.ReadAsStringAsync(ct);
+        logger.LogWarning("Veo refused the {Step} request with status {Status}: {Body}", step, (int)response.StatusCode,
+            body.Length > 2000 ? body[..2000] : body);
+        return new VeoProviderException((int)response.StatusCode);
+    }
+
     private const string Base = "https://generativelanguage.googleapis.com/v1beta/";
     public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
         int durationSeconds, bool people, CancellationToken ct)
@@ -21,12 +31,13 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients) : IVeoVideoProv
         request.Headers.Add("x-goog-api-key", apiKey);
         request.Content = JsonContent.Create(new
         {
-            instances = new[] { new { prompt, image = new { inlineData = new { mimeType = "image/png", data = Convert.ToBase64String(bytes) } } } },
-            parameters = new { aspectRatio, durationSeconds = durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                resolution = "720p", personGeneration = "allow_adult" }
+            // The long-running endpoint of this model takes the image this way; it answers 400 to `inlineData`.
+            instances = new[] { new { prompt, image = new { bytesBase64Encoded = Convert.ToBase64String(bytes), mimeType = "image/png" } } },
+            // The duration goes as a number: the endpoint refuses a string.
+            parameters = new { aspectRatio, durationSeconds, resolution = "720p", personGeneration = "allow_adult" }
         });
         using var response = await clients.CreateClient("Veo").SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) throw new VeoProviderException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "start", ct);
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var name = body.RootElement.TryGetProperty("name", out var value) ? value.GetString() : null;
         if (string.IsNullOrWhiteSpace(name) || !name.StartsWith("operations/", StringComparison.Ordinal))
@@ -41,7 +52,7 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients) : IVeoVideoProv
         using var request = new HttpRequestMessage(HttpMethod.Get, Base + operationName);
         request.Headers.Add("x-goog-api-key", apiKey);
         using var response = await clients.CreateClient("Veo").SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) throw new VeoProviderException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "poll", ct);
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var root = body.RootElement;
         if (!root.TryGetProperty("done", out var done) || done.ValueKind != JsonValueKind.True)
