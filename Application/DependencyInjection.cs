@@ -6,6 +6,7 @@ using APCS.Application.Features.ApiKeys;
 using APCS.Application.Features.BatchProductPrompts;
 using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.Profile;
+using APCS.Application.Features.Revenues;
 using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
@@ -46,6 +47,7 @@ public static class DependencyInjection
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
+        services.AddScoped<IRevenueService, RevenueService>();
 
         return services;
     }
