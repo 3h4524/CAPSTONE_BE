@@ -59,6 +59,40 @@ PYTHON=""
 # Không ghim đường dẫn của máy nào cả: .NET được cài ở chỗ khác nhau trên mỗi OS.
 # global.json ghim một SDK cụ thể. Nếu máy chỉ có SDK khác phiên bản, dotnet
 # in ra cả khối lỗi khó đọc; kiểm tra trước để báo đúng thứ cần cài.
+# NU1301 xuất hiện khi máy không tới được nuget.org. dotnet chỉ in một dòng
+# mã lỗi, không nói nguyên nhân, nên kiểm tra trước khi build.
+require_nuget_reachable() {
+  if "${DOTNET}" build "${API_PROJECT}" -v quiet -p:NuGetAudit=false --no-restore >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Restore đã xong từ lần trước thì build không cần mạng; nếu restore thiếu
+  # thì mới hỏi tới mạng, và lỗi NU1301 là do không ra được internet.
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local status
+  status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.nuget.org/v3/index.json || echo 000)"
+
+  if [ "${status}" = "200" ]; then
+    return 0
+  fi
+
+  die "máy này không tới được https://api.nuget.org (HTTP ${status}).
+     NuGet restore cần mạng để tải package lần đầu.
+
+     Kiểm tra:
+       curl -s -o /dev/null -w '%{http_code}\\n' https://api.nuget.org/v3/index.json
+       nslookup api.nuget.org
+
+     Nếu đang dùng proxy hoặc VPN, cấu hình cho dotnet:
+       dotnet nuget add source https://api.nuget.org/v3/index.json
+
+     Hoặc nếu mạng ổn, xóa cache hỏng rồi thử lại:
+       dotnet nuget locals all --clear"
+}
+
 require_matching_sdk() {
   local required installed found
   required="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${REPO_ROOT}/global.json" 2>/dev/null | head -1)"
@@ -361,6 +395,7 @@ main() {
   resolve_python
   resolve_dotnet
   require_matching_sdk
+  require_nuget_reachable
   trap cleanup_failed_start EXIT
 
   require curl
