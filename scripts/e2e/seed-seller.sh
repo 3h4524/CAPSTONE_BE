@@ -13,6 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 RUN_DIR="${E2E_RUN_DIR:-${SCRIPT_DIR}/.run}"
 mkdir -p "${RUN_DIR}"
 
@@ -21,7 +22,7 @@ mkdir -p "${RUN_DIR}"
 
 BASE_URL="${E2E_BASE_URL:-http://localhost:5191}"
 SMTP_FILE="${E2E_SMTP_FILE:-${RUN_DIR}/mail.jsonl}"
-PG_PORT="${E2E_PG_PORT:-55432}"
+PG_PORT="${TEST_PG_PORT:-55432}"
 E2E_DB="${E2E_DB:-apcs_e2e}"
 E2E_DB_USER="${E2E_DB_USER:-apcs_e2e}"
 E2E_DB_PASSWORD="${E2E_DB_PASSWORD:-apcs_e2e}"
@@ -45,9 +46,15 @@ log()  { printf '\033[1;34m[seed]\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33m[seed]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[seed] FATAL\033[0m %s\n' "$*" >&2; exit 1; }
 
+# SQL đi qua container: psql không có sẵn trên Windows, docker compose thì có ở
+# cả ba OS. Mode "api" (mặc định) không dùng hàm này.
 psql_run() {
-  PGPASSWORD="${E2E_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -qtAX \
-    -h 127.0.0.1 -p "${PG_PORT}" -U "${E2E_DB_USER}" -d "${E2E_DB}" -c "$1"
+  local compose_file="${REPO_ROOT}/scripts/e2e/docker-compose.yml" runner
+  if docker compose version >/dev/null 2>&1; then runner="docker compose"; else runner="docker-compose"; fi
+  TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+    ${runner} -f "${compose_file}" exec -T postgres \
+      env PGPASSWORD="${E2E_DB_PASSWORD}" \
+      psql -v ON_ERROR_STOP=1 -qtAX -U "${E2E_DB_USER}" -d "${E2E_DB}" -c "$1"
 }
 
 sink_line_count() {
@@ -226,7 +233,7 @@ main() {
 
   command -v curl >/dev/null 2>&1 || die "curl is required"
   command -v python3 >/dev/null 2>&1 || die "python3 is required"
-  [ "${SEED_MODE}" != "sql" ] || command -v psql >/dev/null 2>&1 || die "psql is required for E2E_SEED_MODE=sql"
+  [ "${SEED_MODE}" != "sql" ] || command -v docker >/dev/null 2>&1 || die "docker is required for E2E_SEED_MODE=sql"
 
   curl -sS -o /dev/null --max-time 5 "${BASE_URL}/health" \
     || die "the API is not answering on ${BASE_URL}/health; run scripts/e2e/start-backend.sh first"

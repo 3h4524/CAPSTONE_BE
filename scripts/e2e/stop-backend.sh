@@ -10,12 +10,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_DIR="${E2E_RUN_DIR:-${SCRIPT_DIR}/.run}"
 
-PG_PORT="${E2E_PG_PORT:-55432}"
-PG_DATA_DIR="${E2E_PG_DATA_DIR:-/tmp/opencode/pgdata18}"
-PG_ROOT="${E2E_PG_ROOT:-/tmp/opencode/pg18}"
-PG_BIN="${PG_ROOT}/root2404/usr/lib/postgresql/18/bin"
-PG_LIB="${PG_ROOT}/root2404/usr/lib/x86_64-linux-gnu"
-REDIS_PORT="${E2E_REDIS_PORT:-56379}"
+PG_PORT="${TEST_PG_PORT:-55432}"
+COMPOSE_FILE="${COMPOSE_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/docker-compose.yml}"
+REDIS_PORT="${TEST_REDIS_PORT:-56379}"
 
 STOP_INFRASTRUCTURE="no"
 [ "${1:-}" = "--all" ] && STOP_INFRASTRUCTURE="yes"
@@ -92,33 +89,29 @@ except OSError:
 PY
 }
 
-stop_redis() {
-  if ! redis-cli -p "${REDIS_PORT}" ping 2>/dev/null | grep -q PONG; then
-    log "redis: not listening on ${REDIS_PORT}, nothing to stop"
-    return 0
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+      docker compose -f "${COMPOSE_FILE}" "$@"
+  else
+    TEST_PG_PORT="${PG_PORT}" TEST_REDIS_PORT="${REDIS_PORT}" \
+      docker-compose -f "${COMPOSE_FILE}" "$@"
   fi
-
-  redis-cli -p "${REDIS_PORT}" shutdown nosave >/dev/null 2>&1 \
-    || { warn "redis did not shut down cleanly"; return 0; }
-
-  log "redis stopped on ${REDIS_PORT}"
 }
 
-stop_postgres() {
-  if ! port_open "${PG_PORT}"; then
-    log "postgres: not listening on ${PG_PORT}, nothing to stop"
-    return 0
+# Postgres và Redis do Docker quản lý: dừng cả cặp container thay vì tự quản lý
+# tiến trình. Không có docker thì bỏ qua — không phải lỗi.
+stop_services() {
+  command -v docker >/dev/null 2>&1 || { log "docker not available, leaving containers alone"; return 0; }
+  docker info >/dev/null 2>&1 || { log "docker daemon not running, leaving containers alone"; return 0; }
+
+  if [ "${1:-}" = "--all" ]; then
+    compose down -v >/dev/null 2>&1 && log "containers removed (data discarded)" \
+      || warn "docker compose down failed"
+  else
+    compose stop >/dev/null 2>&1 && log "containers stopped (data kept)" \
+      || warn "docker compose stop failed"
   fi
-
-  if [ ! -x "${PG_BIN}/pg_ctl" ]; then
-    warn "postgres: pg_ctl missing under ${PG_BIN}, leaving the server running"
-    return 0
-  fi
-
-  LD_LIBRARY_PATH="${PG_LIB}" "${PG_BIN}/pg_ctl" -D "${PG_DATA_DIR}" -m fast stop >/dev/null 2>&1 \
-    || { warn "postgres did not shut down cleanly; see ${RUN_DIR}/postgres.log"; return 0; }
-
-  log "postgres stopped on ${PG_PORT}"
 }
 
 main() {
@@ -136,10 +129,9 @@ main() {
   fi
 
   if [ "${STOP_INFRASTRUCTURE}" = "yes" ]; then
-    stop_redis
-    stop_postgres
+    stop_services "$@"
   else
-    log "keeping PostgreSQL (${PG_PORT}) and Redis (${REDIS_PORT}) running; pass --all to stop them too"
+    log "keeping the Postgres and Redis containers running; pass --all to remove them"
   fi
 
   log "database left untouched; re-run start-backend.sh to bring the stack back"
