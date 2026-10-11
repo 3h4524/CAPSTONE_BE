@@ -17,7 +17,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/scripts/e2e/docker-compose.yml"
 BOOTSTRAP_SQL="${REPO_ROOT}/scripts/sql/000-bootstrap-schema.sql"
+# Khi CI cấp sẵn connection string thì lấy tên database từ đó, nếu không sẽ tạo
+# nhầm một database khác với cái test dùng.
 TEST_DB="${TEST_DB:-apcs_test}"
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ]; then
+  from_conn="$(printf '%s' "${APCS_TEST_CONNECTION_STRING}" | sed -n 's/.*[;]Database=\([^;]*\).*/\1/p')"
+  [ -n "${from_conn}" ] && TEST_DB="${from_conn}"
+fi
+# Port cũng phải theo connection string, nếu không sẽ nối vào cổng mặc định của
+# compose thay vì service container mà CI cấp.
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ]; then
+  port_conn="$(printf '%s' "${APCS_TEST_CONNECTION_STRING}" | sed -n 's/.*[;]Port=\([^;]*\).*/\1/p')"
+  [ -n "${port_conn}" ] && TEST_PG_PORT="${port_conn}"
+fi
 TEST_DB_USER="${TEST_DB_USER:-apcs}"
 TEST_DB_PASSWORD="${TEST_DB_PASSWORD:-apcs}"
 TEST_PG_PORT="${TEST_PG_PORT:-55432}"
@@ -34,11 +46,27 @@ compose() {
       docker-compose -f "${COMPOSE_FILE}" "$@"
   fi
 }
+
+# GitHub Actions cung cấp Postgres qua service container, không phải compose file
+# của repo. Khi đó chạy psql trên host thay vì exec trong container.
+USE_HOST_PSQL="no"
+if [ -n "${APCS_TEST_CONNECTION_STRING:-}" ] && ! docker compose ps -q postgres >/dev/null 2>&1; then
+  USE_HOST_PSQL="yes"
+fi
+
+sql_host() {
+  PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -qtAX \
+    -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+}
 die()  { printf '   \033[1;31mFATAL\033[0m %s\n' "$*" >&2; exit 1; }
 
 sql() {
-  compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-    psql -v ON_ERROR_STOP=1 -qtAX -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+  if [ "${USE_HOST_PSQL}" = "yes" ]; then
+    sql_host "$1" "$2"
+  else
+    compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
+      psql -v ON_ERROR_STOP=1 -qtAX -U "${TEST_DB_USER}" -d "$1" -c "$2" 2>/dev/null
+  fi
 }
 
 if [ "$(sql postgres "SELECT 1 FROM pg_database WHERE datname='${TEST_DB}'")" != "1" ]; then
@@ -53,9 +81,15 @@ TABLES="$(sql "${TEST_DB}" "SELECT count(*) FROM information_schema.tables WHERE
 if [ "${TABLES:-0}" -lt 40 ]; then
   say "nạp schema (${TABLES:-0}/52 bảng hiện tại)"
   # pg_dump sinh \restrict / \unrestrict, chỉ có từ psql 17; client cũ từ chối.
+  # Không nuốt stderr: exit code của psql là thứ duy nhất chỉ ra lỗi thật.
   sed '/^\\restrict /d; /^\\unrestrict /d' "${BOOTSTRAP_SQL}" \
-    | compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-        psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}" >/dev/null
+    | { if [ "${USE_HOST_PSQL}" = "yes" ]; then
+          PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
+            -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "${TEST_DB}"
+        else
+          compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
+            psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}"
+        fi; }
 else
   say "schema đã đủ ${TABLES} bảng"
 fi
