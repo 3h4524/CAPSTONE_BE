@@ -54,6 +54,46 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
+    [DataRow("node-0")]
+    [DataRow("node-3")]
+    [DataRow("node-5")]
+    public void Validate_ListingContentHangingOffAnyStep_NeedsNoApproval(string source)
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges, new("edge-listing", source, "listing")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentBetweenTwoSteps_IsAccepted()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Skip(1), new("edge-in", "node-0", "listing"), new("edge-out", "listing", "node-1")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentUsedToSkipMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        // Apply Mockup -> Listing Content -> Generate Video, with Mockup Approval left out of the line.
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Where(x => x.Target != "node-2"), new("edge-in", "node-1", "listing"), new("edge-out", "listing", "node-3")]
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
     public void Validate_DesignStepsBeforeApplyMockup_AreAccepted()
     {
         var definition = WithDesignSteps(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), "prompt-synthesis", "design-image", "design-approval");

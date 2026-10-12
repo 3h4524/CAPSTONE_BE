@@ -184,7 +184,8 @@ public static class DependencyInjection
         {
             var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
             client.BaseAddress = new Uri(options.Endpoint);
-            client.Timeout = TimeSpan.FromSeconds(90);
+            // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
+            client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
         });
         services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());

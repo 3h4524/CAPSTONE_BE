@@ -65,6 +65,18 @@ public sealed class WorkflowRuntimeTests
     }
 
     [TestMethod]
+    public async Task ApprovedAssetsAsync_ArtworkGroupOfAnotherProduct_KeepsTheApprovedMockups()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var run = fixture.AddRun(product);
+        var approved = fixture.AddAsset(product);
+        var pending = fixture.AddAsset(product); pending.ApprovalStatus = "pending"; pending.ApprovedRevision = null;
+        var selected = await fixture.Runtime.ApprovedAssetsAsync(run, new([], "group-saved-for-an-earlier-product"), default);
+        selected.Select(x => x.Id).Should().Equal(approved.Id);
+    }
+
+    [TestMethod]
     public async Task AdvanceAsync_ExportWithoutExactApproval_FailsWithoutPackage()
     {
         var fixture = new WorkflowTestData();

@@ -18,18 +18,12 @@ namespace APCS.Infrastructure.Services;
 /// </remarks>
 public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<GeminiOptions> options) : IImageGenerationProvider
 {
-    public async Task<ImageGenerationResult> GenerateAsync(
+    public Task<ImageGenerationResult> GenerateAsync(
         string apiKey,
         string prompt,
         string aspectRatio,
         CancellationToken cancellationToken = default)
     {
-        var model = options.Value.DefaultModel;
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
-        request.Headers.Add("x-goog-api-key", apiKey);
-
         // Aspect ratio is folded into the prompt text rather than a structured field: Gemini's
         // image-generation request shape for this has moved between model versions in ways the
         // available docs did not agree on, while a descriptive clause in the prompt is guaranteed
@@ -40,8 +34,26 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
             ? prompt
             : $"{prompt}\nImage aspect ratio: {aspectRatio}.";
 
-        var body = new GeminiRequest([new GeminiContent([new GeminiPart(effectivePrompt, null)])]);
-        request.Content = JsonContent(body);
+        return SendAsync(apiKey, [new GeminiPart(effectivePrompt, null)], cancellationToken);
+    }
+
+    public Task<ImageGenerationResult> ComposeAsync(
+        string apiKey,
+        string prompt,
+        IReadOnlyList<ImageReference> images,
+        CancellationToken cancellationToken = default) =>
+        SendAsync(apiKey,
+            [.. images.Select(image => new GeminiPart(null, new GeminiInlineData(image.MimeType, Convert.ToBase64String(image.Bytes)))), new GeminiPart(prompt, null)],
+            cancellationToken);
+
+    private async Task<ImageGenerationResult> SendAsync(string apiKey, IReadOnlyList<GeminiPart> parts, CancellationToken cancellationToken)
+    {
+        var model = options.Value.DefaultModel;
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+        request.Headers.Add("x-goog-api-key", apiKey);
+        request.Content = JsonContent(new GeminiRequest([new GeminiContent(parts)]));
 
         var estimatedCost = options.Value.EstimatedCostPerImageUsd;
 
@@ -97,7 +109,8 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // A part is either text or an image: the unused one must be left out, not sent as null.
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
     private static HttpContent JsonContent(GeminiRequest body) =>
         new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");

@@ -57,10 +57,19 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         }
         catch (VeoProviderException ex) when (ex.StatusCode is 400 or 401 or 403 or 404)
         {
-            await MarkFailedAsync(jobId, sceneOrder, request.LeaseToken, ct);
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(ex.StatusCode is 401 or 403
                 ? "Google Veo access denied. Check the connected Gemini key, billing and model availability."
                 : "Google Veo rejected this source or prompt. Review the AI Shot settings."));
+        }
+        catch (VeoProviderException ex) when (ex.StatusCode is 429 or 503)
+        {
+            // Google answered that it is over quota or overloaded: it took nothing and charged nothing, so the
+            // scene goes back to pending and the job's next attempt may submit it again.
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ct);
+            return Result.Failure<AiShotProgressResponse>(Error.Failure("VeoBusy", ex.StatusCode == 429
+                ? "Google Veo quota or rate limit reached. Check the Gemini key's usage, then try again."
+                : "Google Veo is overloaded right now. Try again in a few minutes."));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch
@@ -145,13 +154,13 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
 
     private static void Replace(MediaJob job, AiRenderJobPayload payload, AiShotJobState state) =>
         job.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(x => x.SceneOrder == state.SceneOrder ? state : x).ToArray() });
-    private async Task MarkFailedAsync(Guid jobId, int sceneOrder, Guid token, CancellationToken ct)
+    private async Task MarkAsync(Guid jobId, int sceneOrder, Guid token, string status, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return;
         var (job, payload, item) = loaded.Value;
-        Replace(job, payload, item with { Status = "failed" });
+        Replace(job, payload, item with { Status = status });
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
     private async Task<string> KeyAsync(Guid owner, CancellationToken ct)

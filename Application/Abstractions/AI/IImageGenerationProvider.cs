@@ -16,7 +16,23 @@ public interface IImageGenerationProvider
         string prompt,
         string aspectRatio,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Requests one image generated from a text instruction and reference images, in the order given.
+    /// </summary>
+    /// <param name="apiKey">The Seller's decrypted provider API key.</param>
+    /// <param name="prompt">What to do with the reference images.</param>
+    /// <param name="images">The reference images the prompt refers to.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    Task<ImageGenerationResult> ComposeAsync(
+        string apiKey,
+        string prompt,
+        IReadOnlyList<ImageReference> images,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>An image sent to the provider together with a prompt.</summary>
+public sealed record ImageReference(byte[] Bytes, string MimeType);
 
 /// <summary>
 /// The outcome of one image generation call.

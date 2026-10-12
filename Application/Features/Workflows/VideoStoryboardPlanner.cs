@@ -6,6 +6,17 @@ namespace APCS.Application.Features.Workflows;
 public sealed class VideoStoryboardPlanner
 {
     public static readonly string[] ProductTypes = ["tshirt", "t-shirt", "t_shirt", "hoodie", "mug", "poster", "tote_bag", "phone_case"];
+    /// <summary>
+    /// The artwork group to narrow a product's mock-ups to, or <see langword="null"/> for no narrowing.
+    /// </summary>
+    /// <remarks>
+    /// A workflow keeps the group chosen for the product it was last edited with. A run on another
+    /// product, or one whose design was generated during the run, has no mock-up in that group, and
+    /// filtering by it would hide every mock-up the seller just approved.
+    /// </remarks>
+    public static string? KnownArtworkGroup(IReadOnlyList<MockupImage> owned, string? configured) =>
+        !string.IsNullOrEmpty(configured) && owned.Any(x => x.ArtworkGroupKey == configured) ? configured : null;
+
     public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config)
     {
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
@@ -142,7 +153,9 @@ public sealed class VideoStoryboardPlanner
             _ => "A cinematic, smooth, subtle camera dolly and gentle angle reveal of the product."
         };
         return $"{motion} Start from the supplied image. Keep the exact visible product, colors, print, text and composition unchanged. " +
-            "Do not invent hidden product details, new logos or extra people. No dialogue. " +
+            "Do not invent hidden product details, new logos or extra people. " +
+            // The clip is muted afterwards, but Veo still writes a soundtrack and drops the whole clip if its audio filter objects to it.
+            "No dialogue, speech, singing or music: the only sound is quiet ambient room tone. " +
             (string.IsNullOrWhiteSpace(instruction) ? "" : instruction.Trim());
     }
 

@@ -24,9 +24,11 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<Storyboard>(new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation));
         var validation = await validator.ValidateAsync(request.Config, ct);
         if (!validation.IsValid || request.MockupIds.Count > 8) return Result.Failure<Storyboard>(Error.Validation("Invalid video configuration or mockup selection."));
-        var approved = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
-        return planner.Plan(product, approved.Where(x => request.MockupIds.Count == 0 || request.MockupIds.Contains(x.Id))
-            .Where(x => string.IsNullOrEmpty(request.ArtworkGroupKey) || x.ArtworkGroupKey == request.ArtworkGroupKey).Take(8).ToArray(), request.Config);
+        var owned = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null, ct);
+        var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, request.ArtworkGroupKey);
+        return planner.Plan(product, owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
+            .Where(x => request.MockupIds.Count == 0 || request.MockupIds.Contains(x.Id))
+            .Where(x => group == null || x.ArtworkGroupKey == group).Take(8).ToArray(), request.Config);
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)

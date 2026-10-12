@@ -11,6 +11,8 @@ public sealed class GeminiTextGenerationProvider(
     HttpClient httpClient,
     IOptions<GeminiTextGenerationOptions> options) : IGeminiTextGenerationProvider
 {
+    private static readonly TimeSpan OverloadRetryDelay = TimeSpan.FromSeconds(3);
+
     private readonly GeminiTextGenerationOptions settings = options.Value;
 
     public async Task<GeminiTextGenerationResult> GenerateAsync(
@@ -39,27 +41,53 @@ public sealed class GeminiTextGenerationProvider(
             parts = new[] { new { text = request.Prompt } }
         });
 
-        using var httpRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"models/{Uri.EscapeDataString(settings.Model)}:generateContent");
-        httpRequest.Headers.Add("x-goog-api-key", settings.ApiKey);
-        httpRequest.Content = JsonContent.Create(new
+        // Google answers 503, or does not answer at all, while a model is overloaded. Nothing is generated or
+        // charged then, so the request moves on: once to the fallback model, then one more try after a pause.
+        var fallback = string.IsNullOrWhiteSpace(settings.FallbackModel) ? settings.Model : settings.FallbackModel;
+        string[] models = [settings.Model, fallback, fallback];
+        GenerateContentResponse? payload = null;
+        var model = settings.Model;
+        for (var attempt = 0; ; attempt++)
         {
-            contents,
-            generationConfig = new
+            model = models[attempt];
+            var last = attempt == models.Length - 1;
+            using var httpRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"models/{Uri.EscapeDataString(model)}:generateContent");
+            httpRequest.Headers.Add("x-goog-api-key", settings.ApiKey);
+            httpRequest.Content = JsonContent.Create(new
             {
-                temperature = settings.Temperature,
-                responseMimeType = "application/json"
-            }
-        });
+                contents,
+                generationConfig = new
+                {
+                    temperature = settings.Temperature,
+                    responseMimeType = "application/json"
+                }
+            });
 
-        using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
-        var payload = await response.Content.ReadFromJsonAsync<GenerateContentResponse>(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"Gemini text generation request failed ({(int)response.StatusCode}): "
-                + $"{payload?.Error?.Message ?? "unknown error"}");
+            using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attemptTimeout.CancelAfter(TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds));
+            try
+            {
+                using var response = await httpClient.SendAsync(httpRequest, attemptTimeout.Token);
+                payload = await response.Content.ReadFromJsonAsync<GenerateContentResponse>(attemptTimeout.Token);
+                if (response.IsSuccessStatusCode) break;
+                if (response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable || last)
+                {
+                    throw new HttpRequestException(
+                        $"Gemini text generation request failed ({(int)response.StatusCode}): "
+                        + $"{payload?.Error?.Message ?? "unknown error"}",
+                        null,
+                        response.StatusCode);
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (last)
+                    throw new HttpRequestException($"Gemini model {model} did not answer in time.", null, System.Net.HttpStatusCode.GatewayTimeout);
+            }
+
+            if (attempt > 0) await Task.Delay(OverloadRetryDelay, cancellationToken);
         }
 
         var text = payload?.Candidates?
@@ -73,7 +101,7 @@ public sealed class GeminiTextGenerationProvider(
         var usage = payload?.UsageMetadata;
         return new GeminiTextGenerationResult(
             text,
-            settings.Model,
+            model,
             usage?.PromptTokenCount,
             usage?.CandidatesTokenCount,
             payload?.ResponseId);

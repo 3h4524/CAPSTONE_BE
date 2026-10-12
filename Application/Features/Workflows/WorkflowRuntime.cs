@@ -136,8 +136,10 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     }
     public async Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct)
     {
-        var selected = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null && x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
-        return selected.Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).Where(x => string.IsNullOrEmpty(config.ArtworkGroupKey) || x.ArtworkGroupKey == config.ArtworkGroupKey).Take(8).ToArray();
+        var owned = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null, ct);
+        var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, config.ArtworkGroupKey);
+        return owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
+            .Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).Where(x => group == null || x.ArtworkGroupKey == group).Take(8).ToArray();
     }
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {

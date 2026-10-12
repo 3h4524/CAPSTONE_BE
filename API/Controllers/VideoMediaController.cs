@@ -9,7 +9,7 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Authorize(Roles = AuthConstants.UserRole)]
 [Route("api")]
-public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning) : ControllerBase
+public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning, ILifestyleMockupService lifestyle) : ControllerBase
 {
     [HttpGet("workflows/video-templates")]
     public async Task<IActionResult> Templates(CancellationToken ct) => (await planning.ListTemplatesAsync(ct)).ToActionResult(this);
@@ -25,6 +25,15 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     {
         await using var content = file.OpenReadStream();
         var result = await mockups.UploadAsync(productId, content, file.FileName, file.Length, ct);
+        return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
+    }
+    [HttpPost("products/{productId:guid}/mockup-assets/lifestyle")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(9 * 1024 * 1024)]
+    public async Task<IActionResult> GenerateLifestyle(Guid productId, [FromForm] Guid garmentMockupId, [FromForm] IFormFile file, CancellationToken ct)
+    {
+        await using var content = file.OpenReadStream();
+        var result = await lifestyle.GenerateAsync(productId, garmentMockupId, content, file.Length, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
     }
     [HttpPut("mockup-assets/{id:guid}")]

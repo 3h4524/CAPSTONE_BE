@@ -7,8 +7,8 @@ public sealed class WorkflowCapabilityRegistry
     // a workflow may place them between Product Input and Apply Mockup, and a run leaves them untouched.
     public static readonly string[] BatchSteps = ["prompt-synthesis", "design-image", "design-approval"];
     public static readonly string[] ListingSteps = ["generate-listing"];
-    // Every step a run may contain, in the order they must be connected.
-    public static readonly string[] RunOrder = ["product-input", .. BatchSteps, "generate-listing", .. Pipeline.Skip(1)];
+    // The steps of a run that must be connected in this order. Listing Content is not one of them: it needs no approval.
+    public static readonly string[] RunOrder = ["product-input", .. BatchSteps, .. Pipeline.Skip(1)];
     public WorkflowCapabilities Get() => new(2,
         Pipeline.Select(type => new NodeCapability(type, true, "Standard MVP executor"))
             .Concat(BatchSteps.Select(type => new NodeCapability(type, true, "Runs as a batch job from the canvas.")))

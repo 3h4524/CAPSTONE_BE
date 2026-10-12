@@ -68,11 +68,22 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
         if (!root.TryGetProperty("done", out var done) || done.ValueKind != JsonValueKind.True)
             return new(false, null, null);
         if (root.TryGetProperty("error", out var error))
+        {
+            LogRefusal(operationName, error);
             return new(true, null, error.TryGetProperty("message", out _) ? "Veo could not generate this scene. Adjust the source or prompt." : "Veo could not generate this scene.");
+        }
         var uri = root.TryGetProperty("response", out var result) && result.TryGetProperty("generateVideoResponse", out var video) &&
             video.TryGetProperty("generatedSamples", out var samples) && samples.ValueKind == JsonValueKind.Array && samples.GetArrayLength() > 0 &&
             samples[0].TryGetProperty("video", out var item) && item.TryGetProperty("uri", out var link) ? link.GetString() : null;
+        // A clip removed by Google's safety filter comes back as a finished operation with no sample, only the reasons.
+        if (string.IsNullOrWhiteSpace(uri)) LogRefusal(operationName, root.TryGetProperty("response", out var refused) ? refused : root);
         return string.IsNullOrWhiteSpace(uri) ? new(true, null, "Veo returned no video.") : new(true, uri, null);
+    }
+
+    private void LogRefusal(string operationName, JsonElement detail)
+    {
+        var text = detail.GetRawText();
+        logger.LogWarning("Veo finished {Operation} without a video: {Detail}", operationName, text.Length > 2000 ? text[..2000] : text);
     }
 
     public async Task<byte[]> DownloadAsync(string apiKey, string videoUri, CancellationToken ct)

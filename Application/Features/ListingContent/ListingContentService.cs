@@ -67,7 +67,17 @@ public sealed class ListingContentService(
         if (seoFeedback is not null)
             prompt = $"{prompt}\n\n{BuildSeoRegenerationInstructions(seoFeedback)}";
         var stopwatch = Stopwatch.StartNew();
-        var generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt), cancellationToken);
+        GeminiTextGenerationResult generated;
+        try
+        {
+            generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt), cancellationToken);
+        }
+        catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout)
+        {
+            // Still overloaded after the provider's own retries: nothing was generated, so the seller can simply try again.
+            logger.LogWarning(error, "Gemini was overloaded while generating the listing for product {ProductId}", productId);
+            return Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", "Gemini is overloaded right now. Wait a minute, then generate the listing again."));
+        }
         stopwatch.Stop();
         var parsed = ListingContentParser.Parse(generated.Text);
         var now = timeProvider.GetUtcNow().UtcDateTime;
