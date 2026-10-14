@@ -26,6 +26,9 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     IApiKeyRepository keys, IApiKeyCredentials credentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time) : IAiShotJobService
 {
+    /// <summary>How often one scene is sent again without asking, and only after Google said the dropped clip was free.</summary>
+    public const int MaximumResubmissions = 1;
+
     public async Task<Result<AiShotProgressResponse>> StartAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct)
     {
         AiShotPlan shot;
@@ -57,16 +60,18 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         }
         catch (VeoProviderException ex) when (ex.StatusCode is 400 or 401 or 403 or 404)
         {
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ct);
-            return Result.Failure<AiShotProgressResponse>(Error.Validation(ex.StatusCode is 401 or 403
+            var refusal = ex.StatusCode is 401 or 403
                 ? "Google Veo access denied. Check the connected Gemini key, billing and model availability."
-                : "Google Veo rejected this source or prompt. Review the AI Shot settings."));
+                : "Google Veo rejected this source or prompt. Review the AI Shot settings.";
+            // Kept with the scene, so the run can show the seller what Google said and not only that it refused.
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ex.Detail == null ? refusal : $"{refusal} Google: {ex.Detail}", ct);
+            return Result.Failure<AiShotProgressResponse>(Error.Validation(refusal));
         }
         catch (VeoProviderException ex) when (ex.StatusCode is 429 or 503)
         {
             // Google answered that it is over quota or overloaded: it took nothing and charged nothing, so the
             // scene goes back to pending and the job's next attempt may submit it again.
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ct);
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", null, ct);
             return Result.Failure<AiShotProgressResponse>(Error.Failure("VeoBusy", ex.StatusCode == 429
                 ? "Google Veo quota or rate limit reached. Check the Gemini key's usage, then try again."
                 : "Google Veo is overloaded right now. Try again in a few minutes."));
@@ -104,12 +109,18 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
         (job, var payload, item) = loaded.Value;
-        var next = result.VideoUri != null ? item with { DownloadUri = result.VideoUri, Status = "ready" }
-            : item with { Status = "failed" };
+        var failure = result.Failure ?? "Veo returned no video.";
+        // Google sometimes drops a finished clip and says the attempt was free. That is worth one more submission
+        // inside what the seller already confirmed; a second drop is left for them to decide.
+        var resubmit = result.VideoUri == null && result.NotCharged && item.Resubmissions < MaximumResubmissions;
+        var next = result.VideoUri != null ? item with { DownloadUri = result.VideoUri, Status = "ready", Failure = null }
+            : resubmit ? item with { Status = "pending", OperationName = null, Failure = failure, Resubmissions = item.Resubmissions + 1 }
+            : item with { Status = "failed", Failure = failure };
         Replace(job, payload, next);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return result.VideoUri != null ? Result.Success(new AiShotProgressResponse("ready"))
-            : Result.Failure<AiShotProgressResponse>(Error.Validation(result.Failure ?? "Veo returned no video."));
+            : resubmit ? Result.Success(new AiShotProgressResponse("pending", failure))
+            : Result.Failure<AiShotProgressResponse>(Error.Validation(failure));
     }
 
     public async Task<Result<byte[]>> DownloadAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct)
@@ -154,13 +165,13 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
 
     private static void Replace(MediaJob job, AiRenderJobPayload payload, AiShotJobState state) =>
         job.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(x => x.SceneOrder == state.SceneOrder ? state : x).ToArray() });
-    private async Task MarkAsync(Guid jobId, int sceneOrder, Guid token, string status, CancellationToken ct)
+    private async Task MarkAsync(Guid jobId, int sceneOrder, Guid token, string status, string? failure, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return;
         var (job, payload, item) = loaded.Value;
-        Replace(job, payload, item with { Status = status });
+        Replace(job, payload, item with { Status = status, Failure = failure });
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
     private async Task<string> KeyAsync(Guid owner, CancellationToken ct)

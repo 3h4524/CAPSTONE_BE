@@ -88,6 +88,8 @@ public sealed class AiShotJobServiceTests
 
         result.Error.Message.Should().Contain(message);
         State().Status.Should().Be("failed");
+        // What Google said stays with the scene, for the run to show.
+        State().Failure.Should().Contain(message).And.EndWith("Google: The image is not usable.");
     }
 
     [TestMethod]
@@ -152,15 +154,43 @@ public sealed class AiShotJobServiceTests
     }
 
     [TestMethod]
-    public async Task PollAsync_GoogleFinishedWithoutAVideo_MarksTheSceneFailed()
+    public async Task PollAsync_GoogleFinishedWithoutAVideo_MarksTheSceneFailedWithItsReason()
     {
         var service = Service(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
-        provider.Setup(x => x.PollAsync("plain-key", Operation, It.IsAny<CancellationToken>())).ReturnsAsync(new VeoOperationResult(true, null, "Veo returned no video."));
+        provider.Setup(x => x.PollAsync("plain-key", Operation, It.IsAny<CancellationToken>())).ReturnsAsync(new VeoOperationResult(true, null, "The image shows a minor."));
 
         var result = await service.PollAsync(job.Id, 0, Lease(), default);
 
-        result.Error.Message.Should().Be("Veo returned no video.");
+        result.Error.Message.Should().Be("The image shows a minor.");
         State().Status.Should().Be("failed");
+        State().Failure.Should().Be("The image shows a minor.");
+        State().Resubmissions.Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task PollAsync_ClipDroppedWithoutCharge_IsSubmittedOnceMoreAndThenLeftToTheSeller()
+    {
+        var service = Service(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
+        provider.Setup(x => x.PollAsync("plain-key", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VeoOperationResult(true, null, "Audio issue. You have not been charged for this attempt.", NotCharged: true));
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("models/veo/operations/second");
+
+        // The first drop puts the scene back, so the next start by the worker sends it again.
+        var first = await service.PollAsync(job.Id, 0, Lease(), default);
+        first.Value.Status.Should().Be("pending");
+        State().Status.Should().Be("pending");
+        State().OperationName.Should().BeNull();
+        State().Resubmissions.Should().Be(1);
+        (await service.StartAsync(job.Id, 0, Lease(), default)).Value.Status.Should().Be("polling");
+        State().OperationName.Should().Be("models/veo/operations/second");
+
+        // The second drop is final: no third request without the seller.
+        var second = await service.PollAsync(job.Id, 0, Lease(), default);
+        second.IsFailure.Should().BeTrue();
+        State().Status.Should().Be("failed");
+        State().Failure.Should().Contain("Audio issue.");
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -242,7 +272,7 @@ public sealed class AiShotJobServiceTests
 
     private void Refuse(int status) =>
         provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new VeoProviderException(status));
+            .ThrowsAsync(new VeoProviderException(status, "The image is not usable."));
 
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true)
     {

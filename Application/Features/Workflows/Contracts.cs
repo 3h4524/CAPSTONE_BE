@@ -76,7 +76,9 @@ public sealed record MediaQa(string Codec, string PixelFormat, int Width, int He
 public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa);
 public sealed record JobFailure(Guid LeaseToken, string Message);
 public sealed record RenderJobPayload(Guid VideoId, Storyboard Storyboard);
+/// <param name="Failure">Why the scene has no clip, when Google answered without one.</param>
+/// <param name="Resubmissions">How often the scene was sent again after Google dropped a clip without charging for it.</param>
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
-    string? StorageKey = null, string? StorageVersion = null, string Status = "pending");
+    string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0);
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates);
 public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion, string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest);

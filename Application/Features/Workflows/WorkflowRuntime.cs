@@ -27,42 +27,14 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
         var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
-        if (listing is not null && listing.Status == "pending")
-        {
-            var input = checkpoints.Single(x => x.NodeType == "product-input");
-            if (input.Status != "succeeded")
-            {
-                input.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId });
-                input.Status = "succeeded";
-                input.Progress = 100;
-            }
-            listing.Status = "running";
-            listing.Stage = "Generating listing content";
-            listing.Progress = 10;
-            var result = await listingContent.GenerateAsync(run.ProductId, ct);
-            if (result.IsFailure)
-            {
-                listing.Status = "failed";
-                listing.ErrorMessage = result.Error.Message;
-                run.Status = "failed";
-                run.ErrorMessage = result.Error.Message;
-                return;
-            }
-            listing.OutputSnapshot = WorkflowJson.Write(result.Value);
-            listing.Status = "succeeded";
-            listing.Stage = "Generated";
-            listing.Progress = 100;
-        }
+        if (listing is { Status: "pending" }) await GenerateListingAsync(run, checkpoints, listing, ct);
         if (!definition.Nodes.Any(x => x.Type == "generate-video"))
         {
-            if (listing is null) return;
-            if (listing.Status == "succeeded")
-            {
-                run.Status = "completed";
-                run.CompletedAt = time.GetUtcNow().UtcDateTime;
-            }
+            if (listing is not null) FinishListingOnlyRun(run, listing);
             return;
         }
+        // A listing that could not be written stays failed on its own step and can be retried there:
+        // the video is made from the mock-ups and does not wait for it.
         foreach (var type in WorkflowCapabilityRegistry.Pipeline)
         {
             var node = checkpoints.Single(x => x.NodeType == type);
@@ -104,7 +76,9 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                             try { retained = WorkflowJson.Read<AiRenderJobPayload>(oldJob.Payload).AiShotStates?.ToArray() ?? []; }
                             catch (JsonException) { /* The previous render used the Standard payload. */ }
                         }
-                        var states = (board.AiShots ?? []).Select(shot => retained.FirstOrDefault(x => x.Fingerprint == shot.Fingerprint)
+                        // A scene Google answered without a clip starts over, so this attempt submits it again (the seller
+                        // has just confirmed its cost). One whose submission is uncertain is kept: it is never sent twice.
+                        var states = (board.AiShots ?? []).Select(shot => retained.FirstOrDefault(x => x.Fingerprint == shot.Fingerprint && x.Status != "failed")
                             is { } existing ? existing with { SceneOrder = shot.SceneOrder } : new AiShotJobState(shot.SceneOrder, shot.Fingerprint)).ToArray();
                         await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct);
                     }
@@ -134,6 +108,57 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
     }
+    /// <summary>Writes the listing again after it failed, without touching the video steps.</summary>
+    public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
+    {
+        var listing = checkpoints.Single(x => x.NodeType == "generate-listing");
+        listing.Attempt++;
+        await GenerateListingAsync(run, checkpoints, listing, ct);
+        if (checkpoints.All(x => x.NodeType != "generate-video")) FinishListingOnlyRun(run, listing);
+    }
+
+    private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing, CancellationToken ct)
+    {
+        var input = checkpoints.Single(x => x.NodeType == "product-input");
+        if (input.Status != "succeeded")
+        {
+            input.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId });
+            input.Status = "succeeded";
+            input.Progress = 100;
+        }
+        var result = await listingContent.GenerateAsync(run.ProductId, ct);
+        listing.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        if (result.IsFailure)
+        {
+            listing.Status = "failed";
+            listing.Stage = null;
+            listing.Progress = 0;
+            listing.ErrorMessage = result.Error.Message;
+            return;
+        }
+        listing.OutputSnapshot = WorkflowJson.Write(result.Value);
+        listing.Status = "succeeded";
+        listing.Stage = "Generated";
+        listing.Progress = 100;
+        listing.ErrorMessage = null;
+    }
+
+    // The listing is all such a run makes, so its outcome is the run's.
+    private void FinishListingOnlyRun(WorkflowRun run, WorkflowNodeRun listing)
+    {
+        if (listing.Status == "succeeded")
+        {
+            run.Status = "completed";
+            run.ErrorMessage = null;
+            run.CompletedAt = time.GetUtcNow().UtcDateTime;
+        }
+        else if (listing.Status == "failed")
+        {
+            run.Status = "failed";
+            run.ErrorMessage = listing.ErrorMessage;
+        }
+    }
+
     public async Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct)
     {
         var owned = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null, ct);

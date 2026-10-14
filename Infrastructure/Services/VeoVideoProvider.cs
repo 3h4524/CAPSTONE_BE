@@ -13,7 +13,27 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
         var body = await response.Content.ReadAsStringAsync(ct);
         logger.LogWarning("Veo refused the {Step} request with status {Status}: {Body}", step, (int)response.StatusCode,
             body.Length > 2000 ? body[..2000] : body);
-        return new VeoProviderException((int)response.StatusCode);
+        string? detail = null;
+        try
+        {
+            using var parsed = JsonDocument.Parse(body);
+            if (parsed.RootElement.ValueKind == JsonValueKind.Object && parsed.RootElement.TryGetProperty("error", out var error)) detail = Reason(error);
+        }
+        catch (JsonException) { /* Not every refusal has a JSON body. */ }
+        return new VeoProviderException((int)response.StatusCode, detail);
+    }
+
+    // Google's own explanation, kept short enough to show beside the run.
+    private static string? Reason(JsonElement error)
+    {
+        if (error.ValueKind != JsonValueKind.Object || !error.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String) return null;
+        return Shorten(message.GetString());
+    }
+
+    private static string? Shorten(string? text)
+    {
+        var line = string.Join(' ', (text ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return line.Length == 0 ? null : line.Length > 400 ? line[..400] + "…" : line;
     }
 
     private const string Base = "https://generativelanguage.googleapis.com/v1beta/";
@@ -70,14 +90,21 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
         if (root.TryGetProperty("error", out var error))
         {
             LogRefusal(operationName, error);
-            return new(true, null, error.TryGetProperty("message", out _) ? "Veo could not generate this scene. Adjust the source or prompt." : "Veo could not generate this scene.");
+            return new(true, null, Reason(error) ?? "Veo could not generate this scene.");
         }
         var uri = root.TryGetProperty("response", out var result) && result.TryGetProperty("generateVideoResponse", out var video) &&
             video.TryGetProperty("generatedSamples", out var samples) && samples.ValueKind == JsonValueKind.Array && samples.GetArrayLength() > 0 &&
             samples[0].TryGetProperty("video", out var item) && item.TryGetProperty("uri", out var link) ? link.GetString() : null;
+        if (!string.IsNullOrWhiteSpace(uri)) return new(true, uri, null);
         // A clip removed by Google's safety filter comes back as a finished operation with no sample, only the reasons.
-        if (string.IsNullOrWhiteSpace(uri)) LogRefusal(operationName, root.TryGetProperty("response", out var refused) ? refused : root);
-        return string.IsNullOrWhiteSpace(uri) ? new(true, null, "Veo returned no video.") : new(true, uri, null);
+        var refused = root.TryGetProperty("response", out var answer) ? answer : root;
+        LogRefusal(operationName, refused);
+        var reasons = refused.ValueKind == JsonValueKind.Object && refused.TryGetProperty("generateVideoResponse", out var filtered) &&
+            filtered.ValueKind == JsonValueKind.Object && filtered.TryGetProperty("raiMediaFilteredReasons", out var listed) && listed.ValueKind == JsonValueKind.Array
+            ? Shorten(string.Join(' ', listed.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString())))
+            : null;
+        // Only Google's own statement counts: without it the attempt may have been billed.
+        return new(true, null, reasons ?? "Veo returned no video.", reasons?.Contains("not been charged", StringComparison.OrdinalIgnoreCase) == true);
     }
 
     private void LogRefusal(string operationName, JsonElement detail)

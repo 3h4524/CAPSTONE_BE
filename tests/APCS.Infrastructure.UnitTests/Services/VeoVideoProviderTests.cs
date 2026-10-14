@@ -71,7 +71,21 @@ public sealed class VeoVideoProviderTests
 
         var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "9:16", 6, false, default);
 
-        (await act.Should().ThrowAsync<VeoProviderException>()).Which.StatusCode.Should().Be(429);
+        var refusal = (await act.Should().ThrowAsync<VeoProviderException>()).Which;
+        refusal.StatusCode.Should().Be(429);
+        refusal.Detail.Should().Be("Quota exceeded.");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_RefusalWithoutAReadableBody_HasNoDetail()
+    {
+        var provider = Provider(request => request.Method == HttpMethod.Get ? Bytes(Png) : new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("<html>Bad Request</html>") });
+
+        var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "9:16", 6, false, default);
+
+        var refusal = (await act.Should().ThrowAsync<VeoProviderException>()).Which;
+        refusal.StatusCode.Should().Be(400);
+        refusal.Detail.Should().BeNull();
     }
 
     [TestMethod]
@@ -105,20 +119,46 @@ public sealed class VeoVideoProviderTests
     }
 
     [TestMethod]
-    public async Task PollAsync_ClipRemovedByTheSafetyFilter_ReportsNoVideo()
+    public async Task PollAsync_ClipRemovedByTheSafetyFilter_ReportsTheReasonGoogleGave()
     {
         var provider = Provider(_ => Json(HttpStatusCode.OK,
-            """{"done":true,"response":{"generateVideoResponse":{"raiMediaFilteredCount":1,"raiMediaFilteredReasons":["Audio issue."]}}}"""));
+            """{"done":true,"response":{"generateVideoResponse":{"raiMediaFilteredCount":1,"raiMediaFilteredReasons":["The image\n shows a minor."]}}}"""));
 
         var result = await provider.PollAsync("key", Operation, default);
 
         result.Done.Should().BeTrue();
         result.VideoUri.Should().BeNull();
-        result.Failure.Should().Be("Veo returned no video.");
+        result.Failure.Should().Be("The image shows a minor.");
+        // Google did not say the attempt was free, so it is not assumed to be.
+        result.NotCharged.Should().BeFalse();
     }
 
     [TestMethod]
-    [DataRow("""{"done":true,"error":{"code":3,"message":"Unsafe."}}""", "Adjust the source or prompt")]
+    public async Task PollAsync_ClipDroppedWithoutCharge_SaysSo()
+    {
+        var provider = Provider(_ => Json(HttpStatusCode.OK,
+            """{"done":true,"response":{"generateVideoResponse":{"raiMediaFilteredCount":1,"raiMediaFilteredReasons":["We encountered an issue with the audio for your prompt. You have not been charged for this attempt."]}}}"""));
+
+        var result = await provider.PollAsync("key", Operation, default);
+
+        result.VideoUri.Should().BeNull();
+        result.Failure.Should().Contain("issue with the audio");
+        result.NotCharged.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task PollAsync_FinishedWithNeitherClipNorReason_ReportsNoVideo()
+    {
+        var provider = Provider(_ => Json(HttpStatusCode.OK, """{"done":true,"response":{"generateVideoResponse":{}}}"""));
+
+        var result = await provider.PollAsync("key", Operation, default);
+
+        result.Failure.Should().Be("Veo returned no video.");
+        result.NotCharged.Should().BeFalse();
+    }
+
+    [TestMethod]
+    [DataRow("""{"done":true,"error":{"code":3,"message":"Unsafe."}}""", "Unsafe.")]
     [DataRow("""{"done":true,"error":{"code":3}}""", "could not generate this scene")]
     public async Task PollAsync_OperationFailed_ReportsAFailure(string response, string message)
     {

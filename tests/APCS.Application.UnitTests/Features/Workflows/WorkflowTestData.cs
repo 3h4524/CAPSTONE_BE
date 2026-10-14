@@ -5,6 +5,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.ListingContent.Dtos;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -130,6 +131,41 @@ internal sealed class WorkflowTestData
                 CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime });
         return run;
     }
+
+    /// <summary>Adds a Listing Content step to a run that already has the video steps.</summary>
+    public WorkflowNodeRun AddListingStep(WorkflowRun run, string status = "pending")
+    {
+        var step = new WorkflowNodeRun { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "listing", NodeType = "generate-listing",
+            Status = status, Attempt = 1, InputSnapshot = "{}", OutputSnapshot = "{}", CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
+        NodeRows.Add(step);
+        return step;
+    }
+
+    /// <summary>A run of Product Input -> Listing Content only.</summary>
+    public WorkflowRun AddListingOnlyRun(Product product, string status = "running")
+    {
+        var config = JsonSerializer.SerializeToElement<object>(new ProductInputConfig(product.BatchId, product.Id), WorkflowJson.Options);
+        var definition = new WorkflowDefinition(2,
+            [new("input", "product-input", "Product input", new(0, 0), config), new("listing", "generate-listing", "Listing content", new(200, 0), JsonSerializer.SerializeToElement(new { }))],
+            [new("edge", "input", "listing")]);
+        var run = new WorkflowRun { Id = Guid.NewGuid(), WorkflowId = Guid.NewGuid(), ProductId = product.Id, UserId = Owner,
+            DefinitionSnapshot = WorkflowJson.Write(definition), WorkflowRevision = 4, Revision = 7, Status = status,
+            IdempotencyKey = "listing-only", RequestHash = "listing-only", CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
+        RunRows.Add(run);
+        NodeRows.Add(new() { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "input", NodeType = "product-input", Status = "pending",
+            Attempt = 1, InputSnapshot = "{}", OutputSnapshot = "{}", CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime });
+        AddListingStep(run);
+        return run;
+    }
+
+    public void ListingSucceeds() => ListingContent
+        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
+        .ReturnsAsync((Guid productId, CancellationToken _, ListingSeoFeedbackDto? _) => Result.Success(
+            new ListingContentResponseDto(productId, Guid.NewGuid(), "Vintage road trip tee", "A soft tee.", [], 1, "text-model", Now.UtcDateTime)));
+
+    public void ListingFails(string message) => ListingContent
+        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
+        .ReturnsAsync(Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", message)));
 
     public MockupImage AddAsset(Product product, string role = "Hero")
     {
