@@ -134,7 +134,7 @@ public sealed class MockupTemplateProcessingTests
             Mock.Of<IMockupMapService>(),
             db,
             new ApplyMockupTemplatesValidator(), new CreateMockupTemplateValidator(),
-            new UpdateMockupTemplateValidator(), new GenerateMockupImageValidator(),
+            new UpdateMockupTemplateValidator(), new GenerateMockupImageValidator(), new SaveMockupOverrideValidator(),
             new FakeTimeProvider(UtcNow),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<MockupTemplateService>.Instance);
     }

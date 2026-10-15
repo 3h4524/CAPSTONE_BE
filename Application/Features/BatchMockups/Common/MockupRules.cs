@@ -80,6 +80,30 @@ public static class MockupRules
         : garmentColor is not null && byColor.TryGetValue(garmentColor.ToUpperInvariant(), out var own) ? own
         : byColor.GetValueOrDefault(DefaultBackgroundKey);
 
+    /// <summary>The mock-ups of a job made apart from its shared settings, by slot key (see <see cref="SlotKey"/>).</summary>
+    public const string OverridesConfigKey = "mockupOverrides";
+
+    public const string SlotKeyPattern = "^[0-9a-f]{32}\\.[0-9a-f]{32}\\.([0-9A-F]{6}|own)$";
+
+    /// <summary>
+    /// Names one mock-up that a job's shared settings make: a design on one selected template in one garment color
+    /// (or in the template's own). A mock-up made its own way is kept under this name, so the change applies again
+    /// every time the job's mock-ups are made. Safe in a URL.
+    /// </summary>
+    public static string SlotKey(Guid designImageId, Guid templateId, string? garmentColor) =>
+        $"{designImageId:N}.{templateId:N}.{(garmentColor is null ? "own" : garmentColor.TrimStart('#').ToUpperInvariant())}";
+
+    /// <summary>The design image and template a slot key names, or false for anything else.</summary>
+    public static bool TryReadSlotKey(string? slotKey, out Guid designImageId, out Guid templateId)
+    {
+        designImageId = Guid.Empty;
+        templateId = Guid.Empty;
+        if (slotKey is null || !System.Text.RegularExpressions.Regex.IsMatch(slotKey, SlotKeyPattern))
+            return false;
+        var parts = slotKey.Split('.');
+        return Guid.TryParseExact(parts[0], "N", out designImageId) && Guid.TryParseExact(parts[1], "N", out templateId);
+    }
+
     public const string GarmentColorPattern = "^#[0-9A-Fa-f]{6}$";
     public const string GarmentColorsConfigKey = "mockupGarmentColors";
     public const int MaximumGarmentColors = 5;

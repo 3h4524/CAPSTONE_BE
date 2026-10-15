@@ -62,6 +62,12 @@ public static class MockupErrors
     public static Error ApprovalPending() =>
         Error.Conflict("BatchMockups.ApprovalPending", "Mock-ups are made after the designs are approved.");
 
+    public static Error SlotNotFound() =>
+        Error.NotFound("BatchMockups.SlotNotFound", "This mock-up is not one the job makes any more. Reload its mock-ups and try again.");
+
+    public static Error TemplateNotForProduct(string name) =>
+        Error.Conflict("BatchMockups.TemplateNotForProduct", $"The template {name} is for another type of product than this one.");
+
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
 }
