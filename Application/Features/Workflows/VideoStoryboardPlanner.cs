@@ -1,4 +1,5 @@
 using APCS.Common.Models;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.Workflows;
@@ -17,15 +18,19 @@ public sealed class VideoStoryboardPlanner
     public static string? KnownArtworkGroup(IReadOnlyList<MockupImage> owned, string? configured) =>
         !string.IsNullOrEmpty(configured) && owned.Any(x => x.ArtworkGroupKey == configured) ? configured : null;
 
-    public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config)
+    public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config,
+        IReadOnlyList<VideoTemplate>? aiVideoTemplates = null)
     {
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
         var eligible = assets.Where(x => x.ProductId == product.Id && x.DeletedAt == null && x.ApprovalStatus == "approved" &&
             x.ApprovedRevision == x.MetadataRevision && !string.IsNullOrEmpty(x.ContentHash)).ToList();
-        if (config.AssetSelection == "manual") eligible = eligible.Where(x => config.SelectedMockupIds!.Contains(x.Id)).ToList();
+        var sceneAi = config.Mode == "ai_shot" && config.AiScenes is { Count: > 0 };
+        if (!sceneAi && config.AssetSelection == "manual") eligible = eligible.Where(x => config.SelectedMockupIds!.Contains(x.Id)).ToList();
         if (eligible.Count == 0) return Result.Failure<Storyboard>(Error.Conflict("WaitingForInput", "Approve at least one mockup at its current revision."));
         if (eligible.Select(x => x.ArtworkGroupKey).Distinct().Count() != 1 || string.IsNullOrWhiteSpace(eligible[0].ArtworkGroupKey))
             return Result.Failure<Storyboard>(Error.Validation("All selected mockups must share an artwork group."));
+        if (sceneAi)
+            return PlanAiScenes(product, eligible, config, aiVideoTemplates);
         var templateVersion = config.TemplateVersion ?? 1;
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
         var template = config.Mode == "ai_shot" && config.AiShotOptions?.Coverage == "full_video"
@@ -72,6 +77,157 @@ public sealed class VideoStoryboardPlanner
         return config.Mode == "ai_shot" ? PlanAiShot(standard, eligible, config) : Result.Success(standard);
     }
 
+    private Result<Storyboard> PlanAiScenes(Product product, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config,
+        IReadOnlyList<VideoTemplate>? aiVideoTemplates)
+    {
+        var requestedScenes = config.AiScenes!;
+        if (requestedScenes.Count is < 1 or > 4)
+            return Result.Failure<Storyboard>(Error.Validation("Configure between one and four AI scenes."));
+        if (requestedScenes.Any(scene => scene.DurationSeconds is not (4 or 6 or 8)) || requestedScenes.Sum(scene => scene.DurationSeconds) > 30)
+            return Result.Failure<Storyboard>(Error.Validation("AI scenes must be 4, 6 or 8 seconds each, with a maximum combined duration of 30 seconds."));
+        if (config.AiGlobalInstructions is { Length: > 500 })
+            return Result.Failure<Storyboard>(Error.Validation("Keep the shared AI scene direction under 500 characters."));
+        if (config.AiStudioMode is not ("direct" or "studio"))
+            return Result.Failure<Storyboard>(Error.Validation("Choose direct mock-up or a studio keyframe."));
+
+        var productSources = eligible.Where(asset => asset.Role != "VideoScene").ToList();
+        if (productSources.Count == 0)
+            return Result.Failure<Storyboard>(Error.Conflict("WaitingForInput", "Approve at least one original product mock-up at its current revision."));
+
+        var templates = AiVideoPromptCompiler.Catalog(aiVideoTemplates);
+        var plannedScenes = new List<ScenePlan>(requestedScenes.Count);
+        var shots = new List<AiShotPlan>(requestedScenes.Count);
+        for (var index = 0; index < requestedScenes.Count; index++)
+        {
+            var requested = requestedScenes[index];
+            var definition = templates.SingleOrDefault(item => item.Code == requested.TemplateCode);
+            if (definition == null)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} uses an unavailable template."));
+            var settings = AiVideoPromptCompiler.ApplyDefaults(definition, requested);
+            if (!SettingsAreSupported(definition, settings))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} contains a setting that its template does not support."));
+            if (settings.ExtraInstructions is { Length: > 500 })
+                return Result.Failure<Storyboard>(Error.Validation("Keep each scene's extra instructions under 500 characters."));
+
+            var source = requested.MockupId.HasValue ? productSources.FirstOrDefault(asset => asset.Id == requested.MockupId.Value) : null;
+            if (requested.MockupId.HasValue && source == null)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} source is not an approved mockup."));
+            source ??= definition.RequiresLifestyle
+                ? productSources.FirstOrDefault(asset => asset.Role == "Lifestyle")
+                : definition.RequiresDetail
+                    ? productSources.FirstOrDefault(HasDetail)
+                    : productSources.FirstOrDefault(asset => asset.Role == "Hero") ?? productSources[0];
+
+            if (source == null)
+                return Result.Failure<Storyboard>(Error.Conflict("VideoSourceRequired", definition.RequiresLifestyle
+                    ? $"AI scene {index + 1} requires an approved Lifestyle image. Generate or upload one, approve it, then continue."
+                    : definition.RequiresDetail
+                        ? $"AI scene {index + 1} needs an artwork or detail region. Mark the visible design area or upload a detail mockup."
+                        : $"AI scene {index + 1} needs an approved product mockup."));
+            if (definition.RequiresLifestyle && (source.Role != "Lifestyle" || !settings.RightsConfirmed))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires an approved Lifestyle image and confirmation of image rights."));
+            if (definition.RequiresDetail && !HasDetail(source))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs an artwork or detail region. Mark the visible design area or upload a detail mockup."));
+
+            var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
+            var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
+            var sourceCrop = definition.RequiresDetail && source.Role != "ArtworkDetail"
+                ? detailRegions.FirstOrDefault(region => Math.Min(region.Width * source.MockupWidthPx, region.Height * source.MockupHeightPx) >= 512)
+                : null;
+            if (definition.RequiresDetail && source.Role == "ArtworkDetail" && Math.Min(source.MockupWidthPx, source.MockupHeightPx) < 512)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail image is too small. Upload a close-up at least 512 pixels on its shortest side."));
+            if (definition.RequiresDetail && source.Role != "ArtworkDetail" && sourceCrop == null)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail region is too small. Mark a larger artwork area or upload a detail mockup."));
+            if (sourceCrop != null)
+            {
+                var cropWidth = sourceCrop.Width * source.MockupWidthPx;
+                var cropHeight = sourceCrop.Height * source.MockupHeightPx;
+                if (Math.Min(cropWidth, cropHeight) < 512)
+                    return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail region is too small. Mark a larger artwork area or upload a detail mockup."));
+            }
+
+            var startFrameMode = requested.StartFrameMode ??
+                (definition.Code == "cinematic_product_showcase" && config.AiStudioMode == "studio" ? "studio" : "direct");
+            if (startFrameMode is not ("direct" or "studio"))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} has an unsupported start-frame mode."));
+            var useStudioFrame = startFrameMode == "studio";
+            MockupImage? studioFrame = null;
+            MockupImage? studioSource = null;
+            if (startFrameMode == "studio")
+            {
+                var layout = requested.StudioLayout ?? (requested.StartFrameMode == null ? config.AiStudioLayout : "hanging_window");
+                var frameId = requested.StudioFrameId ?? (requested.StartFrameMode == null ? config.AiStudioFrameId : null);
+                if (frameId is not Guid selectedFrameId || !AiStudioFrameIdentity.IsSupportedLayout(layout))
+                    return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired", $"Choose an approved studio keyframe for AI scene {index + 1}."));
+                studioFrame = eligible.FirstOrDefault(asset => asset.Id == selectedFrameId);
+                var metadata = studioFrame is null ? null : AiStudioFrameIdentity.Read(studioFrame.Regions);
+                studioSource = metadata is null ? null : productSources.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
+                if (studioFrame is null || studioSource is null ||
+                    !AiStudioFrameIdentity.IsCurrent(studioFrame, studioSource, layout,
+                        VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt))
+                    return Result.Failure<Storyboard>(Error.Conflict("StudioFrameStale", $"The studio keyframe for AI scene {index + 1} no longer matches its approved source or video format. Generate or select a current keyframe."));
+            }
+            var sceneSource = useStudioFrame ? studioFrame! : source;
+            var contextSource = useStudioFrame ? studioSource! : source;
+            var productContext = new AiVideoProductContext(product.ProductType, contextSource.Role,
+                contextSource.GarmentColor, contextSource.BackgroundColor);
+            var prompt = AiVideoPromptCompiler.Compile(definition, settings, productContext, requested.DurationSeconds, config.AiGlobalInstructions, useStudioFrame);
+            var scene = CreateScene(sceneSource, product.ProductType, config, index, requested.DurationSeconds * 30) with
+            {
+                GenerationStrategy = "ai_shot",
+                Motion = "static",
+                Transition = index == 0 ? "cut" : config.StandardOptions?.Transition ?? "fade",
+                AiTemplateCode = definition.Code,
+                PromptVersion = definition.PromptVersion,
+                CompiledPrompt = prompt,
+                AiSettings = settings,
+                SourceCrop = sourceCrop,
+                AiProviderKey = AiVideoModel.ProviderKey,
+                AiModelKey = AiVideoModel.ModelKey,
+                AiModelName = AiVideoModel.ModelName
+            };
+            var fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new
+            {
+                sceneSource.Id,
+                sceneSource.MetadataRevision,
+                sceneSource.ContentHash,
+                SourceCrop = sourceCrop,
+                definition.Code,
+                definition.PromptVersion,
+                settings,
+                prompt,
+                Model = AiVideoModel.ModelName,
+                Duration = requested.DurationSeconds,
+                Aspect = VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio,
+                index
+            }));
+            plannedScenes.Add(scene);
+            shots.Add(new(index, sceneSource.Id, sceneSource.ContentHash!, AiVideoModel.ModelName, definition.Code,
+                prompt, requested.DurationSeconds, fingerprint, AiVideoModel.ProviderKey, AiVideoModel.ModelKey, definition.PromptVersion, sourceCrop));
+        }
+
+        var duration = requestedScenes.Sum(scene => scene.DurationSeconds);
+        var output = VideoOutputFormats.Resolve(config.OutputFormat);
+        var fingerprintAll = WorkflowJson.Hash(WorkflowJson.Write(new
+        {
+            Product = product.Id,
+            config.OutputFormat,
+            Mode = "ai_shot",
+            PlannedScenes = plannedScenes,
+            Shots = shots
+        }));
+        return Result.Success(new Storyboard("product_showcase", 2, duration, product.ProductType, plannedScenes,
+            fingerprintAll, output.Format, output.Width, output.Height, output.AspectRatio, "ai_shot", 0, shots));
+    }
+
+    private static bool SettingsAreSupported(AiVideoTemplateDefinition definition, AiVideoSceneOptions settings) =>
+        definition.AllowedSettings.TryGetValue("framing", out var framing) && framing.Contains(settings.Framing, StringComparer.Ordinal) &&
+        definition.AllowedSettings.TryGetValue("cameraAngle", out var angles) && angles.Contains(settings.CameraAngle, StringComparer.Ordinal) &&
+        definition.AllowedSettings.TryGetValue("cameraMovement", out var movements) && movements.Contains(settings.CameraMovement, StringComparer.Ordinal) &&
+        definition.AllowedSettings.TryGetValue("subjectMotion", out var subjectMotion) && subjectMotion.Contains(settings.SubjectMotion, StringComparer.Ordinal) &&
+        definition.AllowedSettings.TryGetValue("motionIntensity", out var intensities) && intensities.Contains(settings.MotionIntensity, StringComparer.Ordinal) &&
+        definition.AllowedSettings.TryGetValue("lighting", out var lighting) && lighting.Contains(settings.Lighting, StringComparer.Ordinal);
+
     private Result<Storyboard> PlanAiShot(Storyboard standard, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config)
     {
         var options = config.AiShotOptions;
@@ -91,7 +247,7 @@ public sealed class VideoStoryboardPlanner
             return Result.Failure<Storyboard>(Error.Validation("Material Detail needs an approved detail image or marked detail region."));
         if (options.Concept is "lifestyle_motion" or "product_in_use" && (source.Role != "Lifestyle" || !options.RightsConfirmed))
             return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need an approved Lifestyle image and image-rights confirmation."));
-        var model = "veo-3.1-lite-generate-preview";
+        var model = AiVideoModel.ModelName;
         var aspect = config.OutputFormat == "landscape" ? "16:9" : "9:16";
         var prompt = BuildPrompt(options.Concept, options.Prompt);
         AiShotPlan Shot(int index, MockupImage asset, int seconds)
@@ -238,7 +394,7 @@ public sealed class VideoStoryboardPlanner
         return "product_showcase";
     }
     private static bool HasDetail(MockupImage asset) => asset.Role == "ArtworkDetail" ||
-        WorkflowJson.Read<MockupRegions>(asset.Regions).Detail != null;
+        WorkflowJson.Read<MockupRegions>(asset.Regions) is { Detail: not null } or { Artwork: not null };
     private static Region Inset(Region bounds, double scale) => new(
         bounds.X + bounds.Width * (1 - scale) / 2,
         bounds.Y + bounds.Height * (1 - scale) / 2,

@@ -3,6 +3,9 @@ namespace APCS.Application.Abstractions.AI;
 /// <summary>Generates one design image per call from a text prompt, using the Seller's own BYOK key.</summary>
 public interface IImageGenerationProvider
 {
+    /// <summary>Estimated cost of one generated image with the currently configured model.</summary>
+    decimal EstimatedCostPerImageUsd { get; }
+
     /// <summary>
     /// Requests one generated image. The call is synchronous: the provider either returns the image
     /// bytes directly or reports why it could not (content-safety block, or a provider error).

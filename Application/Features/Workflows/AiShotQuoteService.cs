@@ -35,7 +35,7 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
         var (board, cost, count) = evaluated.Value;
         var expires = time.GetUtcNow().AddMinutes(10);
         return Result.Success(new AiShotQuoteResponse(signer.Sign(new(run.Id, board.Fingerprint, request.Regenerate, cost, expires)),
-            cost, count, expires, "veo-3.1-lite-generate-preview", "Estimate only. Google bills the connected account for successful generations."));
+            cost, count, expires, AiVideoModel.ModelName, "Estimate only. Google bills the connected account for successful generations."));
     }
 
     public async Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, CancellationToken ct)
@@ -69,6 +69,6 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
         }
         var missing = (board.AiShots ?? []).Where(shot => !stored.Any(state => state.Fingerprint == shot.Fingerprint &&
             state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))).ToArray();
-        return Result.Success((board, missing.Sum(x => x.DurationSeconds) * .05m, missing.Length));
+        return Result.Success((board, missing.Sum(x => x.DurationSeconds) * AiVideoModel.PricePerSecondUsd, missing.Length));
     }
 }

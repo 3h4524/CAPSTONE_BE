@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Workflows;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -26,6 +27,7 @@ public sealed class AiShotQuoteServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.NewClips.Should().Be(clips);
         result.Value.EstimatedCostUsd.Should().Be((decimal)cost);
+        result.Value.Model.Should().Be(AiVideoModel.ModelName);
         result.Value.Token.Should().Be("signed-quote");
         result.Value.ExpiresAtUtc.Should().Be(context.Fixture.Time.GetUtcNow().AddMinutes(10));
         context.Claims.Should().Match<AiShotQuoteClaims>(x => x.RunId == context.Run.Id &&
@@ -52,6 +54,31 @@ public sealed class AiShotQuoteServiceTests
         reuse.Value.EstimatedCostUsd.Should().Be(0m);
         regenerate.Value.NewClips.Should().Be(1);
         regenerate.Value.EstimatedCostUsd.Should().Be(.30m);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_PendingStudioFrame_IsRejectedBeforeSigningVeoQuote()
+    {
+        var context = CreateContext();
+        var frame = WorkflowTestData.Asset(context.Asset.ProductId, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ApprovalStatus = "pending";
+        frame.ApprovedRevision = null;
+        frame.ContentHash = new string('b', 64);
+        var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
+            AiStudioFrameIdentity.Fingerprint(context.Asset, AiStudioFrameIdentity.HangingWindow, aspect), context.Asset.Id,
+            context.Asset.ContentHash!, context.Asset.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
+        context.Fixture.AssetRows.Add(frame);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()], AiStudioMode: "studio",
+            AiStudioSourceMockupId: context.Asset.Id, AiStudioFrameId: frame.Id);
+
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(config), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("StudioFrameStale");
+        context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
     }
 
     [TestMethod]

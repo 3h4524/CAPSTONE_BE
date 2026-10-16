@@ -1,12 +1,18 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Features.Workflows;
 using Microsoft.Extensions.Logging;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
 
 namespace APCS.Infrastructure.Services;
 
-public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVideoProvider> logger) : IVeoVideoProvider
+public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVideoProvider> logger) : IAiVideoGenerationStrategy
 {
+    public string ProviderKey => "gemini";
+    public string ModelKey => AiVideoModel.ModelKey;
+    public string ModelName => AiVideoModel.ModelName;
     // Google says why it refused a request in the response body; without it every refusal looks the same.
     private async Task<VeoProviderException> RefusedAsync(HttpResponseMessage response, string step, CancellationToken ct)
     {
@@ -38,7 +44,11 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
 
     private const string Base = "https://generativelanguage.googleapis.com/v1beta/";
     public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
-        int durationSeconds, bool people, CancellationToken ct)
+        int durationSeconds, bool people, CancellationToken ct) =>
+        await StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, null, ct);
+
+    public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
+        int durationSeconds, bool people, APCS.Application.Features.Workflows.Region? sourceCrop, CancellationToken ct)
     {
         if (durationSeconds is not (4 or 6 or 8) || aspectRatio is not ("9:16" or "16:9"))
             throw new ArgumentException("Unsupported Veo video settings.");
@@ -47,7 +57,21 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
         var bytes = await source.Content.ReadAsByteArrayAsync(ct);
         if (bytes.Length is < 24 or > 20_000_000 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
             throw new InvalidOperationException("AI Shot source must be a valid approved PNG under 20 MB.");
-        using var request = new HttpRequestMessage(HttpMethod.Post, Base + "models/veo-3.1-lite-generate-preview:predictLongRunning");
+        if (sourceCrop is not null)
+        {
+            using var image = Image.Load(bytes);
+            var x = Math.Clamp((int)Math.Floor(sourceCrop.X * image.Width), 0, image.Width - 1);
+            var y = Math.Clamp((int)Math.Floor(sourceCrop.Y * image.Height), 0, image.Height - 1);
+            var width = Math.Clamp((int)Math.Ceiling(sourceCrop.Width * image.Width), 1, image.Width - x);
+            var height = Math.Clamp((int)Math.Ceiling(sourceCrop.Height * image.Height), 1, image.Height - y);
+            if (Math.Min(width, height) < 512)
+                throw new InvalidOperationException("AI macro source region must be at least 512 pixels on its shortest side.");
+            image.Mutate(context => context.Crop(new Rectangle(x, y, width, height)));
+            await using var cropped = new MemoryStream();
+            await image.SaveAsPngAsync(cropped, ct);
+            bytes = cropped.ToArray();
+        }
+        using var request = new HttpRequestMessage(HttpMethod.Post, Base + "models/" + ModelName + ":predictLongRunning");
         request.Headers.Add("x-goog-api-key", apiKey);
         request.Content = JsonContent.Create(new
         {

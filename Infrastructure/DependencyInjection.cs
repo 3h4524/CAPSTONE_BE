@@ -91,6 +91,8 @@ public static class DependencyInjection
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
+        services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
+            ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
