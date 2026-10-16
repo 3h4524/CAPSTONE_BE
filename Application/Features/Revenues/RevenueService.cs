@@ -21,16 +21,16 @@ public sealed class RevenueService(
         var previousEndDate = filter.EndDate.AddDays(-days);
 
         var currentInvoices = await invoiceRepository.Query()
-            .Where(i => i.Status == "paid" && i.PaymentDate >= filter.StartDate && i.PaymentDate <= filter.EndDate)
+            .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= filter.StartDate && (i.PaymentDate ?? i.InvoiceDate) <= filter.EndDate)
             .ToListAsync(cancellationToken);
 
         var previousInvoices = await invoiceRepository.Query()
-            .Where(i => i.Status == "paid" && i.PaymentDate >= previousStartDate && i.PaymentDate <= previousEndDate)
+            .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= previousStartDate && (i.PaymentDate ?? i.InvoiceDate) <= previousEndDate)
             .ToListAsync(cancellationToken);
 
         // 1. Total Net Revenue
-        decimal currentRevenue = currentInvoices.Sum(i => i.AmountUsd);
-        decimal previousRevenue = previousInvoices.Sum(i => i.AmountUsd);
+        decimal currentRevenue = currentInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
+        decimal previousRevenue = previousInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
 
         // 2. Active Subscribers (from Invoices in period)
         int currentUsers = currentInvoices.Select(i => i.UserId).Distinct().Count();
@@ -66,7 +66,7 @@ public sealed class RevenueService(
         var invoices = await invoiceRepository.Query()
             .Include(i => i.Subscription)
             .ThenInclude(s => s.Plan)
-            .Where(i => i.Status == "paid" && i.PaymentDate >= filter.StartDate && i.PaymentDate <= filter.EndDate)
+            .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= filter.StartDate && (i.PaymentDate ?? i.InvoiceDate) <= filter.EndDate)
             .ToListAsync(cancellationToken);
 
         var chartDto = new RevenueChartDto();
@@ -75,12 +75,18 @@ public sealed class RevenueService(
         if (filter.Granularity.Equals("Month", StringComparison.OrdinalIgnoreCase))
         {
             chartDto.Trend = invoices
-                .Where(i => i.PaymentDate.HasValue)
-                .GroupBy(i => new { i.PaymentDate!.Value.Year, i.PaymentDate!.Value.Month })
+                .GroupBy(i => new { (i.PaymentDate ?? i.InvoiceDate).Year, (i.PaymentDate ?? i.InvoiceDate).Month })
                 .Select(g => new RevenueTrendPointDto
                 {
                     DateLabel = $"{g.Key.Year}-{g.Key.Month:D2}",
-                    Amount = g.Sum(i => i.AmountUsd)
+                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                    PlanBreakdown = g
+                        .Where(i => i.Subscription?.Plan != null)
+                        .GroupBy(i => i.Subscription.Plan.Name)
+                        .ToDictionary(
+                            pg => pg.Key,
+                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                        )
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
@@ -88,12 +94,18 @@ public sealed class RevenueService(
         else if (filter.Granularity.Equals("Year", StringComparison.OrdinalIgnoreCase))
         {
             chartDto.Trend = invoices
-                .Where(i => i.PaymentDate.HasValue)
-                .GroupBy(i => i.PaymentDate!.Value.Year)
+                .GroupBy(i => (i.PaymentDate ?? i.InvoiceDate).Year)
                 .Select(g => new RevenueTrendPointDto
                 {
                     DateLabel = g.Key.ToString(),
-                    Amount = g.Sum(i => i.AmountUsd)
+                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                    PlanBreakdown = g
+                        .Where(i => i.Subscription?.Plan != null)
+                        .GroupBy(i => i.Subscription.Plan.Name)
+                        .ToDictionary(
+                            pg => pg.Key,
+                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                        )
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
@@ -101,29 +113,42 @@ public sealed class RevenueService(
         else // Day
         {
             chartDto.Trend = invoices
-                .Where(i => i.PaymentDate.HasValue)
-                .GroupBy(i => i.PaymentDate!.Value)
+                .GroupBy(i => (i.PaymentDate ?? i.InvoiceDate))
                 .Select(g => new RevenueTrendPointDto
                 {
                     DateLabel = g.Key.ToString("yyyy-MM-dd"),
-                    Amount = g.Sum(i => i.AmountUsd)
+                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                    PlanBreakdown = g
+                        .Where(i => i.Subscription?.Plan != null)
+                        .GroupBy(i => i.Subscription.Plan.Name)
+                        .ToDictionary(
+                            pg => pg.Key,
+                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                        )
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
         }
 
         // 2. By Plan Chart
-        decimal totalRevenue = invoices.Sum(i => i.AmountUsd);
+        decimal totalRevenue = invoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
         chartDto.ByPlan = invoices
             .Where(i => i.Subscription?.Plan != null)
             .GroupBy(i => i.Subscription.Plan.Name)
             .Select(g => new RevenueByPlanDto
             {
                 PlanName = g.Key,
-                Amount = g.Sum(i => i.AmountUsd),
-                Percentage = totalRevenue > 0 ? Math.Round((g.Sum(i => i.AmountUsd) / totalRevenue) * 100, 2) : 0
+                Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                Percentage = totalRevenue > 0 ? Math.Round((g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd) / totalRevenue) * 100, 2) : 0
             })
             .OrderByDescending(x => x.Amount)
+            .ToList();
+
+        // 3. Available Plans
+        chartDto.AvailablePlans = invoices
+            .Where(i => i.Subscription?.Plan != null)
+            .Select(i => i.Subscription.Plan.Name)
+            .Distinct()
             .ToList();
 
         return Result.Success(chartDto);
@@ -147,12 +172,12 @@ public sealed class RevenueService(
             .Include(i => i.User)
             .Include(i => i.Subscription)
             .ThenInclude(s => s.Plan)
-            .Where(i => i.Status == "paid" && i.PaymentDate >= filter.StartDate && i.PaymentDate <= filter.EndDate);
+            .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= filter.StartDate && (i.PaymentDate ?? i.InvoiceDate) <= filter.EndDate);
 
         int totalCount = await query.CountAsync(cancellationToken);
 
         var items = await query
-            .OrderByDescending(i => i.PaymentDate)
+            .OrderByDescending(i => (i.PaymentDate ?? i.InvoiceDate))
             .Skip((filter.Page - 1) * filter.PageSize)
             .Take(filter.PageSize)
             .Select(i => new RevenueInvoiceDto
@@ -162,9 +187,9 @@ public sealed class RevenueService(
                 CustomerName = i.User.FullName,
                 CustomerEmail = i.User.Email,
                 PlanName = i.Subscription.Plan.Name,
-                Amount = i.AmountUsd,
+                Amount = i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd,
                 Status = i.Status,
-                PaymentDate = i.PaymentDate
+                PaymentDate = i.PaymentDate ?? i.InvoiceDate
             })
             .ToListAsync(cancellationToken);
 

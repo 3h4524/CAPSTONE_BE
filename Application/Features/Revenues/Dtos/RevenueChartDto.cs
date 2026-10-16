@@ -7,12 +7,14 @@ public class RevenueChartDto
 {
     public List<RevenueTrendPointDto> Trend { get; set; } = new();
     public List<RevenueByPlanDto> ByPlan { get; set; } = new();
+    public List<string> AvailablePlans { get; set; } = new();
 }
 
 public class RevenueTrendPointDto
 {
     public string DateLabel { get; set; } = null!;
     public decimal Amount { get; set; }
+    public Dictionary<string, decimal> PlanBreakdown { get; set; } = new();
 }
 
 public class RevenueByPlanDto

@@ -14,6 +14,7 @@ using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignTemplates;
 using APCS.Application.Features.Notifications;
+using APCS.Application.Features.SystemStatistics;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -48,6 +49,7 @@ public static class DependencyInjection
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
+        services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
 
         return services;
     }
