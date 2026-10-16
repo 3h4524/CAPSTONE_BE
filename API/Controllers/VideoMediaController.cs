@@ -67,6 +67,20 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
         var result = await studioFrames.GenerateAsync(productId, request, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
     }
+
+    // Preserve direct controller callers that already have an application request. These overloads
+    // are not HTTP actions; the multipart endpoints above remain the only routed actions.
+    [NonAction]
+    public async Task<IActionResult> QuoteStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct) =>
+        (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
+
+    [NonAction]
+    public async Task<IActionResult> GenerateStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
+    {
+        var result = await studioFrames.GenerateAsync(productId, request, ct);
+        return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
+    }
+
     [HttpPut("mockup-assets/{id:guid}")]
     public async Task<IActionResult> Update(Guid id, MockupMetadataRequest request, CancellationToken ct) => (await mockups.UpdateAsync(id, request, ct)).ToActionResult(this);
     [HttpPost("mockup-assets/{id:guid}/review")]
