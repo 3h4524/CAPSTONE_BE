@@ -8,4 +8,6 @@ public sealed record RagSearchResultDto(
     string Content,
     string? SourceUrl,
     double Similarity,
-    IReadOnlyDictionary<string, object?> Metadata);
+    IReadOnlyDictionary<string, object?> Metadata,
+    string? Version = null,
+    string Status = "ready");

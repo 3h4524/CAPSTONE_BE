@@ -102,6 +102,10 @@ public static class DependencyInjection
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
+        services.AddOptions<RagRetrievalOptions>()
+            .Bind(configuration.GetSection(RagRetrievalOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
         services.PostConfigure<GeminiTextGenerationOptions>(options =>
