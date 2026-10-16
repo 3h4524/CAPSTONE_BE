@@ -33,10 +33,8 @@ public sealed class VideoStoryboardPlannerTests
             scene.GenerationStrategy.Should().Be("standard");
             scene.SourceRevision.Should().Be(3);
             scene.SourceHash.Should().Be(asset.ContentHash);
-            scene.Crop.X.Should().BeApproximately(0, 1e-9);
-            scene.Crop.Y.Should().BeApproximately(1d / 18d, 1e-9);
-            scene.Crop.Width.Should().BeApproximately(1, 1e-9);
-            scene.Crop.Height.Should().BeApproximately(8d / 9d, 1e-9);
+            // The fixture's mock-up is 9:16 like the default output, so it fills the frame uncropped.
+            scene.Crop.Should().Be(new Region(0, 0, 1, 1));
             scene.EndCrop.Width.Should().BeApproximately(scale, 1e-9);
             scene.EndCrop.X.Should().BeApproximately((1 - scale) / 2, 1e-9);
             scene.Text.Should().Be("Original artwork");
@@ -401,33 +399,35 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_MaterialDetailWithoutDetailSource_RejectsAiShot()
+    public void Plan_MaterialDetailOnAMockupWithoutAMarkedDetail_UsesTheChosenMockup()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var hero = fixture.AddAsset(product);
         var result = _planner.Plan(product, [hero], new(Mode: "ai_shot",
             AiShotOptions: new(Concept: "material_detail", MockupId: hero.Id)));
-        result.Error.Message.Should().Contain("Material Detail");
+        result.IsSuccess.Should().BeTrue();
+        result.Value.AiShots!.Should().OnlyContain(shot => shot.MockupId == hero.Id);
     }
 
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    public void Plan_LifestyleConceptWithoutRightsOrLifestyleSource_Rejects(bool lifestyleSource, bool rights)
+    [DataRow("Lifestyle", false)]
+    [DataRow("Hero", false)]
+    [DataRow("Lifestyle", true)]
+    [DataRow("Hero", true)]
+    public void Plan_LifestyleConcept_NeedsImageRightsWhateverTheImageRole(string role, bool rights)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
-        var source = fixture.AddAsset(product, lifestyleSource ? "Lifestyle" : "Hero");
+        var source = fixture.AddAsset(product, role);
         var result = _planner.Plan(product, [source], new(Mode: "ai_shot",
             AiShotOptions: new(Concept: "lifestyle_motion", MockupId: source.Id, RightsConfirmed: rights)));
-        result.IsFailure.Should().BeTrue();
-        result.Error.Message.Should().Contain("Lifestyle");
+        result.IsSuccess.Should().Be(rights);
+        if (!rights) result.Error.Message.Should().Contain("image-rights confirmation");
     }
 
     [TestMethod]
-    public void Plan_FullLifestyleShotWithNonLifestyleSecondSource_RejectsWholeStoryboard()
+    public void Plan_FullLifestyleShot_UsesEverySelectedImageOnceRightsAreConfirmed()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -436,8 +436,8 @@ public sealed class VideoStoryboardPlannerTests
         var result = _planner.Plan(product, [lifestyle, hero], new(Mode: "ai_shot", DurationSeconds: 15,
             AiShotOptions: new(Coverage: "full_video", Concept: "product_in_use", MockupId: lifestyle.Id,
                 RightsConfirmed: true, FullSceneMockupIds: [lifestyle.Id, hero.Id])));
-        result.IsFailure.Should().BeTrue();
-        result.Error.Message.Should().Contain("Every lifestyle AI scene");
+        result.IsSuccess.Should().BeTrue();
+        result.Value.AiShots!.Select(shot => shot.MockupId).Should().Equal(lifestyle.Id, hero.Id);
     }
 
     [TestMethod]
@@ -455,10 +455,9 @@ public sealed class VideoStoryboardPlannerTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id &&
-            scene.SourceHash == frame.ContentHash && scene.CompiledPrompt!.Contains("keep the set, background and light direction consistent"));
-        result.Value.Scenes[0].CompiledPrompt.Should().Contain("orbit, camera roll, snap zoom");
-        result.Value.Scenes[0].CompiledPrompt.Should().Contain("no floating garment");
-        result.Value.Scenes[0].CompiledPrompt.Should().EndWith("This constraint takes precedence over earlier directions suggesting a changing set or product support.");
+            scene.SourceHash == frame.ContentHash && scene.CompiledPrompt!.Contains("keep its reviewed studio set and background stable"));
+        result.Value.Scenes[0].CompiledPrompt.Should().Contain("use the supplied keyframe as the exact opening composition");
+        result.Value.Scenes[0].CompiledPrompt.Should().EndWith("No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.");
         result.Value.AiShots!.Select(shot => shot.Fingerprint).Should().OnlyHaveUniqueItems();
     }
 
@@ -549,7 +548,9 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.Scenes.Single().CompiledPrompt.Should().NotContain("reviewed studio start frame");
     }
 
-    private static MockupImage CreateStudioFrame(MockupImage source, string layout = AiStudioFrameIdentity.HangingWindow)
+    // A keyframe is made for one scene template; the scenes here use the default one.
+    private static MockupImage CreateStudioFrame(MockupImage source, string layout = AiStudioFrameIdentity.HangingWindow,
+        string templateCode = "cinematic_product_showcase")
     {
         var frame = WorkflowTestData.Asset(source.ProductId, "VideoScene");
         frame.SourceType = MockupSources.AiGenerated;
@@ -557,8 +558,8 @@ public sealed class VideoStoryboardPlannerTests
         frame.ApprovedRevision = 1;
         frame.ContentHash = new string('b', 64);
         var aspectRatio = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
-        var metadata = new AiStudioFrameMetadata(AiStudioFrameIdentity.Fingerprint(source, layout, aspectRatio), source.Id,
-            source.ContentHash!, source.MetadataRevision, layout, aspectRatio, AiStudioFrameIdentity.PromptVersion);
+        var metadata = new AiStudioFrameMetadata(AiStudioFrameIdentity.Fingerprint(source, layout, aspectRatio, templateCode: templateCode), source.Id,
+            source.ContentHash!, source.MetadataRevision, layout, aspectRatio, AiStudioFrameIdentity.PromptVersion, TemplateCode: templateCode);
         frame.Regions = AiStudioFrameIdentity.SerializeRegions(metadata);
         return frame;
     }
