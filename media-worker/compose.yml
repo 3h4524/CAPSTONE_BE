@@ -8,7 +8,7 @@ services:
     environment:
       APCS_API_URL: ${APCS_API_URL:-http://host.docker.internal:5191}
       MEDIA_WORKER_API_KEY: ${MEDIA_WORKER_API_KEY:?Set the same key as API MediaWorker__ApiKey}
-      AI_SCENE_CONCURRENCY: ${AI_SCENE_CONCURRENCY:-2}
+      AI_SCENE_CONCURRENCY: ${AI_SCENE_CONCURRENCY:-1}
     extra_hosts:
       - host.docker.internal:host-gateway
     shm_size: 1gb

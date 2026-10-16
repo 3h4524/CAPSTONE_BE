@@ -26,7 +26,7 @@ internal sealed record AiVideoProductContext(
 /// <summary>Builds a provider prompt from a versioned template and validated scene settings.</summary>
 public static class AiVideoPromptCompiler
 {
-    public const string CommonGuardrail = "Use the approved source image as the primary visual reference. Keep the product recognizable by preserving its visible shape, main color, material character, proportions, and the placement of its artwork, logo and readable text. Let fabric or other materials, lighting, shadows, background and camera perspective move naturally when appropriate to the scene. Keep the product coherent over time; avoid duplicate products or conspicuous details that conflict with the source image. Create one continuous shot without cuts. Avoid unrelated text, watermarks and extra products. No dialogue, speech, singing or music; use quiet ambient room tone only.";
+    public const string CommonGuardrail = "Product identity constraint for the entire shot: use the approved source image as the authoritative visual reference and keep the same exact product in every frame. Preserve its visible construction, silhouette, proportions, main colors, material character, distinctive details, and the placement, scale, geometry, colors, spelling and lettering of every visible artwork or logo. Do not redraw, replace, duplicate, morph or reinterpret the product or its printed design. Natural perspective, fabric folds and physically plausible material movement are allowed only when required by the selected action; they must not change the design content or detach it from the product surface. Create one continuous shot without cuts, dissolves, ghosted duplicates or sudden reframing. Do not introduce unrelated text, watermarks or extra products. No dialogue, speech, singing or music; use quiet ambient room tone only. These identity and continuity constraints take precedence over any earlier direction that conflicts with them.";
 
     private static readonly IReadOnlyDictionary<string, AiVideoTemplateDefinition> BuiltIns = CreateBuiltIns();
 
@@ -34,14 +34,15 @@ public static class AiVideoPromptCompiler
     {
         var stored = ReadPersisted(persisted);
         return BuiltIns.Values.Select(item => stored.TryGetValue(item.Code, out var overrideValue) ? overrideValue : item)
-            .Select(item => item with { CommonPrompt = string.IsNullOrWhiteSpace(item.CommonPrompt) ? CommonGuardrail : item.CommonPrompt })
+            .Select(WithRequiredGuardrail)
             .OrderBy(item => item.Code, StringComparer.Ordinal).ToArray();
     }
 
     public static AiVideoTemplateDefinition? Resolve(string code, IEnumerable<VideoTemplate>? persisted = null)
     {
         var stored = ReadPersisted(persisted);
-        return stored.TryGetValue(code, out var fromDatabase) ? fromDatabase : BuiltIns.GetValueOrDefault(code);
+        var resolved = stored.TryGetValue(code, out var fromDatabase) ? fromDatabase : BuiltIns.GetValueOrDefault(code);
+        return resolved is null ? null : WithRequiredGuardrail(resolved);
     }
 
     internal static string Compile(AiVideoTemplateDefinition template, AiVideoSceneOptions options, AiVideoProductContext productContext, int durationSeconds, string? sharedInstructions = null, bool stableSingleImage = false)
@@ -63,23 +64,83 @@ public static class AiVideoPromptCompiler
 
         var productContextPrompt = ProductContextPrompt(productType, productContext);
         var sceneGuidance = SceneGuidance(template, productType, stableSingleImage);
-        if (stableSingleImage && template.Code == "cinematic_product_showcase")
-            sceneGuidance += " Start from this reviewed studio composition and keep the set, background and light direction consistent throughout. Keep the shirt supported by its hanger or resting on the surface; no floating garment or invented viewpoint.";
         var personGuidance = template.RequiresLifestyle
             ? "Keep any adult already visible in the source recognizable and let them move naturally. Do not introduce additional people."
             : null;
-        var commonPrompt = string.IsNullOrWhiteSpace(template.CommonPrompt) ? CommonGuardrail : template.CommonPrompt;
+        var commonPrompt = EffectiveCommonPrompt(template.CommonPrompt);
         var selectedControls = stableSingleImage && template.Code == "cinematic_product_showcase"
             ? $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {Lighting(settings.Lighting)}. Keep garment movement minimal."
-            : $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {CameraMovement(settings.CameraMovement)}; subject motion {SubjectMotion(settings.SubjectMotion)}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}";
+            : $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {cameraMovement}; subject motion {SubjectMotion(settings.SubjectMotion)}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}";
         var shared = string.IsNullOrWhiteSpace(sharedInstructions) ? null : $"Shared direction for all scenes: {sharedInstructions.Trim()}";
         var custom = string.IsNullOrWhiteSpace(settings.ExtraInstructions) ? null : settings.ExtraInstructions.Trim();
-        var stableFrameGuardrail = stableSingleImage && template.Code == "cinematic_product_showcase"
-            ? $"Studio-frame constraint: keep the reviewed background, set, hanger or surface, and light direction unchanged. {StableStudioCameraGuidance(settings.CameraMovement)} Keep the shirt attached to its support and almost still, with only barely perceptible natural fabric and shadow motion. No duplicate or ghosted shirt, cuts, orbit, camera roll, snap zoom, or sudden reframing. This constraint takes precedence over earlier directions suggesting a changing set or product support."
-            : null;
-        return string.Join("\n\n", new[] { prompt, productContextPrompt, sceneGuidance, personGuidance, selectedControls, shared, custom, commonPrompt, stableFrameGuardrail }
+        var sourceGuardrail = SourceGuardrail(productContext, stableSingleImage);
+        var templateGuardrail = TemplateGuardrail(template.Code, settings, stableSingleImage);
+        return string.Join("\n\n", new[] { prompt, productContextPrompt, sceneGuidance, personGuidance, selectedControls, shared, custom, commonPrompt, sourceGuardrail, templateGuardrail }
             .Where(part => !string.IsNullOrWhiteSpace(part)));
     }
+
+    private static AiVideoTemplateDefinition WithRequiredGuardrail(AiVideoTemplateDefinition template)
+    {
+        var defaults = template.Code == "macro_detail_reveal"
+            ? template.Defaults with { CameraMovement = "locked", SubjectMotion = "none", MotionIntensity = "subtle" }
+            : template.Defaults;
+        return template with { CommonPrompt = EffectiveCommonPrompt(template.CommonPrompt), Defaults = defaults };
+    }
+
+    private static string EffectiveCommonPrompt(string? configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+            return CommonGuardrail;
+        if (configured.Contains(CommonGuardrail, StringComparison.Ordinal))
+            return configured.Trim();
+        return $"{configured.Trim()}\n\n{CommonGuardrail}";
+    }
+
+    private static string SourceGuardrail(AiVideoProductContext context, bool stableSingleImage)
+    {
+        var sourceConstraint = context.SourceRole switch
+        {
+            "Hero" => "Hero-source constraint: preserve the product silhouette, support and visible front-facing design; do not invent a different product side or construction.",
+            "Lifestyle" => "Lifestyle-source constraint: preserve the visible person's identity, clothing, product, setting and product-to-body relationship. Natural body motion may change folds and perspective, but must not replace, relocate or redesign the product artwork.",
+            "ArtworkDetail" => "Detail-source constraint: treat the supplied image as a close view of artwork physically printed on the product. Preserve every visible letter, line, color boundary and graphic element; do not turn it into a separate poster or floating graphic.",
+            "AlternativeAngle" => "Alternative-angle constraint: retain the approved viewpoint and all visible construction details; do not infer a conflicting side of the product.",
+            "Variant" => "Variant-source constraint: preserve this exact approved color and design variant throughout the shot.",
+            _ => "Source constraint: preserve every product detail that is visible in the approved source and do not invent conflicting unseen construction."
+        };
+        var keyframeConstraint = stableSingleImage
+            ? "Reviewed-keyframe constraint: use the supplied keyframe as the exact opening composition. Begin the selected motion immediately and continuously from that frame without a hold-then-transition, crossfade, dissolve, double exposure or replacement composition. Keep its environment, support, background and light direction coherent unless the selected template explicitly calls for a restrained lighting change."
+            : null;
+        return string.Join(" ", new[] { sourceConstraint, keyframeConstraint }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private static string TemplateGuardrail(string templateCode, AiVideoSceneOptions settings, bool stableSingleImage) => templateCode switch
+    {
+        "cinematic_product_showcase" when stableSingleImage =>
+            $"Showcase constraint: keep the reviewed set, background, hanger or surface and light direction stable. {StableStudioCameraGuidance(settings.CameraMovement)} Keep the product attached to its support and almost still, with only barely perceptible natural material and shadow motion. No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.",
+        "cinematic_product_showcase" =>
+            "Showcase constraint: the product remains the stable visual anchor. Camera parallax and lighting may develop gently, but the product silhouette, construction and design must not drift or transform.",
+        "macro_detail_reveal" =>
+            $"Macro-detail constraint: the supplied close-up is already the opening detail shot; do not create an establishing frame or a second version of the artwork. {MacroCameraGuidance(settings.CameraMovement)} Keep the complete visible printed design in sharp, stable focus; limit shallow depth of field to surrounding material outside the artwork. Preserve every visible letter, spelling, line, character feature, color boundary and print edge exactly throughout. Reveal only real surface texture and subtle light response. No artwork redraw, focus pull across lettering, morph, crossfade, ghosting or transition to a newly composed detail.",
+        "lifestyle_in_use" =>
+            "Lifestyle constraint: allow only physically plausible body and fabric movement. Keep the same garment or product on the same person, with artwork anchored to the same surface location and changing only through natural folds, occlusion and perspective. Do not change the design when the person turns.",
+        "creator_pov_ugc" =>
+            "UGC constraint: handheld motion belongs to the camera, not to the product geometry. Keep the same product and artwork stable while it is presented; avoid focus hunting, warped edges, anatomy crossing through the product, or hands covering the main design.",
+        "everyday_story_moment" =>
+            "Story constraint: natural action may change distance, folds and perspective, but the same product must remain identifiable and attached to the same person or object. Do not swap its color, construction, variant or artwork during the action.",
+        "signature_product_reveal" =>
+            "Reveal constraint: reveal the existing product only through restrained camera and lighting changes. Do not materialize, assemble, dissolve, morph, recolor or redesign any part of the product. Finish with the same product identity and artwork shown in the approved source.",
+        _ =>
+            "Template constraint: preserve the approved product identity and visible design continuously while applying only the selected camera, subject and lighting motion."
+    };
+
+    private static string MacroCameraGuidance(string value) => value switch
+    {
+        "locked" => "Keep the camera locked with no zoom, pan, reframing or camera-angle change; only a subtle light sweep may move.",
+        "push_in" => "Use one extremely slow optical push-in of no more than a few percent across the full shot, without generating a new viewpoint.",
+        "pan_left" => "Use one extremely slow lateral move to the left of no more than a few percent of the frame, without changing scale or viewpoint.",
+        "pan_right" => "Use one extremely slow lateral move to the right of no more than a few percent of the frame, without changing scale or viewpoint.",
+        _ => "Keep camera motion minimal and continuous without changing viewpoint."
+    };
 
     private static string ProductContextPrompt(string productType, AiVideoProductContext context)
     {

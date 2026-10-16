@@ -122,8 +122,9 @@ public sealed class VideoPlanningServiceTests
         frame.ContentHash = new string('b', 64);
         var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
         frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
-            AiStudioFrameIdentity.Fingerprint(source, AiStudioFrameIdentity.HangingWindow, aspect), source.Id,
-            source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
+            AiStudioFrameIdentity.Fingerprint(source, AiStudioFrameIdentity.HangingWindow, aspect, templateCode: "cinematic_product_showcase"), source.Id,
+            source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion,
+            TemplateCode: "cinematic_product_showcase"));
         fixture.AssetRows.Add(frame);
         var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new()],
             AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);

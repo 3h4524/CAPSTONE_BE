@@ -47,15 +47,24 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             var source = await assets.GetByIdAsync(shot.MockupId, ct);
             if (source is null || source.ContentHash != shot.SourceHash || source.ApprovalStatus != "approved" || source.MetadataRevision != scene.SourceRevision || source.ApprovedRevision != scene.SourceRevision)
                 return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "AI Shot source changed or is no longer approved."));
-            if (source.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && source.Role == "VideoScene")
+            if (source.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && AiStudioFrameIdentity.Read(source.Regions) is not null)
             {
                 var metadata = AiStudioFrameIdentity.Read(source.Regions);
                 if (metadata is null)
                     return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "Studio keyframe metadata is missing."));
                 var original = await assets.GetByIdAsync(metadata.SourceMockupId, ct);
+                var selectedAsStudioFrame = scene.AiSettings?.StartFrameMode == "studio";
+                var expectedLayout = selectedAsStudioFrame ? scene.AiSettings?.StudioLayout ?? metadata.Layout : metadata.Layout;
+                var expectedAspect = selectedAsStudioFrame ? ReadAspect(job.Payload) : metadata.AspectRatio;
+                var expectedPrompt = selectedAsStudioFrame ? scene.AiSettings?.StudioPrompt : metadata.CustomPrompt;
+                var expectedTemplate = selectedAsStudioFrame ? scene.AiSettings?.TemplateCode : metadata.TemplateCode;
+                var expectedReferences = selectedAsStudioFrame
+                    ? scene.AiSettings?.StudioReferenceHashes
+                    : metadata.References?.Select(reference => reference.ContentHash).ToArray();
                 if (original is null || original.ProductId != source.ProductId || original.DeletedAt != null ||
                     original.ApprovalStatus != "approved" || original.ApprovedRevision != original.MetadataRevision ||
-                    !AiStudioFrameIdentity.IsCurrent(source, original, metadata.Layout, payload.Storyboard.AspectRatio, scene.AiSettings?.StudioPrompt))
+                    !AiStudioFrameIdentity.IsCurrent(source, original, expectedLayout, expectedAspect, expectedPrompt,
+                        expectedTemplate, expectedReferences))
                     return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "Studio keyframe source changed or is no longer approved."));
             }
             Replace(job, payload, item with { Status = "submitting" });
