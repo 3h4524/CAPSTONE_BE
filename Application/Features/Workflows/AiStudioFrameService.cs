@@ -25,15 +25,15 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
     public const int MaximumReferenceCount = 3;
     public const int MaximumCombinedSourceBytes = 40 * 1024 * 1024;
 
-    private sealed record ResolvedReference(MockupImage Asset);
     private sealed record StudioFrameContext(Product Product, MockupImage Source,
-        IReadOnlyList<ResolvedReference> References, string AspectRatio, string Fingerprint);
+        IReadOnlyList<AiStudioFrameReferenceInput> References, IReadOnlyList<AiStudioFrameReferenceMetadata> ReferenceMetadata,
+        string AspectRatio, string Fingerprint);
 
     public async Task<Result<AiStudioFrameQuote>> QuoteAsync(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
     {
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameQuote>(context.Error);
-        var (_, source, references, aspectRatio, fingerprint) = context.Value;
+        var (_, source, _, referenceMetadata, aspectRatio, fingerprint) = context.Value;
 
         MockupResponse? existing = null;
         if (!request.Regenerate)
@@ -43,7 +43,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
             var match = candidates.Where(frame =>
                     AiStudioFrameIdentity.Read(frame.Regions)?.Fingerprint == fingerprint &&
                     AiStudioFrameIdentity.IsCurrent(frame, source, request.Layout, aspectRatio, request.CustomPrompt,
-                        request.TemplateCode, references.Select(reference => reference.Asset.Id).ToArray()))
+                        request.TemplateCode, referenceMetadata.Select(reference => reference.ContentHash).ToArray()))
                 .OrderBy(frame => frame.ApprovalStatus == "approved" && frame.ApprovedRevision == frame.MetadataRevision ? 0 : 1)
                 .ThenByDescending(frame => frame.CreatedAt).FirstOrDefault();
             if (match is not null)
@@ -77,7 +77,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameGenerationResponse>(context.Error);
-        var (_, source, references, aspectRatio, fingerprint) = context.Value;
+        var (_, source, references, referenceMetadata, aspectRatio, fingerprint) = context.Value;
         var userId = user.UserId!.Value;
         var key = (await keys.ListOwnedAsync(userId, ct)).FirstOrDefault(x => x.ServiceProvider == "gemini" && x.IsActive == true && x.LastCheckSucceeded == true);
         if (key is null)
@@ -94,7 +94,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
             var combinedBytes = sourceBytes.Length;
             foreach (var reference in references)
             {
-                var bytes = await storage.ReadImageAsync(reference.Asset.StorageKey, reference.Asset.StorageVersion, ct);
+                var bytes = reference.Bytes;
                 if (bytes.Length is <= 0 or > MaximumSourceBytes || DetectMimeType(bytes) is not { } mimeType)
                     return Result.Failure<AiStudioFrameGenerationResponse>(Error.Validation("Every reference must be a PNG, JPEG or WebP image no larger than 20 MB."));
                 combinedBytes += bytes.Length;
@@ -124,8 +124,6 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
         var id = Guid.NewGuid();
         var now = time.GetUtcNow().UtcDateTime;
-        var referenceMetadata = references.Select(reference => new AiStudioFrameReferenceMetadata(reference.Asset.Id,
-            reference.Asset.ContentHash!, reference.Asset.MetadataRevision)).ToArray();
         var metadata = new AiStudioFrameMetadata(fingerprint, source.Id, source.ContentHash!, source.MetadataRevision,
             request.Layout, aspectRatio, AiStudioFrameIdentity.PromptVersionFor(request.Layout, request.CustomPrompt),
             AiStudioFrameIdentity.NormalizeCustomPrompt(request.CustomPrompt),
@@ -181,35 +179,34 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
             source.ApprovalStatus != "approved" || source.ApprovedRevision != source.MetadataRevision)
             return Result.Failure<StudioFrameContext>(Error.Conflict("SourceNotApproved", "Choose a current, approved product image as the keyframe source."));
 
-        var requestedReferences = AiStudioFrameIdentity.NormalizeReferenceIds(request.ReferenceMockupIds);
+        var requestedReferences = request.References ?? [];
         if (requestedReferences.Count > MaximumReferenceCount)
             return Result.Failure<StudioFrameContext>(Error.Validation($"Use no more than {MaximumReferenceCount} keyframe reference images."));
-        if (requestedReferences.Distinct().Count() != requestedReferences.Count || requestedReferences.Contains(source.Id))
-            return Result.Failure<StudioFrameContext>(Error.Validation("Choose different images for the product source and each keyframe reference."));
         if (RequiresPersonRights(request.TemplateCode) && !request.ReferenceRightsConfirmed)
             return Result.Failure<StudioFrameContext>(Error.Validation("Confirm that you have rights to use people visible in the selected images."));
 
-        var resolvedReferences = new List<ResolvedReference>(requestedReferences.Count);
-        foreach (var referenceId in requestedReferences)
+        long totalReferenceBytes = 0;
+        var referenceMetadata = new List<AiStudioFrameReferenceMetadata>(requestedReferences.Count);
+        foreach (var reference in requestedReferences)
         {
-            var asset = await assets.GetByIdAsync(referenceId, ct);
-            if (asset is null || asset.ProductId != productId || asset.DeletedAt != null || asset.ContentHash is null ||
-                asset.ApprovalStatus != "approved" || asset.ApprovedRevision != asset.MetadataRevision ||
-                AiStudioFrameIdentity.Read(asset.Regions) is not null)
-                return Result.Failure<StudioFrameContext>(Error.Conflict("ReferenceNotApproved", "Choose current, approved original images as keyframe references."));
-            resolvedReferences.Add(new ResolvedReference(asset));
+            if (reference.Bytes.Length is <= 0 or > MaximumSourceBytes || !AllowedMimeType(reference.MimeType) ||
+                DetectMimeType(reference.Bytes) != reference.MimeType || !MockupAssetService.IsStaticImage(reference.Bytes))
+                return Result.Failure<StudioFrameContext>(Error.Validation("Each reference must be a static JPEG, PNG or WebP image no larger than 20 MB."));
+            totalReferenceBytes += reference.Bytes.Length;
+            if (totalReferenceBytes > MaximumSourceBytes)
+                return Result.Failure<StudioFrameContext>(Error.Validation("Reference images must total 20 MB or less."));
+            referenceMetadata.Add(new AiStudioFrameReferenceMetadata(
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(reference.Bytes)).ToLowerInvariant()));
         }
 
         var aspectRatio = VideoOutputFormats.Resolve(request.OutputFormat).AspectRatio;
-        var referenceMetadata = resolvedReferences.Select(reference => new AiStudioFrameReferenceMetadata(reference.Asset.Id,
-            reference.Asset.ContentHash!, reference.Asset.MetadataRevision)).ToArray();
         var fingerprint = AiStudioFrameIdentity.Fingerprint(source, request.Layout, aspectRatio, request.CustomPrompt,
             request.TemplateCode, referenceMetadata);
-        return Result.Success(new StudioFrameContext(product, source, resolvedReferences, aspectRatio, fingerprint));
+        return Result.Success(new StudioFrameContext(product, source, requestedReferences, referenceMetadata, aspectRatio, fingerprint));
     }
 
     private static string BuildPrompt(string productType, MockupImage source, string layout, string aspectRatio,
-        string? customPrompt, string? templateCode, IReadOnlyList<ResolvedReference> references)
+        string? customPrompt, string? templateCode, IReadOnlyList<AiStudioFrameReferenceInput> references)
     {
         var type = NormalizeProductType(productType);
         var normalizedTemplate = AiStudioFrameIdentity.NormalizeTemplateCode(templateCode);

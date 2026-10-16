@@ -178,7 +178,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             var sourceSelected = source is not null && (config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(source.Id));
             return source is not null && (selectedIds.Contains(frame.Id) || sourceSelected) &&
                 AiStudioFrameIdentity.IsCurrent(frame, source, metadata.Layout, metadata.AspectRatio, metadata.CustomPrompt,
-                    metadata.TemplateCode, metadata.References?.Select(reference => reference.MockupId).ToArray());
+                    metadata.TemplateCode, metadata.References?.Select(reference => reference.ContentHash).ToArray());
         });
         return selectedBaseAssets.Concat(availableFrames).DistinctBy(x => x.Id).ToArray();
     }

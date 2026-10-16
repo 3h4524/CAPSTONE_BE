@@ -41,7 +41,7 @@ public sealed record AiVideoSceneOptions(
     string? StudioLayout = null,
     Guid? StudioFrameId = null,
     string? StudioPrompt = null,
-    IReadOnlyList<Guid>? StudioReferenceMockupIds = null);
+    IReadOnlyList<string>? StudioReferenceHashes = null);
 public sealed record VideoOutputSpec(string Format, int Width, int Height, string AspectRatio);
 public static class VideoOutputFormats
 {
@@ -82,9 +82,10 @@ public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, strin
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings);
+public sealed record AiStudioFrameReferenceInput(byte[] Bytes, string MimeType);
 public sealed record AiStudioFrameRequest(Guid SourceMockupId, string Layout, string OutputFormat, bool Regenerate = false,
     string? ExpectedFingerprint = null, decimal? ConfirmedEstimatedCostUsd = null, string? CustomPrompt = null,
-    string? TemplateCode = null, IReadOnlyList<Guid>? ReferenceMockupIds = null,
+    string? TemplateCode = null, IReadOnlyList<AiStudioFrameReferenceInput>? References = null,
     bool ReferenceRightsConfirmed = false);
 public sealed record AiStudioFrameQuote(string Fingerprint, int PromptVersion, decimal EstimatedCostUsd,
     MockupResponse? ExistingFrame, string Note);

@@ -4,7 +4,7 @@ using APCS.Domain.Entities;
 namespace APCS.Application.Features.Workflows;
 
 /// <summary>Versioned identity stored in the existing regions JSON, so stale frames can be rejected without changing the table schema.</summary>
-public sealed record AiStudioFrameReferenceMetadata(Guid MockupId, string SourceHash, long SourceRevision);
+public sealed record AiStudioFrameReferenceMetadata(string ContentHash);
 public sealed record AiStudioFrameMetadata(string Fingerprint, Guid SourceMockupId, string SourceHash,
     long SourceRevision, string Layout, string AspectRatio, int PromptVersion, string? CustomPrompt = null,
     string? TemplateCode = null, IReadOnlyList<AiStudioFrameReferenceMetadata>? References = null);
@@ -38,9 +38,7 @@ public static class AiStudioFrameIdentity
             templateCode = NormalizeTemplateCode(templateCode),
             references = NormalizeReferences(references).Select(reference => new
             {
-                reference.MockupId,
-                reference.SourceHash,
-                reference.SourceRevision
+                reference.ContentHash
             }),
             promptVersion = PromptVersionFor(layout, customPrompt)
         }));
@@ -49,8 +47,8 @@ public static class AiStudioFrameIdentity
         IReadOnlyList<AiStudioFrameReferenceMetadata>? references) =>
         references?.ToArray() ?? [];
 
-    public static IReadOnlyList<Guid> NormalizeReferenceIds(IReadOnlyList<Guid>? referenceMockupIds) =>
-        referenceMockupIds?.ToArray() ?? [];
+    public static IReadOnlyList<string> NormalizeReferenceHashes(IReadOnlyList<string>? referenceHashes) =>
+        referenceHashes?.ToArray() ?? [];
 
     private static string LegacyFingerprintV2(MockupImage source, string layout, string aspectRatio) =>
         WorkflowJson.Hash(WorkflowJson.Write(new
@@ -88,7 +86,7 @@ public static class AiStudioFrameIdentity
     });
 
     public static bool IsCurrent(MockupImage frame, MockupImage source, string layout, string aspectRatio,
-        string? customPrompt = null, string? templateCode = null, IReadOnlyList<Guid>? referenceMockupIds = null)
+        string? customPrompt = null, string? templateCode = null, IReadOnlyList<string>? referenceHashes = null)
     {
         if (frame.SourceType != APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated) return false;
         var metadata = Read(frame.Regions);
@@ -97,14 +95,14 @@ public static class AiStudioFrameIdentity
             return false;
 
         if (metadata.PromptVersion == 2 && string.IsNullOrWhiteSpace(customPrompt) && string.IsNullOrWhiteSpace(metadata.CustomPrompt) &&
-            string.IsNullOrWhiteSpace(templateCode) && referenceMockupIds is not { Count: > 0 })
+            string.IsNullOrWhiteSpace(templateCode) && referenceHashes is not { Count: > 0 })
             return metadata.Fingerprint == LegacyFingerprintV2(source, layout, aspectRatio);
 
         var storedReferences = NormalizeReferences(metadata.References);
-        var requestedReferences = NormalizeReferenceIds(referenceMockupIds);
+        var requestedReferences = NormalizeReferenceHashes(referenceHashes);
         var referencesMatch = storedReferences.Count == requestedReferences.Count &&
             storedReferences.Zip(requestedReferences).All(pair =>
-                pair.First.MockupId == pair.Second);
+                pair.First.ContentHash == pair.Second);
         return metadata.PromptVersion == PromptVersionFor(layout, customPrompt) &&
             NormalizeCustomPrompt(metadata.CustomPrompt) == NormalizeCustomPrompt(customPrompt) &&
             NormalizeTemplateCode(metadata.TemplateCode) == NormalizeTemplateCode(templateCode) && referencesMatch &&

@@ -151,7 +151,7 @@ public sealed class VideoStoryboardPlanner
                 if (studioFrame is null || studioSource is null ||
                     !AiStudioFrameIdentity.IsCurrent(studioFrame, studioSource, layout,
                         VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt,
-                        requested.TemplateCode, requested.StudioReferenceMockupIds))
+                        requested.TemplateCode, requested.StudioReferenceHashes))
                     return Result.Failure<Storyboard>(Error.Conflict("StudioFrameStale", $"The studio keyframe for AI scene {index + 1} no longer matches its approved source or video format. Generate or select a current keyframe."));
             }
             var sceneSource = useStudioFrame ? studioFrame! : source;

@@ -33,7 +33,10 @@ public sealed class VideoStoryboardPlannerTests
             scene.GenerationStrategy.Should().Be("standard");
             scene.SourceRevision.Should().Be(3);
             scene.SourceHash.Should().Be(asset.ContentHash);
-            scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+            scene.Crop.X.Should().BeApproximately(0, 1e-9);
+            scene.Crop.Y.Should().BeApproximately(1d / 18d, 1e-9);
+            scene.Crop.Width.Should().BeApproximately(1, 1e-9);
+            scene.Crop.Height.Should().BeApproximately(8d / 9d, 1e-9);
             scene.EndCrop.Width.Should().BeApproximately(scale, 1e-9);
             scene.EndCrop.X.Should().BeApproximately((1 - scale) / 2, 1e-9);
             scene.Text.Should().Be("Original artwork");

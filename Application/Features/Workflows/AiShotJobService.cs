@@ -59,8 +59,8 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
                 var expectedPrompt = selectedAsStudioFrame ? scene.AiSettings?.StudioPrompt : metadata.CustomPrompt;
                 var expectedTemplate = selectedAsStudioFrame ? scene.AiSettings?.TemplateCode : metadata.TemplateCode;
                 var expectedReferences = selectedAsStudioFrame
-                    ? scene.AiSettings?.StudioReferenceMockupIds
-                    : metadata.References?.Select(reference => reference.MockupId).ToArray();
+                    ? scene.AiSettings?.StudioReferenceHashes
+                    : metadata.References?.Select(reference => reference.ContentHash).ToArray();
                 if (original is null || original.ProductId != source.ProductId || original.DeletedAt != null ||
                     original.ApprovalStatus != "approved" || original.ApprovedRevision != original.MetadataRevision ||
                     !AiStudioFrameIdentity.IsCurrent(source, original, expectedLayout, expectedAspect, expectedPrompt,
