@@ -14,6 +14,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.DesignGeneration;
 
@@ -40,7 +41,8 @@ public sealed class DesignGenerationService(
     IBatchJobClaims claims,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
-    IValidator<StartGenerationRequestDto> validator) : IDesignGenerationService
+    IValidator<StartGenerationRequestDto> validator,
+    IOptions<DesignGenerationSettings> settings) : IDesignGenerationService
 {
     private const string GeminiProvider = "gemini";
 
@@ -343,25 +345,104 @@ public sealed class DesignGenerationService(
             .OrderBy(x => x.SequenceOrder)
             .ToListAsync(cancellationToken);
 
-        // Once the user cancels, the product being generated finishes and every one after it is failed.
+        // Read up front, so the products processed side by side below never have to ask the database for them.
+        var rowIds = rows.Select(row => row.Id).ToList();
+        var promptByRow = (await aiPrompts.Query()
+                .Where(p => p.BatchJobProductId != null && rowIds.Contains(p.BatchJobProductId!.Value))
+                .ToListAsync(cancellationToken))
+            .GroupBy(p => p.BatchJobProductId!.Value)
+            .ToDictionary(group => group.Key, group => group.MaxBy(p => p.VersionNumber)!);
+        var rowProductIds = rows.Where(row => row.ProductId.HasValue).Select(row => row.ProductId!.Value).ToList();
+        var productById = await products.Query()
+            .Where(p => rowProductIds.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id, cancellationToken);
+
+        // Images are mostly waiting on the provider, so several are requested at once, up to what the Seller's key allows.
+        var run = new JobRun(job, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus);
+        var maxImages = Math.Max(1, settings.Value.MaxConcurrentImages);
+        using var imageSlots = new SemaphoreSlim(maxImages);
+        // Just enough products at once to keep every slot busy, so the products shown as being generated are the
+        // ones whose images are being made, still taken in their order.
+        var productsAtOnce = Math.Max(1, (maxImages + variationCount - 1) / Math.Max(1, variationCount));
+
+        // Once the user cancels, the products being generated finish and every one after them is failed.
         var cancelled = false;
-        foreach (var row in rows)
+        await Parallel.ForEachAsync(rows,
+            new ParallelOptions { MaxDegreeOfParallelism = productsAtOnce, CancellationToken = cancellationToken },
+            async (row, token) =>
+            {
+                var skip = await WithDbAsync(async () =>
+                {
+                    cancelled = cancelled || await CancelPendingAsync(job.Id, token);
+                    if (cancelled) await CancelRowAsync(job, row, token);
+                    return cancelled;
+                }, token);
+                if (skip) return;
+
+                var product = row.ProductId is Guid productId ? productById.GetValueOrDefault(productId) : null;
+                await ProcessRowAsync(run, row, promptByRow.GetValueOrDefault(row.Id), product, imageSlots, token);
+            });
+
+        // A cancel that arrived during the last product is consumed too, so a later retry is not stopped by it.
+        if (cancelled || await CancelPendingAsync(job.Id, cancellationToken))
+            await LogAsync(job.Id, null, "info", CancelHonoredEvent, "Generation stopped at the user's request.", cancellationToken);
+
+        var failed = job.FailedProducts ?? 0;
+        job.Status = failed == 0 ? BatchJobStatuses.Completed
+            : failed >= (job.TotalProducts ?? 0) ? BatchJobStatuses.Failed
+            : BatchJobStatuses.PartiallyCompleted;
+        job.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
+        job.UpdatedAt = job.CompletedAt;
+        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
+
+        var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
+        if (batch is not null)
         {
-            cancelled = cancelled || await CancelPendingAsync(job.Id, cancellationToken);
-            if (cancelled)
-            {
-                await CancelRowAsync(job, row, cancellationToken);
-                continue;
-            }
+            batch.Status = BatchStatuses.Completed;
+            batch.UpdatedAt = job.CompletedAt;
+            await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
+        }
 
-            var prompt = await aiPrompts.Query()
-                .Where(p => p.BatchJobProductId == row.Id)
-                .OrderByDescending(p => p.VersionNumber)
-                .FirstOrDefaultAsync(cancellationToken);
-            var now = timeProvider.GetUtcNow().UtcDateTime;
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
 
-            if (prompt is null)
+    // What every product of a job being processed shares.
+    private sealed record JobRun(BatchJob Job, string ApiKey, string AspectRatio, int VariationCount, bool? RequireApproval, string ReviewedStatus);
+
+    // Every repository here shares one DbContext, which two images must never use at the same moment: while a
+    // job's images are made side by side, each read or write of it waits its turn here.
+    private readonly SemaphoreSlim dbGate = new(1, 1);
+
+    private async Task<T> WithDbAsync<T>(Func<Task<T>> work, CancellationToken cancellationToken)
+    {
+        await dbGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await work();
+        }
+        finally
+        {
+            dbGate.Release();
+        }
+    }
+
+    private Task WithDbAsync(Func<Task> work, CancellationToken cancellationToken) =>
+        WithDbAsync(async () =>
+        {
+            await work();
+            return true;
+        }, cancellationToken);
+
+    // Makes every variation of one product, side by side, then records how the product came out.
+    private async Task ProcessRowAsync(JobRun run, BatchJobProduct row, AiPrompt? prompt, Product? product,
+        SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+    {
+        var job = run.Job;
+        if (prompt is null)
+        {
+            await WithDbAsync(async () =>
             {
+                var now = timeProvider.GetUtcNow().UtcDateTime;
                 row.Status = BatchJobProductStatuses.Failed;
                 row.ErrorMessage = "No synthesized prompt was found for this product.";
                 row.CompletedAt = now;
@@ -371,92 +452,116 @@ public sealed class DesignGenerationService(
                 job.ProcessedProducts = (job.ProcessedProducts ?? 0) + 1;
                 await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
-                continue;
-            }
+            }, cancellationToken);
+            return;
+        }
 
-            var product = row.ProductId is Guid productId
-                ? await products.Query().SingleOrDefaultAsync(p => p.Id == productId, cancellationToken)
-                : null;
-            var graphicPrint = product is not null && GraphicPrintTypes.Contains(product.ProductType);
-            var requestPrompt = graphicPrint ? $"{prompt.GeneratedPrompt}\n{GraphicPrintInstruction}" : prompt.GeneratedPrompt;
+        var graphicPrint = product is not null && GraphicPrintTypes.Contains(product.ProductType);
+        var requestPrompt = graphicPrint ? $"{prompt.GeneratedPrompt}\n{GraphicPrintInstruction}" : prompt.GeneratedPrompt;
 
-            // Until now the product was only waiting its turn. Saved with the first log entry of the loop below.
-            if (product is not null)
+        // Until now the product was only waiting its turn. Saved with the log entry of its first image.
+        if (product is not null)
+        {
+            await WithDbAsync(async () =>
             {
                 product.ProcessingStatus = BatchJobProductStatuses.GeneratingImage;
-                product.UpdatedAt = now;
+                product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
                 await products.UpdateAsync(product, cancellationToken: cancellationToken);
-            }
+            }, cancellationToken);
+        }
 
-            var successCount = 0;
-            for (var variation = 0; variation < variationCount; variation++)
+        var saved = await Task.WhenAll(Enumerable.Range(0, run.VariationCount).Select(variation =>
+            GenerateVariationAsync(run, row, prompt, requestPrompt, graphicPrint, variation, imageSlots, cancellationToken)));
+
+        await WithDbAsync(() => CompleteRowAsync(run, row, product, saved.Count(ok => ok), cancellationToken), cancellationToken);
+    }
+
+    /// <summary>
+    /// Makes one image once a slot is free and saves it: true when it was saved. Only the provider call, the
+    /// cut-out and the upload run alongside other images; everything written goes through WithDbAsync.
+    /// </summary>
+    private async Task<bool> GenerateVariationAsync(JobRun run, BatchJobProduct row, AiPrompt prompt, string requestPrompt,
+        bool graphicPrint, int variation, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+    {
+        var job = run.Job;
+        var variationCount = run.VariationCount;
+
+        await imageSlots.WaitAsync(cancellationToken);
+        try
+        {
+            // Saved with the log entry: the job's update time tells other workers it is still being worked on.
+            await WithDbAsync(async () =>
             {
-                var started = timeProvider.GetUtcNow();
-
-                // Hard cap for one image (provider call + upload) so nothing can hang the job forever.
-                using var stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                stepTimeout.CancelAfter(StepTimeout);
-
-                // Saved with the log entry below: the job's update time tells other workers it is still being worked on.
                 job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
                 await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
                 await LogAsync(job.Id, row.Id, "info", "generation_started",
                     $"Requesting image {variation + 1}/{variationCount} from the provider.", cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
+            }, cancellationToken);
 
-                ImageGenerationResult result;
+            var started = timeProvider.GetUtcNow();
+
+            // Hard cap for one image (provider call + upload) so nothing can hang the job forever. Started only
+            // now: the time spent waiting for a slot does not count.
+            using var stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            stepTimeout.CancelAfter(StepTimeout);
+
+            ImageGenerationResult result;
+            try
+            {
+                result = await imageProvider.GenerateAsync(run.ApiKey, requestPrompt, run.AspectRatio, stepTimeout.Token);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                // Never let one provider failure strand the whole job in "running".
+                result = ImageGenerationResult.Failed(ex is OperationCanceledException
+                    ? "Image generation timed out."
+                    : $"Unexpected provider error: {ex.Message}", "unknown");
+            }
+            var elapsedSeconds = (decimal)(timeProvider.GetUtcNow() - started).TotalSeconds;
+
+            if (!result.IsSuccess)
+            {
+                await WithDbAsync(() => LogAsync(job.Id, row.Id, "warning",
+                    result.IsBlocked ? "generation_blocked" : "generation_failed",
+                    result.ErrorMessage ?? "Unknown error", cancellationToken), cancellationToken);
+                return false;
+            }
+
+            var cutOutStarted = timeProvider.GetTimestamp();
+            var (imageBytes, mimeType) = graphicPrint
+                ? CutOutBackground(result.ImageBytes!, result.MimeType!)
+                : (result.ImageBytes!, result.MimeType!);
+            var cutOutTime = timeProvider.GetElapsedTime(cutOutStarted);
+
+            // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
+            // and a later regenerate with the same prompt can never overwrite an existing image.
+            var designImageId = Guid.NewGuid();
+            var storageKey = $"design-images/{designImageId:N}";
+            PublicImageUploadResult uploaded;
+            var uploadStarted = timeProvider.GetTimestamp();
+            using (var stream = new MemoryStream(imageBytes))
+            {
                 try
                 {
-                    result = await imageProvider.GenerateAsync(apiKeyPlain, requestPrompt, aspectRatio, stepTimeout.Token);
+                    // Gemini returns JPEG, so the stored size comes from the upload rather than the bytes.
+                    uploaded = await publicImages.UploadImageWithMetadataAsync(
+                        new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
+                        storageKey,
+                        stepTimeout.Token);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
-                    // Never let one provider failure strand the whole job in "running".
-                    result = ImageGenerationResult.Failed(ex is OperationCanceledException
-                        ? "Image generation timed out."
-                        : $"Unexpected provider error: {ex.Message}", "unknown");
+                    await WithDbAsync(() => LogAsync(job.Id, row.Id, "error", "upload_failed",
+                        ex is OperationCanceledException ? "Image upload timed out." : ex.Message, cancellationToken), cancellationToken);
+                    return false;
                 }
-                var elapsedSeconds = (decimal)(timeProvider.GetUtcNow() - started).TotalSeconds;
+            }
+            var uploadTime = timeProvider.GetElapsedTime(uploadStarted);
 
-                if (!result.IsSuccess)
-                {
-                    await LogAsync(job.Id, row.Id, "warning",
-                        result.IsBlocked ? "generation_blocked" : "generation_failed",
-                        result.ErrorMessage ?? "Unknown error", cancellationToken);
-                    continue;
-                }
-
-                var cutOutStarted = timeProvider.GetTimestamp();
-                var (imageBytes, mimeType) = graphicPrint
-                    ? CutOutBackground(result.ImageBytes!, result.MimeType!)
-                    : (result.ImageBytes!, result.MimeType!);
-                var cutOutTime = timeProvider.GetElapsedTime(cutOutStarted);
-
-                // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
-                // and a later regenerate with the same prompt can never overwrite an existing image.
-                var designImageId = Guid.NewGuid();
-                var storageKey = $"design-images/{designImageId:N}";
-                PublicImageUploadResult uploaded;
-                var uploadStarted = timeProvider.GetTimestamp();
-                using (var stream = new MemoryStream(imageBytes))
-                {
-                    try
-                    {
-                        // Gemini returns JPEG, so the stored size comes from the upload rather than the bytes.
-                        uploaded = await publicImages.UploadImageWithMetadataAsync(
-                            new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
-                            storageKey,
-                            stepTimeout.Token);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-                    {
-                        await LogAsync(job.Id, row.Id, "error", "upload_failed",
-                            ex is OperationCanceledException ? "Image upload timed out." : ex.Message, cancellationToken);
-                        continue;
-                    }
-                }
-                var uploadTime = timeProvider.GetElapsedTime(uploadStarted);
-
+            // Saved right away, so the image shows up while the others are still being made.
+            await WithDbAsync(async () =>
+            {
                 var usageRecord = new ApiUsageRecord
                 {
                     Id = Guid.NewGuid(),
@@ -492,7 +597,7 @@ public sealed class DesignGenerationService(
                     ImageHeightPx = height,
                     FileFormat = FileExtension(mimeType),
                     FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
-                    ApprovalStatus = requireApproval == false ? ApprovalStatuses.Approved : ApprovalStatuses.Pending,
+                    ApprovalStatus = run.RequireApproval == false ? ApprovalStatuses.Approved : ApprovalStatuses.Pending,
                     // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead.
                     VariationIndex = variation + 1,
                     GenerationTimeSeconds = elapsedSeconds,
@@ -500,57 +605,44 @@ public sealed class DesignGenerationService(
                 }, cancellationToken: cancellationToken);
                 await LogTimingAsync(job.Id, row.Id, variation + 1, variationCount,
                     TimeSpan.FromSeconds((double)elapsedSeconds), cutOutTime, uploadTime, cancellationToken);
+                await unitOfWork.SaveChangesAsync(cancellationToken);
+            }, cancellationToken);
+            return true;
+        }
+        finally
+        {
+            imageSlots.Release();
+        }
+    }
 
-                successCount++;
-            }
+    // Records how one product came out once all its variations are done. Called through WithDbAsync.
+    private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, int successCount, CancellationToken cancellationToken)
+    {
+        var job = run.Job;
+        row.Status = successCount > 0 ? run.ReviewedStatus : BatchJobProductStatuses.Failed;
+        row.ErrorMessage = successCount == 0 ? "All requested variations failed or were blocked." : null;
+        row.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
+        row.UpdatedAt = row.CompletedAt;
+        await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
 
-            row.Status = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
-            row.ErrorMessage = successCount == 0 ? "All requested variations failed or were blocked." : null;
-            row.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
-            row.UpdatedAt = row.CompletedAt;
-            await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
-
-            if (product is not null)
-            {
-                product.ProcessingStatus = successCount > 0 ? reviewedStatus : BatchJobProductStatuses.Failed;
-                product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-                await products.UpdateAsync(product, cancellationToken: cancellationToken);
-            }
-
-            if (successCount > 0) await IncrementImagesGeneratedAsync(job.UserId, successCount, cancellationToken);
-
-            job.ProcessedProducts = (job.ProcessedProducts ?? 0) + 1;
-            if (successCount == 0) job.FailedProducts = (job.FailedProducts ?? 0) + 1;
-            job.ProgressPercentage = job.TotalProducts is > 0
-                ? Math.Round(100m * job.ProcessedProducts.Value / job.TotalProducts.Value, 0)
-                : job.ProgressPercentage;
-            job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-            await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
-
-            // Persist per-row: partial progress survives even if a later row throws or the process stops.
-            await unitOfWork.SaveChangesAsync(cancellationToken);
+        if (product is not null)
+        {
+            product.ProcessingStatus = successCount > 0 ? run.ReviewedStatus : BatchJobProductStatuses.Failed;
+            product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+            await products.UpdateAsync(product, cancellationToken: cancellationToken);
         }
 
-        // A cancel that arrived during the last product is consumed too, so a later retry is not stopped by it.
-        if (cancelled || await CancelPendingAsync(job.Id, cancellationToken))
-            await LogAsync(job.Id, null, "info", CancelHonoredEvent, "Generation stopped at the user's request.", cancellationToken);
+        if (successCount > 0) await IncrementImagesGeneratedAsync(job.UserId, successCount, cancellationToken);
 
-        var failed = job.FailedProducts ?? 0;
-        job.Status = failed == 0 ? BatchJobStatuses.Completed
-            : failed >= (job.TotalProducts ?? 0) ? BatchJobStatuses.Failed
-            : BatchJobStatuses.PartiallyCompleted;
-        job.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
-        job.UpdatedAt = job.CompletedAt;
+        job.ProcessedProducts = (job.ProcessedProducts ?? 0) + 1;
+        if (successCount == 0) job.FailedProducts = (job.FailedProducts ?? 0) + 1;
+        job.ProgressPercentage = job.TotalProducts is > 0
+            ? Math.Round(100m * job.ProcessedProducts.Value / job.TotalProducts.Value, 0)
+            : job.ProgressPercentage;
+        job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
 
-        var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
-        if (batch is not null)
-        {
-            batch.Status = BatchStatuses.Completed;
-            batch.UpdatedAt = job.CompletedAt;
-            await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
-        }
-
+        // Persist per-row: partial progress survives even if a later row throws or the process stops.
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
