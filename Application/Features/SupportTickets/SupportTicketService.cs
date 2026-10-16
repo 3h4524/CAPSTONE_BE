@@ -37,6 +37,7 @@ public sealed class SupportTicketService(
     IValidator<UpdateSupportTicketRequestDto> updateValidator,
     IValidator<RateSupportTicketRequestDto> ratingValidator,
     ISupportTicketNotifier ticketNotifier,
+    APCS.Application.Features.Notifications.INotificationService notificationService,
     ILogger<SupportTicketService> logger) : ISupportTicketService
 {
     public async Task<Result<SupportTicketSummaryResponseDto>> CreateAsync(
@@ -103,7 +104,7 @@ public sealed class SupportTicketService(
                     Message = $"A {request.Priority} priority {request.Category} ticket was created.",
                     Severity = "info",
                     IsRead = false,
-                    ActionUrl = $"/admin/support-tickets/{ticketId}",
+                    ActionUrl = $"/admin/support-tickets?ticketId={ticketId}",
                     CreatedAt = now.UtcDateTime
                 };
                 var inAppDelivery = NewDelivery(alert.Id, "in_app", "sent", now, now);
@@ -242,8 +243,23 @@ public sealed class SupportTicketService(
             await transaction.CommitAsync(cancellationToken);
             var mappedReply = MapReply(reply, ticket.UserId);
             
-            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này VÀ cục Noti của User
+            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này
             await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, mappedReply, cancellationToken);
+
+            // Gửi thông báo cho Admin qua Notification Base
+            var adminsForNoti = await accountRepository.GetActiveUsersByRoleAsync(AuthConstants.AdminRole, cancellationToken);
+            foreach (var admin in adminsForNoti)
+            {
+                await notificationService.SendNotificationAsync(new APCS.Application.Features.Notifications.Dtos.Request.CreateNotificationDto
+                {
+                    UserId = admin.Id,
+                    Type = "support_ticket_reply",
+                    Title = $"Tin nhắn mới từ vé {ticket.TicketNumber}",
+                    Message = "Khách hàng vừa gửi phản hồi mới.",
+                    Severity = "info",
+                    ActionUrl = $"/admin/support-tickets?ticketId={ticket.Id}"
+                }, cancellationToken);
+            }
         }
         catch
         {
@@ -464,8 +480,19 @@ public sealed class SupportTicketService(
             await unitOfWork.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             var mappedReply = MapReply(reply, ticket.UserId);
-            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này VÀ cục Noti của User
+            // Bắn tín hiệu WebSocket cho các client đang mở Ticket này
             await ticketNotifier.NotifyTicketUpdatedAsync(ticket.Id, ticket.UserId, mappedReply, cancellationToken);
+            
+            // Gửi thông báo cho Seller qua Notification Base
+            await notificationService.SendNotificationAsync(new APCS.Application.Features.Notifications.Dtos.Request.CreateNotificationDto
+            {
+                UserId = ticket.UserId,
+                Type = "support_ticket_reply",
+                Title = $"Phản hồi mới cho vé {ticket.TicketNumber}",
+                Message = "Admin vừa trả lời khiếu nại của bạn.",
+                Severity = "info",
+                ActionUrl = $"/support?ticket={ticket.Id}"
+            }, cancellationToken);
         }
         catch
         {
