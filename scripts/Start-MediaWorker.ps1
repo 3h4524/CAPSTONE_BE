@@ -13,6 +13,7 @@ foreach ($line in Get-Content -LiteralPath $envFile) {
 }
 
 $workerKey = $settings["MediaWorker__ApiKey"]
+$aiSceneConcurrency = $settings["AI_SCENE_CONCURRENCY"]
 
 if ([string]::IsNullOrWhiteSpace($workerKey)) {
     throw "MediaWorker__ApiKey is missing from $envFile"
@@ -20,6 +21,9 @@ if ([string]::IsNullOrWhiteSpace($workerKey)) {
 
 $env:APCS_API_URL = "http://localhost:5191"
 $env:MEDIA_WORKER_API_KEY = $workerKey
+if (-not [string]::IsNullOrWhiteSpace($aiSceneConcurrency)) {
+    $env:AI_SCENE_CONCURRENCY = $aiSceneConcurrency
+}
 $env:CHROME_EXECUTABLE = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $env:FFMPEG_PATH = (
     Resolve-Path -LiteralPath (

@@ -4,6 +4,7 @@ using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.DesignGeneration;
+using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Validators;
 using APCS.Common.Constants;
@@ -162,7 +163,8 @@ public sealed class DesignGenerationServiceTests
             new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
             Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
-            Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator());
+            Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)));
 
         return new Fixture
         {

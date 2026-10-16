@@ -47,6 +47,13 @@ public sealed record MockupPosition(int X, int Y, int Width, int Height);
 /// The base photo's shorter side. Folds are as wide as the photo makes them, whatever the design's
 /// size, so this limits how far they shift a large design.
 /// </param>
+/// <param name="CutMaskKey">
+/// Storage key of the template's cut mask (the garment mask with its edge pulled in). With
+/// <paramref name="BackgroundColor"/> the finished garment is cut out with it and put on that color.
+/// </param>
+/// <param name="BackgroundColor">'#RRGGBB' to replace the photo's background with.</param>
+/// <param name="BasePhotoWidthPx">The base photo's width; a replaced background is cropped back to the photo's size.</param>
+/// <param name="BasePhotoHeightPx">The base photo's height.</param>
 public sealed record MockupLayers(
     int? DesignWidthPx,
     int? DesignHeightPx,
@@ -54,4 +61,8 @@ public sealed record MockupLayers(
     string? GarmentMaskKey,
     string? GarmentColor,
     bool MultiplyDesign = false,
-    int? BasePhotoShortSidePx = null);
+    int? BasePhotoShortSidePx = null,
+    string? CutMaskKey = null,
+    string? BackgroundColor = null,
+    int? BasePhotoWidthPx = null,
+    int? BasePhotoHeightPx = null);

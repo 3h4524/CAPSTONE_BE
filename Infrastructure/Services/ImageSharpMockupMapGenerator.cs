@@ -28,6 +28,9 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter) 
     // Fold shadows on a lit white garment are faint, so they are deepened to show once recolored.
     internal const double ShadingGain = 1.5;
 
+    // How far the cut mask's edge is pulled in. One pixel removes the line of old background; more only shrinks the garment.
+    internal const int CutMaskInset = 1;
+
     public bool IsAvailable => segmenter.IsAvailable;
 
     public byte[] GenerateDisplacementMap(byte[] baseImage)
@@ -108,6 +111,35 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter) 
         }
 
         return new GarmentMaskResult(EncodePng(mask), coverage, covered > 0 ? luminanceSum / covered : 0, width, height);
+    }
+
+    public byte[]? GenerateCutMask(byte[] garmentMaskPng)
+    {
+        using var mask = LoadPhoto(garmentMaskPng);
+        var (width, height) = (mask.Width, mask.Height);
+        var pixels = Pixels(mask);
+
+        var covered = pixels.Count(p => p.A >= 128);
+        if (!MockupRules.IsSeparated(new GarmentMaskStats((double)covered / pixels.Length, 0)))
+            return null;
+
+        // Each pixel takes the lowest alpha among itself and its neighbours, which moves the edge in by one pixel.
+        using var cut = new Image<Rgba32>(width, height);
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var alpha = byte.MaxValue;
+                for (var ny = Math.Max(0, y - CutMaskInset); ny <= Math.Min(height - 1, y + CutMaskInset); ny++)
+                    for (var nx = Math.Max(0, x - CutMaskInset); nx <= Math.Min(width - 1, x + CutMaskInset); nx++)
+                        alpha = Math.Min(alpha, pixels[ny * width + nx].A);
+
+                var p = pixels[y * width + x];
+                cut[x, y] = new Rgba32(p.R, p.G, p.B, alpha);
+            }
+        }
+
+        return EncodePng(cut);
     }
 
     // The 95th percentile of the garment's brightness, so a few clipped highlights don't set it.

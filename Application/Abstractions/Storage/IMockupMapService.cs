@@ -19,9 +19,20 @@ public interface IMockupMapService
 
     /// <summary>
     /// Stores the helper images of <paramref name="prepared"/> under <paramref name="keyPrefix"/>
-    /// plus "-displace" and "-mask".
+    /// plus "-displace", "-mask" and, when the garment was separated, "-cut".
     /// </summary>
     Task StoreHelpersAsync(string keyPrefix, PreparedBasePhoto prepared, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Makes sure the cut mask of a template exists, deriving it from the stored garment mask for a
+    /// template analyzed before cut masks were made.
+    /// </summary>
+    /// <param name="maskUrl">Delivery URL of the stored garment mask.</param>
+    /// <param name="cutMaskUrl">Delivery URL the cut mask has once stored.</param>
+    /// <param name="cutMaskKey">Storage key to store the cut mask under.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns><see langword="false"/> when the garment was not separated from the background, so there is nothing to cut.</returns>
+    Task<bool> EnsureCutMaskAsync(string maskUrl, string cutMaskUrl, string cutMaskKey, CancellationToken cancellationToken = default);
 }
 
 /// <summary>How much of the photo the garment covers and how bright it is, both 0..1.</summary>
@@ -33,5 +44,6 @@ public sealed record GarmentMaskStats(double Coverage, double Luminance);
 /// <param name="Stats">The garment mask measurements.</param>
 /// <param name="WidthPx">The photo's width in pixels (of the preview rendition, for a preview).</param>
 /// <param name="HeightPx">The photo's height in pixels.</param>
+/// <param name="CutMaskPng">The mask for lifting the garment onto another background; <see langword="null"/> for a preview or when no garment was separated.</param>
 public sealed record PreparedBasePhoto(
-    byte[] MaskPng, byte[]? DisplacementPng, GarmentMaskStats Stats, int WidthPx = 0, int HeightPx = 0);
+    byte[] MaskPng, byte[]? DisplacementPng, GarmentMaskStats Stats, int WidthPx = 0, int HeightPx = 0, byte[]? CutMaskPng = null);

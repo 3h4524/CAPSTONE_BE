@@ -7,6 +7,7 @@ using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
@@ -84,6 +85,9 @@ public static class DependencyInjection
         // not a platform credential, so a box with no override here still boots on the defaults.
         services.AddOptions<GeminiOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Gemini));
+        services.AddSingleton<IOptions<DesignGenerationSettings>>(provider =>
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(
+                Math.Max(1, provider.GetRequiredService<IOptions<GeminiOptions>>().Value.MaxConcurrentImages))));
         services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
@@ -91,11 +95,17 @@ public static class DependencyInjection
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
+        services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
+            ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
+        services.AddOptions<RagRetrievalOptions>()
+            .Bind(configuration.GetSection(RagRetrievalOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
         services.PostConfigure<GeminiTextGenerationOptions>(options =>
@@ -184,7 +194,8 @@ public static class DependencyInjection
         {
             var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
             client.BaseAddress = new Uri(options.Endpoint);
-            client.Timeout = TimeSpan.FromSeconds(90);
+            // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
+            client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
         });
         services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
