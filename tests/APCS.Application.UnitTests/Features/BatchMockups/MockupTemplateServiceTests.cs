@@ -1890,6 +1890,78 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAllAsync_OlderVersionsOfAMockup_GoUnlessTheyAreAlreadyVideoSourcesOrApproved()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        MockupImage Older(string url, string? contentHash = null, string approval = "pending", string source = MockupSources.Generated)
+        {
+            var mockup = ExistingMockup(image, product, templateId, url);
+            (mockup.SourceType, mockup.ContentHash, mockup.ApprovalStatus) = (source, contentHash, approval);
+            return mockup;
+        }
+        var stale = Older("https://cdn/made-before-the-template-was-edited.jpg");
+        var otherTemplate = Older("https://cdn/template-taken-out.jpg");
+        otherTemplate.MockupTemplateId = Guid.NewGuid();
+        var imported = Older("https://cdn/imported.jpg", contentHash: "a-hash");
+        var approved = Older("https://cdn/approved.jpg", approval: "approved");
+        var uploaded = Older("https://cdn/uploaded.jpg", source: "uploaded");
+        var current = Older("https://cdn/composed.jpg");
+        var mockupImages = MockRepo(stale, otherTemplate, imported, approved, uploaded, current);
+        var added = CaptureAdded(mockupImages);
+        var unitOfWork = MockUnitOfWork();
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages,
+                compositor: StubCompositor(), unitOfWork: unitOfWork)
+            .GenerateAllAsync(job.Id);
+
+        result.Value.Images.Single().Id.Should().Be(current.Id);
+        added.Should().BeEmpty();
+        stale.DeletedAt.Should().NotBeNull();
+        otherTemplate.DeletedAt.Should().NotBeNull();
+        new[] { imported, approved, uploaded, current }.Should().OnlyContain(x => x.DeletedAt == null);
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_TemplateThatCannotBeMadeThisTime_KeepsItsEarlierMockups()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var earlier = ExistingMockup(image, product, templateId, "https://cdn/composed.jpg");
+        earlier.SourceType = MockupSources.Generated;
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Throws(new InvalidOperationException("No upload marker."));
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo(earlier),
+                compositor: compositor)
+            .GenerateAllAsync(job.Id);
+
+        result.Value.Errors.Should().ContainSingle();
+        earlier.DeletedAt.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task GetJobMockupsAsync_OlderVersionsOfAMockup_AreOnlyLeftOutNotRemoved()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var stale = ExistingMockup(image, product, templateId, "https://cdn/made-before-the-template-was-edited.jpg");
+        stale.SourceType = MockupSources.Generated;
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo(stale),
+                compositor: StubCompositor())
+            .GetJobMockupsAsync(job.Id);
+
+        result.Value.Images.Should().BeEmpty();
+        stale.DeletedAt.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task SaveOverrideAsync_KeepsTheChangeThroughAnotherApplyAndEveryLaterGeneration()
     {
         var userId = Guid.NewGuid();

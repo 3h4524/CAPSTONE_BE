@@ -26,7 +26,7 @@ public interface IGeneratedMockupSourceService
 /// </remarks>
 public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<Product> products,
     IRepository<MockupImage> assets, IUnitOfWork uow, IMediaStorage storage, IMockupAssetService mockups,
-    ILogger<GeneratedMockupSourceService> logger) : IGeneratedMockupSourceService
+    ILogger<GeneratedMockupSourceService> logger, TimeProvider time) : IGeneratedMockupSourceService
 {
     /// <summary>Each import is one upload, so a single request stays bounded; the rest follow on the next call.</summary>
     public const int MaximumPerCall = 24;
@@ -40,10 +40,22 @@ public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<
                 x.SourceType == MockupSources.Generated && x.ContentHash == null && x.MockupImageUrl != null, ct))
             .OrderByDescending(x => x.CreatedAt).Take(MaximumPerCall).ToArray();
 
+        // The same composite already among the video sources, or twice in this list, is added once: the copy waiting is
+        // removed. Only a mock-up made exactly the same way counts; one that merely looks alike is kept.
+        var present = (await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null &&
+                x.SourceType == MockupSources.Generated && x.ContentHash != null && x.MockupImageUrl != null, ct))
+            .Select(SameMockup).ToHashSet();
         var imported = 0;
         var failed = 0;
+        var duplicates = 0;
         foreach (var mockup in waiting)
         {
+            if (!present.Add(SameMockup(mockup)))
+            {
+                mockup.DeletedAt = time.GetUtcNow().UtcDateTime;
+                duplicates++;
+                continue;
+            }
             if (!IsCompositeUrl(mockup.MockupImageUrl!))
             {
                 failed++;
@@ -68,13 +80,15 @@ public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<
                 logger.LogWarning(error, "Could not store mock-up {MockupId} as a video source", mockup.Id);
             }
         }
-        if (imported > 0) await uow.SaveChangesAsync(ct);
+        if (imported > 0 || duplicates > 0) await uow.SaveChangesAsync(ct);
 
         var listed = await mockups.ListAsync(productId, ct);
         return listed.IsFailure
             ? Result.Failure<ImportGeneratedMockupsResponse>(listed.Error)
             : Result.Success(new ImportGeneratedMockupsResponse(imported, failed, listed.Value));
     }
+
+    private static (Guid?, Guid?, string?) SameMockup(MockupImage mockup) => (mockup.DesignImageId, mockup.MockupTemplateId, mockup.MockupImageUrl);
 
     // Only a composite this application built is fetched: never an arbitrary address stored on a row.
     private static bool IsCompositeUrl(string url) =>

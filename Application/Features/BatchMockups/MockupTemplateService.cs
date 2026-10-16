@@ -393,6 +393,14 @@ public sealed class MockupTemplateService(
             return Result.Failure<MockupImageResponseDto>(MockupErrors.TemplateNotUsable(template.Name));
         }
 
+        // Made exactly as one that already exists (the job's own, or an earlier preview), it is that one: a second
+        // copy would later be added to the video sources beside it.
+        var same = await mockupImages.Query()
+            .FirstOrDefaultAsync(image => image.DesignImageId == designImage.Id && image.MockupTemplateId == template.Id
+                && image.MockupImageUrl == compositeUrl && image.DeletedAt == null, cancellationToken);
+        if (same is not null)
+            return Result.Success(MapImage(same));
+
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var mockupImage = new MockupImage
         {
@@ -551,6 +559,8 @@ public sealed class MockupTemplateService(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var created = new List<MockupImage>();
         var current = new List<(MockupImage Image, string SlotKey, MockupOverrideDto? Override)>();
+        // A template whose mock-ups could not be made this time keeps the ones made before.
+        var failedTemplateIds = new HashSet<Guid>();
         var removed = new List<RemovedMockupSlotDto>();
         var errors = new List<string>();
         var usageIncrements = new Dictionary<Guid, int>();
@@ -629,6 +639,7 @@ public sealed class MockupTemplateService(
                     }
                     catch (InvalidOperationException)
                     {
+                        failedTemplateIds.Add(made.Template.Id);
                         AddError($"{made.Template.Name}: does not have a usable base photo yet.");
                         // Every color of the job's template fails the same way; a mock-up of its own only fails itself.
                         if (custom is null) break;
@@ -687,7 +698,9 @@ public sealed class MockupTemplateService(
             await templates.UpdateAsync(template, cancellationToken: cancellationToken);
         }
 
-        if (created.Count > 0 || usageIncrements.Count > 0)
+        var retiredCount = create ? await RetireOutdatedAsync(designImageIds, current.Select(item => item.Image.Id).ToHashSet(), failedTemplateIds, now, cancellationToken) : 0;
+
+        if (created.Count > 0 || usageIncrements.Count > 0 || retiredCount > 0)
             await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var allImages = current.Select(item => MapImage(item.Image) with { SlotKey = item.SlotKey, Override = item.Override }).ToList();
@@ -756,6 +769,27 @@ public sealed class MockupTemplateService(
         var overrides = new Dictionary<string, MockupOverrideDto>(ReadOverrides(batch.Config));
         overrides.Remove(slotKey);
         return await StoreOverridesAndRegenerateAsync(batch, userId, overrides, replacedMockupImageId, cancellationToken);
+    }
+
+    // What the job's settings no longer make (a template taken out, a color dropped, a template photo or print area edited
+    // since, a mock-up changed on its own, an earlier preview) goes. Otherwise "Add this product's mock-ups" would bring
+    // such older versions in beside the current ones. One already among the video sources stays: it may be approved or in
+    // use, so the seller decides about it at Mockup Approval.
+    private async Task<int> RetireOutdatedAsync(IReadOnlyCollection<Guid> designImageIds, IReadOnlySet<Guid> currentIds,
+        IReadOnlySet<Guid> failedTemplateIds, DateTime now, CancellationToken cancellationToken)
+    {
+        var outdated = (await mockupImages.Query()
+                .Where(image => image.DesignImageId != null && designImageIds.Contains(image.DesignImageId.Value) && image.DeletedAt == null
+                    && image.SourceType == MockupSources.Generated && image.ContentHash == null && image.ApprovalStatus != ApprovalStatuses.Approved)
+                .ToListAsync(cancellationToken))
+            .Where(image => !currentIds.Contains(image.Id) && !(image.MockupTemplateId is Guid templateId && failedTemplateIds.Contains(templateId)))
+            .ToList();
+        foreach (var image in outdated)
+        {
+            image.DeletedAt = now;
+            await mockupImages.UpdateAsync(image, cancellationToken: cancellationToken);
+        }
+        return outdated.Count;
     }
 
     // The job and product a slot key names, when the job can have its mock-ups changed now.

@@ -48,18 +48,32 @@ public sealed class MockupTemplateProcessingTests
     }
 
     [TestMethod]
-    public async Task GenerateCompositeAsync_CalledTwice_IncrementsUsageCountEachTime()
+    public async Task GenerateCompositeAsync_SameMockupTwice_IsStoredOnce()
     {
         await using var db = CreateContext();
         var (templateId, designImageId) = Seed(db);
-        var service = CreateService(db);
 
-        await service.GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
+        var first = await CreateService(db).GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
         db.ChangeTracker.Clear();
-        var result = await CreateService(db).GenerateCompositeAsync(
-            designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
+        var again = await CreateService(db).GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
 
-        result.IsSuccess.Should().BeTrue();
+        again.Value.Id.Should().Be(first.Value.Id);
+        db.ChangeTracker.Clear();
+        (await db.MockupImages.CountAsync()).Should().Be(1);
+        (await db.MockupTemplates.SingleAsync(t => t.Id == templateId)).UsageCount.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task GenerateCompositeAsync_MadeAnotherWay_IsANewMockupAndCountsAgain()
+    {
+        await using var db = CreateContext();
+        var (templateId, designImageId) = Seed(db);
+
+        await CreateService(db).GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, null, null, null, null));
+        db.ChangeTracker.Clear();
+        var moved = await CreateService(db).GenerateCompositeAsync(designImageId, new GenerateMockupImageRequestDto(templateId, 10, 10, 50, 50));
+
+        moved.IsSuccess.Should().BeTrue();
         db.ChangeTracker.Clear();
         (await db.MockupImages.CountAsync()).Should().Be(2);
         (await db.MockupTemplates.SingleAsync(t => t.Id == templateId)).UsageCount.Should().Be(2);
