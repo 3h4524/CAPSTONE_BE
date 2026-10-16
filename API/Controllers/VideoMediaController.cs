@@ -46,7 +46,7 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [ProducesResponseType(typeof(AiStudioFrameQuote), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> QuoteStudioFrame(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
+    public async Task<IActionResult> QuoteStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
     {
         var request = await form.ToRequestAsync(ct);
         if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
@@ -60,7 +60,7 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [ProducesResponseType(typeof(AiStudioFrameGenerationResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GenerateStudioFrame(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
+    public async Task<IActionResult> GenerateStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
     {
         var request = await form.ToRequestAsync(ct);
         if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
