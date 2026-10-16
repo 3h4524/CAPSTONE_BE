@@ -49,6 +49,37 @@ public sealed class CloudinaryPublicImageService : IPublicImageService
         return result.SecureUrl.AbsoluteUri;
     }
 
+    public async Task<PublicImageUploadResult> UploadImageWithMetadataAsync(
+        UploadFileDto file,
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+
+        using var description = new FileDescription(file.FileName, file.Content);
+        var result = await _cloudinary.UploadAsync(
+            new ImageUploadParams
+            {
+                File = description,
+                PublicId = CloudinaryPaths.BuildPublicId(_options.Folder, storageKey),
+                AssetFolder = CloudinaryPaths.BuildAssetFolder(_options.Folder, storageKey),
+                Overwrite = true,
+                UseFilename = false,
+                UniqueFilename = false,
+                DiscardOriginalFilename = true
+            },
+            cancellationToken: cancellationToken);
+
+        if (result.Error is not null || result.SecureUrl is null)
+        {
+            throw new InvalidOperationException(
+                $"Cloudinary could not store the image: {result.Error?.Message ?? "No delivery URL was returned."}");
+        }
+
+        return new PublicImageUploadResult(result.SecureUrl.AbsoluteUri, result.Width, result.Height);
+    }
+
     public async Task DeleteImageAsync(string storageKey, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);

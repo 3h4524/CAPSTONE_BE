@@ -16,7 +16,7 @@ namespace APCS.Application.UnitTests.Features.Batches;
 public sealed class BatchApprovalTests
 {
     [TestMethod]
-    public async Task ApproveAsync_WithPendingProducts_CreatesQueuedDesignJobAndItems()
+    public async Task ApproveAsync_WithPendingProducts_CreatesDraftDesignJobAndItems()
     {
         var userId = Guid.NewGuid();
         var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
@@ -43,11 +43,13 @@ public sealed class BatchApprovalTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.QueuedProductCount.Should().Be(2);
-        jobs.Should().ContainSingle().Which.Status.Should().Be("queued");
+        // Draft, not Queued: the Seller still has to configure mock-ups/prompt overrides and click
+        // "Start Image Job" (DesignGenerationService.StartAsync) before generation actually begins.
+        jobs.Should().ContainSingle().Which.Status.Should().Be("draft");
         jobs.Single().JobType.Should().Be("design_generation");
         items.Should().HaveCount(2).And.OnlyContain(item => item.BatchJobId == jobs[0].Id && item.Status == "pending");
-        pending.Should().OnlyContain(product => product.ProcessingStatus == "queued");
-        batch.Status.Should().Be("processing");
+        pending.Should().OnlyContain(product => product.ProcessingStatus == "pending");
+        batch.Status.Should().Be("draft");
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 

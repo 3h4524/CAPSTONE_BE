@@ -31,5 +31,9 @@ public partial class VideoTemplate
 
     public DateTime? UpdatedAt { get; set; }
 
+    public string? Code { get; set; }
+
+    public int TemplateVersion { get; set; }
+
     public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
 }

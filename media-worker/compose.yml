@@ -1,0 +1,17 @@
+services:
+  media-worker:
+    build:
+      context: ..
+      dockerfile: media-worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      APCS_API_URL: ${APCS_API_URL:-http://host.docker.internal:5191}
+      MEDIA_WORKER_API_KEY: ${MEDIA_WORKER_API_KEY:?Set the same key as API MediaWorker__ApiKey}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    shm_size: 1gb
+    mem_limit: 3g
+    cpus: 2
+    security_opt:
+      - no-new-privileges:true

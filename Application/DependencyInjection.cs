@@ -11,8 +11,10 @@ using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.Batches;
+using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignTemplates;
 using APCS.Application.Features.Notifications;
+using APCS.Application.Features.ListingContent;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -46,6 +48,24 @@ public static class DependencyInjection
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
+        services.AddScoped<IDesignGenerationService, DesignGenerationService>();
+        services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
+        services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
+        services.AddScoped<Features.Workflows.VideoStoryboardPlanner>();
+        services.AddScoped<Features.Workflows.WorkflowRuntime>();
+        services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
+        services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
+        services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
+        services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
+        services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
+        services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
+        services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
+        services.AddScoped<Features.Workflows.IAiShotQuoteService, Features.Workflows.AiShotQuoteService>();
+        services.AddScoped<Features.Workflows.IAiShotJobService, Features.Workflows.AiShotJobService>();
+        services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
+        services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();
+        services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
+        services.AddScoped<IListingContentService, ListingContentService>();
 
         return services;
     }

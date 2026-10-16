@@ -70,9 +70,13 @@ public sealed class BatchService(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var job = new BatchJob
         {
+            // Draft, not Queued: the Seller still has to configure mock-ups/prompt overrides
+            // (MockupTemplateService/BatchProductPromptService both require BatchJob.Status ==
+            // "draft" before allowing changes) before DesignGenerationService.StartAsync moves
+            // this to Queued and actually calls the AI provider.
             Id = Guid.NewGuid(), UserId = userId, BatchId = batchId,
             Name = $"{batch.Name} - design generation", Description = batch.Description,
-            SourceFileType = "manual", Status = "queued", JobType = "design_generation",
+            SourceFileType = "manual", Status = BatchJobStatuses.Draft, JobType = "design_generation",
             Config = "{}", Priority = "normal", TotalProducts = pendingProducts.Count,
             ProcessedProducts = 0, FailedProducts = 0, SkippedProducts = 0,
             ProgressPercentage = 0, EstimatedCostUsd = 0, ActualCostUsd = 0,
@@ -83,21 +87,15 @@ public sealed class BatchService(
         for (var index = 0; index < pendingProducts.Count; index++)
         {
             var product = pendingProducts[index];
-            product.ProcessingStatus = "queued";
-            product.UpdatedAt = now;
-            await products.UpdateAsync(product, cancellationToken: cancellationToken);
             await batchJobProducts.AddAsync(new BatchJobProduct
             {
                 Id = Guid.NewGuid(), BatchJobId = job.Id, BatchId = batchId,
                 ProductId = product.Id, SequenceOrder = index + 1,
-                Status = "pending", CurrentStep = "design_generation", RetryCount = 0,
+                Status = BatchJobProductStatuses.Pending, CurrentStep = "design_generation", RetryCount = 0,
                 CreatedAt = now, UpdatedAt = now
             }, cancellationToken: cancellationToken);
         }
 
-        batch.Status = "processing";
-        batch.UpdatedAt = now;
-        await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success(new ApproveBatchDto(batchId, job.Id, pendingProducts.Count, job.Status));
     }
