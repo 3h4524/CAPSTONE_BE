@@ -52,4 +52,10 @@ public static class ConfigurationSections
 
     /// <summary>The private asset storage section.</summary>
     public const string Cloudinary = "Cloudinary";
+
+    /// <summary>The Google Gemini image generation options section.</summary>
+    public const string Gemini = "Gemini";
+
+    /// <summary>The mock-up image processing options section.</summary>
+    public const string Mockups = "Mockups";
 }

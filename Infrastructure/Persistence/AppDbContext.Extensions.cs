@@ -2,6 +2,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using APCS.Infrastructure.Persistence.Rag;
 
 namespace APCS.Infrastructure.Persistence;
 
@@ -19,6 +20,13 @@ public partial class AppDbContext : IUnitOfWork
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        RagModelConfiguration.Configure(modelBuilder);
+
+        // The production provider is PostgreSQL/pgvector. The existing unit-test
+        // contexts use EF Core InMemory, which cannot map Pgvector.Vector.
+        if (Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true)
+            modelBuilder.Entity<RagEmbedding>().Ignore(x => x.Embedding);
+
         modelBuilder.Entity<AuthToken>()
             .Property<uint>("xmin")
             .IsRowVersion()

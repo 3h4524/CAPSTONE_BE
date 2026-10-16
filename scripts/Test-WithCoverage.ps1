@@ -70,12 +70,17 @@ try {
         "+APCS.Application.Common.Behaviours.*",
         "+APCS.Application.Features.Auth.*",
         "+APCS.Application.Features.ApiKeys.*",
+        "+APCS.Application.Features.Workflows.*",
         "+APCS.Common.*",
         "+APCS.Domain.Common.SoftDeletableEntity",
         "+APCS.Domain.Entities.AuthToken",
         "+APCS.Domain.Entities.User",
         "+APCS.Domain.ValueObjects.Email",
-        "+APCS.Infrastructure.Services.*"
+        "+APCS.Infrastructure.Services.*",
+        "-APCS.Infrastructure.Services.GeminiEmbeddingProvider",
+        "-APCS.Infrastructure.Services.GeminiTextGenerationProvider",
+        "-APCS.Infrastructure.Services.RagContextRetrievers",
+        "-APCS.Infrastructure.Services.RagService"
     ) -join ";"
 
     & dotnet tool run reportgenerator `
