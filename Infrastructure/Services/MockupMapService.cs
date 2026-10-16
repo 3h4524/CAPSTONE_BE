@@ -24,7 +24,8 @@ public sealed class MockupMapService(
             var displacement = preview ? null : generator.GenerateDisplacementMap(photo);
             return new PreparedBasePhoto(
                 garment.MaskPng, displacement,
-                new GarmentMaskStats(garment.GarmentCoverage, garment.GarmentLuminance), garment.WidthPx, garment.HeightPx);
+                new GarmentMaskStats(garment.GarmentCoverage, garment.GarmentLuminance), garment.WidthPx, garment.HeightPx,
+                preview ? null : generator.GenerateCutMask(garment.MaskPng));
         }, cancellationToken);
 
     public Task<byte[]> DownloadAsync(string baseImageUrl, CancellationToken cancellationToken = default) =>
@@ -35,6 +36,26 @@ public sealed class MockupMapService(
         if (prepared.DisplacementPng is { } displacement)
             await UploadAsync(displacement, MockupRules.DisplacementMapKey(keyPrefix), cancellationToken);
         await UploadAsync(prepared.MaskPng, MockupRules.GarmentMaskKey(keyPrefix), cancellationToken);
+        if (prepared.CutMaskPng is { } cut)
+            await UploadAsync(cut, MockupRules.CutMaskKey(keyPrefix), cancellationToken);
+    }
+
+    public async Task<bool> EnsureCutMaskAsync(string maskUrl, string cutMaskUrl, string cutMaskKey, CancellationToken cancellationToken = default)
+    {
+        var client = clients.CreateClient(HttpClientName);
+        using (var existing = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, cutMaskUrl), cancellationToken))
+        {
+            if (existing.IsSuccessStatusCode)
+                return true;
+        }
+
+        var mask = await client.GetByteArrayAsync(maskUrl, cancellationToken);
+        var cut = await Task.Run(() => generator.GenerateCutMask(mask), cancellationToken);
+        if (cut is null)
+            return false;
+
+        await UploadAsync(cut, cutMaskKey, cancellationToken);
+        return true;
     }
 
     /// <summary>

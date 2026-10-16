@@ -76,6 +76,36 @@ public sealed class CloudinaryMockupCompositorTests
     }
 
     [TestMethod]
+    public void BuildCompositeUrl_WithABackground_CutsTheGarmentOutShadowsItAndFillsTheRest()
+    {
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(40, 60, 400, 200),
+            new MockupLayers(1000, 1000, null, "mockup-templates/t-mask", null,
+                CutMaskKey: "mockup-templates/t-cut", BackgroundColor: "#ede6da", BasePhotoWidthPx: 1500, BasePhotoHeightPx: 2000));
+
+        url.Should().EndWith(
+            "fl_layer_apply,g_north_west,x_140,y_60/"
+            + "l_apcs:mockup-templates:t-cut/fl_cutter,fl_layer_apply,g_north_west,x_0,y_0/"
+            + "u_apcs:mockup-templates:t-cut/e_colorize:100,co_rgb:000000/e_blur:1350/o_38/fl_layer_apply,g_north_west,x_0,y_18/"
+            + "c_crop,g_north_west,w_1500,h_2000/b_rgb:EDE6DA/"
+            + "v1700000000/apcs/mockup-templates/t.webp");
+    }
+
+    [TestMethod]
+    [DataRow("mockup-templates/t-cut", null, DisplayName = "No background chosen")]
+    [DataRow(null, "#EDE6DA", DisplayName = "No cut mask")]
+    public void BuildCompositeUrl_WithoutBothTheCutMaskAndTheColor_KeepsThePhotosBackground(string? cutMaskKey, string? background)
+    {
+        var plain = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(40, 60, 400, 200),
+            new MockupLayers(1000, 1000, null, "mockup-templates/t-mask", null));
+
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(40, 60, 400, 200),
+            new MockupLayers(1000, 1000, null, "mockup-templates/t-mask", null,
+                CutMaskKey: cutMaskKey, BackgroundColor: background, BasePhotoWidthPx: 1500, BasePhotoHeightPx: 2000));
+
+        url.Should().Be(plain);
+    }
+
+    [TestMethod]
     [DataRow(1152, 1039, "x_12,y_12", DisplayName = "A large design is bent by no more than the photo's folds allow")]
     [DataRow(300, 300, "x_6,y_6", DisplayName = "A small design is bent by a share of its own size")]
     public void BuildCompositeUrl_WithThePhotoSize_LimitsTheBendOfALargeDesign(int areaWidth, int areaHeight, string expected)

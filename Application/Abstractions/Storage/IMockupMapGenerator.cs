@@ -24,6 +24,14 @@ public interface IMockupMapGenerator
     /// <param name="baseImage">The photo.</param>
     /// <param name="maxOutputSide">Scales the result down to this longest side, for a quick preview.</param>
     GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null);
+
+    /// <summary>
+    /// The garment mask with its edge pulled in by a pixel, for lifting the garment onto another
+    /// background: the edge of the plain mask is half garment, half the photo's own background, which
+    /// shows as a light line on a dark one. <see langword="null"/> when the mask separated no garment.
+    /// </summary>
+    /// <param name="garmentMaskPng">A mask made by <see cref="GenerateGarmentMask"/>.</param>
+    byte[]? GenerateCutMask(byte[] garmentMaskPng);
 }
 
 /// <summary>

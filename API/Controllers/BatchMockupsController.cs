@@ -44,4 +44,28 @@ public sealed class BatchMockupsController(IMockupTemplateService service) : Con
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> GenerateAll(Guid batchJobId, CancellationToken cancellationToken) =>
         (await service.GenerateAllAsync(batchJobId, cancellationToken)).ToActionResult(this);
+
+    /// <summary>Makes one of the job's mock-ups its own way, apart from the job's settings, and returns the job's mock-ups.</summary>
+    [HttpPut("overrides")]
+    [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SaveOverride(
+        Guid batchJobId,
+        [FromBody] SaveMockupOverrideRequestDto request,
+        CancellationToken cancellationToken) =>
+        (await service.SaveOverrideAsync(batchJobId, request, cancellationToken)).ToActionResult(this);
+
+    /// <summary>Puts one of the job's mock-ups back on the job's settings and returns the job's mock-ups.</summary>
+    [HttpDelete("overrides/{slotKey}")]
+    [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ResetOverride(
+        Guid batchJobId,
+        string slotKey,
+        [FromQuery] Guid? replacedMockupImageId,
+        CancellationToken cancellationToken) =>
+        (await service.ResetOverrideAsync(batchJobId, slotKey, replacedMockupImageId, cancellationToken)).ToActionResult(this);
 }

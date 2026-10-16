@@ -8,6 +8,8 @@ public interface IMediaStorage
     Task<StoredMockup> UploadMockupAsync(Stream content, string fileName, string storageKey, CancellationToken cancellationToken);
     /// <summary>Stores the image at <paramref name="sourceUrl"/> the same way as an uploaded mock-up.</summary>
     Task<StoredMockup> UploadMockupFromUrlAsync(string sourceUrl, string storageKey, CancellationToken cancellationToken);
+    /// <summary>Reads a stored mock-up image back as PNG bytes.</summary>
+    Task<byte[]> ReadImageAsync(string storageKey, string? version, CancellationToken cancellationToken);
     string SignRead(string storageKey, string resourceType, string? version = null, bool attachment = false);
     UploadGrant CreateUploadGrant(string storageKey, string resourceType);
     Task<bool> VerifyAsync(string storageKey, string resourceType, string version, long? bytes, CancellationToken cancellationToken);

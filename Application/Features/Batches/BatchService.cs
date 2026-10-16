@@ -33,7 +33,8 @@ public sealed class BatchService(
             .OrderByDescending(x => x.CreatedAt).Select(x => new BatchDto(x.Id, x.Name, x.Description, x.DefaultNiche,
                 x.DefaultProductType, x.Status, x.CreatedAt,
                 x.Products.Count(p => p.DeletedAt == null))).ToListAsync(cancellationToken);
-        return Result.Success<IReadOnlyList<BatchDto>>(batchList);
+        var statuses = await ResolveStatusesAsync(batchList.Select(x => (x.Id, x.ProductCount)).ToList(), cancellationToken);
+        return Result.Success<IReadOnlyList<BatchDto>>(batchList.Select(x => x with { Status = statuses[x.Id] }).ToList());
     }
 
     public async Task<Result<BatchDto>> CreateAsync(SaveBatchDto request, CancellationToken cancellationToken = default)
@@ -47,7 +48,7 @@ public sealed class BatchService(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = name, Description = Clean(request.Description),
             DefaultNiche = Clean(request.DefaultNiche), DefaultProductType = request.DefaultProductType,
-            InputMethod = "manual", Status = "draft", CreatedAt = now };
+            InputMethod = "manual", Status = BatchStatuses.Draft, CreatedAt = now };
         await batches.AddAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success(new BatchDto(batch.Id, batch.Name, batch.Description, batch.DefaultNiche, batch.DefaultProductType, batch.Status, now, 0));
@@ -120,8 +121,9 @@ public sealed class BatchService(
         await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var productCount = await products.Query().CountAsync(x => x.BatchId == batchId && x.DeletedAt == null, cancellationToken);
+        var status = (await ResolveStatusesAsync([(batch.Id, productCount)], cancellationToken))[batch.Id];
         return Result.Success(new BatchDto(batch.Id, batch.Name, batch.Description, batch.DefaultNiche,
-            batch.DefaultProductType, batch.Status, batch.CreatedAt, productCount));
+            batch.DefaultProductType, status, batch.CreatedAt, productCount));
     }
 
     public async Task<Result> DeleteBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
@@ -267,6 +269,23 @@ public sealed class BatchService(
         await products.UpdateAsync(product, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success();
+    }
+
+    // The status shown for a batch says what is left to do in it, so it is worked out from its jobs and products.
+    // The stored column only records that the last job started or finished: it is stale as soon as a product is
+    // added or set back to pending.
+    private async Task<Dictionary<Guid, string>> ResolveStatusesAsync(IReadOnlyCollection<(Guid Id, int ProductCount)> batchList, CancellationToken cancellationToken)
+    {
+        var ids = batchList.Select(x => x.Id).ToList();
+        var running = await batchJobs.Query()
+            .Where(x => ids.Contains(x.BatchId) && x.DeletedAt == null && BatchJobStatuses.Active.Contains(x.Status.ToLower()))
+            .Select(x => x.BatchId).Distinct().ToListAsync(cancellationToken);
+        var waiting = await products.Query()
+            .Where(x => ids.Contains(x.BatchId) && x.DeletedAt == null && x.ProcessingStatus == BatchJobProductStatuses.Pending)
+            .Select(x => x.BatchId).Distinct().ToListAsync(cancellationToken);
+        return batchList.ToDictionary(x => x.Id, x => running.Contains(x.Id) ? BatchStatuses.Processing
+            : x.ProductCount == 0 || waiting.Contains(x.Id) ? BatchStatuses.Draft
+            : BatchStatuses.Completed);
     }
 
     private async Task<Error?> AuthorizeAsync(CancellationToken cancellationToken)

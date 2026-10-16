@@ -33,6 +33,12 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
     /// </summary>
     internal const double DisplacementPhotoRatio = 0.006;
 
+    // The shadow under a garment on a new background, as shares of the photo's shorter side: how far
+    // it is lowered and how much it is blurred, so it looks the same on small and large photos.
+    internal const double ShadowDropRatio = 0.012;
+    internal const double ShadowBlurRatio = 0.9;
+    internal const int ShadowOpacity = 38;
+
     private readonly CloudinaryOptions _options = options.Value;
 
     public string BuildCompositeUrl(string baseImageUrl, string overlayStorageKey, MockupPosition position, MockupLayers? layers = null)
@@ -114,6 +120,24 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
         {
             components.Add($"l_{recolorMaskToken}");
             components.Add("fl_layer_apply,e_multiply,g_north_west,x_0,y_0");
+        }
+
+        // New background: the finished garment is cut out, a soft shadow of its own shape is laid under
+        // it (the photo's shadow went with the photo's background), and what is left empty is filled.
+        if (layers is { CutMaskKey: { } backgroundCutKey, BackgroundColor: { } background, BasePhotoWidthPx: > 0 and var photoWidth, BasePhotoHeightPx: > 0 and var photoHeight })
+        {
+            var cutToken = LayerToken(backgroundCutKey);
+            var shortSide = Math.Min(photoWidth, photoHeight);
+            components.Add($"l_{cutToken}");
+            components.Add("fl_cutter,fl_layer_apply,g_north_west,x_0,y_0");
+            components.Add($"u_{cutToken}");
+            components.Add("e_colorize:100,co_rgb:000000");
+            components.Add($"e_blur:{Math.Max(1, (int)Math.Round(shortSide * ShadowBlurRatio))}");
+            components.Add($"o_{ShadowOpacity}");
+            components.Add($"fl_layer_apply,g_north_west,x_0,y_{Math.Max(1, (int)Math.Round(shortSide * ShadowDropRatio))}");
+            // The lowered shadow made the canvas taller; it is cut back to the photo's size.
+            components.Add($"c_crop,g_north_west,w_{photoWidth},h_{photoHeight}");
+            components.Add($"b_rgb:{background.TrimStart('#').ToUpperInvariant()}");
         }
 
         return baseImageUrl.Insert(markerIndex + UploadMarker.Length, string.Join('/', components) + "/");

@@ -28,10 +28,20 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         if (WorkflowCapabilityRegistry.BatchSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
             return Error.Validation("Each design step may appear only once.");
         // One line in run order, so neither approval gate can be bypassed and the design steps stay ahead of the mock-ups.
-        var ordered = definition.Nodes.OrderBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.Type)).ToArray();
+        // Listing Content is written from the product's own details and waits for no approval: it may hang off
+        // any step, or sit between two of them, without being one of the steps the line is checked against.
+        var listing = definition.Nodes.SingleOrDefault(x => x.Type == "generate-listing");
+        if (listing is not null && definition.Edges.Count(e => e.Target == listing.Id) != 1)
+            return Error.Validation("Connect Listing Content after exactly one step.");
+        var ordered = definition.Nodes.Where(x => x != listing).OrderBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.Type)).ToArray();
         for (var i = 1; i < ordered.Length; i++)
-            if (definition.Edges.Count(e => e.Source == ordered[i - 1].Id && e.Target == ordered[i].Id) != 1)
+        {
+            var direct = definition.Edges.Count(e => e.Source == ordered[i - 1].Id && e.Target == ordered[i].Id);
+            var throughListing = listing is not null && definition.Edges.Any(e => e.Source == ordered[i - 1].Id && e.Target == listing.Id) &&
+                definition.Edges.Count(e => e.Source == listing.Id && e.Target == ordered[i].Id) == 1;
+            if (direct + (throughListing ? 1 : 0) != 1)
                 return Error.Validation("Node connections must preserve both approval gates.");
+        }
         try
         {
             var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));

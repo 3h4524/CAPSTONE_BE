@@ -12,10 +12,12 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// Every mock-up image tied to this batch job's design images and the currently selected templates —
 /// old and newly created together, so the caller can render one complete grid without a second call.
 /// </param>
+/// <param name="Removed">The mock-ups the job's settings would make that were removed for their product alone.</param>
 public sealed record GenerateAllMockupsResultDto(
     int GeneratedCount,
     int NoDesignImageCount,
     int NoCompatibleTemplateCount,
     IReadOnlyList<string> Errors,
     IReadOnlyList<MockupImageResponseDto> Images,
-    int NoApprovedImageCount = 0);
+    int NoApprovedImageCount = 0,
+    IReadOnlyList<RemovedMockupSlotDto>? Removed = null);

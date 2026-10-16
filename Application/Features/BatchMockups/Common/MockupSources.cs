@@ -12,6 +12,9 @@ public static class MockupSources
     /// <summary>Uploaded by the user as a finished mock-up photo.</summary>
     public const string Uploaded = "uploaded";
 
+    /// <summary>Generated from an existing product image to prepare an AI video start frame.</summary>
+    public const string AiGenerated = "ai_generated";
+
     public const string DefaultRole = "Hero";
 
     /// <summary>No protected regions marked.</summary>

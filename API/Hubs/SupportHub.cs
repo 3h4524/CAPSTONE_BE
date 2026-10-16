@@ -16,14 +16,6 @@ public class SupportHub : Hub
         _ticketRepository = ticketRepository;
     }
 
-    public override async Task OnConnectedAsync()
-    {
-        if (Context.User?.IsInRole("Admin") == true)
-        {
-            await Groups.AddToGroupAsync(Context.ConnectionId, "Admins");
-        }
-        await base.OnConnectedAsync();
-    }
 
     // Tham gia vào phòng chat của một Ticket cụ thể
     public async Task JoinTicket(string ticketId)

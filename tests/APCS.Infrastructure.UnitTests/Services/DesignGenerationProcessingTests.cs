@@ -3,6 +3,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.DesignGeneration;
+using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Validators;
 using APCS.Common.Constants;
@@ -355,6 +356,26 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    public async Task ProcessBatchJobAsync_WhileAnImageIsMade_OnlyThatProductIsBeingGenerated()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0);
+        // What the Batches page would read while the provider works on each product in turn.
+        var seen = new List<string>();
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                seen.Add(string.Join(", ", db.Products.AsNoTracking().OrderBy(p => p.Name).Select(p => p.ProcessingStatus)));
+                return ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m);
+            });
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        seen.Should().Equal("generating_image, queued", "image_review_required, generating_image");
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_TshirtDesign_AsksForAPlainBackdropAndStoresTheCutOut()
     {
         await using var db = CreateContext();
@@ -478,6 +499,144 @@ public sealed class DesignGenerationProcessingTests
         db.ChangeTracker.Clear();
     }
 
+    // ---- Several images at once ----
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_SeveralImagesAtOnce_MakesThemSideBySideAndSavesEveryOne()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 6, existingUsage: 0);
+        var provider = new SlowProvider();
+
+        await CreateService(db, provider: provider.Mock, maxConcurrentImages: 3).ProcessBatchJobAsync(jobId);
+
+        provider.MostAtOnce.Should().BeInRange(2, 3, "images overlap, but never more than allowed");
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(6);
+        var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
+        job.Status.Should().Be(BatchJobStatuses.Completed);
+        (job.ProcessedProducts, job.FailedProducts, job.ProgressPercentage).Should().Be((6, 0, 100m));
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
+            .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.ImageReviewRequired);
+        (await db.UsageStatistics.SingleAsync()).ImagesGenerated.Should().Be(6);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_VariationsOfOneProduct_AreMadeSideBySideWithinTheLimit()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 4);
+        var provider = new SlowProvider();
+
+        await CreateService(db, provider: provider.Mock, maxConcurrentImages: 2).ProcessBatchJobAsync(jobId);
+
+        provider.MostAtOnce.Should().Be(2);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.Select(i => i.VariationIndex).ToListAsync()).Should().BeEquivalentTo([1, 2, 3, 4]);
+        (await db.BatchJobLogs.CountAsync(l => l.EventType == "image_timing")).Should().Be(4);
+        (await db.UsageStatistics.SingleAsync()).ImagesGenerated.Should().Be(4);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_SeveralAtOnceAndOneProductFails_TheOthersAreStillSaved()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 4, existingUsage: 0);
+        var provider = new SlowProvider(fails: prompt => prompt.StartsWith("prompt 2"));
+
+        await CreateService(db, provider: provider.Mock, maxConcurrentImages: 3).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
+        job.Status.Should().Be(BatchJobStatuses.PartiallyCompleted);
+        (job.ProcessedProducts, job.FailedProducts).Should().Be((4, 1));
+        var rows = await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).ToListAsync();
+        rows[2].Status.Should().Be(BatchJobProductStatuses.Failed);
+        rows.Where((_, index) => index != 2).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.ImageReviewRequired);
+        (await db.DesignImages.CountAsync()).Should().Be(3);
+        (await db.UsageStatistics.SingleAsync()).ImagesGenerated.Should().Be(3);
+        (await db.BatchJobLogs.CountAsync(l => l.EventType == "generation_failed")).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task CancelAsync_WhileSeveralProductsAreBeingGenerated_FinishesThemAndFailsTheRest()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        await using var db = CreateContext(databaseName);
+        var jobId = Seed(db, productCount: 4, existingUsage: 0);
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopPressed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, string prompt, string _, CancellationToken _) =>
+            {
+                if (prompt.StartsWith("prompt 0"))
+                {
+                    // The user presses Stop while the first two products are being generated, from their own request.
+                    try
+                    {
+                        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                        await using var requestDb = CreateContext(databaseName);
+                        (await CreateService(requestDb).CancelAsync(jobId)).IsSuccess.Should().BeTrue();
+                    }
+                    finally
+                    {
+                        stopPressed.TrySetResult();
+                    }
+                }
+                else
+                {
+                    secondStarted.TrySetResult();
+                    await stopPressed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                return ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m);
+            });
+
+        await CreateService(db, provider: provider, maxConcurrentImages: 2).ProcessBatchJobAsync(jobId);
+
+        provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+        var rows = await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).ToListAsync();
+        rows.Take(2).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.ImageReviewRequired);
+        rows.Skip(2).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.Failed && r.ErrorMessage == "Cancelled by the user.");
+        var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
+        job.Status.Should().Be(BatchJobStatuses.PartiallyCompleted);
+        (job.ProcessedProducts, job.FailedProducts).Should().Be((4, 2));
+        (await db.BatchJobLogs.CountAsync(l => l.EventType == "cancel_honored")).Should().Be(1);
+    }
+
+    // A provider that takes a moment for each image and remembers how many it was making at the same time.
+    private sealed class SlowProvider
+    {
+        private readonly object sync = new();
+        private int running;
+
+        public SlowProvider(Func<string, bool>? fails = null)
+        {
+            Mock.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Returns(async (string _, string prompt, string _, CancellationToken cancellationToken) =>
+                {
+                    lock (sync) MostAtOnce = Math.Max(MostAtOnce, ++running);
+                    try
+                    {
+                        await Task.Delay(100, cancellationToken);
+                        return fails?.Invoke(prompt) == true
+                            ? ImageGenerationResult.Failed("Gemini returned 500: boom", "test-model")
+                            : ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m);
+                    }
+                    finally
+                    {
+                        lock (sync) running--;
+                    }
+                });
+        }
+
+        public Mock<IImageGenerationProvider> Mock { get; } = new();
+
+        public int MostAtOnce { get; private set; }
+    }
+
     // ---- Setting products back to pending ----
 
     [TestMethod]
@@ -586,15 +745,17 @@ public sealed class DesignGenerationProcessingTests
         return jobId;
     }
 
-    private static AppDbContext CreateContext() =>
-        new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    // Contexts made with the same name share one database, as two scopes of the application do.
+    private static AppDbContext CreateContext(string? databaseName = null) =>
+        new(new DbContextOptionsBuilder<AppDbContext>().UseInMemoryDatabase(databaseName ?? Guid.NewGuid().ToString()).Options);
 
     private static DesignGenerationService CreateService(
         AppDbContext db,
         IDesignGenerationQueue? queue = null,
         Mock<IImageGenerationProvider>? provider = null,
         IDesignBackgroundRemover? backgroundRemover = null,
-        Mock<IPublicImageService>? storage = null)
+        Mock<IPublicImageService>? storage = null,
+        int maxConcurrentImages = 1)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -622,7 +783,8 @@ public sealed class DesignGenerationProcessingTests
             new ApiKeyRepository(db), credentials.Object, new SubscriptionRepository(db), new UsageStatisticRepository(db),
             provider.Object, storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(),
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
-            new FakeTimeProvider(UtcNow), new StartGenerationValidator());
+            new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)));
     }
 
     private static Guid Seed(
@@ -630,7 +792,8 @@ public sealed class DesignGenerationProcessingTests
         int productCount,
         int existingUsage,
         string jobStatus = BatchJobStatuses.Running,
-        string rowStatus = BatchJobProductStatuses.GeneratingImage)
+        string rowStatus = BatchJobProductStatuses.GeneratingImage,
+        int variationCount = 1)
     {
         var now = UtcNow.UtcDateTime;
         var today = DateOnly.FromDateTime(now);
@@ -641,7 +804,7 @@ public sealed class DesignGenerationProcessingTests
         db.BatchJobs.Add(new BatchJob
         {
             Id = jobId, UserId = UserId, BatchId = batchId, Name = "J", SourceFileType = "manual", Status = jobStatus,
-            JobType = "design_generation", Config = "{\"variationCount\":1,\"aspectRatio\":\"1:1\"}", Priority = "normal",
+            JobType = "design_generation", Config = $"{{\"variationCount\":{variationCount},\"aspectRatio\":\"1:1\"}}", Priority = "normal",
             TotalProducts = productCount,
             ProcessedProducts = jobStatus == BatchJobStatuses.Failed ? productCount : 0,
             FailedProducts = jobStatus == BatchJobStatuses.Failed ? productCount : 0, CreatedAt = now

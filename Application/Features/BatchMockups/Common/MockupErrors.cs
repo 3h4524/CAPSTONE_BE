@@ -53,11 +53,20 @@ public static class MockupErrors
     public static Error NotRecolorable(string reason) =>
         Error.Conflict("BatchMockups.NotRecolorable", $"This photo can't be recolored: {reason} Use a white or light-gray garment on a plain background.");
 
+    public static Error BackgroundNotAllowed(string name) =>
+        Error.Conflict("BatchMockups.BackgroundNotAllowed", $"The background of the template {name} can't be changed: its garment could not be separated from the photo's background.");
+
     public static Error RecolorNotAllowed(string name) =>
         Error.Conflict("BatchMockups.RecolorNotAllowed", $"The template {name} does not support garment colors.");
 
     public static Error ApprovalPending() =>
         Error.Conflict("BatchMockups.ApprovalPending", "Mock-ups are made after the designs are approved.");
+
+    public static Error SlotNotFound() =>
+        Error.NotFound("BatchMockups.SlotNotFound", "This mock-up is not one the job makes any more. Reload its mock-ups and try again.");
+
+    public static Error TemplateNotForProduct(string name) =>
+        Error.Conflict("BatchMockups.TemplateNotForProduct", $"The template {name} is for another type of product than this one.");
 
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");

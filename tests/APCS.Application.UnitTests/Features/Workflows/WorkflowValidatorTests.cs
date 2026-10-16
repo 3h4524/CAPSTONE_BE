@@ -54,10 +54,10 @@ public sealed class WorkflowValidatorTests
     [TestMethod]
     [DataRow(3, true)]
     [DataRow(12, true)]
-    [DataRow(15, true)]
+    [DataRow(30, true)]
     [DataRow(2, false)]
-    [DataRow(16, false)]
-    public void VideoConfig_DurationBoundary_AcceptsOnlyThreeToFifteen(int duration, bool valid)
+    [DataRow(31, false)]
+    public void VideoConfig_DurationBoundary_AcceptsOnlyThreeToThirty(int duration, bool valid)
     {
         var result = new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(DurationSeconds: duration));
         result.IsValid.Should().Be(valid);
@@ -66,11 +66,18 @@ public sealed class WorkflowValidatorTests
 
     [TestMethod]
     [DataRow("standard")]
-    [DataRow("ai_background")]
     [DataRow("ai_shot")]
-    public void VideoConfig_DeclaredMode_RemainsRepresentableWithoutSelectingProvider(string mode)
+    public void VideoConfig_SupportedMode_RemainsRepresentableWithoutSelectingProvider(string mode)
     {
-        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: mode)).IsValid.Should().BeTrue();
+        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: mode,
+            AiShotOptions: mode == "ai_shot" ? new() : null)).IsValid.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void VideoConfig_LegacyAiBackground_IsRejected()
+    {
+        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: "ai_background"))
+            .Errors.Should().Contain(x => x.PropertyName == "Mode");
     }
 
     [TestMethod]
@@ -113,12 +120,11 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    public void VideoConfig_StandardWithAiOptions_RejectsBothOptions()
+    public void VideoConfig_StandardWithDormantAiShotOptions_RemainsValid()
     {
-        var config = new GenerateVideoConfig(AiBackgroundOptions: new("Clean Studio", "test", [0]),
-            AiShotOptions: new(0, Guid.NewGuid(), "Slow Dolly In", "test"));
+        var config = new GenerateVideoConfig(AiShotOptions: new());
         var result = new GenerateVideoConfigValidator().Validate(config);
-        result.Errors.Select(x => x.PropertyName).Should().Contain(["AiBackgroundOptions", "AiShotOptions"]);
+        result.IsValid.Should().BeTrue();
     }
 
     [TestMethod]
@@ -141,16 +147,47 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    [DataRow(0, 1, true)]
-    [DataRow(3, 2, true)]
-    [DataRow(-1, 1, false)]
-    [DataRow(4, 2, false)]
-    [DataRow(0, 0, false)]
-    [DataRow(0, 3, false)]
-    public void VideoConfig_AiShotLimits_RejectsOutsideSceneAndAttemptBounds(int index, int attempts, bool valid)
+    [DataRow("single_scene", 12, true)]
+    [DataRow("single_scene", 15, true)]
+    [DataRow("single_scene", 8, false)]
+    [DataRow("full_video", 8, true)]
+    [DataRow("full_video", 15, true)]
+    [DataRow("full_video", 12, false)]
+    public void VideoConfig_AiShotCoverageDuration_EnforcesSupportedCombinations(string coverage, int duration, bool valid)
     {
-        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(index, Guid.NewGuid(), "Slow Dolly In", null, attempts)))
+        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: duration,
+            AiShotOptions: new(Coverage: coverage)))
             .IsValid.Should().Be(valid);
+    }
+
+    [TestMethod]
+    [DataRow("coverage")]
+    [DataRow("concept")]
+    [DataRow("scene")]
+    [DataRow("prompt")]
+    [DataRow("source_ids")]
+    public void VideoConfig_AiShotInvalidOption_RejectsSpecificPartition(string invalid)
+    {
+        var options = invalid switch
+        {
+            "coverage" => new AiShotOptions(Coverage: "unknown"),
+            "concept" => new AiShotOptions(Concept: "unknown"),
+            "scene" => new AiShotOptions(SceneIndex: 4),
+            "prompt" => new AiShotOptions(Prompt: new string('x', 501)),
+            _ => new AiShotOptions(FullSceneMockupIds: [Guid.Empty])
+        };
+        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: options))
+            .Errors.Should().Contain(x => x.PropertyName == "AiShotOptions");
+    }
+
+    [TestMethod]
+    public void VideoConfig_AiShotWithoutOptionsOrLifestyleRights_RejectsConfiguration()
+    {
+        var validator = new GenerateVideoConfigValidator();
+        validator.Validate(new GenerateVideoConfig(Mode: "ai_shot"))
+            .Errors.Should().Contain(x => x.PropertyName == "AiShotOptions");
+        validator.Validate(new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(Concept: "lifestyle_motion")))
+            .Errors.Should().Contain(x => x.ErrorMessage.Contains("rights"));
     }
 
     [TestMethod]

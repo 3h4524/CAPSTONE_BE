@@ -91,6 +91,6 @@ public sealed class WorkflowsControllerTests
         var result = new WorkflowsController(Mock.Of<IWorkflowService>(), Mock.Of<IWorkflowRunService>(), new()).Capabilities();
         var capability = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<WorkflowCapabilities>().Subject;
         capability.VideoModes.Single(x => x.Mode == "standard").Enabled.Should().BeTrue();
-        capability.VideoModes.Where(x => x.Mode != "standard").Should().HaveCount(2).And.OnlyContain(x => !x.Enabled && x.Availability == "coming_soon");
+        capability.VideoModes.Where(x => x.Mode != "standard").Should().ContainSingle().Which.Should().Match<VideoModeCapability>(x => x.Mode == "ai_shot" && x.Enabled && x.Availability == "available");
     }
 }

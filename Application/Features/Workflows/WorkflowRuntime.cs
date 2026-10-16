@@ -17,9 +17,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var mockupConfig = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
         var approved = await ApprovedAssetsAsync(run, mockupConfig, ct);
         var product = await products.GetByIdAsync(run.ProductId, ct);
+        var aiTemplateCodes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
+        var aiTemplates = await templates.FindAsync(x => x.IsSystemTemplate == true && x.IsActive == true && x.Code != null && aiTemplateCodes.Contains(x.Code), ct);
         return product is null
             ? Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."))
-            : planner.Plan(product, approved, config);
+            : planner.Plan(product, approved, config, aiTemplates);
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)
@@ -27,42 +29,14 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
         var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
-        if (listing is not null && listing.Status == "pending")
-        {
-            var input = checkpoints.Single(x => x.NodeType == "product-input");
-            if (input.Status != "succeeded")
-            {
-                input.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId });
-                input.Status = "succeeded";
-                input.Progress = 100;
-            }
-            listing.Status = "running";
-            listing.Stage = "Generating listing content";
-            listing.Progress = 10;
-            var result = await listingContent.GenerateAsync(run.ProductId, ct);
-            if (result.IsFailure)
-            {
-                listing.Status = "failed";
-                listing.ErrorMessage = result.Error.Message;
-                run.Status = "failed";
-                run.ErrorMessage = result.Error.Message;
-                return;
-            }
-            listing.OutputSnapshot = WorkflowJson.Write(result.Value);
-            listing.Status = "succeeded";
-            listing.Stage = "Generated";
-            listing.Progress = 100;
-        }
+        if (listing is { Status: "pending" }) await GenerateListingAsync(run, checkpoints, listing, ct);
         if (!definition.Nodes.Any(x => x.Type == "generate-video"))
         {
-            if (listing is null) return;
-            if (listing.Status == "succeeded")
-            {
-                run.Status = "completed";
-                run.CompletedAt = time.GetUtcNow().UtcDateTime;
-            }
+            if (listing is not null) FinishListingOnlyRun(run, listing);
             return;
         }
+        // A listing that could not be written stays failed on its own step and can be retried there:
+        // the video is made from the mock-ups and does not wait for it.
         foreach (var type in WorkflowCapabilityRegistry.Pipeline)
         {
             var node = checkpoints.Single(x => x.NodeType == type);
@@ -84,18 +58,34 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     var reuse = previous is { Status: "failed" } && previous.Fingerprint == board.Fingerprint && node.Attempt == previous.VersionNumber;
                     var video = reuse ? previous! : new PromoVideo { Id = Guid.NewGuid(), ProductId = run.ProductId, WorkflowRunId = run.Id,
                         VideoTemplateId = (await templates.FindAsync(x => x.Code == board.Template && x.TemplateVersion == board.TemplateVersion, ct)).Single().Id,
-                        Mode = "standard", SeriesId = series, VersionNumber = (previous?.VersionNumber ?? 0) + 1, ReviewRevision = 1,
+                        Mode = board.Mode, SeriesId = series, VersionNumber = (previous?.VersionNumber ?? 0) + 1, ReviewRevision = 1,
                         Fingerprint = board.Fingerprint, TemplateVersion = board.TemplateVersion, ConfigSnapshot = WorkflowJson.Write(new { config, storyboard = board }),
                         QaResult = "{}", VideoDurationSeconds = config.DurationSeconds, VideoResolution = $"{board.Width}x{board.Height}", AspectRatio = board.AspectRatio,
                         FileFormat = "mp4", PlatformTarget = "etsy", Status = "queued", ApprovalStatus = "pending", IsFinal = false, CreatedAt = time.GetUtcNow().UtcDateTime };
                     if (!reuse) await videos.AddAsync(video, cancellationToken: ct);
                     video.Status = "queued";
                     foreach (var scene in reuse ? Array.Empty<ScenePlan>() : board.Scenes) await scenes.AddAsync(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = scene.MockupId,
-                        SceneOrder = scene.SceneOrder + 1, DurationSeconds = scene.DurationFrames / 30m, GenerationStrategy = "standard", SourceRevision = scene.SourceRevision,
+                        SceneOrder = scene.SceneOrder + 1, DurationSeconds = scene.DurationFrames / 30m, GenerationStrategy = scene.GenerationStrategy, SourceRevision = scene.SourceRevision,
                         SourceHash = scene.SourceHash, SceneConfig = WorkflowJson.Write(scene), Warnings = WorkflowJson.Write(scene.Warnings), TransitionEffect = scene.Transition,
                         TextOverlayContent = scene.Text, CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
                     node.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id)); node.Status = "running"; node.Stage = "Planning"; node.Progress = 5;
-                    await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct); return;
+                    if (board.Mode == "ai_shot")
+                    {
+                        AiShotJobState[] retained = [];
+                        var oldJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
+                        if (oldJob?.Kind == "render")
+                        {
+                            try { retained = WorkflowJson.Read<AiRenderJobPayload>(oldJob.Payload).AiShotStates?.ToArray() ?? []; }
+                            catch (JsonException) { /* The previous render used the Standard payload. */ }
+                        }
+                        // A scene Google answered without a clip starts over, so this attempt submits it again (the seller
+                        // has just confirmed its cost). One whose submission is uncertain is kept: it is never sent twice.
+                        var states = (board.AiShots ?? []).Select(shot => retained.FirstOrDefault(x => x.Fingerprint == shot.Fingerprint && x.Status != "failed")
+                            is { } existing ? existing with { SceneOrder = shot.SceneOrder } : new AiShotJobState(shot.SceneOrder, shot.Fingerprint)).ToArray();
+                        await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct);
+                    }
+                    else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct);
+                    return;
                 case "review-video":
                     node.OutputSnapshot = checkpoints.Single(x => x.NodeType == "generate-video").OutputSnapshot;
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;
@@ -120,10 +110,63 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
     }
+    /// <summary>Writes the listing again after it failed, without touching the video steps.</summary>
+    public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
+    {
+        var listing = checkpoints.Single(x => x.NodeType == "generate-listing");
+        listing.Attempt++;
+        await GenerateListingAsync(run, checkpoints, listing, ct);
+        if (checkpoints.All(x => x.NodeType != "generate-video")) FinishListingOnlyRun(run, listing);
+    }
+
+    private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing, CancellationToken ct)
+    {
+        var input = checkpoints.Single(x => x.NodeType == "product-input");
+        if (input.Status != "succeeded")
+        {
+            input.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId });
+            input.Status = "succeeded";
+            input.Progress = 100;
+        }
+        var result = await listingContent.GenerateAsync(run.ProductId, ct);
+        listing.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        if (result.IsFailure)
+        {
+            listing.Status = "failed";
+            listing.Stage = null;
+            listing.Progress = 0;
+            listing.ErrorMessage = result.Error.Message;
+            return;
+        }
+        listing.OutputSnapshot = WorkflowJson.Write(result.Value);
+        listing.Status = "succeeded";
+        listing.Stage = "Generated";
+        listing.Progress = 100;
+        listing.ErrorMessage = null;
+    }
+
+    // The listing is all such a run makes, so its outcome is the run's.
+    private void FinishListingOnlyRun(WorkflowRun run, WorkflowNodeRun listing)
+    {
+        if (listing.Status == "succeeded")
+        {
+            run.Status = "completed";
+            run.ErrorMessage = null;
+            run.CompletedAt = time.GetUtcNow().UtcDateTime;
+        }
+        else if (listing.Status == "failed")
+        {
+            run.Status = "failed";
+            run.ErrorMessage = listing.ErrorMessage;
+        }
+    }
+
     public async Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct)
     {
-        var selected = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null && x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
-        return selected.Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).Where(x => string.IsNullOrEmpty(config.ArtworkGroupKey) || x.ArtworkGroupKey == config.ArtworkGroupKey).Take(8).ToArray();
+        var owned = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null, ct);
+        var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, config.ArtworkGroupKey);
+        return owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
+            .Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).Where(x => group == null || x.ArtworkGroupKey == group).Take(8).ToArray();
     }
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {

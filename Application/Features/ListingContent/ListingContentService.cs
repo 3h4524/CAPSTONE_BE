@@ -67,9 +67,35 @@ public sealed class ListingContentService(
         if (seoFeedback is not null)
             prompt = $"{prompt}\n\n{BuildSeoRegenerationInstructions(seoFeedback)}";
         var stopwatch = Stopwatch.StartNew();
-        var generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt), cancellationToken);
+        GeminiTextGenerationResult generated;
+        try
+        {
+            generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt), cancellationToken);
+        }
+        catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout)
+        {
+            // Still overloaded after the provider's own retries: nothing was generated, so the seller can simply try again.
+            logger.LogWarning(error, "Gemini was overloaded while generating the listing for product {ProductId}", productId);
+            return Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", "Gemini is overloaded right now. Wait a minute, then generate the listing again."));
+        }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException)
+        {
+            // Refused or unusable for a reason the seller cannot act on (the key and model are the platform's).
+            logger.LogError(error, "Gemini could not generate the listing for product {ProductId}", productId);
+            return Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.GenerationFailed", "Listing content could not be generated right now. Try again in a moment."));
+        }
         stopwatch.Stop();
-        var parsed = ListingContentParser.Parse(generated.Text);
+        GeneratedListingContent parsed;
+        try
+        {
+            parsed = ListingContentParser.Parse(generated.Text);
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        {
+            // The model answered, but not with a title, a description and exactly 13 tags.
+            logger.LogWarning(error, "Gemini returned an unusable listing for product {ProductId}", productId);
+            return Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.IncompleteResponse", "Gemini returned an incomplete listing. Generate it again."));
+        }
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var usageRecord = new ApiUsageRecord
         {

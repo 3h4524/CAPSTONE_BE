@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
@@ -16,7 +17,7 @@ public sealed class VideoPlanningServiceTests
         var fixture = new WorkflowTestData();
         fixture.TemplateRows.Single(x => x.TemplateVersion == 2 && x.Code == "design_detail").PreviewVideoUrl = "/detail.mp4";
         fixture.TemplateRows.Add(new() { Id = Guid.NewGuid(), Code = "unsupported", Name = "Unsupported", Type = "product_showcase",
-            Platform = "etsy", DurationSeconds = 12, AspectRatio = "1:2", Resolution = "1080x2160", EffectsConfig = "{}",
+            Platform = "etsy", DurationSeconds = 12, AspectRatio = "9:16", Resolution = "1080x1920", EffectsConfig = "{}",
             IsSystemTemplate = true, IsActive = true, TemplateVersion = 2 });
 
         var result = await Service(fixture).ListTemplatesAsync(default);
@@ -80,16 +81,58 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
-    [DataRow("ai_background")]
-    [DataRow("ai_shot")]
-    public async Task PreviewAsync_DisabledMode_RejectsBeforeReadingAssets(string mode)
+    public async Task PreviewAsync_LegacyAiBackground_RejectsBeforeReadingAssets()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
-        var result = await Service(fixture).PreviewAsync(product.Id, new(new(Mode: mode), [], null), default);
+        var result = await Service(fixture).PreviewAsync(product.Id, new(new(Mode: "ai_background"), [], null), default);
         result.Error.Code.Should().Be("UnsupportedVideoMode");
         fixture.Assets.Verify(x => x.FindAsync(It.IsAny<Expression<Func<MockupImage, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
         fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_AiShotWithApprovedMockup_ReturnsMixedStoryboardWithoutQueuingJob()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(MockupId: source.Id));
+
+        var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], null), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("ai_shot");
+        result.Value.AiShots.Should().ContainSingle().Which.MockupId.Should().Be(source.Id);
+        result.Value.Scenes.Count(x => x.GenerationStrategy == "ai_shot").Should().Be(1);
+        fixture.JobRows.Should().BeEmpty();
+        fixture.VideoRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_StudioFrameNotInApplyMockupSelection_IsIncludedForShowcaseScenes()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = WorkflowTestData.Asset(product.Id, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ApprovedRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
+            AiStudioFrameIdentity.Fingerprint(source, AiStudioFrameIdentity.HangingWindow, aspect), source.Id,
+            source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
+        fixture.AssetRows.Add(frame);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new()],
+            AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], source.ArtworkGroupKey), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(frame.Id);
+        result.Value.AiShots!.Single().MockupId.Should().Be(frame.Id);
     }
 
     [TestMethod]
@@ -132,7 +175,7 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
-    [DataRow(16, 0)]
+    [DataRow(31, 0)]
     [DataRow(12, 9)]
     public async Task PreviewAsync_InvalidConfigurationOrSelection_RejectsBeforeAssetQuery(int duration, int count)
     {

@@ -25,7 +25,7 @@ public sealed class GeneratedMockupSourceServiceTests
             .ReturnsAsync((string _, string key, CancellationToken _) => Stored with { StorageKey = key });
         _fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), "image", It.IsAny<string?>(), false)).Returns("https://signed.example/preview");
         _service = new(current.Object, _fixture.Products.Object, _fixture.Assets.Object, _fixture.Unit.Object,
-            _fixture.Storage.Object, _fixture.MockupService, NullLogger<GeneratedMockupSourceService>.Instance);
+            _fixture.Storage.Object, _fixture.MockupService, NullLogger<GeneratedMockupSourceService>.Instance, _fixture.Time);
     }
 
     [TestMethod]
@@ -82,6 +82,56 @@ public sealed class GeneratedMockupSourceServiceTests
         _fixture.Storage.Verify(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         _fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
         deleted.ContentHash.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_SameMockupAlreadyASource_RemovesTheCopyInsteadOfAddingIt()
+    {
+        var product = _fixture.AddProduct();
+        var source = AddComposited(product, Guid.NewGuid()); source.ContentHash = new string('c', 64);
+        var copy = AddComposited(product, source.DesignImageId!.Value); copy.MockupTemplateId = source.MockupTemplateId;
+        var madeAnotherWay = AddComposited(product, source.DesignImageId.Value);
+        madeAnotherWay.MockupTemplateId = source.MockupTemplateId;
+        madeAnotherWay.MockupImageUrl = CompositeUrl + "?moved";
+
+        var result = await _service.ImportAsync(product.Id, default);
+
+        result.Value.ImportedCount.Should().Be(1);
+        copy.DeletedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
+        copy.ContentHash.Should().BeNull();
+        madeAnotherWay.ContentHash.Should().Be(Stored.Hash);
+        _fixture.Storage.Verify(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_SameMockupWaitingTwice_AddsItOnce()
+    {
+        var product = _fixture.AddProduct();
+        var older = AddComposited(product, Guid.NewGuid());
+        var newer = AddComposited(product, older.DesignImageId!.Value);
+        newer.MockupTemplateId = older.MockupTemplateId;
+        newer.CreatedAt = WorkflowTestData.Now.AddMinutes(1).UtcDateTime;
+
+        var result = await _service.ImportAsync(product.Id, default);
+
+        result.Value.ImportedCount.Should().Be(1);
+        newer.ContentHash.Should().Be(Stored.Hash);
+        older.DeletedAt.Should().NotBeNull();
+        result.Value.Mockups.Select(x => x.Id).Should().Equal(newer.Id);
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_OnlyACopyWaiting_RemovesItAndSaves()
+    {
+        var product = _fixture.AddProduct();
+        var source = AddComposited(product, Guid.NewGuid()); source.ContentHash = new string('c', 64);
+        var copy = AddComposited(product, source.DesignImageId!.Value); copy.MockupTemplateId = source.MockupTemplateId;
+
+        var result = await _service.ImportAsync(product.Id, default);
+
+        result.Value.ImportedCount.Should().Be(0);
+        copy.DeletedAt.Should().NotBeNull();
+        _fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]

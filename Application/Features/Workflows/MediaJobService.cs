@@ -38,6 +38,17 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                 { await FailAsync(job.Id, new(token, "Source mockup approval or revision changed. Review mockups again."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"mockups/{asset.Id}.png"));
             }
+            if (payload.Storyboard.Mode == "ai_shot")
+            {
+                var ai = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+                foreach (var shot in ai.Storyboard.AiShots ?? [])
+                {
+                    var clip = ai.AiShotStates.SingleOrDefault(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint);
+                    if (clip is { Status: "stored", StorageKey: not null, StorageVersion: not null })
+                        workerAssets.Add(new(Guid.Empty, storage.SignRead(clip.StorageKey, "video", clip.StorageVersion), $"ai-shots/{shot.SceneOrder}.mp4"));
+                    else uploads[$"ai-shot-{shot.SceneOrder}"] = storage.CreateUploadGrant(AiShotJobService.OutputKey(job, token, shot.SceneOrder), "video");
+                }
+            }
             uploads["video"] = storage.CreateUploadGrant(OutputKey(job, token, "video"), "video");
             uploads["thumbnail"] = storage.CreateUploadGrant(OutputKey(job, token, "thumbnail"), "image");
         }
@@ -89,6 +100,12 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (job.Kind == "render")
         {
             var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
+            if (payload.Storyboard.Mode == "ai_shot")
+            {
+                var ai = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+                if ((ai.Storyboard.AiShots ?? []).Any(shot => !ai.AiShotStates.Any(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint && x.Status == "stored" && x.StorageKey != null)))
+                    return Result.Failure(Error.Conflict("AiShotIncomplete", "All AI Shot clips must be stored before render completion."));
+            }
             var output = VideoOutputFormats.Resolve(payload.Storyboard.OutputFormat);
             var width = payload.Storyboard.Width > 0 ? payload.Storyboard.Width : output.Width;
             var height = payload.Storyboard.Height > 0 ? payload.Storyboard.Height : output.Height;
@@ -136,18 +153,40 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
         var job = await state.LockJobAsync(id, ct);
         if (!ValidLease(job, request.LeaseToken, run)) return Result.Failure(LeaseError());
-        job!.ErrorMessage = "Worker could not finish media processing. Retry or review source assets.";
+        // The worker only names what went wrong; what the seller reads is written here, with Google's own reason when the scene has one.
+        var reason = request.Message is "AiShotRejected" or "AiShotFailed" ? AiShotFailure(job!) : null;
+        job!.ErrorMessage = request.Message switch
+        {
+            "VeoSubmissionUncertain" => "Veo request status is uncertain. Retry will not submit it again; choose Regenerate AI clips after checking your Google usage.",
+            "SourceChanged" => "A source mock-up changed or is no longer approved. Approve the mock-ups again, then retry.",
+            "AiShotRejected" or "AiShotFailed" when reason != null =>
+                $"Veo did not generate this AI scene: {reason} Choose Retry checkpoint to submit it again; if Google keeps refusing, change the source image or the motion direction.",
+            "AiShotRejected" => "Veo rejected this AI scene. Change its approved source or motion instruction, then regenerate AI clips.",
+            "AiShotFailed" => "AI Shot could not finish. Review the approved source or prompt, then regenerate AI clips if needed.",
+            _ => "Worker could not finish media processing. Retry or review source assets."
+        };
         job.LeaseToken = null; job.LeaseExpiresAt = null;
-        job.Status = job.Attempt < job.MaximumAttempts ? "queued" : "failed";
+        // Trying again by itself cannot change a refusal, a changed source or an uncertain submission.
+        job.Status = request.Message is "VeoSubmissionUncertain" or "AiShotRejected" or "SourceChanged" || reason != null || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
         job.AvailableAt = time.GetUtcNow().AddSeconds(5 * job.Attempt).UtcDateTime;
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();
+    }
+    private static string? AiShotFailure(MediaJob job)
+    {
+        if (job.Kind != "render") return null;
+        try
+        {
+            return WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates?
+                .FirstOrDefault(x => x.Status == "failed" && !string.IsNullOrWhiteSpace(x.Failure))?.Failure;
+        }
+        catch (JsonException) { return null; }
     }
     private bool ValidLease(MediaJob? job, Guid token, WorkflowRun? run) => job is { Status: "leased" } && job.LeaseToken == token &&
         job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run?.Status == "running";
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Job lease expired or run was cancelled.");
     private static string OutputKey(MediaJob job, Guid token, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/{suffix}";
-    public static bool ValidQa(MediaQa? qa, int duration, int width = 1080, int height = 2160) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
+    public static bool ValidQa(MediaQa? qa, int duration, int width = 1080, int height = 1920) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
         qa.Width == width && qa.Height == height && Math.Abs(qa.Fps - 30) < .01 && Math.Abs(qa.DurationSeconds - duration) <= 1d / 30 + .01 &&
         qa.Bytes is > 0 and < 100 * 1024 * 1024 && !qa.HasAudio && qa.FullDecode;
 }
