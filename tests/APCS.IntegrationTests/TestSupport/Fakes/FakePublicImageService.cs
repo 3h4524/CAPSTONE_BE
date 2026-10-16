@@ -27,6 +27,20 @@ public sealed class FakePublicImageService : IPublicImageService
     }
 
     /// <inheritdoc />
+    public Task<PublicImageUploadResult> UploadImageWithMetadataAsync(
+        UploadFileDto file,
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+
+        _stored[storageKey] = file;
+
+        return Task.FromResult(new PublicImageUploadResult($"https://storage.test/{storageKey}", 0, 0));
+    }
+
+    /// <inheritdoc />
     public Task DeleteImageAsync(string storageKey, CancellationToken cancellationToken = default)
     {
         _stored.Remove(storageKey);
