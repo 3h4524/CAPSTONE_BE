@@ -165,8 +165,22 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     {
         var owned = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null, ct);
         var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, config.ArtworkGroupKey);
-        return owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
-            .Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).Where(x => group == null || x.ArtworkGroupKey == group).Take(8).ToArray();
+        var approved = owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
+            .Where(x => group == null || x.ArtworkGroupKey == group).ToArray();
+        var selected = approved.Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).ToArray();
+        var selectedIds = selected.Select(x => x.Id).ToHashSet();
+        var selectedBaseAssets = selected.Where(x => AiStudioFrameIdentity.Read(x.Regions) is null).ToArray();
+        var availableFrames = approved.Where(frame =>
+        {
+            var metadata = AiStudioFrameIdentity.Read(frame.Regions);
+            if (metadata is null) return false;
+            var source = approved.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
+            var sourceSelected = source is not null && (config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(source.Id));
+            return source is not null && (selectedIds.Contains(frame.Id) || sourceSelected) &&
+                AiStudioFrameIdentity.IsCurrent(frame, source, metadata.Layout, metadata.AspectRatio, metadata.CustomPrompt,
+                    metadata.TemplateCode, metadata.References?.Select(reference => reference.MockupId).ToArray());
+        });
+        return selectedBaseAssets.Concat(availableFrames).DistinctBy(x => x.Id).ToArray();
     }
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {

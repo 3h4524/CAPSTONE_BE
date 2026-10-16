@@ -22,19 +22,28 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
     ILogger<AiStudioFrameService> logger) : IAiStudioFrameService
 {
     public const int MaximumSourceBytes = 20 * 1024 * 1024;
+    public const int MaximumReferenceCount = 3;
+    public const int MaximumCombinedSourceBytes = 40 * 1024 * 1024;
+
+    private sealed record ResolvedReference(MockupImage Asset);
+    private sealed record StudioFrameContext(Product Product, MockupImage Source,
+        IReadOnlyList<ResolvedReference> References, string AspectRatio, string Fingerprint);
 
     public async Task<Result<AiStudioFrameQuote>> QuoteAsync(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
     {
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameQuote>(context.Error);
-        var (_, source, aspectRatio, fingerprint) = context.Value;
+        var (_, source, references, aspectRatio, fingerprint) = context.Value;
 
         MockupResponse? existing = null;
         if (!request.Regenerate)
         {
             var candidates = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null &&
-                x.SourceType == MockupSources.AiGenerated && x.Role == "VideoScene" && x.ApprovalStatus != "rejected", ct);
-            var match = candidates.Where(frame => AiStudioFrameIdentity.IsCurrent(frame, source, request.Layout, aspectRatio, request.CustomPrompt))
+                x.SourceType == MockupSources.AiGenerated && x.ApprovalStatus != "rejected", ct);
+            var match = candidates.Where(frame =>
+                    AiStudioFrameIdentity.Read(frame.Regions)?.Fingerprint == fingerprint &&
+                    AiStudioFrameIdentity.IsCurrent(frame, source, request.Layout, aspectRatio, request.CustomPrompt,
+                        request.TemplateCode, references.Select(reference => reference.Asset.Id).ToArray()))
                 .OrderBy(frame => frame.ApprovalStatus == "approved" && frame.ApprovedRevision == frame.MetadataRevision ? 0 : 1)
                 .ThenByDescending(frame => frame.CreatedAt).FirstOrDefault();
             if (match is not null)
@@ -46,7 +55,8 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         }
 
         var isApproved = existing is { ApprovalStatus: "approved" } && existing.ApprovedRevision == existing.Revision;
-        return Result.Success(new AiStudioFrameQuote(fingerprint, AiStudioFrameIdentity.PromptVersion,
+        return Result.Success(new AiStudioFrameQuote(fingerprint,
+            AiStudioFrameIdentity.PromptVersionFor(request.Layout, request.CustomPrompt),
             existing is null ? images.EstimatedCostPerImageUsd : 0m, existing,
             existing is null
                 ? "This Gemini image estimate is for one new studio keyframe. A new frame must be approved before it can be sent to Veo."
@@ -67,7 +77,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameGenerationResponse>(context.Error);
-        var (_, source, aspectRatio, fingerprint) = context.Value;
+        var (_, source, references, aspectRatio, fingerprint) = context.Value;
         var userId = user.UserId!.Value;
         var key = (await keys.ListOwnedAsync(userId, ct)).FirstOrDefault(x => x.ServiceProvider == "gemini" && x.IsActive == true && x.LastCheckSucceeded == true);
         if (key is null)
@@ -76,11 +86,25 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         ImageGenerationResult generated;
         try
         {
+            var providerReferences = new List<ImageReference>(references.Count + 1);
             var sourceBytes = await storage.ReadImageAsync(source.StorageKey, source.StorageVersion, ct);
-            if (sourceBytes.Length is <= 0 or > MaximumSourceBytes)
-                return Result.Failure<AiStudioFrameGenerationResponse>(Error.Validation("The approved source image must be 20 MB or smaller."));
-            generated = await images.ComposeAsync(credentials.Unprotect(key.KeyValueEncrypted), BuildPrompt(context.Value.Product.ProductType, source, request.Layout, aspectRatio, request.CustomPrompt),
-                [new(sourceBytes, "image/png")], ct);
+            if (sourceBytes.Length is <= 0 or > MaximumSourceBytes || DetectMimeType(sourceBytes) is not { } sourceMimeType)
+                return Result.Failure<AiStudioFrameGenerationResponse>(Error.Validation("The approved source must be a PNG, JPEG or WebP image no larger than 20 MB."));
+            providerReferences.Add(new ImageReference(sourceBytes, sourceMimeType));
+            var combinedBytes = sourceBytes.Length;
+            foreach (var reference in references)
+            {
+                var bytes = await storage.ReadImageAsync(reference.Asset.StorageKey, reference.Asset.StorageVersion, ct);
+                if (bytes.Length is <= 0 or > MaximumSourceBytes || DetectMimeType(bytes) is not { } mimeType)
+                    return Result.Failure<AiStudioFrameGenerationResponse>(Error.Validation("Every reference must be a PNG, JPEG or WebP image no larger than 20 MB."));
+                combinedBytes += bytes.Length;
+                if (combinedBytes > MaximumCombinedSourceBytes)
+                    return Result.Failure<AiStudioFrameGenerationResponse>(Error.Validation("The product source and reference images must total 40 MB or less."));
+                providerReferences.Add(new ImageReference(bytes, mimeType));
+            }
+            generated = await images.ComposeAsync(credentials.Unprotect(key.KeyValueEncrypted),
+                BuildPrompt(context.Value.Product.ProductType, source, request.Layout, aspectRatio, request.CustomPrompt,
+                    request.TemplateCode, references), providerReferences, ct);
         }
         catch (HttpRequestException error)
         {
@@ -100,8 +124,12 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
         var id = Guid.NewGuid();
         var now = time.GetUtcNow().UtcDateTime;
+        var referenceMetadata = references.Select(reference => new AiStudioFrameReferenceMetadata(reference.Asset.Id,
+            reference.Asset.ContentHash!, reference.Asset.MetadataRevision)).ToArray();
         var metadata = new AiStudioFrameMetadata(fingerprint, source.Id, source.ContentHash!, source.MetadataRevision,
-            request.Layout, aspectRatio, AiStudioFrameIdentity.PromptVersion, AiStudioFrameIdentity.NormalizeCustomPrompt(request.CustomPrompt));
+            request.Layout, aspectRatio, AiStudioFrameIdentity.PromptVersionFor(request.Layout, request.CustomPrompt),
+            AiStudioFrameIdentity.NormalizeCustomPrompt(request.CustomPrompt),
+            AiStudioFrameIdentity.NormalizeTemplateCode(request.TemplateCode), referenceMetadata);
         using var content = new MemoryStream(generated.ImageBytes!);
         StoredMockup saved;
         try
@@ -137,36 +165,69 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         return Result.Success(new AiStudioFrameGenerationResponse(response, false, generated.EstimatedCostUsd));
     }
 
-    private async Task<Result<(Product Product, MockupImage Source, string AspectRatio, string Fingerprint)>> ResolveAsync(
+    private async Task<Result<StudioFrameContext>> ResolveAsync(
         Guid productId, AiStudioFrameRequest request, CancellationToken ct)
     {
         if (user.UserId is not Guid userId || await products.GetByIdAsync(productId, ct) is not { DeletedAt: null } product || product.UserId != userId)
-            return Result.Failure<(Product, MockupImage, string, string)>(Error.NotFound("ProductNotFound", "Product not found."));
+            return Result.Failure<StudioFrameContext>(Error.NotFound("ProductNotFound", "Product not found."));
         if (!AiStudioFrameIdentity.IsSupportedLayout(request.Layout))
-            return Result.Failure<(Product, MockupImage, string, string)>(Error.Validation("Choose a supported keyframe template."));
+            return Result.Failure<StudioFrameContext>(Error.Validation("Choose a supported keyframe template."));
         if (request.CustomPrompt?.Length > 500)
-            return Result.Failure<(Product, MockupImage, string, string)>(Error.Validation("Keep custom keyframe directions under 500 characters."));
+            return Result.Failure<StudioFrameContext>(Error.Validation("Keep custom keyframe directions under 500 characters."));
         if (!VideoOutputFormats.IsSupported(request.OutputFormat))
-            return Result.Failure<(Product, MockupImage, string, string)>(Error.Validation("Choose a supported video output format."));
+            return Result.Failure<StudioFrameContext>(Error.Validation("Choose a supported video output format."));
         var source = await assets.GetByIdAsync(request.SourceMockupId, ct);
         if (source is null || source.ProductId != productId || source.DeletedAt != null || source.ContentHash is null ||
-            source.ApprovalStatus != "approved" || source.ApprovedRevision != source.MetadataRevision ||
-            source.Role == "VideoScene")
-            return Result.Failure<(Product, MockupImage, string, string)>(Error.Conflict("SourceNotApproved", "Choose a current, approved product image as the keyframe source."));
+            source.ApprovalStatus != "approved" || source.ApprovedRevision != source.MetadataRevision)
+            return Result.Failure<StudioFrameContext>(Error.Conflict("SourceNotApproved", "Choose a current, approved product image as the keyframe source."));
+
+        var requestedReferences = AiStudioFrameIdentity.NormalizeReferenceIds(request.ReferenceMockupIds);
+        if (requestedReferences.Count > MaximumReferenceCount)
+            return Result.Failure<StudioFrameContext>(Error.Validation($"Use no more than {MaximumReferenceCount} keyframe reference images."));
+        if (requestedReferences.Distinct().Count() != requestedReferences.Count || requestedReferences.Contains(source.Id))
+            return Result.Failure<StudioFrameContext>(Error.Validation("Choose different images for the product source and each keyframe reference."));
+        if (RequiresPersonRights(request.TemplateCode) && !request.ReferenceRightsConfirmed)
+            return Result.Failure<StudioFrameContext>(Error.Validation("Confirm that you have rights to use people visible in the selected images."));
+
+        var resolvedReferences = new List<ResolvedReference>(requestedReferences.Count);
+        foreach (var referenceId in requestedReferences)
+        {
+            var asset = await assets.GetByIdAsync(referenceId, ct);
+            if (asset is null || asset.ProductId != productId || asset.DeletedAt != null || asset.ContentHash is null ||
+                asset.ApprovalStatus != "approved" || asset.ApprovedRevision != asset.MetadataRevision ||
+                AiStudioFrameIdentity.Read(asset.Regions) is not null)
+                return Result.Failure<StudioFrameContext>(Error.Conflict("ReferenceNotApproved", "Choose current, approved original images as keyframe references."));
+            resolvedReferences.Add(new ResolvedReference(asset));
+        }
 
         var aspectRatio = VideoOutputFormats.Resolve(request.OutputFormat).AspectRatio;
-        return Result.Success((product, source, aspectRatio, AiStudioFrameIdentity.Fingerprint(source, request.Layout, aspectRatio, request.CustomPrompt)));
+        var referenceMetadata = resolvedReferences.Select(reference => new AiStudioFrameReferenceMetadata(reference.Asset.Id,
+            reference.Asset.ContentHash!, reference.Asset.MetadataRevision)).ToArray();
+        var fingerprint = AiStudioFrameIdentity.Fingerprint(source, request.Layout, aspectRatio, request.CustomPrompt,
+            request.TemplateCode, referenceMetadata);
+        return Result.Success(new StudioFrameContext(product, source, resolvedReferences, aspectRatio, fingerprint));
     }
 
-    private static string BuildPrompt(string productType, MockupImage source, string layout, string aspectRatio, string? customPrompt)
+    private static string BuildPrompt(string productType, MockupImage source, string layout, string aspectRatio,
+        string? customPrompt, string? templateCode, IReadOnlyList<ResolvedReference> references)
     {
         var type = NormalizeProductType(productType);
+        var normalizedTemplate = AiStudioFrameIdentity.NormalizeTemplateCode(templateCode);
+        var isLifestyleComposition = RequiresPersonRights(normalizedTemplate);
         var additionalDirection = string.IsNullOrWhiteSpace(customPrompt)
             ? ""
             : $"Additional visual direction from the user: {customPrompt.Trim()}. Follow it only where it is consistent with the reference image and the product's real construction.";
-        if (source.Role == "Lifestyle")
+        var referenceGuide = references.Count == 0 ? "" : $"""
+            Image 1 is the product source. {string.Join(" ", references.Select((_, index) => $"Image {index + 2} is user reference {index + 1}."))} Interpret how each user reference should influence the result from the user's additional visual direction. References may guide the person, pose, environment, composition, lighting or photographic style. Image 1 always remains authoritative for the product and artwork. Never copy a different product, artwork, logo, lettering or watermark from a reference, and never let a reference replace or redesign image 1's product.
+            """;
+        if (source.Role == "Lifestyle" && !isLifestyleComposition)
             return $"""
-                Create one photorealistic keyframe based on the supplied approved Lifestyle image. Preserve the same visible person or people, their identity, clothing, pose and natural proportions, the product in use, and the existing location and background. Keep the product recognizable and preserve visible artwork, lettering, logos and product details. {additionalDirection} Improve only the photographic polish with natural light, coherent shadows and subtle depth; do not replace the environment with a studio, change the activity, add people or objects, or invent text. Compose the existing scene for a {aspectRatio} frame with comfortable margins.
+                Image 1 is the authoritative approved product source. Create one photorealistic keyframe based on it. Preserve the same visible person or people, their identity, clothing, pose and natural proportions, the product in use, and the existing location and background. Keep the product recognizable and preserve visible artwork, lettering, logos and product details. {referenceGuide} {additionalDirection} Improve only the photographic polish with natural light, coherent shadows and subtle depth; do not replace the environment with a studio, change the activity, add people or objects, or invent text. Compose the existing scene for a {aspectRatio} frame with comfortable margins.
+                """;
+        if (isLifestyleComposition)
+            return $"""
+                Create one photorealistic lifestyle keyframe for a {normalizedTemplate.Replace('_', ' ')} scene. Image 1 is the authoritative identity reference for the {type}: preserve its construction, main color, proportions, distinctive details, and the exact placement, scale, colors and lettering of all visible artwork and logos. Keep printed designs attached to the product surface; do not invent, redraw, translate or replace them. {referenceGuide}
+                Show one adult naturally using or wearing the product in a believable setting. Use the additional reference images according to the user's direction. If image 1 already contains a person and the user does not request a different approved reference person, preserve that person. {additionalDirection} Use coherent natural light, realistic anatomy, fabric behavior, contact shadows and perspective. No extra products, copied reference branding, added text, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
                 """;
         var staging = (type, layout) switch
         {
@@ -181,11 +242,17 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         var background = layout == AiStudioFrameIdentity.None
             ? "Use the environment requested in the custom direction, or preserve the reference background when no environment is specified."
             : "Use a simple natural background with realistic light and shadow.";
+        var framing = layout == AiStudioFrameIdentity.None && !string.IsNullOrWhiteSpace(customPrompt)
+            ? "Follow the requested framing. If a close-up is requested, fill the frame with the specified artwork or material detail instead of showing the whole item."
+            : "Keep one product only, centered with the whole item visible.";
         return $"""
-            Create one photorealistic studio product photograph based on the supplied approved product image. Treat that image as the identity reference for the {type} and any visible artwork. {staging}
-            Keep one product only, centered with the whole item visible. Preserve its visible shape, construction, main color, proportions, distinctive details and the placement, scale, colors and lettering of any artwork or logo. Keep printed designs attached to the product surface and do not invent or redraw them. {additionalDirection} {background} No extra products, added text, extra logos, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
+            Create one photorealistic studio product photograph. Image 1 is the authoritative identity reference for the {type} and every visible product detail or artwork. {referenceGuide} {staging}
+            {framing} Preserve the visible product construction, main color, proportions, distinctive details and the placement, scale, colors and lettering of any artwork or logo. Keep printed designs attached to the product surface and do not invent or redraw them. {additionalDirection} {background} No extra products, added text, extra logos, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
             """;
     }
+
+    private static bool RequiresPersonRights(string? templateCode) =>
+        AiStudioFrameIdentity.NormalizeTemplateCode(templateCode) is "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment";
 
     private static string NormalizeProductType(string productType) => productType.Trim().ToLowerInvariant() switch
     {
@@ -200,4 +267,15 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
     private static bool AllowedMimeType(string? mimeType) => mimeType is "image/png" or "image/jpeg" or "image/webp";
     private static string FileExtension(string mimeType) => mimeType switch { "image/jpeg" => ".jpg", "image/webp" => ".webp", _ => ".png" };
+    private static string? DetectMimeType(byte[] bytes)
+    {
+        if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4e && bytes[3] == 0x47)
+            return "image/png";
+        if (bytes.Length >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff)
+            return "image/jpeg";
+        if (bytes.Length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+            bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+            return "image/webp";
+        return null;
+    }
 }

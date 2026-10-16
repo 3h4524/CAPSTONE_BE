@@ -90,7 +90,7 @@ public sealed class VideoStoryboardPlanner
         if (config.AiStudioMode is not ("direct" or "studio"))
             return Result.Failure<Storyboard>(Error.Validation("Choose direct mock-up or a studio keyframe."));
 
-        var productSources = eligible.Where(asset => asset.Role != "VideoScene").ToList();
+        var productSources = eligible.ToList();
         if (productSources.Count == 0)
             return Result.Failure<Storyboard>(Error.Conflict("WaitingForInput", "Approve at least one original product mock-up at its current revision."));
 
@@ -109,14 +109,17 @@ public sealed class VideoStoryboardPlanner
             if (settings.ExtraInstructions is { Length: > 500 })
                 return Result.Failure<Storyboard>(Error.Validation("Keep each scene's extra instructions under 500 characters."));
 
+            var startFrameMode = requested.StartFrameMode ??
+                (definition.Code == "cinematic_product_showcase" && config.AiStudioMode == "studio" ? "studio" : "direct");
+            if (startFrameMode is not ("direct" or "studio"))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} has an unsupported start-frame mode."));
+
             var source = requested.MockupId.HasValue ? productSources.FirstOrDefault(asset => asset.Id == requested.MockupId.Value) : null;
             if (requested.MockupId.HasValue && source == null)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} source is not an approved mockup."));
-            source ??= definition.RequiresLifestyle
-                ? productSources.FirstOrDefault(asset => asset.Role == "Lifestyle")
-                : definition.RequiresDetail
-                    ? productSources.FirstOrDefault(HasDetail)
-                    : productSources.FirstOrDefault(asset => asset.Role == "Hero") ?? productSources[0];
+            source ??= definition.RequiresDetail
+                ? productSources.FirstOrDefault(HasMarkedDetail) ?? productSources[0]
+                : productSources[0];
 
             if (source == null)
                 return Result.Failure<Storyboard>(Error.Conflict("VideoSourceRequired", definition.RequiresLifestyle
@@ -124,33 +127,16 @@ public sealed class VideoStoryboardPlanner
                     : definition.RequiresDetail
                         ? $"AI scene {index + 1} needs an artwork or detail region. Mark the visible design area or upload a detail mockup."
                         : $"AI scene {index + 1} needs an approved product mockup."));
-            if (definition.RequiresLifestyle && (source.Role != "Lifestyle" || !settings.RightsConfirmed))
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires an approved Lifestyle image and confirmation of image rights."));
-            if (definition.RequiresDetail && !HasDetail(source))
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs an artwork or detail region. Mark the visible design area or upload a detail mockup."));
+            if (definition.RequiresLifestyle && !settings.RightsConfirmed)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires confirmation that you have rights to use the selected image with people."));
 
             var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
             var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
-            var sourceCrop = definition.RequiresDetail && source.Role != "ArtworkDetail"
+            var useStudioFrame = startFrameMode == "studio";
+            var sourceCrop = definition.RequiresDetail && !useStudioFrame
                 ? detailRegions.FirstOrDefault(region => Math.Min(region.Width * source.MockupWidthPx, region.Height * source.MockupHeightPx) >= 512)
                 : null;
-            if (definition.RequiresDetail && source.Role == "ArtworkDetail" && Math.Min(source.MockupWidthPx, source.MockupHeightPx) < 512)
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail image is too small. Upload a close-up at least 512 pixels on its shortest side."));
-            if (definition.RequiresDetail && source.Role != "ArtworkDetail" && sourceCrop == null)
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail region is too small. Mark a larger artwork area or upload a detail mockup."));
-            if (sourceCrop != null)
-            {
-                var cropWidth = sourceCrop.Width * source.MockupWidthPx;
-                var cropHeight = sourceCrop.Height * source.MockupHeightPx;
-                if (Math.Min(cropWidth, cropHeight) < 512)
-                    return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} detail region is too small. Mark a larger artwork area or upload a detail mockup."));
-            }
 
-            var startFrameMode = requested.StartFrameMode ??
-                (definition.Code == "cinematic_product_showcase" && config.AiStudioMode == "studio" ? "studio" : "direct");
-            if (startFrameMode is not ("direct" or "studio"))
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} has an unsupported start-frame mode."));
-            var useStudioFrame = startFrameMode == "studio";
             MockupImage? studioFrame = null;
             MockupImage? studioSource = null;
             if (startFrameMode == "studio")
@@ -164,7 +150,8 @@ public sealed class VideoStoryboardPlanner
                 studioSource = metadata is null ? null : productSources.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
                 if (studioFrame is null || studioSource is null ||
                     !AiStudioFrameIdentity.IsCurrent(studioFrame, studioSource, layout,
-                        VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt))
+                        VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt,
+                        requested.TemplateCode, requested.StudioReferenceMockupIds))
                     return Result.Failure<Storyboard>(Error.Conflict("StudioFrameStale", $"The studio keyframe for AI scene {index + 1} no longer matches its approved source or video format. Generate or select a current keyframe."));
             }
             var sceneSource = useStudioFrame ? studioFrame! : source;
@@ -235,18 +222,11 @@ public sealed class VideoStoryboardPlanner
         var source = options.MockupId.HasValue ? eligible.FirstOrDefault(x => x.Id == options.MockupId.Value) : null;
         if (options.MockupId.HasValue && source == null)
             return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
-        source ??= options.Concept switch
-        {
-            "material_detail" => eligible.FirstOrDefault(x => HasDetail(x)),
-            "lifestyle_motion" or "product_in_use" => eligible.FirstOrDefault(x => x.Role == "Lifestyle"),
-            _ => eligible.FirstOrDefault(x => x.Role == "Hero") ?? eligible[0]
-        };
+        source ??= options.Concept == "material_detail" ? eligible.FirstOrDefault(HasMarkedDetail) ?? eligible[0] : eligible[0];
         if (source == null || !eligible.Any(x => x.Id == source.Id))
             return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
-        if (options.Concept == "material_detail" && !HasDetail(source))
-            return Result.Failure<Storyboard>(Error.Validation("Material Detail needs an approved detail image or marked detail region."));
-        if (options.Concept is "lifestyle_motion" or "product_in_use" && (source.Role != "Lifestyle" || !options.RightsConfirmed))
-            return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need an approved Lifestyle image and image-rights confirmation."));
+        if (options.Concept is "lifestyle_motion" or "product_in_use" && !options.RightsConfirmed)
+            return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need image-rights confirmation for the selected image."));
         var model = AiVideoModel.ModelName;
         var aspect = config.OutputFormat == "landscape" ? "16:9" : "9:16";
         var prompt = BuildPrompt(options.Concept, options.Prompt);
@@ -283,12 +263,7 @@ public sealed class VideoStoryboardPlanner
                 ? eligible.FirstOrDefault(x => x.Id == ids[index]) : null;
             if (options.FullSceneMockupIds is { Count: > 0 } supplied && index < supplied.Count && requested == null)
                 return Result.Failure<Storyboard>(Error.Validation("An AI scene uses an unavailable mockup."));
-            var chosen = requested ?? (index == 0 && count == 2 && options.Concept == "product_cinematic"
-                ? eligible.FirstOrDefault(x => x.Role == "Hero") ?? source : source);
-            if (options.Concept is "lifestyle_motion" or "product_in_use" && chosen.Role != "Lifestyle")
-                return Result.Failure<Storyboard>(Error.Validation("Every lifestyle AI scene needs a Lifestyle image with a visible adult."));
-            if (options.Concept == "material_detail" && !HasDetail(chosen))
-                return Result.Failure<Storyboard>(Error.Validation("Every material-detail AI scene needs a detail image or region."));
+            var chosen = requested ?? source;
             allSources.Add(chosen);
         }
         var fullScenes = allSources.Select((asset, index) => CreateScene(asset, standard.ProductType, config, index, 240) with
@@ -394,6 +369,8 @@ public sealed class VideoStoryboardPlanner
         return "product_showcase";
     }
     private static bool HasDetail(MockupImage asset) => asset.Role == "ArtworkDetail" ||
+        WorkflowJson.Read<MockupRegions>(asset.Regions) is { Detail: not null } or { Artwork: not null };
+    private static bool HasMarkedDetail(MockupImage asset) =>
         WorkflowJson.Read<MockupRegions>(asset.Regions) is { Detail: not null } or { Artwork: not null };
     private static Region Inset(Region bounds, double scale) => new(
         bounds.X + bounds.Width * (1 - scale) / 2,
