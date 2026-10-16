@@ -64,7 +64,7 @@ public sealed class ApiKeyEndpointTests
         var providers = await response.Content.ReadFromJsonAsync<JsonElement>();
         providers.EnumerateArray()
             .Select(item => item.GetProperty("id").GetString())
-            .Should().Contain(["openai", "replicate", "printify"]);
+            .Should().Contain(["gemini", "replicate", "printify"]);
     }
 
     [TestMethod]
