@@ -23,7 +23,7 @@ public sealed class RagControllerTests
         service.Setup(x => x.SearchAsync(search, cancellation.Token)).ReturnsAsync(results);
         var controller = new RagController(service.Object);
 
-        (await controller.Ingest(ingest, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().NotBeNull();
+        (await controller.Ingest(ingest, cancellation.Token)).Should().BeOfType<AcceptedResult>().Which.Value.Should().NotBeNull();
         (await controller.Search(search, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(results);
         service.VerifyAll();
     }
