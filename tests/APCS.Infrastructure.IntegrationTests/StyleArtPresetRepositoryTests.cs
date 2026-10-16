@@ -2,6 +2,7 @@ using APCS.Domain.Entities;
 using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.Infrastructure.IntegrationTests;
 
@@ -18,8 +19,8 @@ public sealed class StyleArtPresetRepositoryTests
             return;
         }
 
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options;
-        await using var db = new RagFreeAppDbContext(options);
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString, o => o.UseVector()).Options;
+        await using var db = new AppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {
@@ -71,8 +72,8 @@ public sealed class StyleArtPresetRepositoryTests
             return;
         }
 
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options;
-        await using var db = new RagFreeAppDbContext(options);
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString, o => o.UseVector()).Options;
+        await using var db = new AppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {

@@ -4,6 +4,7 @@ using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.Infrastructure.IntegrationTests;
 
@@ -15,8 +16,8 @@ public sealed class ApiKeyRepositoryTests
     {
         var connection = Environment.GetEnvironmentVariable("APCS_TEST_CONNECTION_STRING");
         if (string.IsNullOrWhiteSpace(connection)) { Assert.Inconclusive("Set APCS_TEST_CONNECTION_STRING to run PostgreSQL tests."); return; }
-        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options;
-        await using var db = new RagFreeAppDbContext(options);
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection, o => o.UseVector()).Options;
+        await using var db = new AppDbContext(options);
         await db.Database.OpenConnectionAsync();
         // This session-local table shadows the application's unqualified table mapping.
         await db.Database.ExecuteSqlRawAsync("CREATE TEMP TABLE api_keys (LIKE public.api_keys INCLUDING ALL)");
@@ -58,8 +59,8 @@ public sealed class ApiKeyRepositoryTests
 
         var audit = new QueryAudit();
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(connectionString).AddInterceptors(audit).Options;
-        await using var db = new RagFreeAppDbContext(options);
+            .UseNpgsql(connectionString, o => o.UseVector()).AddInterceptors(audit).Options;
+        await using var db = new AppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {
