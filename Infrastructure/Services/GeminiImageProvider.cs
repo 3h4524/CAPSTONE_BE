@@ -18,6 +18,8 @@ namespace APCS.Infrastructure.Services;
 /// </remarks>
 public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<GeminiOptions> options) : IImageGenerationProvider
 {
+    public decimal EstimatedCostPerImageUsd => options.Value.EstimatedCostPerImageUsd;
+
     public Task<ImageGenerationResult> GenerateAsync(
         string apiKey,
         string prompt,

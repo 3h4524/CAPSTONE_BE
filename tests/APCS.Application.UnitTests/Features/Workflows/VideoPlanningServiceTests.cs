@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
@@ -106,6 +107,32 @@ public sealed class VideoPlanningServiceTests
         result.Value.Scenes.Count(x => x.GenerationStrategy == "ai_shot").Should().Be(1);
         fixture.JobRows.Should().BeEmpty();
         fixture.VideoRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_StudioFrameNotInApplyMockupSelection_IsIncludedForShowcaseScenes()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = WorkflowTestData.Asset(product.Id, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ApprovedRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
+            AiStudioFrameIdentity.Fingerprint(source, AiStudioFrameIdentity.HangingWindow, aspect), source.Id,
+            source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
+        fixture.AssetRows.Add(frame);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new()],
+            AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], source.ArtworkGroupKey), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(frame.Id);
+        result.Value.AiShots!.Single().MockupId.Should().Be(frame.Id);
     }
 
     [TestMethod]

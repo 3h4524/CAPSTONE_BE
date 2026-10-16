@@ -17,9 +17,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var mockupConfig = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
         var approved = await ApprovedAssetsAsync(run, mockupConfig, ct);
         var product = await products.GetByIdAsync(run.ProductId, ct);
+        var aiTemplateCodes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
+        var aiTemplates = await templates.FindAsync(x => x.IsSystemTemplate == true && x.IsActive == true && x.Code != null && aiTemplateCodes.Contains(x.Code), ct);
         return product is null
             ? Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."))
-            : planner.Plan(product, approved, config);
+            : planner.Plan(product, approved, config, aiTemplates);
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)

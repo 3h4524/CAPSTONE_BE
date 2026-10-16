@@ -15,6 +15,10 @@ if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "host.docker.in
 const renderer = new RemotionVideoRenderer();
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort()); process.once("SIGTERM", () => shutdown.abort());
+const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "2");
+const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
+  ? Math.min(configuredAiConcurrency, 4)
+  : 2;
 async function api(path: string, payload: unknown, signal: AbortSignal) {
   const response = await fetch(new URL(`/internal/media-jobs/${path}`, baseUrl), { method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key }, body: JSON.stringify(payload), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
   if (!response.ok) {
@@ -56,9 +60,12 @@ async function execute(job: WorkerJob) {
         if (!asset) throw new Error("Missing source mockup");
         sources[scene.mockupId] = pngSource(asset.data, scene.sourceHash);
       }
-      for (const shot of payload.storyboard.aiShots ?? []) {
+      const aiShots = payload.storyboard.aiShots ?? [];
+      const sceneErrors: unknown[] = [];
+      let nextShot = 0;
+      const generateShot = async (shot: NonNullable<typeof payload.storyboard.aiShots>[number]) => {
         const stored = assets.get(`ai-shots/${shot.sceneOrder}.mp4`);
-        if (stored) { clips[shot.sceneOrder] = stored.file; continue; }
+        if (stored) { clips[shot.sceneOrder] = stored.file; return; }
         stage = "Generating Assets"; progress = Math.max(progress, 15); duringAiShot = true;
         const request = { leaseToken: job.leaseToken };
         let state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string };
@@ -76,7 +83,16 @@ async function execute(job: WorkerJob) {
         const result = await uploadFile(grant, file, signal);
         await api(`${job.id}/ai-shots/${shot.sceneOrder}/stored`, { ...request, ...result }, signal);
         clips[shot.sceneOrder] = file;
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(aiSceneConcurrency, aiShots.length) }, async () => {
+        while (true) {
+          const index = nextShot++;
+          if (index >= aiShots.length) return;
+          try { await generateShot(aiShots[index]!); }
+          catch (error) { sceneErrors.push(error); }
+        }
+      }));
+      if (sceneErrors.length > 0) throw sceneErrors[0];
       duringAiShot = false;
       stage = "Rendering";
       const result = await renderer.render({ storyboard: payload.storyboard, sources, clips }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });

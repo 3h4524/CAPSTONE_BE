@@ -1,4 +1,4 @@
-<Project Sdk="MSTest.Sdk">
+<Project Sdk="MSTest.Sdk/4.3.3">
   <PropertyGroup>
     <AssemblyName>APCS.Infrastructure.IntegrationTests</AssemblyName>
     <RootNamespace>APCS.Infrastructure.IntegrationTests</RootNamespace>

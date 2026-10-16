@@ -2,6 +2,7 @@ using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
@@ -74,6 +75,42 @@ public sealed class AiShotJobServiceTests
 
         (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("SourceChanged");
         provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_StudioFrameOriginalSourceChangedAfterQuote_DoesNotSubmit()
+    {
+        var service = Service();
+        var original = source;
+        var frame = WorkflowTestData.Asset(original.ProductId, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ApprovedRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
+            AiStudioFrameIdentity.Fingerprint(original, AiStudioFrameIdentity.HangingWindow, aspect), original.Id,
+            original.ContentHash!, original.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
+        fixture.AssetRows.Add(frame);
+        var payload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+        var oldScene = payload.Storyboard.Scenes.Single();
+        var scene = oldScene with { MockupId = frame.Id, SourceRevision = frame.MetadataRevision,
+            SourceHash = frame.ContentHash!, Role = frame.Role, AiTemplateCode = "cinematic_product_showcase" };
+        var oldShot = payload.Storyboard.AiShots!.Single();
+        var shot = oldShot with { MockupId = frame.Id, SourceHash = frame.ContentHash! };
+        job.Payload = WorkflowJson.Write(payload with
+        {
+            Storyboard = payload.Storyboard with { Scenes = [scene], AiShots = [shot] }
+        });
+        original.ContentHash = new string('d', 64);
+        original.MetadataRevision++;
+        original.ApprovedRevision++;
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.Error.Code.Should().Be("SourceChanged");
+        provider.VerifyNoOtherCalls();
+        State().Status.Should().Be("pending");
     }
 
     [TestMethod]
@@ -281,7 +318,7 @@ public sealed class AiShotJobServiceTests
         source = fixture.AddAsset(product, "Lifestyle");
         job = fixture.AddJob(run);
         var scene = new ScenePlan(source.Id, source.MetadataRevision, source.ContentHash!, source.Role, 0, 240, new(0, 0, 1, 1), new(0, 0, 1, 1), "static", "cut", "", "ai_shot", []);
-        var board = new Storyboard("auto", 2, 8, "tshirt", [scene], "board", OutputFormat: "tall", Mode: "ai_shot",
+        var board = new Storyboard("auto", 2, 8, "tshirt", [scene], "board", OutputFormat: "portrait", Width: 1080, Height: 1920, AspectRatio: "9:16", Mode: "ai_shot",
             AiShots: [new(0, source.Id, source.ContentHash!, "veo", "lifestyle_motion", "Move gently.", 8, "fingerprint")]);
         job.Payload = WorkflowJson.Write(new AiRenderJobPayload(Guid.NewGuid(), board, [state ?? new AiShotJobState(0, "fingerprint")]));
 

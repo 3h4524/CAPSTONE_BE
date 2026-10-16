@@ -16,7 +16,8 @@ public sealed class WorkflowCapabilityRegistry
                 new NodeCapability("publish-etsy", false, "Backend executor is not available yet."),
                 new NodeCapability("publish-printify", false, "Backend executor is not available yet.") }).ToArray(),
         [new("standard", true, "available", "Showcase from approved mockups. No AI model cost.", true),
-         new("ai_shot", true, "available", "Animate one scene or the entire video with Google Veo Lite.", false,
-             new CostRange("USD", .30m, .80m, "Estimated Google Veo cost per new video; a confirmation is required."))]);
+         new("ai_shot", true, "available", $"Build a video from individually configured AI scenes using {AiVideoModel.DisplayName}.", false,
+             new CostRange("USD", 4 * AiVideoModel.PricePerSecondUsd, 30 * AiVideoModel.PricePerSecondUsd,
+                 $"Estimated {AiVideoModel.DisplayName} cost at ${AiVideoModel.PricePerSecondUsd:0.00}/second for new clips; confirmation is required."))]);
     public bool IsModeEnabled(string mode) => Get().VideoModes.Any(x => x.Mode == mode && x.Enabled);
 }

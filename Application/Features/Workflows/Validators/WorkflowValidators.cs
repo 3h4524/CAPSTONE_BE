@@ -12,12 +12,26 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.Template).Must(x => new[] { "auto", "product_showcase", "design_detail", "variant_showcase" }.Contains(x));
         RuleFor(x => x.TemplateVersion).Must(x => x is null or 1 or 2);
         RuleFor(x => x.OutputFormat).Must(VideoOutputFormats.IsSupported).WithMessage("Choose a supported video output format.");
-        RuleFor(x => x.DurationSeconds).InclusiveBetween(3, 15);
+        RuleFor(x => x.AiStudioMode).Must(x => x is "direct" or "studio").WithMessage("Choose direct mock-up or a studio keyframe.");
+        RuleFor(x => x.AiStudioLayout).Must(AiStudioFrameIdentity.IsSupportedLayout).WithMessage("Choose a supported studio layout.");
+        RuleFor(x => x.DurationSeconds).InclusiveBetween(3, 30);
         RuleFor(x => x.AssetSelection).Must(x => x is "automatic" or "manual");
         RuleFor(x => x.SelectedMockupIds).Must(x => x is null || x.Count <= 8 && x.Distinct().Count() == x.Count);
         RuleFor(x => x.SceneOrder).Must(x => x is null || x.Count <= 4 && x.Distinct().Count() == x.Count);
         RuleFor(x => x.TextOverlay).NotNull().MaximumLength(120);
-        RuleFor(x => x.AiShotOptions).NotNull().When(x => x.Mode == "ai_shot");
+        RuleFor(x => x.AiShotOptions).NotNull().When(x => x.Mode == "ai_shot" && x.AiScenes is not { Count: > 0 });
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.Count is >= 1 and <= 4)
+            .WithMessage("Configure between one and four AI scenes.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.DurationSeconds is 4 or 6 or 8) && x.Sum(scene => scene.DurationSeconds) <= 30)
+            .WithMessage("AI scenes must be 4, 6 or 8 seconds each, with a maximum combined duration of 30 seconds.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.ExtraInstructions is null or { Length: <= 500 }))
+            .WithMessage("Keep each scene's extra instructions under 500 characters.");
+        RuleFor(x => x.AiGlobalInstructions).Must(x => x is null or { Length: <= 500 })
+            .WithMessage("Keep shared AI scene directions under 500 characters.");
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.DurationSeconds == x.AiScenes.Sum(scene => scene.DurationSeconds))
+            .WithMessage("Overall video duration must equal the sum of AI scene durations.");
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.AiShotOptions == null)
+            .WithMessage("Use either the scene-based AI settings or legacy AI Shot settings, not both.");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
             new[] { "varied", "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
@@ -32,11 +46,11 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             x.SceneIndex is >= 0 and <= 3 &&
             x.Prompt is null or { Length: <= 500 } &&
             (x.FullSceneMockupIds is null || x.FullSceneMockupIds.Count <= 2 && x.FullSceneMockupIds.All(id => id != Guid.Empty)));
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
             .WithMessage("Full AI videos must be 8 or 15 seconds.");
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
             .WithMessage("Confirm rights to use the adult Lifestyle image for AI video generation.");
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
             .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }
 }
