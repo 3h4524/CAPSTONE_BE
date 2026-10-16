@@ -325,6 +325,51 @@ public sealed class MediaJobServiceTests
         fixture.VideoRows.Single().Status.Should().Be(attempt == 3 ? "failed" : "queued");
     }
 
+    [TestMethod]
+    [DataRow("AiShotRejected")]
+    [DataRow("AiShotFailed")]
+    public async Task FailAsync_AiSceneGoogleAnsweredWithoutAClip_ShowsItsReasonAndStopsTrying(string code)
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = 1;
+        var board = WorkflowJson.Read<RenderJobPayload>(job.Payload).Storyboard;
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            [new AiShotJobState(0, "fingerprint", "models/veo/operations/abc", Status: "failed", Failure: "Audio issue. You have not been charged for this attempt.")]));
+
+        (await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, code), default)).IsSuccess.Should().BeTrue();
+
+        // Asking again by itself would only get the same answer.
+        job.Status.Should().Be("failed");
+        job.ErrorMessage.Should().Contain("Audio issue. You have not been charged for this attempt.").And.Contain("Retry checkpoint");
+        fixture.RunRows.Single().Status.Should().Be("failed");
+        fixture.RunRows.Single().ErrorMessage.Should().Be(job.ErrorMessage);
+    }
+
+    [TestMethod]
+    public async Task FailAsync_AiSceneWithoutAKnownReason_IsRetriedLikeAnyOtherFailure()
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = 1;
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "AiShotFailed"), default);
+
+        job.Status.Should().Be("queued");
+        fixture.RunRows.Single().Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task FailAsync_SourceChanged_FailsAtOnceAndSaysWhatToDo()
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = 1;
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "SourceChanged"), default);
+
+        job.Status.Should().Be("failed");
+        job.ErrorMessage.Should().Contain("no longer approved");
+        fixture.RunRows.Single().Status.Should().Be("failed");
+    }
+
     private static WorkflowTestData RenderFixture()
     {
         var fixture = new WorkflowTestData();

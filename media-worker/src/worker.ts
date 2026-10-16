@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { exportPayloadSchema, renderPayloadSchema, workerJobSchema } from "./contracts";
 import type { RenderProps, WorkerJob } from "./contracts";
+import { ApiError, failureCode } from "./failures";
 import { createZip, downloadAssets, pngSource, uploadFile } from "./media-files";
 import { RemotionVideoRenderer } from "./renderer";
 
@@ -14,9 +15,16 @@ if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "host.docker.in
 const renderer = new RemotionVideoRenderer();
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort()); process.once("SIGTERM", () => shutdown.abort());
+const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "2");
+const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
+  ? Math.min(configuredAiConcurrency, 4)
+  : 2;
 async function api(path: string, payload: unknown, signal: AbortSignal) {
   const response = await fetch(new URL(`/internal/media-jobs/${path}`, baseUrl), { method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key }, body: JSON.stringify(payload), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
-  if (!response.ok) throw new Error(`Internal API rejected request (${response.status})`);
+  if (!response.ok) {
+    const problem = await response.json().catch(() => null) as { code?: unknown } | null;
+    throw new ApiError(response.status, typeof problem?.code === "string" ? problem.code : null);
+  }
   return response.status === 204 ? null : response.json();
 }
 async function aiShotBytes(job: WorkerJob, order: number, signal: AbortSignal) {
@@ -33,7 +41,7 @@ async function execute(job: WorkerJob) {
   const directory = await mkdtemp(join(tmpdir(), "apcs-media-"));
   const abort = new AbortController();
   const signal = AbortSignal.any([abort.signal, shutdown.signal, AbortSignal.timeout(30 * 60_000)]);
-  let stage = "Planning", progress = 5;
+  let stage = "Planning", progress = 5, duringAiShot = false;
   let heartbeatRunning = false;
   const heartbeat = setInterval(() => {
     if (heartbeatRunning) return;
@@ -52,13 +60,18 @@ async function execute(job: WorkerJob) {
         if (!asset) throw new Error("Missing source mockup");
         sources[scene.mockupId] = pngSource(asset.data, scene.sourceHash);
       }
-      for (const shot of payload.storyboard.aiShots ?? []) {
+      const aiShots = payload.storyboard.aiShots ?? [];
+      const sceneErrors: unknown[] = [];
+      let nextShot = 0;
+      const generateShot = async (shot: NonNullable<typeof payload.storyboard.aiShots>[number]) => {
         const stored = assets.get(`ai-shots/${shot.sceneOrder}.mp4`);
-        if (stored) { clips[shot.sceneOrder] = stored.file; continue; }
-        stage = "Generating Assets"; progress = Math.max(progress, 15);
+        if (stored) { clips[shot.sceneOrder] = stored.file; return; }
+        stage = "Generating Assets"; progress = Math.max(progress, 15); duringAiShot = true;
         const request = { leaseToken: job.leaseToken };
         let state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string };
-        for (let check = 0; check < 240 && state.status === "polling"; check++) {
+        for (let check = 0; check < 240 && (state.status === "polling" || state.status === "pending"); check++) {
+          // "pending" again: Google dropped the clip without charging and the API allows one more submission.
+          if (state.status === "pending") { state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string }; continue; }
           await delay(5_000, undefined, { signal });
           state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/poll`, request, signal) as { status: string };
         }
@@ -70,7 +83,17 @@ async function execute(job: WorkerJob) {
         const result = await uploadFile(grant, file, signal);
         await api(`${job.id}/ai-shots/${shot.sceneOrder}/stored`, { ...request, ...result }, signal);
         clips[shot.sceneOrder] = file;
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(aiSceneConcurrency, aiShots.length) }, async () => {
+        while (true) {
+          const index = nextShot++;
+          if (index >= aiShots.length) return;
+          try { await generateShot(aiShots[index]!); }
+          catch (error) { sceneErrors.push(error); }
+        }
+      }));
+      if (sceneErrors.length > 0) throw sceneErrors[0];
+      duringAiShot = false;
       stage = "Rendering";
       const result = await renderer.render({ storyboard: payload.storyboard, sources, clips }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
       stage = "Uploading"; progress = 90;
@@ -95,11 +118,7 @@ async function execute(job: WorkerJob) {
     }
     process.stdout.write(`Media job ${job.id} completed.\n`);
   } catch (error) {
-    const message = stage === "Generating Assets" && job.kind === "render"
-      ? error instanceof Error && error.message.includes("(409)") ? "VeoSubmissionUncertain"
-        : error instanceof Error && error.message.includes("(400)") ? "AiShotRejected" : "AiShotFailed"
-      : "MediaProcessingFailed";
-    await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message }, shutdown.signal).catch(() => {});
+    await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message: failureCode(error, duringAiShot) }, shutdown.signal).catch(() => {});
     process.stderr.write(`Media job ${job.id} did not complete: ${error instanceof Error ? error.message : "unknown error"}.\n`);
   } finally {
     clearInterval(heartbeat); abort.abort();

@@ -13,7 +13,7 @@ public sealed class WorkflowRunServiceTests
     {
         var fixture = new WorkflowTestData();
         var run = PrepareReview(fixture);
-        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(DurationSeconds: 16)), default);
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(DurationSeconds: 31)), default);
         result.IsFailure.Should().BeTrue();
         fixture.VideoRows.Should().HaveCount(1);
         fixture.JobRows.Should().BeEmpty();
@@ -282,6 +282,87 @@ public sealed class WorkflowRunServiceTests
         result.Value.Status.Should().Be("running");
         fixture.VideoRows.Should().HaveCount(2);
         fixture.VideoRows.MaxBy(x => x.VersionNumber)!.Fingerprint.Should().Be(fingerprint);
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryWithTheSameSettingsFromTheCanvas_CarriesOnWithTheFailedVersion()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture); run.Status = "failed";
+        var existing = fixture.VideoRows.Single(); existing.Status = "failed";
+        existing.Fingerprint = new VideoStoryboardPlanner().Plan(fixture.ProductRows.Single(), fixture.AssetRows, new()).Value.Fingerprint;
+        var generate = fixture.NodeRows.Single(x => x.NodeType == "generate-video"); generate.Status = "failed";
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry", Config: new()), default);
+
+        result.Value.Status.Should().Be("running");
+        fixture.VideoRows.Should().ContainSingle();
+        generate.Attempt.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryWithChangedSettingsFromTheCanvas_RendersThemAsANewVersion()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture); run.Status = "failed";
+        fixture.VideoRows.Single().Status = "failed";
+        var generate = fixture.NodeRows.Single(x => x.NodeType == "generate-video"); generate.Status = "failed";
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry", Config: new(TextOverlay: "Second try")), default);
+
+        result.Value.Status.Should().Be("running");
+        generate.Attempt.Should().Be(2);
+        generate.InputSnapshot.Should().Contain("Second try");
+        fixture.VideoRows.Should().HaveCount(2);
+        fixture.VideoRows.MaxBy(x => x.VersionNumber)!.ConfigSnapshot.Should().Contain("Second try");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryListing_WritesTheListingWhileTheRunKeepsWaiting()
+    {
+        var fixture = new WorkflowTestData();
+        var run = fixture.AddRun(fixture.AddProduct(), "waiting_for_input");
+        var listing = fixture.AddListingStep(run, "failed");
+        fixture.ListingSucceeds();
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry_listing"), default);
+
+        result.Value.Status.Should().Be("waiting_for_input");
+        result.Value.Revision.Should().Be(8);
+        listing.Status.Should().Be("succeeded");
+        fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow("running", "failed")]
+    [DataRow("cancelled", "failed")]
+    [DataRow("waiting_for_input", "succeeded")]
+    public async Task ActionAsync_RetryListingWhenItCannotRun_IsRefusedWithoutCallingGemini(string runStatus, string listingStatus)
+    {
+        var fixture = new WorkflowTestData();
+        var run = fixture.AddRun(fixture.AddProduct(), runStatus);
+        fixture.AddListingStep(run, listingStatus);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry_listing"), default);
+
+        result.Error.Code.Should().Be("InvalidCheckpoint");
+        fixture.ListingContent.VerifyNoOtherCalls();
+        run.Revision.Should().Be(7);
+    }
+
+    [TestMethod]
+    [DataRow("retry")]
+    [DataRow("rerender")]
+    [DataRow("resume_mockups")]
+    [DataRow("approve_video")]
+    public async Task ActionAsync_VideoActionOnAListingOnlyRun_IsRefusedInsteadOfFailing(string action)
+    {
+        var fixture = new WorkflowTestData();
+        var run = fixture.AddListingOnlyRun(fixture.AddProduct(), "failed");
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, action), default);
+
+        result.Error.Code.Should().Be("InvalidCheckpoint");
     }
 
     [TestMethod]

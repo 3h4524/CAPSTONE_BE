@@ -22,6 +22,34 @@ public sealed class ImageSharpMockupMapGeneratorTests
     private readonly ImageSharpMockupMapGenerator _generator = new(Middle);
 
     [TestMethod]
+    public void GenerateCutMask_PullsTheGarmentsEdgeInByOnePixelAndKeepsItsShading()
+    {
+        var photo = Png(100, 100, (_, _) => new Rgba32(200, 200, 200));
+        var mask = _generator.GenerateGarmentMask(photo).MaskPng;
+
+        using var before = Image.Load<Rgba32>(mask);
+        using var cut = Image.Load<Rgba32>(_generator.GenerateCutMask(mask)!);
+
+        cut.Size.Should().Be(before.Size);
+        // The garment runs from 20 to 79: its outermost pixel is cut away, the one inside it stays.
+        before[20, 50].A.Should().Be(255);
+        cut[20, 50].A.Should().Be(0);
+        cut[21, 50].A.Should().Be(255);
+        cut[79, 50].A.Should().Be(0);
+        cut[78, 50].A.Should().Be(255);
+        cut[50, 50].R.Should().Be(before[50, 50].R);
+    }
+
+    [TestMethod]
+    public void GenerateCutMask_WhenNoGarmentWasSeparated_IsNothing()
+    {
+        var photo = Png(100, 100, (_, _) => new Rgba32(200, 200, 200));
+        var everything = new ImageSharpMockupMapGenerator(new FakeGarmentSegmenter((_, _) => true));
+
+        everything.GenerateCutMask(everything.GenerateGarmentMask(photo).MaskPng).Should().BeNull();
+    }
+
+    [TestMethod]
     public void GenerateDisplacementMap_FlatFabric_IsNeutral()
     {
         var photo = Png(200, 160, (_, _) => new Rgba32(200, 200, 200));

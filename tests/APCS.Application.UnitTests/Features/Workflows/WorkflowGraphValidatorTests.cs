@@ -34,7 +34,6 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    [DataRow("generate-listing")]
     [DataRow("publish-etsy")]
     [DataRow("publish-printify")]
     public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode(string type)
@@ -51,6 +50,46 @@ public sealed class WorkflowGraphValidatorTests
     {
         var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
         definition = definition with { Edges = definition.Edges.Select((x, i) => i == edgeIndex ? x with { Target = "node-5" } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
+    [DataRow("node-0")]
+    [DataRow("node-3")]
+    [DataRow("node-5")]
+    public void Validate_ListingContentHangingOffAnyStep_NeedsNoApproval(string source)
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges, new("edge-listing", source, "listing")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentBetweenTwoSteps_IsAccepted()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Skip(1), new("edge-in", "node-0", "listing"), new("edge-out", "listing", "node-1")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentUsedToSkipMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        // Apply Mockup -> Listing Content -> Generate Video, with Mockup Approval left out of the line.
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Where(x => x.Target != "node-2"), new("edge-in", "node-1", "listing"), new("edge-out", "listing", "node-3")]
+        };
         _validator.Validate(definition)!.Message.Should().Contain("approval gates");
     }
 
@@ -130,6 +169,6 @@ public sealed class WorkflowGraphValidatorTests
         capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
             x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
         capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
-        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps));
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps).Concat(WorkflowCapabilityRegistry.ListingSteps));
     }
 }

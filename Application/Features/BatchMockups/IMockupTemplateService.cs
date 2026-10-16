@@ -57,4 +57,14 @@ public interface IMockupTemplateService
     /// a browser. Fails without changing anything when the job is not finished or has no template selected.
     /// </summary>
     Task<Result<GenerateAllMockupsResultDto>> GenerateAllForJobAsync(Guid batchJobId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Makes one of the job's mock-ups its own way (another template, garment color, background or print area, or
+    /// none at all) and returns the job's mock-ups made again. The change is kept with the job, so it applies every
+    /// time the job's mock-ups are made, whatever its shared settings become.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> SaveOverrideAsync(Guid batchJobId, SaveMockupOverrideRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Puts one of the job's mock-ups back on the job's shared settings and returns the job's mock-ups made again.</summary>
+    Task<Result<GenerateAllMockupsResultDto>> ResetOverrideAsync(Guid batchJobId, string slotKey, Guid? replacedMockupImageId, CancellationToken cancellationToken = default);
 }

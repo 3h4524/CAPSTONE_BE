@@ -1466,6 +1466,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.ArtworkGroupKey)
                 .HasMaxLength(100)
                 .HasColumnName("artwork_group_key");
+            entity.Property(e => e.BackgroundColor)
+                .HasMaxLength(7)
+                .HasColumnName("background_color");
             entity.Property(e => e.BatchJobProductId).HasColumnName("batch_job_product_id");
             entity.Property(e => e.ContentHash)
                 .HasMaxLength(64)

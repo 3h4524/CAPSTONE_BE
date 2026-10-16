@@ -11,6 +11,7 @@ public interface IVideoPlanningService
 {
     Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct);
     Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct);
+    Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct);
 }
 public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<VideoTemplate> templates, GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
@@ -24,9 +25,35 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<Storyboard>(new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation));
         var validation = await validator.ValidateAsync(request.Config, ct);
         if (!validation.IsValid || request.MockupIds.Count > 8) return Result.Failure<Storyboard>(Error.Validation("Invalid video configuration or mockup selection."));
-        var approved = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
-        return planner.Plan(product, approved.Where(x => request.MockupIds.Count == 0 || request.MockupIds.Contains(x.Id))
-            .Where(x => string.IsNullOrEmpty(request.ArtworkGroupKey) || x.ArtworkGroupKey == request.ArtworkGroupKey).Take(8).ToArray(), request.Config);
+        var owned = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null, ct);
+        var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, request.ArtworkGroupKey);
+        var aiTemplates = await LoadAiTemplatesAsync(ct);
+        var approved = owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
+            .Where(x => group == null || x.ArtworkGroupKey == group).ToArray();
+        var requestedIds = new HashSet<Guid>(request.MockupIds);
+        if (request.Config.AiScenes is { } scenes)
+        {
+            foreach (var scene in scenes)
+            {
+                if (scene.MockupId is Guid sourceId) requestedIds.Add(sourceId);
+                if (scene.StudioFrameId is Guid frameId) requestedIds.Add(frameId);
+            }
+        }
+        if (request.Config.AiStudioMode == "studio")
+        {
+            if (request.Config.AiStudioSourceMockupId is Guid legacySourceId) requestedIds.Add(legacySourceId);
+            if (request.Config.AiStudioFrameId is Guid legacyFrameId) requestedIds.Add(legacyFrameId);
+        }
+        foreach (var frame in owned.Where(x => requestedIds.Contains(x.Id)))
+        {
+            var identity = AiStudioFrameIdentity.Read(frame.Regions);
+            if (identity is not null) requestedIds.Add(identity.SourceMockupId);
+        }
+        var selected = request.MockupIds.Count == 0
+            ? approved.Where(x => requestedIds.Contains(x.Id)).Concat(approved.Take(8)).DistinctBy(x => x.Id).ToList()
+            : approved.Where(x => requestedIds.Contains(x.Id)).ToList();
+        selected.AddRange(owned.Where(x => requestedIds.Contains(x.Id) && x.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && x.Role == "VideoScene"));
+        return planner.Plan(product, selected.DistinctBy(x => x.Id).ToArray(), request.Config, aiTemplates);
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)
@@ -45,6 +72,15 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
                 effects.Requirements ?? FallbackRequirements(x.Code));
         }).ToArray();
         return Result.Success<IReadOnlyList<VideoTemplateCatalogItem>>(result);
+    }
+
+    public async Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct) =>
+        Result.Success(AiVideoPromptCompiler.Catalog(await LoadAiTemplatesAsync(ct)));
+
+    private async Task<IReadOnlyList<VideoTemplate>> LoadAiTemplatesAsync(CancellationToken ct)
+    {
+        var codes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
+        return await templates.FindAsync(x => x.IsSystemTemplate == true && x.IsActive == true && x.Code != null && codes.Contains(x.Code), ct);
     }
 
     private static VideoTemplateEffects SafeReadEffects(string? effectsConfig)

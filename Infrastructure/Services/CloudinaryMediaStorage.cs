@@ -33,6 +33,8 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
         var bytes = await response.Content.ReadAsByteArrayAsync(ct);
         return new(key, result.Version, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Width, result.Height);
     }
+    public Task<byte[]> ReadImageAsync(string key, string? version, CancellationToken ct) =>
+        clients.CreateClient("PrivateMedia").GetByteArrayAsync(SignRead(key, "image", version), ct);
     public string SignRead(string key, string type, string? version = null, bool attachment = false) => Client.DownloadPrivate(
         PublicId(key), attachment: attachment, format: type == "image" ? "png" : type == "video" ? "mp4" : null,
         type: "authenticated", expiresAt: time.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds(), resourceType: type,

@@ -1,14 +1,54 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Features.Workflows;
+using Microsoft.Extensions.Logging;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
 
 namespace APCS.Infrastructure.Services;
 
-public sealed class VeoVideoProvider(IHttpClientFactory clients) : IVeoVideoProvider
+public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVideoProvider> logger) : IAiVideoGenerationStrategy
 {
+    public string ProviderKey => "gemini";
+    public string ModelKey => AiVideoModel.ModelKey;
+    public string ModelName => AiVideoModel.ModelName;
+    // Google says why it refused a request in the response body; without it every refusal looks the same.
+    private async Task<VeoProviderException> RefusedAsync(HttpResponseMessage response, string step, CancellationToken ct)
+    {
+        var body = await response.Content.ReadAsStringAsync(ct);
+        logger.LogWarning("Veo refused the {Step} request with status {Status}: {Body}", step, (int)response.StatusCode,
+            body.Length > 2000 ? body[..2000] : body);
+        string? detail = null;
+        try
+        {
+            using var parsed = JsonDocument.Parse(body);
+            if (parsed.RootElement.ValueKind == JsonValueKind.Object && parsed.RootElement.TryGetProperty("error", out var error)) detail = Reason(error);
+        }
+        catch (JsonException) { /* Not every refusal has a JSON body. */ }
+        return new VeoProviderException((int)response.StatusCode, detail);
+    }
+
+    // Google's own explanation, kept short enough to show beside the run.
+    private static string? Reason(JsonElement error)
+    {
+        if (error.ValueKind != JsonValueKind.Object || !error.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String) return null;
+        return Shorten(message.GetString());
+    }
+
+    private static string? Shorten(string? text)
+    {
+        var line = string.Join(' ', (text ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return line.Length == 0 ? null : line.Length > 400 ? line[..400] + "…" : line;
+    }
+
     private const string Base = "https://generativelanguage.googleapis.com/v1beta/";
     public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
-        int durationSeconds, bool people, CancellationToken ct)
+        int durationSeconds, bool people, CancellationToken ct) =>
+        await StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, null, ct);
+
+    public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
+        int durationSeconds, bool people, APCS.Application.Features.Workflows.Region? sourceCrop, CancellationToken ct)
     {
         if (durationSeconds is not (4 or 6 or 8) || aspectRatio is not ("9:16" or "16:9"))
             throw new ArgumentException("Unsupported Veo video settings.");
@@ -17,41 +57,84 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients) : IVeoVideoProv
         var bytes = await source.Content.ReadAsByteArrayAsync(ct);
         if (bytes.Length is < 24 or > 20_000_000 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
             throw new InvalidOperationException("AI Shot source must be a valid approved PNG under 20 MB.");
-        using var request = new HttpRequestMessage(HttpMethod.Post, Base + "models/veo-3.1-lite-generate-preview:predictLongRunning");
+        if (sourceCrop is not null)
+        {
+            using var image = Image.Load(bytes);
+            var x = Math.Clamp((int)Math.Floor(sourceCrop.X * image.Width), 0, image.Width - 1);
+            var y = Math.Clamp((int)Math.Floor(sourceCrop.Y * image.Height), 0, image.Height - 1);
+            var width = Math.Clamp((int)Math.Ceiling(sourceCrop.Width * image.Width), 1, image.Width - x);
+            var height = Math.Clamp((int)Math.Ceiling(sourceCrop.Height * image.Height), 1, image.Height - y);
+            if (Math.Min(width, height) < 512)
+                throw new InvalidOperationException("AI macro source region must be at least 512 pixels on its shortest side.");
+            image.Mutate(context => context.Crop(new Rectangle(x, y, width, height)));
+            await using var cropped = new MemoryStream();
+            await image.SaveAsPngAsync(cropped, ct);
+            bytes = cropped.ToArray();
+        }
+        using var request = new HttpRequestMessage(HttpMethod.Post, Base + "models/" + ModelName + ":predictLongRunning");
         request.Headers.Add("x-goog-api-key", apiKey);
         request.Content = JsonContent.Create(new
         {
-            instances = new[] { new { prompt, image = new { inlineData = new { mimeType = "image/png", data = Convert.ToBase64String(bytes) } } } },
-            parameters = new { aspectRatio, durationSeconds = durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                resolution = "720p", personGeneration = "allow_adult" }
+            // The long-running endpoint of this model takes the image this way; it answers 400 to `inlineData`.
+            instances = new[] { new { prompt, image = new { bytesBase64Encoded = Convert.ToBase64String(bytes), mimeType = "image/png" } } },
+            // The duration goes as a number: the endpoint refuses a string.
+            parameters = new { aspectRatio, durationSeconds, resolution = "720p", personGeneration = "allow_adult" }
         });
         using var response = await clients.CreateClient("Veo").SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) throw new VeoProviderException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "start", ct);
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var name = body.RootElement.TryGetProperty("name", out var value) ? value.GetString() : null;
-        if (string.IsNullOrWhiteSpace(name) || !name.StartsWith("operations/", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(name) || !OperationName.IsMatch(name))
+        {
+            // Google accepted the request, so a clip is being made; without a usable name it cannot be followed.
+            logger.LogWarning("Veo accepted the request but named its operation unexpectedly: {Name}", name);
             throw new VeoProviderException(502);
+        }
+
         return name;
     }
 
+    // What the operation of an accepted request is called: "models/<model>/operations/<id>" on this API,
+    // or the bare "operations/<id>". Nothing else may be appended to the base address.
+    private static readonly System.Text.RegularExpressions.Regex OperationName = new(
+        @"^(models/[A-Za-z0-9._-]+/)?operations/[A-Za-z0-9._-]+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     public async Task<VeoOperationResult> PollAsync(string apiKey, string operationName, CancellationToken ct)
     {
-        if (!operationName.StartsWith("operations/", StringComparison.Ordinal) || operationName.Contains("..", StringComparison.Ordinal))
+        if (!OperationName.IsMatch(operationName) || operationName.Contains("..", StringComparison.Ordinal))
             throw new ArgumentException("Invalid Veo operation name.");
         using var request = new HttpRequestMessage(HttpMethod.Get, Base + operationName);
         request.Headers.Add("x-goog-api-key", apiKey);
         using var response = await clients.CreateClient("Veo").SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) throw new VeoProviderException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "poll", ct);
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
         var root = body.RootElement;
         if (!root.TryGetProperty("done", out var done) || done.ValueKind != JsonValueKind.True)
             return new(false, null, null);
         if (root.TryGetProperty("error", out var error))
-            return new(true, null, error.TryGetProperty("message", out _) ? "Veo could not generate this scene. Adjust the source or prompt." : "Veo could not generate this scene.");
+        {
+            LogRefusal(operationName, error);
+            return new(true, null, Reason(error) ?? "Veo could not generate this scene.");
+        }
         var uri = root.TryGetProperty("response", out var result) && result.TryGetProperty("generateVideoResponse", out var video) &&
             video.TryGetProperty("generatedSamples", out var samples) && samples.ValueKind == JsonValueKind.Array && samples.GetArrayLength() > 0 &&
             samples[0].TryGetProperty("video", out var item) && item.TryGetProperty("uri", out var link) ? link.GetString() : null;
-        return string.IsNullOrWhiteSpace(uri) ? new(true, null, "Veo returned no video.") : new(true, uri, null);
+        if (!string.IsNullOrWhiteSpace(uri)) return new(true, uri, null);
+        // A clip removed by Google's safety filter comes back as a finished operation with no sample, only the reasons.
+        var refused = root.TryGetProperty("response", out var answer) ? answer : root;
+        LogRefusal(operationName, refused);
+        var reasons = refused.ValueKind == JsonValueKind.Object && refused.TryGetProperty("generateVideoResponse", out var filtered) &&
+            filtered.ValueKind == JsonValueKind.Object && filtered.TryGetProperty("raiMediaFilteredReasons", out var listed) && listed.ValueKind == JsonValueKind.Array
+            ? Shorten(string.Join(' ', listed.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString())))
+            : null;
+        // Only Google's own statement counts: without it the attempt may have been billed.
+        return new(true, null, reasons ?? "Veo returned no video.", reasons?.Contains("not been charged", StringComparison.OrdinalIgnoreCase) == true);
+    }
+
+    private void LogRefusal(string operationName, JsonElement detail)
+    {
+        var text = detail.GetRawText();
+        logger.LogWarning("Veo finished {Operation} without a video: {Detail}", operationName, text.Length > 2000 ? text[..2000] : text);
     }
 
     public async Task<byte[]> DownloadAsync(string apiKey, string videoUri, CancellationToken ct)

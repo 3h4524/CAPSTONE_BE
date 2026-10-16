@@ -9,10 +9,13 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Authorize(Roles = AuthConstants.UserRole)]
 [Route("api")]
-public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning) : ControllerBase
+public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning,
+    ILifestyleMockupService lifestyle, IAiStudioFrameService studioFrames) : ControllerBase
 {
     [HttpGet("workflows/video-templates")]
     public async Task<IActionResult> Templates(CancellationToken ct) => (await planning.ListTemplatesAsync(ct)).ToActionResult(this);
+    [HttpGet("workflows/ai-video-templates")]
+    public async Task<IActionResult> AiTemplates(CancellationToken ct) => (await planning.ListAiTemplatesAsync(ct)).ToActionResult(this);
 
     [HttpPost("products/{productId:guid}/video-storyboard")]
     public async Task<IActionResult> Storyboard(Guid productId, PreviewStoryboardRequest request, CancellationToken ct) => (await planning.PreviewAsync(productId, request, ct)).ToActionResult(this);
@@ -25,6 +28,33 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     {
         await using var content = file.OpenReadStream();
         var result = await mockups.UploadAsync(productId, content, file.FileName, file.Length, ct);
+        return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
+    }
+    [HttpPost("products/{productId:guid}/mockup-assets/lifestyle")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(9 * 1024 * 1024)]
+    public async Task<IActionResult> GenerateLifestyle(Guid productId, [FromForm] Guid garmentMockupId, [FromForm] IFormFile file, CancellationToken ct)
+    {
+        await using var content = file.OpenReadStream();
+        var result = await lifestyle.GenerateAsync(productId, garmentMockupId, content, file.Length, ct);
+        return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
+    }
+    /// <summary>Prices a product studio keyframe and returns a matching reusable image when one exists.</summary>
+    [HttpPost("products/{productId:guid}/studio-keyframe/quote")]
+    [ProducesResponseType(typeof(AiStudioFrameQuote), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> QuoteStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct) =>
+        (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
+
+    /// <summary>Generates one product studio keyframe after the user confirms its current quote.</summary>
+    [HttpPost("products/{productId:guid}/studio-keyframe/generate")]
+    [ProducesResponseType(typeof(AiStudioFrameGenerationResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GenerateStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
+    {
+        var result = await studioFrames.GenerateAsync(productId, request, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
     }
     [HttpPut("mockup-assets/{id:guid}")]

@@ -16,6 +16,7 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// <param name="AllowRecolor">Whether the garment can be recolored.</param>
 /// <param name="GarmentMaskUrl">The garment mask image, for placing the print area and live recolor previews; null until the photo has been analyzed.</param>
 /// <param name="GarmentColor">The template's own garment color, used when a batch picks no colors; null keeps the photo's color.</param>
+/// <param name="AllowBackground">Whether a batch may put the garment on another background; the photo must have been analyzed.</param>
 public sealed record MockupTemplateResponseDto(
     Guid Id,
     string Name,
@@ -31,4 +32,5 @@ public sealed record MockupTemplateResponseDto(
     bool RealisticPrintReady,
     bool AllowRecolor,
     string? GarmentMaskUrl,
-    string? GarmentColor);
+    string? GarmentColor,
+    bool AllowBackground = false);
