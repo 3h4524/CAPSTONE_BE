@@ -17,7 +17,7 @@ public sealed class VideoPlanningServiceTests
         var fixture = new WorkflowTestData();
         fixture.TemplateRows.Single(x => x.TemplateVersion == 2 && x.Code == "design_detail").PreviewVideoUrl = "/detail.mp4";
         fixture.TemplateRows.Add(new() { Id = Guid.NewGuid(), Code = "unsupported", Name = "Unsupported", Type = "product_showcase",
-            Platform = "etsy", DurationSeconds = 12, AspectRatio = "1:2", Resolution = "1080x2160", EffectsConfig = "{}",
+            Platform = "etsy", DurationSeconds = 12, AspectRatio = "9:16", Resolution = "1080x1920", EffectsConfig = "{}",
             IsSystemTemplate = true, IsActive = true, TemplateVersion = 2 });
 
         var result = await Service(fixture).ListTemplatesAsync(default);
@@ -175,7 +175,7 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
-    [DataRow(16, 0)]
+    [DataRow(31, 0)]
     [DataRow(12, 9)]
     public async Task PreviewAsync_InvalidConfigurationOrSelection_RejectsBeforeAssetQuery(int duration, int count)
     {

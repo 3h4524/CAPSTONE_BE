@@ -186,7 +186,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run?.Status == "running";
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Job lease expired or run was cancelled.");
     private static string OutputKey(MediaJob job, Guid token, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/{suffix}";
-    public static bool ValidQa(MediaQa? qa, int duration, int width = 1080, int height = 2160) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
+    public static bool ValidQa(MediaQa? qa, int duration, int width = 1080, int height = 1920) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
         qa.Width == width && qa.Height == height && Math.Abs(qa.Fps - 30) < .01 && Math.Abs(qa.DurationSeconds - duration) <= 1d / 30 + .01 &&
         qa.Bytes is > 0 and < 100 * 1024 * 1024 && !qa.HasAudio && qa.FullDecode;
 }

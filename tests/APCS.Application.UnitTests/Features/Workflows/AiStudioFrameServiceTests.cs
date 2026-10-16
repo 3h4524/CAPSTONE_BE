@@ -157,14 +157,31 @@ public sealed class AiStudioFrameServiceTests
     }
 
     [TestMethod]
-    public async Task QuoteAsync_NonTShirtProduct_RejectsBeforeLookingForFrames()
+    public async Task GenerateAsync_ProductOtherThanATShirt_IsStagedAsARigidProduct()
     {
         var context = CreateContext("mug");
+        var source = context.Fixture.AddAsset(context.Product);
+        var request = new AiStudioFrameRequest(source.Id, AiStudioFrameIdentity.FlatLay, VideoOutputFormats.Default);
+        var quote = (await context.Service.QuoteAsync(context.Product.Id, request, default)).Value;
 
-        var result = await context.Service.QuoteAsync(context.Product.Id,
-            new(Guid.NewGuid(), AiStudioFrameIdentity.FlatLay, VideoOutputFormats.Default), default);
+        var result = await context.Service.GenerateAsync(context.Product.Id,
+            request with { ExpectedFingerprint = quote.Fingerprint, ConfirmedEstimatedCostUsd = quote.EstimatedCostUsd }, default);
 
-        result.Error.Message.Should().Contain("T-shirts only");
+        result.IsSuccess.Should().BeTrue();
+        context.Images.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.Is<string>(prompt => prompt.Contains("same mug resting securely") && prompt.Contains("keep its shape rigid")),
+            It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_SourceThatIsNotACurrentApprovedProductImage_IsRefusedBeforeLookingForFrames()
+    {
+        var context = CreateContext();
+        var source = context.Fixture.AddAsset(context.Product);
+        source.ApprovalStatus = "pending";
+
+        var result = await context.Service.QuoteAsync(context.Product.Id, Request(source), default);
+
+        result.Error.Code.Should().Be("SourceNotApproved");
         context.Fixture.Assets.Verify(x => x.FindAsync(It.IsAny<Expression<Func<MockupImage, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 

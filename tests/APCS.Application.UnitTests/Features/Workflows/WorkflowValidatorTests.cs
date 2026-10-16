@@ -54,10 +54,10 @@ public sealed class WorkflowValidatorTests
     [TestMethod]
     [DataRow(3, true)]
     [DataRow(12, true)]
-    [DataRow(15, true)]
+    [DataRow(30, true)]
     [DataRow(2, false)]
-    [DataRow(16, false)]
-    public void VideoConfig_DurationBoundary_AcceptsOnlyThreeToFifteen(int duration, bool valid)
+    [DataRow(31, false)]
+    public void VideoConfig_DurationBoundary_AcceptsOnlyThreeToThirty(int duration, bool valid)
     {
         var result = new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(DurationSeconds: duration));
         result.IsValid.Should().Be(valid);

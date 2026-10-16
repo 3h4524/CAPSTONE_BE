@@ -453,9 +453,9 @@ public sealed class VideoStoryboardPlannerTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id &&
             scene.SourceHash == frame.ContentHash && scene.CompiledPrompt!.Contains("keep the set, background and light direction consistent"));
-        result.Value.Scenes[0].CompiledPrompt.Should().Contain("no fast zoom, orbit");
+        result.Value.Scenes[0].CompiledPrompt.Should().Contain("orbit, camera roll, snap zoom");
         result.Value.Scenes[0].CompiledPrompt.Should().Contain("no floating garment");
-        result.Value.Scenes[0].CompiledPrompt.Should().EndWith("This constraint takes precedence over any earlier direction suggesting a changing background, lighting setup, viewpoint, or product support.");
+        result.Value.Scenes[0].CompiledPrompt.Should().EndWith("This constraint takes precedence over earlier directions suggesting a changing set or product support.");
         result.Value.AiShots!.Select(shot => shot.Fingerprint).Should().OnlyHaveUniqueItems();
     }
 
