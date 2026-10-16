@@ -94,6 +94,22 @@ else
   say "schema đã đủ ${TABLES} bảng"
 fi
 
+# Bootstrap dump cũ hơn code: các bảng workflow/media_jobs nằm ở patch riêng.
+# Patch toàn IF NOT EXISTS / ON CONFLICT nên chạy lại nhiều lần vẫn an toàn.
+PATCH_SQL="${REPO_ROOT}/scripts/sql/video-workflows.sql"
+if [ -f "${PATCH_SQL}" ]; then
+  say "apply video-workflows.sql (workflows, workflow_runs, media_jobs)"
+  if [ "${USE_HOST_PSQL}" = "yes" ]; then
+    PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
+      -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "${TEST_DB}" \
+      -f "${PATCH_SQL}" >/dev/null
+  else
+    sed '/^\\restrict /d; /^\\unrestrict /d' "${PATCH_SQL}" \
+      | compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
+        psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}" >/dev/null
+  fi
+fi
+
 cat <<EOF
 export APCS_TEST_CONNECTION_STRING="Host=127.0.0.1;Port=${TEST_PG_PORT};Database=${TEST_DB};Username=${TEST_DB_USER};Password=${TEST_DB_PASSWORD};SSL Mode=Disable"
 export APCS_TEST_REDIS_CONNECTION_STRING="127.0.0.1:${TEST_REDIS_PORT},abortConnect=false"

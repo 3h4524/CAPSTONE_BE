@@ -19,7 +19,7 @@ public sealed class StyleArtPresetRepositoryTests
         }
 
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options;
-        await using var db = new AppDbContext(options);
+        await using var db = new RagFreeAppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {
@@ -72,7 +72,7 @@ public sealed class StyleArtPresetRepositoryTests
         }
 
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options;
-        await using var db = new AppDbContext(options);
+        await using var db = new RagFreeAppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
         try
         {

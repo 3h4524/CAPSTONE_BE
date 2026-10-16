@@ -86,7 +86,7 @@ public sealed class MediaJobRepositoryTests
     {
         var connection = Environment.GetEnvironmentVariable("APCS_TEST_CONNECTION_STRING");
         if (string.IsNullOrWhiteSpace(connection)) { Assert.Inconclusive("Set APCS_TEST_CONNECTION_STRING to run PostgreSQL tests."); return null; }
-        var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options);
+        var db = new RagFreeAppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection).Options);
         var transaction = await db.Database.BeginTransactionAsync();
         await db.Database.ExecuteSqlRawAsync("CREATE TEMP TABLE media_jobs (LIKE public.media_jobs INCLUDING ALL) ON COMMIT DROP");
         return new(db, transaction);
