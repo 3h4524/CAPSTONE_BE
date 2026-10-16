@@ -121,6 +121,10 @@ ON CONFLICT(id) DO UPDATE SET aspect_ratio=EXCLUDED.aspect_ratio, resolution=EXC
 
 -- AI video prompt catalog: the provider-independent prompt/settings definition is versioned in
 -- video_templates.effects_config. Keep these six built-ins in sync with AiVideoPromptCompiler.
+-- Their rows have a type of their own, which the original schema did not allow.
+ALTER TABLE public.video_templates DROP CONSTRAINT IF EXISTS chk_video_templates_type;
+ALTER TABLE public.video_templates ADD CONSTRAINT chk_video_templates_type
+  CHECK (type IN ('slideshow','product_showcase','lifestyle_reel','story_vertical','ai_video_scene'));
 INSERT INTO public.video_templates(id,name,type,platform,duration_seconds,aspect_ratio,resolution,effects_config,preview_video_url,is_system_template,is_active,code,template_version)
 VALUES
  ('a1dc0c03-7336-4e24-a173-7a882e310001','Cinematic Product Showcase','ai_video_scene','etsy',4,'9:16','720p',

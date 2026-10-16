@@ -1,5 +1,8 @@
+using System.Globalization;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.AI;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Options;
@@ -51,27 +54,42 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
     private async Task<ImageGenerationResult> SendAsync(string apiKey, IReadOnlyList<GeminiPart> parts, CancellationToken cancellationToken)
     {
         var model = options.Value.DefaultModel;
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
-        request.Headers.Add("x-goog-api-key", apiKey);
-        request.Content = JsonContent(new GeminiRequest([new GeminiContent(parts)]));
-
+        var body = JsonSerializer.Serialize(new GeminiRequest([new GeminiContent(parts)]), JsonOptions);
         var estimatedCost = options.Value.EstimatedCostPerImageUsd;
 
         HttpResponseMessage response;
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            response = await clients.CreateClient("Gemini").SendAsync(request, cancellationToken);
-        }
-        catch (HttpRequestException ex)
-        {
-            return ImageGenerationResult.Failed($"Could not reach Gemini: {ex.Message}", model);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            // HttpClient reports its own timeout as a cancellation, not an HttpRequestException.
-            return ImageGenerationResult.Failed("Gemini did not respond in time (request timed out).", model);
+            // A request can be sent only once, so every attempt builds its own.
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+            request.Headers.Add("x-goog-api-key", apiKey);
+            request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+
+            try
+            {
+                response = await clients.CreateClient("Gemini").SendAsync(request, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                return ImageGenerationResult.Failed($"Could not reach Gemini: {ex.Message}", model);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // HttpClient reports its own timeout as a cancellation, not an HttpRequestException.
+                return ImageGenerationResult.Failed("Gemini did not respond in time (request timed out).", model);
+            }
+
+            // Busy: the key's rate limit was reached (several images are requested at once) or the model is
+            // overloaded. The same call usually goes through a few seconds later.
+            if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+                || attempt >= options.Value.MaxRetries)
+                break;
+
+            var delay = RetryDelay(response, await response.Content.ReadAsStringAsync(cancellationToken), attempt);
+            response.Dispose();
+            await Task.Delay(delay, cancellationToken);
         }
 
         using (response)
@@ -114,8 +132,23 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
     // A part is either text or an image: the unused one must be left out, not sent as null.
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
-    private static HttpContent JsonContent(GeminiRequest body) =>
-        new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");
+    // Longer waits are not worth it: one image is given three minutes in all.
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
+
+    // Gemini puts how long to wait in the error body ("retryDelay": "21s").
+    private static readonly Regex RetryDelayPattern = new("\"retryDelay\"\\s*:\\s*\"(\\d+(?:\\.\\d+)?)s\"", RegexOptions.Compiled);
+
+    // The wait Gemini asked for, else a doubling one with a little jitter so images turned away together
+    // do not all come back at the same moment.
+    private TimeSpan RetryDelay(HttpResponseMessage response, string payload, int attempt)
+    {
+        var asked = response.Headers.RetryAfter?.Delta
+            ?? (RetryDelayPattern.Match(payload) is { Success: true } match
+                ? TimeSpan.FromSeconds(double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture))
+                : (TimeSpan?)null);
+        var delay = asked ?? options.Value.RetryBaseDelay * Math.Pow(2, attempt) * (1 + Random.Shared.NextDouble() * 0.2);
+        return delay < MaxRetryDelay ? delay : MaxRetryDelay;
+    }
 
     private sealed record GeminiRequest(
         [property: JsonPropertyName("contents")] IReadOnlyList<GeminiContent> Contents);

@@ -25,7 +25,7 @@ public sealed class AiShotJobServiceTests
     public async Task StartAsync_PendingScene_SubmitsOnceAndRemembersTheOperation()
     {
         var service = Service();
-        provider.Setup(x => x.StartAsync("plain-key", "https://signed.example/source", "Move gently.", "9:16", 8, true, It.IsAny<CancellationToken>()))
+        provider.Setup(x => x.StartAsync("plain-key", "https://signed.example/source", "Move gently.", "9:16", 8, true, It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Operation);
 
         var result = await service.StartAsync(job.Id, 0, Lease(), default);
@@ -36,7 +36,7 @@ public sealed class AiShotJobServiceTests
 
         // The worker asks again after a restart: the paid request is not sent a second time.
         (await service.StartAsync(job.Id, 0, Lease(), default)).Value.Status.Should().Be("polling");
-        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -149,7 +149,7 @@ public sealed class AiShotJobServiceTests
     public async Task StartAsync_UnknownOutcome_IsNeverResubmittedAutomatically()
     {
         var service = Service();
-        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException());
 
         (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
@@ -210,7 +210,7 @@ public sealed class AiShotJobServiceTests
         var service = Service(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
         provider.Setup(x => x.PollAsync("plain-key", It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VeoOperationResult(true, null, "Audio issue. You have not been charged for this attempt.", NotCharged: true));
-        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("models/veo/operations/second");
 
         // The first drop puts the scene back, so the next start by the worker sends it again.
@@ -227,7 +227,7 @@ public sealed class AiShotJobServiceTests
         second.IsFailure.Should().BeTrue();
         State().Status.Should().Be("failed");
         State().Failure.Should().Contain("Audio issue.");
-        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -308,7 +308,7 @@ public sealed class AiShotJobServiceTests
     private AiShotJobState State() => WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates.Single();
 
     private void Refuse(int status) =>
-        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VeoProviderException(status, "The image is not usable."));
 
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true)

@@ -84,6 +84,56 @@ public sealed class GeminiImageProviderTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_GoogleBusyOnce_SendsTheCallAgainAndGetsTheImage()
+    {
+        var requests = 0;
+        var provider = Provider(_ => ++requests == 1
+            ? Json(HttpStatusCode.TooManyRequests, """{"error":{"message":"Quota exceeded.","details":[{"retryDelay":"0s"}]}}""")
+            : Json(HttpStatusCode.OK, Generated));
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        result.IsSuccess.Should().BeTrue();
+        requests.Should().Be(2);
+        using var request = JsonDocument.Parse(body);
+        request.RootElement.GetProperty("contents")[0].GetProperty("parts")[0].GetProperty("text").GetString()
+            .Should().Be("A fox.\nImage aspect ratio: 1:1.", "the repeat sends the same request");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_GoogleStaysBusy_GivesUpAfterTheRetries()
+    {
+        var requests = 0;
+        var provider = Provider(_ =>
+        {
+            requests++;
+            return Json(HttpStatusCode.ServiceUnavailable, """{"error":{"message":"The model is overloaded."}}""");
+        });
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("503").And.Contain("overloaded");
+        requests.Should().Be(3, "the first call and two retries");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_GoogleRejectsTheRequest_IsNotSentAgain()
+    {
+        var requests = 0;
+        var provider = Provider(_ =>
+        {
+            requests++;
+            return Json(HttpStatusCode.BadRequest, """{"error":{"message":"API key not valid."}}""");
+        });
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        result.ErrorMessage.Should().Contain("400");
+        requests.Should().Be(1);
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_PromptBlocked_IsReportedAsBlocked()
     {
         var provider = Provider(_ => Json(HttpStatusCode.OK, """{"promptFeedback":{"blockReason":"SAFETY"}}"""));
@@ -151,7 +201,10 @@ public sealed class GeminiImageProviderTests
             body = request.Content is null ? "" : await request.Content.ReadAsStringAsync();
             return send(request);
         })));
-        return new(clients.Object, Microsoft.Extensions.Options.Options.Create(new GeminiOptions { DefaultModel = "image-model", EstimatedCostPerImageUsd = 0.05m }));
+        return new(clients.Object, Microsoft.Extensions.Options.Options.Create(new GeminiOptions
+        {
+            DefaultModel = "image-model", EstimatedCostPerImageUsd = 0.05m, MaxRetries = 2, RetryBaseDelay = TimeSpan.Zero
+        }));
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string content) =>

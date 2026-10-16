@@ -107,6 +107,50 @@ public sealed class VideoMediaControllerTests
     }
 
     [TestMethod]
+    public async Task AiTemplates_ForwardsCancellationAndReturnsOk()
+    {
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<AiVideoTemplateDefinition> templates = [];
+        var planning = new Mock<IVideoPlanningService>(MockBehavior.Strict);
+        planning.Setup(x => x.ListAiTemplatesAsync(cancellation.Token)).ReturnsAsync(Result.Success(templates));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(), planning.Object, Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
+
+        (await controller.AiTemplates(cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(templates);
+        planning.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task StudioFrame_QuoteIsOkAndANewFrameIsCreated()
+    {
+        var productId = Guid.NewGuid(); using var cancellation = new CancellationTokenSource();
+        var request = new AiStudioFrameRequest(Guid.NewGuid(), "centered", "9:16");
+        var quote = new AiStudioFrameQuote("fingerprint", 1, 0.04m, null, "note");
+        var generated = new AiStudioFrameGenerationResponse(VideoWorkflowTestData.Mockup(), false, 0.04m);
+        var frames = new Mock<IAiStudioFrameService>(MockBehavior.Strict);
+        frames.Setup(x => x.QuoteAsync(productId, request, cancellation.Token)).ReturnsAsync(Result.Success(quote));
+        frames.Setup(x => x.GenerateAsync(productId, request, cancellation.Token)).ReturnsAsync(Result.Success(generated));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(), Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), frames.Object);
+
+        (await controller.QuoteStudioFrame(productId, request, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(quote);
+        var created = (await controller.GenerateStudioFrame(productId, request, cancellation.Token)).Should().BeOfType<ObjectResult>().Subject;
+        created.StatusCode.Should().Be(StatusCodes.Status201Created);
+        created.Value.Should().BeSameAs(generated);
+        frames.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task GenerateStudioFrame_RefusedRequest_ReturnsItsProblem()
+    {
+        var frames = new Mock<IAiStudioFrameService>();
+        frames.Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<AiStudioFrameRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<AiStudioFrameGenerationResponse>(Error.NotFound("MockupNotFound", "Product or mockup not found.")));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(), Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), frames.Object);
+
+        var result = (await controller.GenerateStudioFrame(Guid.NewGuid(), new(Guid.NewGuid(), "centered", "9:16"), default)).Should().BeOfType<ObjectResult>().Subject;
+        result.StatusCode.Should().Be(404);
+    }
+
+    [TestMethod]
     public async Task DownloadAndZip_UseCorrectResourceKindAndCancellation()
     {
         var videoId = Guid.NewGuid(); var zipId = Guid.NewGuid(); using var cancellation = new CancellationTokenSource();

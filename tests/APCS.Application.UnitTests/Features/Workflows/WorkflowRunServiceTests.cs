@@ -13,7 +13,7 @@ public sealed class WorkflowRunServiceTests
     {
         var fixture = new WorkflowTestData();
         var run = PrepareReview(fixture);
-        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(DurationSeconds: 16)), default);
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: new(DurationSeconds: 31)), default);
         result.IsFailure.Should().BeTrue();
         fixture.VideoRows.Should().HaveCount(1);
         fixture.JobRows.Should().BeEmpty();
