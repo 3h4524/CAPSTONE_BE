@@ -99,6 +99,7 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -124,6 +125,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
 
         return services;
     }

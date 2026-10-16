@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.Rag.Dtos;
 using APCS.Application.Features.Rag.Common;
@@ -17,11 +18,13 @@ namespace APCS.Infrastructure.Services;
 public sealed class RagService(
     AppDbContext dbContext,
     IRagEmbeddingProvider embeddingProvider,
-    IOptions<RagRetrievalOptions> retrievalOptions)
+    IOptions<RagRetrievalOptions> retrievalOptions,
+    IRagIngestionQueue ingestionQueue)
     : IRagService
 {
     private const int ChunkSize = 1400;
     private const int ChunkOverlap = 200;
+    private static readonly TimeSpan StaleProcessingTimeout = TimeSpan.FromMinutes(5);
 
     public async Task<Guid> IngestAsync(RagIngestRequest request, CancellationToken cancellationToken = default)
     {
@@ -36,17 +39,32 @@ public sealed class RagService(
             throw new ArgumentException("Source type cannot be empty.", nameof(request));
 
         var sourceId = ResolveSourceId(request, sourceType);
+        var normalizedTitle = request.Title.Trim();
         var version = string.IsNullOrWhiteSpace(request.Version) ? null : request.Version.Trim();
         var existing = await dbContext.RagDocuments
             .AsNoTracking()
             .Where(x => x.SourceId == sourceId && x.ContentHash == hash)
-            .Select(x => new { x.Id, x.Status })
-            .SingleOrDefaultAsync(cancellationToken);
+            .OrderByDescending(x => x.UpdatedAt)
+            .Select(x => new { x.Id, x.Status, x.UpdatedAt, ChunkCount = x.Chunks.Count() })
+            .FirstOrDefaultAsync(cancellationToken);
 
         if (existing is not null && existing.Status != RagDocumentStatuses.Failed)
-            return existing.Id;
+        {
+            var isStaleProcessing = existing.Status == RagDocumentStatuses.Processing
+                && existing.UpdatedAt < DateTime.UtcNow.Subtract(StaleProcessingTimeout);
+            var isCompleted = existing.Status == RagDocumentStatuses.Ready && existing.ChunkCount > 0;
+            var isActive = existing.Status is RagDocumentStatuses.Queued or RagDocumentStatuses.Processing;
+            if (isCompleted || (isActive && !isStaleProcessing))
+                return existing.Id;
 
-        if (existing is not null)
+            var previousDocument = await dbContext.RagDocuments
+                .SingleAsync(x => x.Id == existing.Id, cancellationToken);
+            previousDocument.Status = RagDocumentStatuses.Superseded;
+            previousDocument.UpdatedAt = DateTime.UtcNow;
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        if (existing is not null && existing.Status == RagDocumentStatuses.Failed)
         {
             var failedDocument = await dbContext.RagDocuments
                 .SingleAsync(x => x.Id == existing.Id, cancellationToken);
@@ -54,9 +72,10 @@ public sealed class RagService(
             await dbContext.SaveChangesAsync(cancellationToken);
         }
 
+        var metadata = JsonSerializer.Serialize(request.Metadata ?? new Dictionary<string, object?>());
         var document = new RagDocument
         {
-            Title = request.Title.Trim(),
+            Title = normalizedTitle,
             SourceType = sourceType,
             SourceId = sourceId,
             ContentType = NormalizeContentType(request.ContentType),
@@ -64,20 +83,68 @@ public sealed class RagService(
             Version = version,
             Language = string.IsNullOrWhiteSpace(request.Language) ? "en" : request.Language.Trim(),
             ContentHash = hash,
-            Status = RagDocumentStatuses.Processing,
+            IngestionContent = normalizedContent,
+            IngestionMetadata = metadata,
+            Status = RagDocumentStatuses.Queued,
             UpdatedAt = DateTime.UtcNow
         };
 
-        var metadata = JsonSerializer.Serialize(request.Metadata ?? new Dictionary<string, object?>());
         var chunks = SplitIntoChunks(normalizedContent).ToArray();
         if (chunks.Length == 0)
             throw new ArgumentException("Document content cannot be empty after normalization.", nameof(request));
 
         dbContext.RagDocuments.Add(document);
         await dbContext.SaveChangesAsync(cancellationToken);
+        ingestionQueue.Enqueue(document.Id);
+        return document.Id;
+    }
+
+    public async Task ProcessIngestAsync(Guid documentId, CancellationToken cancellationToken = default)
+    {
+        var now = DateTime.UtcNow;
+        var claimed = await dbContext.RagDocuments
+            .Where(x => x.Id == documentId
+                && (x.Status == RagDocumentStatuses.Queued
+                    || (x.Status == RagDocumentStatuses.Processing
+                        && x.UpdatedAt < now.Subtract(StaleProcessingTimeout))))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.Status, RagDocumentStatuses.Processing)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken);
+        if (claimed == 0)
+            return;
+
+        var document = await dbContext.RagDocuments
+            .SingleOrDefaultAsync(x => x.Id == documentId, cancellationToken);
+        if (document is null)
+            return;
 
         try
         {
+            var chunks = SplitIntoChunks(document.IngestionContent).ToArray();
+            if (chunks.Length == 0)
+                throw new InvalidOperationException("Document content cannot be empty after normalization.");
+
+            var oldChunks = await dbContext.RagChunks
+                .Where(x => x.DocumentId == document.Id)
+                .ToListAsync(cancellationToken);
+            if (oldChunks.Count > 0)
+            {
+                dbContext.RagChunks.RemoveRange(oldChunks);
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+
+            var pendingVersions = await dbContext.RagDocuments
+                .Where(x => x.Id != document.Id
+                    && x.SourceId == document.SourceId
+                    && x.Status == RagDocumentStatuses.Processing
+                    && x.Title.ToLower() == document.Title.ToLower())
+                .ToListAsync(cancellationToken);
+            foreach (var pendingVersion in pendingVersions)
+            {
+                pendingVersion.Status = RagDocumentStatuses.Superseded;
+                pendingVersion.UpdatedAt = DateTime.UtcNow;
+            }
+
             foreach (var (content, index) in chunks.Select((content, index) => (content, index)))
             {
                 var vector = await embeddingProvider.CreateEmbeddingAsync(content, cancellationToken);
@@ -87,19 +154,32 @@ public sealed class RagService(
                     Content = content,
                     ChunkIndex = index,
                     TokenCount = EstimateTokenCount(content),
-                    Metadata = metadata
+                    Metadata = document.IngestionMetadata
                 };
-                chunk.Embeddings.Add(new RagEmbedding
+                var embedding = new RagEmbedding
                 {
                     ChunkId = chunk.Id,
                     Embedding = new Vector(vector),
                     EmbeddingModel = embeddingProvider.ModelName
-                });
+                };
+                chunk.Embeddings.Add(embedding);
                 document.Chunks.Add(chunk);
+                dbContext.RagChunks.Add(chunk);
+                dbContext.RagEmbeddings.Add(embedding);
             }
 
+            // A newer ingest may have superseded this request while its embeddings were running.
+            // Do not let the older request publish itself as ready after that happens.
+            var currentStatus = await dbContext.RagDocuments
+                .AsNoTracking()
+                .Where(x => x.Id == document.Id)
+                .Select(x => x.Status)
+                .SingleAsync(cancellationToken);
+            if (currentStatus != RagDocumentStatuses.Processing)
+                return;
+
             var previousVersions = await dbContext.RagDocuments
-                .Where(x => x.SourceId == sourceId
+                .Where(x => x.SourceId == document.SourceId
                     && x.Id != document.Id
                     && x.Status == RagDocumentStatuses.Ready)
                 .ToListAsync(cancellationToken);
@@ -112,15 +192,23 @@ public sealed class RagService(
             document.Status = RagDocumentStatuses.Ready;
             document.UpdatedAt = DateTime.UtcNow;
             await dbContext.SaveChangesAsync(cancellationToken);
-            return document.Id;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
-            document.Status = RagDocumentStatuses.Failed;
-            document.IngestionError = exception.Message[..Math.Min(exception.Message.Length, 2000)];
-            document.UpdatedAt = DateTime.UtcNow;
-            await dbContext.SaveChangesAsync(CancellationToken.None);
-            throw;
+            dbContext.ChangeTracker.Clear();
+            var failedDocument = await dbContext.RagDocuments
+                .SingleOrDefaultAsync(x => x.Id == documentId, CancellationToken.None);
+            if (failedDocument is not null)
+            {
+                failedDocument.Status = RagDocumentStatuses.Failed;
+                failedDocument.IngestionError = exception.Message[..Math.Min(exception.Message.Length, 2000)];
+                failedDocument.UpdatedAt = DateTime.UtcNow;
+                await dbContext.SaveChangesAsync(CancellationToken.None);
+            }
         }
     }
 
@@ -352,6 +440,11 @@ public sealed class RagService(
         var document = await dbContext.RagDocuments
             .SingleOrDefaultAsync(x => x.Id == documentId, cancellationToken);
         if (document is null || document.Status == RagDocumentStatuses.Failed || document.Status == RagDocumentStatuses.Processing)
+            return false;
+
+        var chunkCount = await dbContext.RagChunks
+            .CountAsync(x => x.DocumentId == documentId, cancellationToken);
+        if (chunkCount == 0)
             return false;
 
         var versions = await dbContext.RagDocuments

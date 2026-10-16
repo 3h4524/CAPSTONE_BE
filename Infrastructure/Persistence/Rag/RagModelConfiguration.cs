@@ -20,11 +20,16 @@ internal static class RagModelConfiguration
             entity.Property(x => x.Version).HasColumnName("version").HasMaxLength(100);
             entity.Property(x => x.Language).HasColumnName("language").HasMaxLength(20).IsRequired();
             entity.Property(x => x.ContentHash).HasColumnName("content_hash").HasMaxLength(128).IsRequired();
-            entity.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).HasDefaultValue("ready").IsRequired();
+            entity.Property(x => x.IngestionContent).HasColumnName("ingestion_content").IsRequired();
+            entity.Property(x => x.IngestionMetadata).HasColumnName("ingestion_metadata").HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.Status).HasColumnName("status").HasMaxLength(30).HasDefaultValue("queued").IsRequired();
             entity.Property(x => x.IngestionError).HasColumnName("ingestion_error");
             entity.Property(x => x.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(x => x.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("CURRENT_TIMESTAMP");
-            entity.HasIndex(x => new { x.SourceId, x.ContentHash }).IsUnique();
+            // The same content may legitimately exist in multiple document versions.
+            // Ingestion deduplication is handled by RagService so historical versions
+            // can remain visible after a stale processing retry.
+            entity.HasIndex(x => new { x.SourceId, x.ContentHash });
             entity.HasIndex(x => new { x.SourceId, x.Status });
         });
 
