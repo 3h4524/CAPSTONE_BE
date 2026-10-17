@@ -346,6 +346,40 @@ public sealed class MediaJobServiceTests
     }
 
     [TestMethod]
+    [DataRow(1, "queued")]
+    [DataRow(3, "failed")]
+    public async Task FailAsync_GoogleBusyOrOverQuota_WaitsAMinuteThenSaysNothingWasBilled(int attempt, string expected)
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = attempt;
+        var board = WorkflowJson.Read<RenderJobPayload>(job.Payload).Storyboard;
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            [new AiShotJobState(0, "fingerprint", Status: "pending", Failure: "Google Veo quota or rate limit reached.")]));
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "AiVideoBusy"), default);
+
+        job.Status.Should().Be(expected);
+        // A per-minute limit has reset by the next attempt.
+        job.AvailableAt.Should().Be(WorkflowTestData.Now.AddSeconds(attempt * 70).UtcDateTime);
+        job.ErrorMessage.Should().Contain("quota or rate limit reached").And.Contain("Nothing was billed");
+    }
+
+    [TestMethod]
+    public async Task FailAsync_UncertainSubmission_SaysWhatWasKnown()
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = 1;
+        var board = WorkflowJson.Read<RenderJobPayload>(job.Payload).Storyboard;
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            [new AiShotJobState(0, "fingerprint", Status: "submitting", Failure: "Google Veo did not answer in time.")]));
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "VeoSubmissionUncertain"), default);
+
+        job.Status.Should().Be("failed");
+        job.ErrorMessage.Should().Contain("Google Veo did not answer in time.").And.Contain("Regenerate AI clips");
+    }
+
+    [TestMethod]
     public async Task FailAsync_AiSceneWithoutAKnownReason_IsRetriedLikeAnyOtherFailure()
     {
         var fixture = RenderFixture();

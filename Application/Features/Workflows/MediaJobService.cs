@@ -155,9 +155,20 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (!ValidLease(job, request.LeaseToken, run)) return Result.Failure(LeaseError());
         // The worker only names what went wrong; what the seller reads is written here, with Google's own reason when the scene has one.
         var reason = request.Message is "AiShotRejected" or "AiShotFailed" ? AiShotFailure(job!) : null;
+        var note = request.Message switch
+        {
+            "VeoSubmissionUncertain" => AiShotFailure(job!, "submitting"),
+            "AiVideoBusy" => AiShotFailure(job!, "pending"),
+            _ => null
+        };
+        // Over quota or a passing error at Google, which billed nothing: tried again once a per-minute limit has
+        // had time to reset, and left to the seller when the job runs out of attempts.
+        var busy = request.Message == "AiVideoBusy";
         job!.ErrorMessage = request.Message switch
         {
+            "VeoSubmissionUncertain" when note != null => $"Veo request status is uncertain: {note} Retry will not submit it again; choose Regenerate AI clips after checking your Google usage.",
             "VeoSubmissionUncertain" => "Veo request status is uncertain. Retry will not submit it again; choose Regenerate AI clips after checking your Google usage.",
+            "AiVideoBusy" => $"{note ?? "Google Veo is busy or over quota."} Nothing was billed for it; choose Retry checkpoint once the quota allows it.",
             "SourceChanged" => "A source mock-up changed or is no longer approved. Approve the mock-ups again, then retry.",
             "AiShotRejected" or "AiShotFailed" when reason != null =>
                 $"Veo did not generate this AI scene: {reason} Choose Retry checkpoint to submit it again; if Google keeps refusing, change the source image or the motion direction.",
@@ -168,17 +179,18 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.LeaseToken = null; job.LeaseExpiresAt = null;
         // Trying again by itself cannot change a refusal, a changed source or an uncertain submission.
         job.Status = request.Message is "VeoSubmissionUncertain" or "AiShotRejected" or "SourceChanged" || reason != null || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
-        job.AvailableAt = time.GetUtcNow().AddSeconds(5 * job.Attempt).UtcDateTime;
+        job.AvailableAt = time.GetUtcNow().AddSeconds(busy ? 70 * job.Attempt : 5 * job.Attempt).UtcDateTime;
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();
     }
-    private static string? AiShotFailure(MediaJob job)
+    // What the AI scene in the given state recorded about itself: Google's refusal, or why its outcome is unknown.
+    private static string? AiShotFailure(MediaJob job, string status = "failed")
     {
         if (job.Kind != "render") return null;
         try
         {
             return WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates?
-                .FirstOrDefault(x => x.Status == "failed" && !string.IsNullOrWhiteSpace(x.Failure))?.Failure;
+                .FirstOrDefault(x => x.Status == status && !string.IsNullOrWhiteSpace(x.Failure))?.Failure;
         }
         catch (JsonException) { return null; }
     }
