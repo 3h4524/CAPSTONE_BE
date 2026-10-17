@@ -3,6 +3,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.BatchMockups.Common;
+using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
@@ -132,6 +133,8 @@ public sealed class AiShotJobServiceTests
     [TestMethod]
     [DataRow(429, "quota")]
     [DataRow(503, "overloaded")]
+    [DataRow(500, "temporary error")]
+    [DataRow(504, "temporary error")]
     public async Task StartAsync_GoogleIsBusy_LeavesTheSceneReadyToSubmitAgain(int status, string message)
     {
         var service = Service();
@@ -139,10 +142,37 @@ public sealed class AiShotJobServiceTests
 
         var result = await service.StartAsync(job.Id, 0, Lease(), default);
 
+        // An HTTP error means Google made no operation, so this is never an uncertain paid submission.
         result.Error.Code.Should().Be("VeoBusy");
         result.Error.Message.Should().Contain(message);
         State().Status.Should().Be("pending");
         State().OperationName.Should().BeNull();
+        State().Failure.Should().Contain(message).And.EndWith("Google: The image is not usable.");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_OtherRefusal_FailsTheSceneInsteadOfLeavingItUncertain()
+    {
+        var service = Service();
+        Refuse(409);
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+        State().Status.Should().Be("failed");
+        State().Failure.Should().Contain("409");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AcceptedButUnreadable_IsUncertainAndSaysWhy()
+    {
+        var service = Service();
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiVideoSubmissionUnknownException("Veo accepted the request, but did not name an operation to follow."));
+
+        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        State().Status.Should().Be("submitting");
+        State().Failure.Should().Contain("did not name an operation");
     }
 
     [TestMethod]
@@ -157,12 +187,33 @@ public sealed class AiShotJobServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_NoConnectedKey_DoesNotCallGoogle()
+    public async Task StartAsync_NoConnectedKey_DoesNotCallGoogleAndSaysWhy()
     {
         var service = Service(connected: false);
 
-        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+        result.Error.Message.Should().Contain("API key");
+        State().Status.Should().Be("failed");
+        State().Failure.Should().Contain("Reconnect");
         provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_SourceCouldNotBePrepared_LeavesTheSceneReadyToSubmitAgain()
+    {
+        var service = Service();
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiVideoNotSubmittedException("Timed out reading the approved source image."));
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        // Google received nothing, so this is not an uncertain paid submission.
+        result.Error.Code.Should().Be("AiVideoNotSubmitted");
+        State().Status.Should().Be("pending");
+        State().OperationName.Should().BeNull();
+        State().Failure.Should().Be("Timed out reading the approved source image.");
     }
 
     [TestMethod]

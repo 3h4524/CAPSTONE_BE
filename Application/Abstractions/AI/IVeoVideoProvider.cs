@@ -2,6 +2,9 @@ using APCS.Application.Features.Workflows;
 
 namespace APCS.Application.Abstractions.AI;
 
+/// <summary>
+/// The provider answered with an HTTP error. It created no operation, so nothing is being generated or billed.
+/// </summary>
 public class AiVideoProviderException(int statusCode, string? detail = null) : Exception($"AI video provider request failed with status {statusCode}.")
 {
     public int StatusCode { get; } = statusCode;
@@ -11,6 +14,15 @@ public class AiVideoProviderException(int statusCode, string? detail = null) : E
 }
 
 public sealed class VeoProviderException(int statusCode, string? detail = null) : AiVideoProviderException(statusCode, detail);
+
+/// <summary>The request failed before anything was sent to the provider, so nothing can have been generated or billed.</summary>
+public sealed class AiVideoNotSubmittedException(string message, Exception? inner = null) : Exception(message, inner);
+
+/// <summary>
+/// The provider accepted the request, but its answer could not be used: a clip may be generated and billed
+/// that cannot be followed, so the request must not be sent again without the seller deciding.
+/// </summary>
+public sealed class AiVideoSubmissionUnknownException(string message, Exception? inner = null) : Exception(message, inner);
 
 /// <summary>Only the backend handles the Seller's Gemini credential and Google video URLs.</summary>
 public interface IVeoVideoProvider

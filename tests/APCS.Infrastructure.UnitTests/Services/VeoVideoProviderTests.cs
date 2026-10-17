@@ -49,7 +49,7 @@ public sealed class VeoVideoProviderTests
 
         var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", aspectRatio, seconds, false, default);
 
-        await act.Should().ThrowAsync<ArgumentException>();
+        (await act.Should().ThrowAsync<AiVideoNotSubmittedException>()).WithInnerException<ArgumentException>();
         requests.Should().BeEmpty();
     }
 
@@ -60,7 +60,19 @@ public sealed class VeoVideoProviderTests
 
         var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "16:9", 4, false, default);
 
-        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await act.Should().ThrowAsync<AiVideoNotSubmittedException>()).WithInnerException<InvalidOperationException>();
+        requests.Should().OnlyContain(x => x.Method == HttpMethod.Get);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_SourceCannotBeRead_IsNotSubmitted()
+    {
+        var provider = Provider(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+
+        var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "16:9", 4, false, default);
+
+        // Google was never called, so the scene is certain not to have been billed.
+        await act.Should().ThrowAsync<AiVideoNotSubmittedException>();
         requests.Should().OnlyContain(x => x.Method == HttpMethod.Get);
     }
 
@@ -91,13 +103,39 @@ public sealed class VeoVideoProviderTests
     [TestMethod]
     [DataRow("""{"name":"operations/../secrets"}""")]
     [DataRow("""{"done":false}""")]
-    public async Task StartAsync_AcceptedWithoutAUsableOperationName_IsABadGateway(string response)
+    [DataRow("not json")]
+    public async Task StartAsync_AcceptedWithoutAUsableOperationName_IsAnUnknownSubmission(string response)
     {
         var provider = Provider(request => request.Method == HttpMethod.Get ? Bytes(Png) : Json(HttpStatusCode.OK, response));
 
         var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "9:16", 8, false, default);
 
-        (await act.Should().ThrowAsync<VeoProviderException>()).Which.StatusCode.Should().Be(502);
+        // Google took the request, so a clip may be billed: this must not look like an ordinary refusal.
+        await act.Should().ThrowAsync<AiVideoSubmissionUnknownException>();
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.InternalServerError)]
+    [DataRow(HttpStatusCode.GatewayTimeout)]
+    public async Task StartAsync_GoogleServerError_IsReportedAsARefusal(HttpStatusCode status)
+    {
+        var provider = Provider(request => request.Method == HttpMethod.Get ? Bytes(Png) : Json(status, """{"error":{"message":"Internal error encountered."}}"""));
+
+        var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "9:16", 8, false, default);
+
+        (await act.Should().ThrowAsync<VeoProviderException>()).Which.StatusCode.Should().Be((int)status);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_GoogleCannotBeReached_IsNotSubmitted()
+    {
+        var provider = Provider(request => request.Method == HttpMethod.Get
+            ? Bytes(Png)
+            : throw new HttpRequestException(HttpRequestError.ConnectionError, "No connection could be made."));
+
+        var act = () => provider.StartAsync("key", "https://signed.example/source.png", "Move.", "9:16", 8, false, default);
+
+        await act.Should().ThrowAsync<AiVideoNotSubmittedException>();
     }
 
     [TestMethod]
