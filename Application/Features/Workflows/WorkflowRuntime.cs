@@ -15,7 +15,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     {
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
         var mockupConfig = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
-        var approved = await ApprovedAssetsAsync(run, mockupConfig, ct);
+        var approved = await ApprovedAssetsAsync(run, mockupConfig, config, ct);
         var product = await products.GetByIdAsync(run.ProductId, ct);
         var aiTemplateCodes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
         var aiTemplates = await templates.FindAsync(x => x.IsSystemTemplate == true && x.IsActive == true && x.Code != null && aiTemplateCodes.Contains(x.Code), ct);
@@ -161,26 +161,86 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
     }
 
-    public async Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct)
+    public Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct) =>
+        ApprovedAssetsAsync(run, config, null, ct);
+
+    public async Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config,
+        GenerateVideoConfig? videoConfig, CancellationToken ct)
     {
         var owned = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null, ct);
         var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, config.ArtworkGroupKey);
         var approved = owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
             .Where(x => group == null || x.ArtworkGroupKey == group).ToArray();
-        var selected = approved.Where(x => config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(x.Id)).ToArray();
+        var (referencedIds, directSceneIds) = ReferencedVideoAssetIds(videoConfig);
+        foreach (var frame in owned.Where(asset => referencedIds.Contains(asset.Id)))
+        {
+            var metadata = AiStudioFrameIdentity.Read(frame.Regions);
+            if (metadata is not null) referencedIds.Add(metadata.SourceMockupId);
+        }
+
+        var hasConfiguredSelection = config.MockupIds is { Count: > 0 };
+        var selected = approved.Where(x => !hasConfiguredSelection || config.MockupIds!.Contains(x.Id) || referencedIds.Contains(x.Id)).ToArray();
         var selectedIds = selected.Select(x => x.Id).ToHashSet();
         var selectedBaseAssets = selected.Where(x => AiStudioFrameIdentity.Read(x.Regions) is null).ToArray();
         var availableFrames = approved.Where(frame =>
         {
             var metadata = AiStudioFrameIdentity.Read(frame.Regions);
             if (metadata is null) return false;
+            // Once an approved keyframe is chosen as a direct scene source, it is a standalone immutable image.
+            // Its original generation source may no longer be selected or approved in a later workflow run.
+            if (directSceneIds.Contains(frame.Id)) return true;
             var source = approved.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
-            var sourceSelected = source is not null && (config.MockupIds is not { Count: > 0 } || config.MockupIds.Contains(source.Id));
+            var sourceSelected = source is not null && (!hasConfiguredSelection || config.MockupIds!.Contains(source.Id) || referencedIds.Contains(source.Id));
             return source is not null && (selectedIds.Contains(frame.Id) || sourceSelected) &&
                 AiStudioFrameIdentity.IsCurrent(frame, source, metadata.Layout, metadata.AspectRatio, metadata.CustomPrompt,
                     metadata.TemplateCode, metadata.References?.Select(reference => reference.ContentHash).ToArray());
         });
         return selectedBaseAssets.Concat(availableFrames).DistinctBy(x => x.Id).ToArray();
+    }
+
+    private static (HashSet<Guid> ReferencedIds, HashSet<Guid> DirectSceneIds) ReferencedVideoAssetIds(GenerateVideoConfig? config)
+    {
+        var referenced = new HashSet<Guid>();
+        var direct = new HashSet<Guid>();
+        if (config is null) return (referenced, direct);
+
+        if (config.AiScenes is { Count: > 0 })
+        {
+            foreach (var scene in config.AiScenes)
+            {
+                var usesStudioFrame = scene.StartFrameMode == "studio" ||
+                    scene.StartFrameMode is null && scene.TemplateCode == "cinematic_product_showcase" && config.AiStudioMode == "studio";
+                if (scene.MockupId is Guid sourceId && sourceId != Guid.Empty)
+                {
+                    referenced.Add(sourceId);
+                    if (!usesStudioFrame) direct.Add(sourceId);
+                }
+                var frameId = scene.StudioFrameId ?? (scene.StartFrameMode is null ? config.AiStudioFrameId : null);
+                if (usesStudioFrame && frameId is Guid selectedFrameId && selectedFrameId != Guid.Empty)
+                    referenced.Add(selectedFrameId);
+            }
+        }
+        else if (config.AiShotOptions is { } legacy)
+        {
+            if (legacy.MockupId is Guid sourceId && sourceId != Guid.Empty)
+            {
+                referenced.Add(sourceId);
+                direct.Add(sourceId);
+            }
+            foreach (var id in legacy.FullSceneMockupIds ?? [])
+            {
+                if (id == Guid.Empty) continue;
+                referenced.Add(id);
+                direct.Add(id);
+            }
+        }
+
+        if (config.AiStudioMode == "studio")
+        {
+            if (config.AiStudioSourceMockupId is Guid sourceId && sourceId != Guid.Empty) referenced.Add(sourceId);
+            if (config.AiStudioFrameId is Guid frameId && frameId != Guid.Empty) referenced.Add(frameId);
+        }
+        return (referenced, direct);
     }
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {

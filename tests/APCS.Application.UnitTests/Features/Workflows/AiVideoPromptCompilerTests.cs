@@ -29,7 +29,7 @@ public sealed class AiVideoPromptCompilerTests
         prompt.Should().Contain("background and lighting may develop naturally");
         prompt.Should().Contain("Shared direction for all scenes: Use a warm sunset studio background.");
         prompt.Should().Contain("Keep the print easy to read.");
-        storyboard.Scenes.Single().PromptVersion.Should().Be(4);
+        storyboard.Scenes.Single().PromptVersion.Should().Be(5);
     }
 
     [TestMethod]
@@ -102,7 +102,7 @@ public sealed class AiVideoPromptCompilerTests
         var currentPlan = planner.Plan(product, [source], config).Value;
         var oldVersionPlan = planner.Plan(product, [source], config, [older]).Value;
 
-        currentPlan.Scenes.Single().PromptVersion.Should().Be(4);
+        currentPlan.Scenes.Single().PromptVersion.Should().Be(5);
         currentPlan.Scenes.Single().AiModelKey.Should().Be(AiVideoModel.ModelKey);
         currentPlan.Scenes.Single().AiModelName.Should().Be(AiVideoModel.ModelName);
         currentPlan.AiShots!.Single().Model.Should().Be(AiVideoModel.ModelName);

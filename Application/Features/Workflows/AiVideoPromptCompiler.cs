@@ -69,7 +69,7 @@ public static class AiVideoPromptCompiler
             : null;
         var commonPrompt = EffectiveCommonPrompt(template.CommonPrompt);
         var selectedControls = stableSingleImage && template.Code == "cinematic_product_showcase"
-            ? $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {Lighting(settings.Lighting)}. Keep garment movement minimal."
+            ? $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; required camera movement {cameraMovement}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}. The product itself remains still while the camera performs the selected movement."
             : $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {cameraMovement}; subject motion {SubjectMotion(settings.SubjectMotion)}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}";
         var shared = string.IsNullOrWhiteSpace(sharedInstructions) ? null : $"Shared direction for all scenes: {sharedInstructions.Trim()}";
         var custom = string.IsNullOrWhiteSpace(settings.ExtraInstructions) ? null : settings.ExtraInstructions.Trim();
@@ -81,9 +81,12 @@ public static class AiVideoPromptCompiler
 
     private static AiVideoTemplateDefinition WithRequiredGuardrail(AiVideoTemplateDefinition template)
     {
-        var defaults = template.Code == "macro_detail_reveal"
-            ? template.Defaults with { CameraMovement = "locked", SubjectMotion = "none", MotionIntensity = "subtle" }
-            : template.Defaults;
+        var defaults = template.Code switch
+        {
+            "macro_detail_reveal" => template.Defaults with { CameraMovement = "locked", SubjectMotion = "none", MotionIntensity = "subtle" },
+            "cinematic_product_showcase" => template.Defaults with { SubjectMotion = "none" },
+            _ => template.Defaults
+        };
         return template with { CommonPrompt = EffectiveCommonPrompt(template.CommonPrompt), Defaults = defaults };
     }
 
@@ -108,7 +111,7 @@ public static class AiVideoPromptCompiler
             _ => "Source constraint: preserve every product detail that is visible in the approved source and do not invent conflicting unseen construction."
         };
         var keyframeConstraint = stableSingleImage
-            ? "Reviewed-keyframe constraint: use the supplied keyframe as the exact opening composition. Begin the selected motion immediately and continuously from that frame without a hold-then-transition, crossfade, dissolve, double exposure or replacement composition. Keep its environment, support, background and light direction coherent unless the selected template explicitly calls for a restrained lighting change."
+            ? "Reviewed-keyframe constraint: use the supplied keyframe as the exact first frame only. Begin the selected camera movement immediately and continue it throughout the shot; the camera must visibly depart from the opening composition when a non-locked movement is selected. Do not use a hold-then-transition, crossfade, dissolve, double exposure or replacement composition. Extend the visible environment naturally as the camera moves while keeping the support, background style and light direction coherent."
             : null;
         return string.Join(" ", new[] { sourceConstraint, keyframeConstraint }.Where(value => !string.IsNullOrWhiteSpace(value)));
     }
@@ -116,11 +119,11 @@ public static class AiVideoPromptCompiler
     private static string TemplateGuardrail(string templateCode, AiVideoSceneOptions settings, bool stableSingleImage) => templateCode switch
     {
         "cinematic_product_showcase" when stableSingleImage =>
-            $"Showcase constraint: keep the reviewed set, background, hanger or surface and light direction stable. {StableStudioCameraGuidance(settings.CameraMovement)} Keep the product attached to its support and almost still, with only barely perceptible natural material and shadow motion. No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.",
+            $"Showcase camera direction: the selected camera movement is mandatory and is the primary visible action. {StableStudioCameraGuidance(settings.CameraMovement, settings.MotionIntensity)} The product stays attached to its support and does not animate independently. Preserve product identity and set continuity as the viewpoint changes; words such as stable refer to the product, artwork and environment continuity, not to a locked camera. No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.",
         "cinematic_product_showcase" =>
-            "Showcase constraint: the product remains the stable visual anchor. Camera parallax and lighting may develop gently, but the product silhouette, construction and design must not drift or transform.",
+            $"Showcase camera direction: the selected camera movement is mandatory and must remain visible from the beginning to the end of the shot. {ShowcaseCameraGuidance(settings.CameraMovement, settings.MotionIntensity)} Keep the product as the visual anchor without freezing the camera; its silhouette, construction and printed design must not drift or transform.",
         "macro_detail_reveal" =>
-            $"Macro-detail constraint: the supplied close-up is already the opening detail shot; do not create an establishing frame or a second version of the artwork. {MacroCameraGuidance(settings.CameraMovement)} Keep the complete visible printed design in sharp, stable focus; limit shallow depth of field to surrounding material outside the artwork. Preserve every visible letter, spelling, line, character feature, color boundary and print edge exactly throughout. Reveal only real surface texture and subtle light response. No artwork redraw, focus pull across lettering, morph, crossfade, ghosting or transition to a newly composed detail.",
+            $"Macro-detail camera direction: the supplied close-up is the first frame; do not create an establishing shot or a second version of the artwork. The selected movement is mandatory unless Locked is selected. {MacroCameraGuidance(settings.CameraMovement, settings.MotionIntensity)} Keep the focus plane attached to the printed surface and the visible artwork sharply readable while the camera moves. Preserve every visible letter, spelling, line, character feature, color boundary and print edge exactly throughout. Reveal only real surface texture and restrained light response. No artwork redraw, focus pull across lettering, morph, crossfade, ghosting or transition to a newly composed detail.",
         "lifestyle_in_use" =>
             "Lifestyle constraint: allow only physically plausible body and fabric movement. Keep the same garment or product on the same person, with artwork anchored to the same surface location and changing only through natural folds, occlusion and perspective. Do not change the design when the person turns.",
         "creator_pov_ugc" =>
@@ -133,14 +136,18 @@ public static class AiVideoPromptCompiler
             "Template constraint: preserve the approved product identity and visible design continuously while applying only the selected camera, subject and lighting motion."
     };
 
-    private static string MacroCameraGuidance(string value) => value switch
+    private static string MacroCameraGuidance(string value, string intensity)
     {
-        "locked" => "Keep the camera locked with no zoom, pan, reframing or camera-angle change; only a subtle light sweep may move.",
-        "push_in" => "Use one extremely slow optical push-in of no more than a few percent across the full shot, without generating a new viewpoint.",
-        "pan_left" => "Use one extremely slow lateral move to the left of no more than a few percent of the frame, without changing scale or viewpoint.",
-        "pan_right" => "Use one extremely slow lateral move to the right of no more than a few percent of the frame, without changing scale or viewpoint.",
-        _ => "Keep camera motion minimal and continuous without changing viewpoint."
-    };
+        var amount = MotionAmount(intensity);
+        return value switch
+        {
+            "locked" => "Keep the camera locked with no zoom, pan, reframing or camera-angle change; only a subtle light sweep may move.",
+            "push_in" => $"Push the macro camera forward continuously at a constant speed for the entire shot, making the selected detail about {amount}% larger by the final frame. Begin immediately; do not pause or pull back.",
+            "pan_left" => $"Pan the macro camera left continuously at a constant speed across the printed surface for the entire shot. The visible artwork detail travels gradually toward the right side of frame, ending about {amount}% from its starting composition. Keep scale constant and maintain surface focus.",
+            "pan_right" => $"Pan the macro camera right continuously at a constant speed across the printed surface for the entire shot. The visible artwork detail travels gradually toward the left side of frame, ending about {amount}% from its starting composition. Keep scale constant and maintain surface focus.",
+            _ => "Keep one continuous, clearly visible camera movement throughout the shot without changing to a new viewpoint."
+        };
+    }
 
     private static string ProductContextPrompt(string productType, AiVideoProductContext context)
     {
@@ -264,14 +271,14 @@ public static class AiVideoPromptCompiler
         };
 
         var showcase = new AiVideoTemplateDefinition("cinematic_product_showcase", "Cinematic Product Showcase",
-            "A polished product hero shot with controlled camera movement.", 4,
-            "Create a premium e-commerce hero shot of the exact product shown in the approved image supplied for this scene. Keep the product clear and stable while the camera uses {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use realistic materials, clean commercial composition and natural shadows. Product motion is {{SUBJECT_MOTION}}. Create a {{DURATION}}-second shot.",
+            "A polished product hero shot with controlled camera movement.", 5,
+            "Create one continuous premium e-commerce hero shot from the approved source image. The selected {{CAMERA_MOVEMENT}} is the primary visible action: it begins in the first frame and continues smoothly for the full {{DURATION}} seconds from {{CAMERA_ANGLE}}, using {{FRAMING}}. Keep the product itself still and preserve its exact identity and artwork while the camera moves. {{LIGHTING}} Use realistic materials, coherent background parallax, clean commercial composition and natural shadows. Camera motion intensity is {{MOTION_INTENSITY}}.",
             false, false, Settings(["wide", "medium", "medium_close", "close_up"], ["eye_level", "three_quarter", "low_angle", "top_down"], ["locked", "push_in", "pull_back", "pan_left", "pan_right"], ["none", "minimal"], ["soft_studio", "bright_clean", "cool_modern", "moody_cinematic"]),
-            new(TemplateCode: "cinematic_product_showcase", DurationSeconds: 4, Framing: "medium", CameraAngle: "three_quarter", CameraMovement: "push_in", SubjectMotion: "minimal", MotionIntensity: "subtle", Lighting: "soft_studio"));
+            new(TemplateCode: "cinematic_product_showcase", DurationSeconds: 4, Framing: "medium", CameraAngle: "three_quarter", CameraMovement: "push_in", SubjectMotion: "none", MotionIntensity: "subtle", Lighting: "soft_studio"));
 
         var macro = new AiVideoTemplateDefinition("macro_detail_reveal", "Macro Detail Reveal",
-            "A close commercial view of the printed artwork and material texture.", 2,
-            "Create a photorealistic macro commercial shot of the visible print and surface material detail from the approved source image. The camera performs {{CAMERA_MOVEMENT}} across the marked artwork or detail region from {{CAMERA_ANGLE}}, using {{FRAMING}}. Use shallow depth of field with focus on the selected artwork and material texture. Controlled reflections reveal surface detail without obscuring the design. {{LIGHTING}} Keep the artwork clear and attached to the product surface. Camera motion intensity is {{MOTION_INTENSITY}}. Create a {{DURATION}}-second shot.",
+            "A close commercial view of the printed artwork and material texture.", 3,
+            "Create one continuous photorealistic macro commercial shot from the approved detail image. The selected {{CAMERA_MOVEMENT}} is the primary visible action and continues smoothly across the artwork for the full {{DURATION}} seconds from {{CAMERA_ANGLE}}, using {{FRAMING}}. Keep the focus plane locked to the printed surface so fine material texture, print edges and all visible lettering remain sharp and readable while the camera moves. {{LIGHTING}} Use controlled reflections without glare or focus hunting. Keep the artwork physically attached to the product. Camera motion intensity is {{MOTION_INTENSITY}}.",
             false, true, Settings(["macro", "close_up"], ["top_down", "three_quarter", "eye_level"], ["locked", "push_in", "pan_left", "pan_right"], ["none"], ["soft_studio", "bright_clean", "moody_cinematic"]),
             new(TemplateCode: "macro_detail_reveal", DurationSeconds: 4, Framing: "macro", CameraAngle: "three_quarter", CameraMovement: "pan_right", SubjectMotion: "none", MotionIntensity: "subtle", Lighting: "soft_studio"));
 
@@ -323,8 +330,8 @@ public static class AiVideoPromptCompiler
         "pull_back" => "a slow, smooth pull-back",
         "orbit_left" => "a restrained cinematic orbit to the left",
         "orbit_right" => "a restrained cinematic orbit to the right",
-        "pan_left" => "a slow lateral pan to the left",
-        "pan_right" => "a slow lateral pan to the right",
+        "pan_left" => "a slow horizontal camera pan to the left",
+        "pan_right" => "a slow horizontal camera pan to the right",
         "gentle_tracking" => "gentle tracking movement",
         "subtle_handheld" => "subtle controlled handheld movement",
         _ => "a slow, smooth cinematic push-in"
@@ -333,18 +340,37 @@ public static class AiVideoPromptCompiler
     {
         "locked" => "locked-off camera",
         "pull_back" => "pull-back",
-        "pan_left" => "pan to the left",
-        "pan_right" => "pan to the right",
+        "pan_left" => "a smooth horizontal pan to the left",
+        "pan_right" => "a smooth horizontal pan to the right",
         _ => "push-in"
     };
-    private static string StableStudioCameraGuidance(string value) => value switch
+    private static string StableStudioCameraGuidance(string value, string intensity)
     {
-        "locked" => "Keep the camera locked off with no reframing.",
-        "pull_back" => "Make one smooth, constant-speed pull-back over the full shot; the shirt becomes about 8% smaller by the end while remaining fully visible.",
-        "pan_left" => "Make one smooth, constant-speed pan to the left over the full shot; shift the composition gently by about 8% while keeping the full shirt and hanger visible.",
-        "pan_right" => "Make one smooth, constant-speed pan to the right over the full shot; shift the composition gently by about 8% while keeping the full shirt and hanger visible.",
-        _ => "Make one smooth, constant-speed push-in over the full shot; the shirt becomes about 8% larger by the end while the full shirt and hanger remain visible. Begin and end gently, with no speed jump."
-    };
+        var amount = MotionAmount(intensity);
+        return value switch
+        {
+            "locked" => "Keep the camera locked off with no reframing.",
+            "pull_back" => $"Pull the camera back continuously at a constant speed for the entire shot; the product becomes about {amount}% smaller by the final frame while remaining fully visible.",
+            "pan_left" => $"From the opening frame, pan the camera left continuously at a constant speed for the entire shot. Show visible horizontal background motion and natural parallax; the product shifts gradually toward the right side of frame, ending about {amount}% from its starting composition.",
+            "pan_right" => $"From the opening frame, pan the camera right continuously at a constant speed for the entire shot. Show visible horizontal background motion and natural parallax; the product shifts gradually toward the left side of frame, ending about {amount}% from its starting composition.",
+            _ => $"Push the camera in continuously at a constant speed for the entire shot; the product becomes about {amount}% larger by the final frame while remaining fully visible."
+        };
+    }
+
+    private static string ShowcaseCameraGuidance(string value, string intensity)
+    {
+        var amount = MotionAmount(intensity);
+        return value switch
+        {
+            "locked" => "Keep the camera locked off; allow only restrained natural shadow or material movement.",
+            "pull_back" => $"Pull back continuously so the product becomes about {amount}% smaller by the final frame.",
+            "pan_left" => $"Pan left continuously with visible background parallax; the product ends about {amount}% to the right of its starting position in the composition.",
+            "pan_right" => $"Pan right continuously with visible background parallax; the product ends about {amount}% to the left of its starting position in the composition.",
+            _ => $"Push in continuously so the product becomes about {amount}% larger by the final frame."
+        };
+    }
+
+    private static int MotionAmount(string intensity) => intensity == "balanced" ? 16 : 10;
     private static string SubjectMotion(string value) => value switch
     {
         "none" => "none; keep the product still",

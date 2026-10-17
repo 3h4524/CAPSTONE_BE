@@ -6,6 +6,7 @@ namespace APCS.Application.Features.Workflows;
 
 public sealed class VideoStoryboardPlanner
 {
+    private const int TransitionFrames = 12;
     public static readonly string[] ProductTypes = ["tshirt", "t-shirt", "t_shirt", "hoodie", "mug", "poster", "tote_bag", "phone_case"];
     /// <summary>
     /// The artwork group to narrow a product's mock-ups to, or <see langword="null"/> for no narrowing.
@@ -22,6 +23,8 @@ public sealed class VideoStoryboardPlanner
         IReadOnlyList<VideoTemplate>? aiVideoTemplates = null)
     {
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
+        if (config.Mode == "ai_shot" && config.OutputFormat == "square")
+            return Result.Failure<Storyboard>(Error.Validation("AI video supports portrait or landscape output."));
         var eligible = assets.Where(x => x.ProductId == product.Id && x.DeletedAt == null && x.ApprovalStatus == "approved" &&
             x.ApprovedRevision == x.MetadataRevision && !string.IsNullOrEmpty(x.ContentHash)).ToList();
         var sceneAi = config.Mode == "ai_shot" && config.AiScenes is { Count: > 0 };
@@ -64,16 +67,20 @@ public sealed class VideoStoryboardPlanner
             ordered = config.SceneOrder.Select(id => eligible.Single(x => x.Id == id)).ToList();
         }
         if (ordered.Count == 1) ordered.Add(ordered[0]);
-        var totalFrames = config.DurationSeconds * 30;
+        var outputFrames = config.DurationSeconds * 30;
+        var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
+        var overlapFrames = transition == "none" ? 0 : TransitionFrames;
+        var totalFrames = outputFrames + overlapFrames * (ordered.Count - 1);
         var scenes = ordered.Select((asset, index) => CreateScene(asset, product.ProductType, config, index,
-            totalFrames / ordered.Count + (index < totalFrames % ordered.Count ? 1 : 0))).ToArray();
+            totalFrames / ordered.Count + (index < totalFrames % ordered.Count ? 1 : 0)) with
+            { Transition = index == 0 ? "none" : transition }).ToArray();
         if (templateVersion >= 2 && ordered.Count == 2 && ordered[0].Id == ordered[1].Id &&
             scenes[0].Motion == scenes[1].Motion && config.SceneMotionPresets is not { Count: > 0 })
             scenes[1] = scenes[1] with { Motion = scenes[0].Motion == "static" ? "contain_gentle" : "static" };
         var rendererVersion = templateVersion >= 2 ? "standard-v2" : "standard-v1";
         var fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { product.Id, config, template, templateVersion, rendererVersion, scenes }));
         var standard = new Storyboard(template, templateVersion, config.DurationSeconds, product.ProductType, scenes, fingerprint,
-            output.Format, output.Width, output.Height, output.AspectRatio);
+            output.Format, output.Width, output.Height, output.AspectRatio, "standard", overlapFrames, null, outputFrames);
         return config.Mode == "ai_shot" ? PlanAiShot(standard, eligible, config) : Result.Success(standard);
     }
 
@@ -114,19 +121,12 @@ public sealed class VideoStoryboardPlanner
             if (startFrameMode is not ("direct" or "studio"))
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} has an unsupported start-frame mode."));
 
-            var source = requested.MockupId.HasValue ? productSources.FirstOrDefault(asset => asset.Id == requested.MockupId.Value) : null;
-            if (requested.MockupId.HasValue && source == null)
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} source is not an approved mockup."));
-            source ??= definition.RequiresDetail
-                ? productSources.FirstOrDefault(HasMarkedDetail) ?? productSources[0]
-                : productSources[0];
-
+            if (requested.MockupId is not Guid selectedMockupId || selectedMockupId == Guid.Empty)
+                return Result.Failure<Storyboard>(Error.Validation($"Choose an approved product image or keyframe for AI scene {index + 1}."));
+            var source = productSources.FirstOrDefault(asset => asset.Id == selectedMockupId);
             if (source == null)
-                return Result.Failure<Storyboard>(Error.Conflict("VideoSourceRequired", definition.RequiresLifestyle
-                    ? $"AI scene {index + 1} requires an approved Lifestyle image. Generate or upload one, approve it, then continue."
-                    : definition.RequiresDetail
-                        ? $"AI scene {index + 1} needs an artwork or detail region. Mark the visible design area or upload a detail mockup."
-                        : $"AI scene {index + 1} needs an approved product mockup."));
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} source is not an approved mockup."));
+
             if (definition.RequiresLifestyle && !settings.RightsConfirmed)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires confirmation that you have rights to use the selected image with people."));
 
@@ -163,7 +163,7 @@ public sealed class VideoStoryboardPlanner
             {
                 GenerationStrategy = "ai_shot",
                 Motion = "static",
-                Transition = index == 0 ? "cut" : config.StandardOptions?.Transition ?? "fade",
+                Transition = index == 0 ? "none" : NormalizeTransition(config.StandardOptions?.Transition ?? "none"),
                 AiTemplateCode = definition.Code,
                 PromptVersion = definition.PromptVersion,
                 CompiledPrompt = prompt,
@@ -194,6 +194,9 @@ public sealed class VideoStoryboardPlanner
         }
 
         var duration = requestedScenes.Sum(scene => scene.DurationSeconds);
+        var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
+        var overlapFrames = requestedScenes.Count > 1 && transition != "none" ? TransitionFrames : 0;
+        var outputFrames = duration * 30 - overlapFrames * (requestedScenes.Count - 1);
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
         var fingerprintAll = WorkflowJson.Hash(WorkflowJson.Write(new
         {
@@ -204,8 +207,10 @@ public sealed class VideoStoryboardPlanner
             Shots = shots
         }));
         return Result.Success(new Storyboard("product_showcase", 2, duration, product.ProductType, plannedScenes,
-            fingerprintAll, output.Format, output.Width, output.Height, output.AspectRatio, "ai_shot", 0, shots));
+            fingerprintAll, output.Format, output.Width, output.Height, output.AspectRatio, "ai_shot", overlapFrames, shots, outputFrames));
     }
+
+    private static string NormalizeTransition(string transition) => transition == "cut" ? "none" : transition;
 
     private static bool SettingsAreSupported(AiVideoTemplateDefinition definition, AiVideoSceneOptions settings) =>
         definition.AllowedSettings.TryGetValue("framing", out var framing) && framing.Contains(settings.Framing, StringComparer.Ordinal) &&
@@ -244,13 +249,17 @@ public sealed class VideoStoryboardPlanner
                 return Result.Failure<Storyboard>(Error.Validation("Choose an existing storyboard scene for the AI Shot."));
             var stillCount = standard.Scenes.Count - 1;
             if (stillCount < 1) return Result.Failure<Storyboard>(Error.Validation("A mixed video needs at least one Standard scene."));
-            var remaining = standard.DurationSeconds * 30 - 180;
+            var singleSceneTransition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
+            var singleSceneOverlapFrames = standard.Scenes.Count > 1 && singleSceneTransition != "none" ? TransitionFrames : 0;
+            var singleSceneOutputFrames = standard.DurationSeconds * 30;
+            var remaining = singleSceneOutputFrames + singleSceneOverlapFrames * (standard.Scenes.Count - 1) - 180;
             var stillPosition = 0;
             var scenes = standard.Scenes.Select((scene, index) => index == options.SceneIndex
-                ? CreateScene(source, standard.ProductType, config, index, 180) with { GenerationStrategy = "ai_shot", Motion = "static" }
+                ? CreateScene(source, standard.ProductType, config, index, 180) with { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : singleSceneTransition }
                 : scene with { DurationFrames = remaining / stillCount + (stillPosition++ < remaining % stillCount ? 1 : 0) }).ToArray();
             var shots = new[] { Shot(options.SceneIndex, source, 6) };
             return Result.Success(standard with { Scenes = scenes, Mode = "ai_shot", AiShots = shots,
+                TransitionOverlapFrames = singleSceneOverlapFrames, OutputDurationFrames = singleSceneOutputFrames,
                 Fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { standard.Fingerprint, scenes, shots })) });
         }
         if (options.Coverage != "full_video" || config.DurationSeconds is not (8 or 15))
@@ -266,11 +275,14 @@ public sealed class VideoStoryboardPlanner
             var chosen = requested ?? source;
             allSources.Add(chosen);
         }
+        var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
+        var overlapFrames = count > 1 && transition != "none" ? TransitionFrames : 0;
+        var outputFrames = count * 240 - overlapFrames * (count - 1);
         var fullScenes = allSources.Select((asset, index) => CreateScene(asset, standard.ProductType, config, index, 240) with
-        { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 && count == 2 ? "fade" : "cut" }).ToArray();
+        { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : transition }).ToArray();
         var fullShots = allSources.Select((asset, index) => Shot(index, asset, 8)).ToArray();
         return Result.Success(standard with { Scenes = fullScenes, Mode = "ai_shot", AiShots = fullShots,
-            TransitionOverlapFrames = count == 2 ? 30 : 0,
+            TransitionOverlapFrames = overlapFrames, OutputDurationFrames = outputFrames,
             Fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new { standard.Fingerprint, fullScenes, fullShots })) });
     }
 
@@ -356,7 +368,7 @@ public sealed class VideoStoryboardPlanner
         if (asset.MockupWidthPx < output.Width / 2 || asset.MockupHeightPx < output.Height / 2)
             warnings.Add($"Low-resolution source may appear soft at {output.Width} × {output.Height}.");
         return new(asset.Id, asset.MetadataRevision, asset.ContentHash!, asset.Role, index, frames, crop, end, motion,
-            config.StandardOptions?.Transition ?? "fade", config.TextOverlay, "standard", warnings);
+            config.StandardOptions?.Transition ?? "none", config.TextOverlay, "standard", warnings);
     }
 
     private static string ResolveTemplate(string requested, IReadOnlyList<MockupImage> eligible, int templateVersion)

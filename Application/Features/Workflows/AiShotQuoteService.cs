@@ -7,7 +7,7 @@ using APCS.Domain.Entities;
 namespace APCS.Application.Features.Workflows;
 
 /// <summary>Requests a short-lived, exact-cost consent before paid Veo generation.</summary>
-public sealed record AiShotQuoteRequest(GenerateVideoConfig? Config = null, bool Regenerate = false);
+public sealed record AiShotQuoteRequest(GenerateVideoConfig? Config = null, bool Regenerate = false, int? SceneOrder = null);
 /// <summary>A quote bound to one run, storyboard, and set of missing AI clips.</summary>
 public sealed record AiShotQuoteResponse(string Token, decimal EstimatedCostUsd, int NewClips, DateTimeOffset ExpiresAtUtc,
     string Model, string Note);
@@ -15,7 +15,7 @@ public sealed record AiShotQuoteResponse(string Token, decimal EstimatedCostUsd,
 public interface IAiShotQuoteService
 {
     Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct);
-    Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, CancellationToken ct);
+    Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct);
 }
 
 public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<WorkflowNodeRun> nodes,
@@ -30,28 +30,30 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
         var node = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).Single();
         var config = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
-        var evaluated = await EvaluateAsync(run, config, request.Regenerate, ct);
+        if (request.SceneOrder.HasValue && !request.Regenerate)
+            return Result.Failure<AiShotQuoteResponse>(Error.Validation("A scene can only be selected for regeneration."));
+        var evaluated = await EvaluateAsync(run, config, request.Regenerate, request.SceneOrder, ct);
         if (evaluated.IsFailure) return Result.Failure<AiShotQuoteResponse>(evaluated.Error);
         var (board, cost, count) = evaluated.Value;
         var expires = time.GetUtcNow().AddMinutes(10);
-        return Result.Success(new AiShotQuoteResponse(signer.Sign(new(run.Id, board.Fingerprint, request.Regenerate, cost, expires)),
+        return Result.Success(new AiShotQuoteResponse(signer.Sign(new(run.Id, board.Fingerprint, request.Regenerate, cost, expires, request.SceneOrder)),
             cost, count, expires, AiVideoModel.ModelName, "Estimate only. Google bills the connected account for successful generations."));
     }
 
-    public async Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, CancellationToken ct)
+    public async Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Success();
         var claims = string.IsNullOrWhiteSpace(token) ? null : signer.Read(token);
-        if (claims == null || claims.ExpiresAtUtc <= time.GetUtcNow() || claims.RunId != run.Id || claims.Regenerate != regenerate)
+        if (claims == null || claims.ExpiresAtUtc <= time.GetUtcNow() || claims.RunId != run.Id || claims.Regenerate != regenerate || claims.SceneOrder != sceneOrder)
             return Result.Failure(Error.Validation("Confirm the current AI Shot cost before continuing."));
-        var evaluated = await EvaluateAsync(run, config, regenerate, ct);
+        var evaluated = await EvaluateAsync(run, config, regenerate, sceneOrder, ct);
         if (evaluated.IsFailure) return Result.Failure(evaluated.Error);
         var (board, cost, _) = evaluated.Value;
         return claims.StoryboardFingerprint == board.Fingerprint && claims.EstimatedCostUsd == cost
             ? Result.Success() : Result.Failure(Error.Conflict("AiShotQuoteChanged", "AI Shot settings or source changed. Review the cost again."));
     }
 
-    private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, CancellationToken ct)
+    private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("Choose AI Shot to request a quote."));
         var key = (await keys.ListOwnedAsync(run.UserId, ct)).FirstOrDefault(x => x.ServiceProvider == "gemini" && x.IsActive == true && x.LastCheckSucceeded == true);
@@ -62,13 +64,23 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
         var node = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).Single();
         var previous = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
         AiShotJobState[] stored = [];
-        if (!regenerate && previous?.Kind == "render")
+        if ((!regenerate || sceneOrder.HasValue) && previous?.Kind == "render")
         {
             try { stored = WorkflowJson.Read<AiRenderJobPayload>(previous.Payload).AiShotStates?.ToArray() ?? []; }
             catch (System.Text.Json.JsonException) { /* An older Standard job has no AI states. */ }
         }
-        var missing = (board.AiShots ?? []).Where(shot => !stored.Any(state => state.Fingerprint == shot.Fingerprint &&
-            state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))).ToArray();
+        var shots = board.AiShots ?? [];
+        if (sceneOrder.HasValue && shots.All(x => x.SceneOrder != sceneOrder.Value))
+            return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("The selected scene is not part of this storyboard."));
+        if (sceneOrder.HasValue && shots.Where(x => x.SceneOrder != sceneOrder.Value).Any(shot => !stored.Any(state =>
+                state.Fingerprint == shot.Fingerprint && state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))))
+            return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("OtherScenesIncomplete", "Finish or regenerate the other incomplete scenes before replacing this clip."));
+        var missing = sceneOrder.HasValue
+            ? shots.Where(x => x.SceneOrder == sceneOrder.Value).ToArray()
+            : regenerate
+                ? shots.ToArray()
+                : shots.Where(shot => !stored.Any(state => state.Fingerprint == shot.Fingerprint &&
+                    state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))).ToArray();
         return Result.Success((board, missing.Sum(x => x.DurationSeconds) * AiVideoModel.PricePerSecondUsd, missing.Length));
     }
 }

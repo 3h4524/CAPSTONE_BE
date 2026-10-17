@@ -127,7 +127,7 @@ public sealed class AiShotQuoteServiceTests
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
         context.Fixture.Time.Advance(TimeSpan.FromMinutes(11));
 
-        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
         result.IsFailure.Should().BeTrue();
         result.Error.Message.Should().Contain("Confirm");
@@ -140,9 +140,9 @@ public sealed class AiShotQuoteServiceTests
         var config = Config(context.Asset);
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
 
-        var missing = await context.Service.VerifyAsync(context.Run, config, null, false, default);
+        var missing = await context.Service.VerifyAsync(context.Run, config, null, false, null, default);
         context.Claims = context.Claims! with { RunId = Guid.NewGuid() };
-        var foreignToken = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var foreignToken = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
         missing.IsFailure.Should().BeTrue();
         foreignToken.IsFailure.Should().BeTrue();
@@ -157,11 +157,11 @@ public sealed class AiShotQuoteServiceTests
         var config = Config(context.Asset);
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
 
-        var wrongChoice = await context.Service.VerifyAsync(context.Run, config, "signed-quote", true, default);
+        var wrongChoice = await context.Service.VerifyAsync(context.Run, config, "signed-quote", true, null, default);
         context.Asset.ContentHash = new string('b', 64);
         context.Asset.MetadataRevision++;
         context.Asset.ApprovedRevision++;
-        var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
         wrongChoice.IsFailure.Should().BeTrue();
         changedSource.Error.Code.Should().Be("AiShotQuoteChanged");

@@ -20,4 +20,6 @@ public sealed class WorkflowRunsController(IWorkflowRunService runs, IVideoArtif
     public async Task<IActionResult> Action(Guid id, RunActionRequest request, CancellationToken ct) => (await runs.ActionAsync(id, request, ct)).ToActionResult(this);
     [HttpGet("{id:guid}/videos")]
     public async Task<IActionResult> Videos(Guid id, CancellationToken ct) => (await media.ListAsync(id, ct)).ToActionResult(this);
+    [HttpGet("{id:guid}/scene-videos")]
+    public async Task<IActionResult> SceneVideos(Guid id, CancellationToken ct) => (await media.ListSceneClipsAsync(id, ct)).ToActionResult(this);
 }

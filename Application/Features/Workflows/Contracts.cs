@@ -23,7 +23,7 @@ public sealed record SaveWorkflowRequest(string Name, string Description, Workfl
 public sealed record WorkflowResponse(Guid Id, string Name, string Description, int NodeCount, long Revision, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, WorkflowDefinition Definition);
 public sealed record ProductInputConfig(Guid BatchId, Guid ProductId);
 public sealed record MockupConfig(IReadOnlyList<Guid>? MockupIds = null, string? ArtworkGroupKey = null);
-public sealed record StandardOptions(string MotionPreset = "gentle", string Crop = "safe", string Transition = "fade");
+public sealed record StandardOptions(string MotionPreset = "gentle", string Crop = "safe", string Transition = "none");
 public sealed record AiVideoSceneOptions(
     Guid? MockupId = null,
     string TemplateCode = "cinematic_product_showcase",
@@ -31,7 +31,7 @@ public sealed record AiVideoSceneOptions(
     string Framing = "medium",
     string CameraAngle = "three_quarter",
     string CameraMovement = "push_in",
-    string SubjectMotion = "minimal",
+    string SubjectMotion = "none",
     string MotionIntensity = "subtle",
     string Lighting = "soft_studio",
     string? ExtraInstructions = null,
@@ -76,7 +76,8 @@ public sealed record NodeCapability(string Type, bool Enabled, string Descriptio
 public sealed record WorkflowCapabilities(int DefinitionVersion, IReadOnlyList<NodeCapability> Nodes, IReadOnlyList<VideoModeCapability> VideoModes);
 public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey);
 public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid? VideoId = null, long? ReviewRevision = null,
-    GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null);
+    GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null,
+    int? SceneOrder = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
@@ -97,9 +98,10 @@ public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash
     string ProviderKey = AiVideoModel.ProviderKey, string ModelKey = AiVideoModel.ModelKey, int PromptVersion = 1, Region? SourceCrop = null);
 public sealed record Storyboard(string Template, int TemplateVersion, int DurationSeconds, string ProductType, IReadOnlyList<ScenePlan> Scenes, string Fingerprint,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
-    string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null);
+    string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null);
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16");
+public sealed record AiSceneVideoResponse(int SceneOrder, string Status, string? PreviewUrl, string? Failure);
 public sealed record WorkerAsset(Guid MockupId, string Url, string FileName);
 public sealed record UploadGrant(string Url, IReadOnlyDictionary<string, string> Fields, string StorageKey, string ResourceType);
 public sealed record WorkerJob(Guid Id, Guid LeaseToken, string Kind, JsonElement Payload, IReadOnlyList<WorkerAsset> Assets, IReadOnlyDictionary<string, UploadGrant> Uploads);

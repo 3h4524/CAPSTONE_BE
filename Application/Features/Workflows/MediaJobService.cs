@@ -109,7 +109,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var output = VideoOutputFormats.Resolve(payload.Storyboard.OutputFormat);
             var width = payload.Storyboard.Width > 0 ? payload.Storyboard.Width : output.Width;
             var height = payload.Storyboard.Height > 0 ? payload.Storyboard.Height : output.Height;
-            if (!ValidQa(request.Qa, payload.Storyboard.DurationSeconds, width, height)) return Result.Failure(Error.Validation("Video failed technical QA."));
+            var outputDurationSeconds = (payload.Storyboard.OutputDurationFrames ?? payload.Storyboard.DurationSeconds * 30) / 30d;
+            if (!ValidQa(request.Qa, outputDurationSeconds, width, height)) return Result.Failure(Error.Validation("Video failed technical QA."));
             var thumb = OutputKey(job, request.LeaseToken, "thumbnail");
             if (request.ThumbnailStorageKey != thumb || string.IsNullOrEmpty(request.ThumbnailStorageVersion) ||
                 !await storage.VerifyAsync(thumb, "image", request.ThumbnailStorageVersion, null, ct)) return Result.Failure(Error.Validation("Thumbnail verification failed."));
@@ -198,7 +199,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run?.Status == "running";
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Job lease expired or run was cancelled.");
     private static string OutputKey(MediaJob job, Guid token, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/{suffix}";
-    public static bool ValidQa(MediaQa? qa, int duration, int width = 1080, int height = 1920) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
+    public static bool ValidQa(MediaQa? qa, double duration, int width = 1080, int height = 1920) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
         qa.Width == width && qa.Height == height && Math.Abs(qa.Fps - 30) < .01 && Math.Abs(qa.DurationSeconds - duration) <= 1d / 30 + .01 &&
         qa.Bytes is > 0 and < 100 * 1024 * 1024 && !qa.HasAudio && qa.FullDecode;
 }

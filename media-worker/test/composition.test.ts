@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getSceneFrame, getShotImageGeometry, type StandardVideoScene } from "@apcs/video-composition";
+import { getSceneFrame, getShotImageGeometry, getTransitionFrameStyle, type StandardVideoScene, type VideoTransition } from "@apcs/video-composition";
 
 const scene: StandardVideoScene = {
   mockupId: "asset", sceneOrder: 0, durationFrames: 90,
@@ -21,9 +21,32 @@ test("contain_gentle keeps contain layout while applying a bounded scale", () =>
   assert.equal(getSceneFrame(contained, 89).containScale, 1);
 });
 
-test("shared fade transition matches first middle and final preview/render opacity", () => {
-  const faded = { ...scene, transition: "fade" as const };
-  assert.equal(getSceneFrame(faded, 0).opacity, 0);
-  assert.equal(getSceneFrame(faded, 45).opacity, 1);
-  assert.equal(getSceneFrame(faded, 89).opacity, 0);
+test("scene imagery stays fully visible and transitions are applied only at scene boundaries", () => {
+  assert.equal(getSceneFrame({ ...scene, transition: "fade" }, 0).opacity, 1);
+  assert.equal(getTransitionFrameStyle("fade", 0, 12, "incoming").opacity, 0);
+  assert.equal(getTransitionFrameStyle("fade", 11, 12, "incoming").opacity, 1);
+  assert.equal(getTransitionFrameStyle("fade", 0, 12, "outgoing").opacity, 1);
+  assert.equal(getTransitionFrameStyle("fade", 11, 12, "outgoing").opacity, 1);
+});
+
+test("transition frame styles cover every effect and None/cut add no effect", () => {
+  const transitions: VideoTransition[] = ["none", "cut", "fade", "swipe", "zoom", "flash", "whip_pan", "blur"];
+  for (const transition of transitions) {
+    const start = getTransitionFrameStyle(transition, 0, 12, "incoming");
+    const middle = getTransitionFrameStyle(transition, 6, 12, "incoming");
+    const end = getTransitionFrameStyle(transition, 11, 12, "incoming");
+    if (transition === "none" || transition === "cut") {
+      assert.deepEqual(start, { opacity: 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: 0 });
+      assert.deepEqual(middle, start);
+      assert.deepEqual(end, start);
+    } else {
+      assert.notDeepEqual(start, middle, `${transition} changes through the overlap`);
+      assert.notDeepEqual(middle, end, `${transition} reaches its finished state`);
+      assert.equal(getTransitionFrameStyle(transition, 6, 12, "outgoing").opacity >= 0, true);
+    }
+  }
+  assert.match(getTransitionFrameStyle("swipe", 0, 12, "incoming").clipPath, /100%/);
+  assert.ok(getTransitionFrameStyle("flash", 6, 12, "incoming").flashOpacity > .8);
+  assert.equal(getTransitionFrameStyle("whip_pan", 0, 12, "incoming").transform, "translateX(100%)");
+  assert.equal(getTransitionFrameStyle("blur", 0, 12, "incoming").filter, "blur(14px)");
 });

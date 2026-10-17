@@ -100,6 +100,21 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
+    [DataRow("none")]
+    [DataRow("fade")]
+    [DataRow("swipe")]
+    [DataRow("zoom")]
+    [DataRow("flash")]
+    [DataRow("whip_pan")]
+    [DataRow("blur")]
+    [DataRow("cut")]
+    public void VideoConfig_Transition_AcceptsCurrentAndLegacyValues(string transition)
+    {
+        new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(StandardOptions: new(Transition: transition)))
+            .IsValid.Should().BeTrue();
+    }
+
+    [TestMethod]
     public void VideoConfig_PerSceneMotion_AcceptsOverridesAndRejectsInvalidOrExcessEntries()
     {
         var validator = new GenerateVideoConfigValidator();

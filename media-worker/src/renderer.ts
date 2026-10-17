@@ -31,7 +31,8 @@ export class RemotionVideoRenderer implements IVideoRenderer {
       await processOutput(process.env.FFMPEG_PATH ?? "ffmpeg", ["-y", "-i", raw, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-map_metadata", "-1", video], signal);
       await renderStill({ composition, serveUrl, inputProps, output: thumbnail, imageFormat: "png", frame: 10, browserExecutable });
       progress(85);
-      return { video, thumbnail, qa: await inspectVideo(video, props.storyboard.durationSeconds, signal, props.storyboard.width, props.storyboard.height) };
+      const durationSeconds = (props.storyboard.outputDurationFrames ?? props.storyboard.durationSeconds * 30) / 30;
+      return { video, thumbnail, qa: await inspectVideo(video, durationSeconds, signal, props.storyboard.width, props.storyboard.height) };
     } finally { signal.removeEventListener("abort", cancel); await clipServer.close(); }
   }
 }

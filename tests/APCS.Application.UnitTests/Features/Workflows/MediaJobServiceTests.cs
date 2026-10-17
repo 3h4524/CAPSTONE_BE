@@ -132,6 +132,15 @@ public sealed class MediaJobServiceTests
     }
 
     [TestMethod]
+    public void ValidQa_TransitionedAiOutput_UsesFractionalRenderedDuration()
+    {
+        var transitioned = WorkflowTestData.Qa() with { DurationSeconds = 15.6 };
+
+        MediaJobService.ValidQa(transitioned, 15.6).Should().BeTrue();
+        MediaJobService.ValidQa(transitioned, 16).Should().BeFalse();
+    }
+
+    [TestMethod]
     [DataRow("expired")]
     [DataRow("at_expiry")]
     [DataRow("wrong_token")]
@@ -267,6 +276,38 @@ public sealed class MediaJobServiceTests
         run.Revision.Should().Be(8);
         fixture.NodeRows.Single(x => x.NodeType == "review-video").Status.Should().Be("waiting_for_review");
         fixture.ExportRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task CompleteAsync_TransitionedStoryboard_ValidatesQaAgainstOutputDurationFrames()
+    {
+        static void SetTransitionedPayload(WorkflowTestData fixture)
+        {
+            var job = fixture.JobRows.Single();
+            var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
+            var scenes = payload.Storyboard.Scenes.Select((scene, index) => scene with
+            { DurationFrames = 240, GenerationStrategy = "ai_shot", Transition = index == 0 ? "none" : "fade" }).ToArray();
+            var storyboard = payload.Storyboard with { Mode = "ai_shot", DurationSeconds = 16, Scenes = scenes,
+                TransitionOverlapFrames = 12, OutputDurationFrames = 468, AiShots = [] };
+            job.Payload = WorkflowJson.Write(new AiRenderJobPayload(payload.VideoId, storyboard, []));
+        }
+
+        var validFixture = RenderFixture();
+        SetTransitionedPayload(validFixture);
+        var validJob = validFixture.JobRows.Single();
+        SetupVerification(validFixture);
+        var valid = await validFixture.MediaService.CompleteAsync(validJob.Id,
+            Completion(validJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 15.6 } }, default);
+        valid.IsSuccess.Should().BeTrue();
+
+        var invalidFixture = RenderFixture();
+        SetTransitionedPayload(invalidFixture);
+        var invalidJob = invalidFixture.JobRows.Single();
+        SetupVerification(invalidFixture);
+        var invalid = await invalidFixture.MediaService.CompleteAsync(invalidJob.Id,
+            Completion(invalidJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 16 } }, default);
+        invalid.Error.Message.Should().Be("Video failed technical QA.");
+        invalidFixture.VideoRows.Single().Status.Should().Be("queued");
     }
 
     [TestMethod]
