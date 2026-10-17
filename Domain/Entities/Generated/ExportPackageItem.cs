@@ -27,7 +27,11 @@ public partial class ExportPackageItem
 
     public DateTime? CreatedAt { get; set; }
 
+    public Guid? PromoVideoId { get; set; }
+
     public virtual ExportPackage ExportPackage { get; set; } = null!;
 
     public virtual Product Product { get; set; } = null!;
+
+    public virtual PromoVideo? PromoVideo { get; set; }
 }

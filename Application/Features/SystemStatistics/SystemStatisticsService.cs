@@ -18,7 +18,7 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
     private readonly IRepository<DesignImage> _designImageRepo;
     private readonly IRepository<MockupImage> _mockupImageRepo;
     private readonly IRepository<PromoVideo> _promoVideoRepo;
-    private readonly IRepository<ListingContent> _listingContentRepo;
+    private readonly IRepository<APCS.Domain.Entities.ListingContent> _listingContentRepo;
     private readonly IRepository<EtsyUploadLog> _etsyLogRepo;
     private readonly IRepository<PrintifyUploadLog> _printifyLogRepo;
     private readonly IRepository<SocialMediaShare> _socialMediaRepo;
@@ -30,7 +30,7 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
         IRepository<DesignImage> designImageRepo,
         IRepository<MockupImage> mockupImageRepo,
         IRepository<PromoVideo> promoVideoRepo,
-        IRepository<ListingContent> listingContentRepo,
+        IRepository<APCS.Domain.Entities.ListingContent> listingContentRepo,
         IRepository<EtsyUploadLog> etsyLogRepo,
         IRepository<PrintifyUploadLog> printifyLogRepo,
         IRepository<SocialMediaShare> socialMediaRepo,

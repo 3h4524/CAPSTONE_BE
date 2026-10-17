@@ -33,7 +33,8 @@ public sealed class BatchService(
             .OrderByDescending(x => x.CreatedAt).Select(x => new BatchDto(x.Id, x.Name, x.Description, x.DefaultNiche,
                 x.DefaultProductType, x.Status, x.CreatedAt,
                 x.Products.Count(p => p.DeletedAt == null))).ToListAsync(cancellationToken);
-        return Result.Success<IReadOnlyList<BatchDto>>(batchList);
+        var statuses = await ResolveStatusesAsync(batchList.Select(x => (x.Id, x.ProductCount)).ToList(), cancellationToken);
+        return Result.Success<IReadOnlyList<BatchDto>>(batchList.Select(x => x with { Status = statuses[x.Id] }).ToList());
     }
 
     public async Task<Result<BatchDto>> CreateAsync(SaveBatchDto request, CancellationToken cancellationToken = default)
@@ -47,7 +48,7 @@ public sealed class BatchService(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = name, Description = Clean(request.Description),
             DefaultNiche = Clean(request.DefaultNiche), DefaultProductType = request.DefaultProductType,
-            InputMethod = "manual", Status = "draft", CreatedAt = now };
+            InputMethod = "manual", Status = BatchStatuses.Draft, CreatedAt = now };
         await batches.AddAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success(new BatchDto(batch.Id, batch.Name, batch.Description, batch.DefaultNiche, batch.DefaultProductType, batch.Status, now, 0));
@@ -70,9 +71,13 @@ public sealed class BatchService(
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var job = new BatchJob
         {
+            // Draft, not Queued: the Seller still has to configure mock-ups/prompt overrides
+            // (MockupTemplateService/BatchProductPromptService both require BatchJob.Status ==
+            // "draft" before allowing changes) before DesignGenerationService.StartAsync moves
+            // this to Queued and actually calls the AI provider.
             Id = Guid.NewGuid(), UserId = userId, BatchId = batchId,
             Name = $"{batch.Name} - design generation", Description = batch.Description,
-            SourceFileType = "manual", Status = "queued", JobType = "design_generation",
+            SourceFileType = "manual", Status = BatchJobStatuses.Draft, JobType = "design_generation",
             Config = "{}", Priority = "normal", TotalProducts = pendingProducts.Count,
             ProcessedProducts = 0, FailedProducts = 0, SkippedProducts = 0,
             ProgressPercentage = 0, EstimatedCostUsd = 0, ActualCostUsd = 0,
@@ -83,21 +88,15 @@ public sealed class BatchService(
         for (var index = 0; index < pendingProducts.Count; index++)
         {
             var product = pendingProducts[index];
-            product.ProcessingStatus = "queued";
-            product.UpdatedAt = now;
-            await products.UpdateAsync(product, cancellationToken: cancellationToken);
             await batchJobProducts.AddAsync(new BatchJobProduct
             {
                 Id = Guid.NewGuid(), BatchJobId = job.Id, BatchId = batchId,
                 ProductId = product.Id, SequenceOrder = index + 1,
-                Status = "pending", CurrentStep = "design_generation", RetryCount = 0,
+                Status = BatchJobProductStatuses.Pending, CurrentStep = "design_generation", RetryCount = 0,
                 CreatedAt = now, UpdatedAt = now
             }, cancellationToken: cancellationToken);
         }
 
-        batch.Status = "processing";
-        batch.UpdatedAt = now;
-        await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success(new ApproveBatchDto(batchId, job.Id, pendingProducts.Count, job.Status));
     }
@@ -122,8 +121,9 @@ public sealed class BatchService(
         await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         var productCount = await products.Query().CountAsync(x => x.BatchId == batchId && x.DeletedAt == null, cancellationToken);
+        var status = (await ResolveStatusesAsync([(batch.Id, productCount)], cancellationToken))[batch.Id];
         return Result.Success(new BatchDto(batch.Id, batch.Name, batch.Description, batch.DefaultNiche,
-            batch.DefaultProductType, batch.Status, batch.CreatedAt, productCount));
+            batch.DefaultProductType, status, batch.CreatedAt, productCount));
     }
 
     public async Task<Result> DeleteBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
@@ -269,6 +269,23 @@ public sealed class BatchService(
         await products.UpdateAsync(product, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success();
+    }
+
+    // The status shown for a batch says what is left to do in it, so it is worked out from its jobs and products.
+    // The stored column only records that the last job started or finished: it is stale as soon as a product is
+    // added or set back to pending.
+    private async Task<Dictionary<Guid, string>> ResolveStatusesAsync(IReadOnlyCollection<(Guid Id, int ProductCount)> batchList, CancellationToken cancellationToken)
+    {
+        var ids = batchList.Select(x => x.Id).ToList();
+        var running = await batchJobs.Query()
+            .Where(x => ids.Contains(x.BatchId) && x.DeletedAt == null && BatchJobStatuses.Active.Contains(x.Status.ToLower()))
+            .Select(x => x.BatchId).Distinct().ToListAsync(cancellationToken);
+        var waiting = await products.Query()
+            .Where(x => ids.Contains(x.BatchId) && x.DeletedAt == null && x.ProcessingStatus == BatchJobProductStatuses.Pending)
+            .Select(x => x.BatchId).Distinct().ToListAsync(cancellationToken);
+        return batchList.ToDictionary(x => x.Id, x => running.Contains(x.Id) ? BatchStatuses.Processing
+            : x.ProductCount == 0 || waiting.Contains(x.Id) ? BatchStatuses.Draft
+            : BatchStatuses.Completed);
     }
 
     private async Task<Error?> AuthorizeAsync(CancellationToken cancellationToken)

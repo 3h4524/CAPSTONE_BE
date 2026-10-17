@@ -17,7 +17,7 @@ public sealed class BatchMockupsControllerTests
     {
         IReadOnlyList<MockupTemplateResponseDto> response =
         [
-            new(Guid.NewGuid(), "Tee A", "tshirt", "https://x/a.jpg", null, "{}", 2000, 2000, 0, true, false)
+            new(Guid.NewGuid(), "Tee A", "tshirt", "https://x/a.jpg", null, "{}", 2000, 2000, 0, true, false, false, false, null, null)
         ];
         var service = new Mock<IMockupTemplateService>();
         service.Setup(x => x.ListAsync("tshirt", It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
@@ -31,7 +31,7 @@ public sealed class BatchMockupsControllerTests
     public async Task Get_Found_ReturnsSelection()
     {
         var batchId = Guid.NewGuid();
-        var response = new BatchMockupSelectionResponseDto(batchId, [Guid.NewGuid()]);
+        var response = new BatchMockupSelectionResponseDto(batchId, [Guid.NewGuid()], []);
         var service = new Mock<IMockupTemplateService>();
         service.Setup(x => x.GetSelectionAsync(batchId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
 
@@ -57,7 +57,7 @@ public sealed class BatchMockupsControllerTests
     {
         var batchId = Guid.NewGuid();
         var templateId = Guid.NewGuid();
-        var response = new BatchMockupSelectionResponseDto(batchId, [templateId]);
+        var response = new BatchMockupSelectionResponseDto(batchId, [templateId], []);
         var service = new Mock<IMockupTemplateService>();
         service.Setup(x => x.ApplyAsync(batchId, It.IsAny<ApplyMockupTemplatesRequestDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(response));
@@ -79,5 +79,33 @@ public sealed class BatchMockupsControllerTests
             .Apply(Guid.NewGuid(), new ApplyMockupTemplatesRequestDto([Guid.NewGuid()]), CancellationToken.None);
 
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(404);
+    }
+
+    [TestMethod]
+    public async Task SaveOverride_ReturnsTheJobsMockups()
+    {
+        var batchId = Guid.NewGuid();
+        var request = new SaveMockupOverrideRequestDto("slot", new MockupOverrideDto(Guid.NewGuid(), null, null, null), Guid.NewGuid());
+        var response = new GenerateAllMockupsResultDto(1, 0, 0, [], []);
+        var service = new Mock<IMockupTemplateService>();
+        service.Setup(x => x.SaveOverrideAsync(batchId, request, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
+
+        var result = await new BatchMockupsController(service.Object).SaveOverride(batchId, request, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
+    public async Task ResetOverride_PassesTheSlotAndTheReplacedMockup()
+    {
+        var batchId = Guid.NewGuid();
+        var replaced = Guid.NewGuid();
+        var service = new Mock<IMockupTemplateService>();
+        service.Setup(x => x.ResetOverrideAsync(batchId, "slot", replaced, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<GenerateAllMockupsResultDto>(Error.Conflict("BatchMockups.JobGenerating", "Busy.")));
+
+        var result = await new BatchMockupsController(service.Object).ResetOverride(batchId, "slot", replaced, CancellationToken.None);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(409);
     }
 }

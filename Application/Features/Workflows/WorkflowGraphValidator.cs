@@ -1,0 +1,63 @@
+using System.Text.Json;
+using APCS.Common.Models;
+using APCS.Application.Features.Workflows.Validators;
+
+namespace APCS.Application.Features.Workflows;
+
+public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, GenerateVideoConfigValidator videoValidator)
+{
+    public Error? Validate(WorkflowDefinition definition)
+    {
+        if (definition.Version != 2 || definition.Edges.Count != definition.Nodes.Count - 1)
+            return Error.Validation("A video run needs Product Input → Apply Mockup → Mockup Approval → Generate Video → Review Video → Export ZIP in one line. The design steps may come before Apply Mockup.");
+        if (definition.Nodes.Select(x => x.Id).Distinct().Count() != definition.Nodes.Count || definition.Nodes.Any(x => string.IsNullOrWhiteSpace(x.Id) || x.Id.Length > 100))
+            return Error.Validation("Node IDs must be unique and non-empty.");
+        var enabled = registry.Get().Nodes.Where(x => x.Enabled).Select(x => x.Type).ToHashSet();
+        if (definition.Nodes.Any(x => !enabled.Contains(x.Type)))
+            return new("UnsupportedNode", "This workflow contains a node without a backend executor.", ErrorType.Validation);
+        var hasListing = definition.Nodes.Any(x => x.Type == "generate-listing");
+        var hasVideo = definition.Nodes.Any(x => x.Type == "generate-video");
+        if (!hasListing && !hasVideo)
+            return Error.Validation("Add a Listing Content or Generate Video node before running the workflow.");
+        if (hasListing && !hasVideo && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)))
+            return Error.Validation("A listing-only workflow currently supports Product Input -> Listing Content.");
+        if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) != 1))
+            return Error.Validation("Each video MVP node must appear exactly once.");
+        if (definition.Nodes.Count(x => x.Type == "product-input") != 1 || definition.Nodes.Count(x => x.Type == "generate-listing") > 1)
+            return Error.Validation("Product Input is required once and Listing Content may appear only once.");
+        if (WorkflowCapabilityRegistry.BatchSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
+            return Error.Validation("Each design step may appear only once.");
+        // One line in run order, so neither approval gate can be bypassed and the design steps stay ahead of the mock-ups.
+        // Listing Content is written from the product's own details and waits for no approval: it may hang off
+        // any step, or sit between two of them, without being one of the steps the line is checked against.
+        var listing = definition.Nodes.SingleOrDefault(x => x.Type == "generate-listing");
+        if (listing is not null && definition.Edges.Count(e => e.Target == listing.Id) != 1)
+            return Error.Validation("Connect Listing Content after exactly one step.");
+        var ordered = definition.Nodes.Where(x => x != listing).OrderBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.Type)).ToArray();
+        for (var i = 1; i < ordered.Length; i++)
+        {
+            var direct = definition.Edges.Count(e => e.Source == ordered[i - 1].Id && e.Target == ordered[i].Id);
+            var throughListing = listing is not null && definition.Edges.Any(e => e.Source == ordered[i - 1].Id && e.Target == listing.Id) &&
+                definition.Edges.Count(e => e.Source == listing.Id && e.Target == ordered[i].Id) == 1;
+            if (direct + (throughListing ? 1 : 0) != 1)
+                return Error.Validation("Node connections must preserve both approval gates.");
+        }
+        try
+        {
+            var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
+            if (input.BatchId == Guid.Empty || input.ProductId == Guid.Empty) return Error.Validation("Select a batch and one product.");
+            if (hasVideo)
+            {
+                var config = WorkflowJson.Config<GenerateVideoConfig>(definition.Nodes.Single(x => x.Type == "generate-video"));
+                if (!registry.IsModeEnabled(config.Mode)) return new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation);
+                var validation = videoValidator.Validate(config);
+                if (!validation.IsValid) return Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage)));
+                var assets = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
+                if (assets.MockupIds is { Count: > 8 } || assets.MockupIds?.Distinct().Count() != assets.MockupIds?.Count)
+                    return Error.Validation("Select at most eight distinct mockups.");
+            }
+        }
+        catch (JsonException) { return Error.Validation("Invalid node configuration."); }
+        return null;
+    }
+}

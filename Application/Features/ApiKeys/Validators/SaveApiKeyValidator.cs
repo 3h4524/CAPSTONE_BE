@@ -7,7 +7,7 @@ public sealed class SaveApiKeyValidator : AbstractValidator<SaveApiKeyRequestDto
 {
     public SaveApiKeyValidator()
     {
-        RuleFor(x => x.Provider).Must(x => x is "openai" or "replicate" or "printify")
+        RuleFor(x => x.Provider).Must(x => x is "openai" or "replicate" or "gemini" or "printify")
             .WithMessage("MSG01 — Select a supported API key provider.").WithErrorCode("MSG01");
         RuleFor(x => x.Name).MaximumLength(100);
         RuleFor(x => x.Environment).Must(x => x is null or "Production" or "Sandbox")

@@ -8,6 +8,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.SystemStatistics.Dtos;
 using APCS.Domain.Entities;
+using ListingContent = APCS.Domain.Entities.ListingContent;
 using FluentAssertions;
 using Microsoft.Extensions.Time.Testing;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -16,6 +17,8 @@ using Moq;
 
 namespace APCS.Application.UnitTests.Features.SystemStatistics;
 
+using ListingContent = APCS.Domain.Entities.ListingContent;
+
 [TestClass]
 public sealed class SystemStatisticsServiceTests
 {
@@ -23,7 +26,7 @@ public sealed class SystemStatisticsServiceTests
     private readonly Mock<IRepository<DesignImage>> _designImageRepo = new();
     private readonly Mock<IRepository<MockupImage>> _mockupImageRepo = new();
     private readonly Mock<IRepository<PromoVideo>> _promoVideoRepo = new();
-    private readonly Mock<IRepository<ListingContent>> _listingContentRepo = new();
+    private readonly Mock<IRepository<APCS.Domain.Entities.ListingContent>> _listingContentRepo = new();
     private readonly Mock<IRepository<EtsyUploadLog>> _etsyLogRepo = new();
     private readonly Mock<IRepository<PrintifyUploadLog>> _printifyLogRepo = new();
     private readonly Mock<IRepository<SocialMediaShare>> _socialMediaRepo = new();

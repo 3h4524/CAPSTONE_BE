@@ -1,9 +1,13 @@
 using System.Text;
+using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
@@ -20,6 +24,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.Infrastructure;
 
@@ -76,13 +81,49 @@ public static class DependencyInjection
         services.AddOptions<CloudinaryOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
 
+        // Not required/ValidateOnStart: the Gemini key itself is per-Seller BYOK (ApiKeys table),
+        // not a platform credential, so a box with no override here still boots on the defaults.
+        services.AddOptions<GeminiOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Gemini));
+        services.AddSingleton<IOptions<DesignGenerationSettings>>(provider =>
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(
+                Math.Max(1, provider.GetRequiredService<IOptions<GeminiOptions>>().Value.MaxConcurrentImages))));
+        services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
+            .RedactLoggedHeaders(new[] { "x-goog-api-key" });
+        services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
+        services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
+            .RedactLoggedHeaders(new[] { "x-goog-api-key" })
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
+        services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
+            ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
+        services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
+        services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
+        services.AddOptions<GeminiEmbeddingOptions>()
+            .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
+        services.AddOptions<RagRetrievalOptions>()
+            .Bind(configuration.GetSection(RagRetrievalOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddOptions<GeminiTextGenerationOptions>()
+            .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.PostConfigure<GeminiTextGenerationOptions>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(options.ApiKey))
+                options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
+        });
+
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
-        services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseNpgsql(connectionString, npgsql => npgsql.UseVector()));
 
         services.AddRepositories();
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
 
         return services;
     }
@@ -103,6 +144,7 @@ public static class DependencyInjection
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
+        services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 
         return services;
     }
@@ -130,6 +172,38 @@ public static class DependencyInjection
         services.AddScoped<IInvoicePdfRenderer, QuestPdfInvoiceRenderer>();
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
+        services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
+        services.AddOptions<MockupOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Mockups));
+        services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
+        services.AddHostedService<SegmentationModelInstaller>();
+        services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();
+        services.AddSingleton<IDesignBackgroundRemover, ImageSharpDesignBackgroundRemover>();
+        services.AddScoped<IMockupMapService, MockupMapService>();
+        services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
+        services.AddHttpClient<GeminiEmbeddingProvider>((provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<GeminiEmbeddingOptions>>().Value;
+            client.BaseAddress = new Uri(options.Endpoint);
+            client.Timeout = TimeSpan.FromSeconds(60);
+        });
+        services.AddHttpClient<GeminiTextGenerationProvider>((provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
+            client.BaseAddress = new Uri(options.Endpoint);
+            // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
+            client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
+        });
+        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
+        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
+        services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
+        services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();
+        services.AddScoped<IPolicyContextRetriever, PolicyContextRetriever>();
 
         // ── Redis cache ──────────────────────────────────────────
         services.AddOptions<RedisOptions>()
