@@ -41,22 +41,46 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     }
     /// <summary>Prices a product studio keyframe and returns a matching reusable image when one exists.</summary>
     [HttpPost("products/{productId:guid}/studio-keyframe/quote")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(21 * 1024 * 1024)]
     [ProducesResponseType(typeof(AiStudioFrameQuote), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> QuoteStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct) =>
-        (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
+    public async Task<IActionResult> QuoteStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
+    {
+        var request = await form.ToRequestAsync(ct);
+        if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
+        return (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
+    }
 
     /// <summary>Generates one product studio keyframe after the user confirms its current quote.</summary>
     [HttpPost("products/{productId:guid}/studio-keyframe/generate")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(21 * 1024 * 1024)]
     [ProducesResponseType(typeof(AiStudioFrameGenerationResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GenerateStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
+    {
+        var request = await form.ToRequestAsync(ct);
+        if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
+        var result = await studioFrames.GenerateAsync(productId, request, ct);
+        return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
+    }
+
+    // Preserve direct controller callers that already have an application request. These overloads
+    // are not HTTP actions; the multipart endpoints above remain the only routed actions.
+    [NonAction]
+    public async Task<IActionResult> QuoteStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct) =>
+        (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
+
+    [NonAction]
     public async Task<IActionResult> GenerateStudioFrame(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
     {
         var result = await studioFrames.GenerateAsync(productId, request, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
     }
+
     [HttpPut("mockup-assets/{id:guid}")]
     public async Task<IActionResult> Update(Guid id, MockupMetadataRequest request, CancellationToken ct) => (await mockups.UpdateAsync(id, request, ct)).ToActionResult(this);
     [HttpPost("mockup-assets/{id:guid}/review")]
@@ -65,4 +89,35 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     public async Task<IActionResult> Download(Guid id, CancellationToken ct) => (await media.DownloadAsync(id, false, ct)).ToActionResult(this);
     [HttpGet("video-exports/{id:guid}/download")]
     public async Task<IActionResult> DownloadZip(Guid id, CancellationToken ct) => (await media.DownloadAsync(id, true, ct)).ToActionResult(this);
+}
+
+public sealed class AiStudioFrameFormRequest
+{
+    public Guid SourceMockupId { get; set; }
+    public string Layout { get; set; } = "";
+    public string OutputFormat { get; set; } = "";
+    public bool Regenerate { get; set; }
+    public string? ExpectedFingerprint { get; set; }
+    public decimal? ConfirmedEstimatedCostUsd { get; set; }
+    public string? CustomPrompt { get; set; }
+    public string? TemplateCode { get; set; }
+    public bool ReferenceRightsConfirmed { get; set; }
+    public List<IFormFile> References { get; set; } = [];
+
+    public async Task<AiStudioFrameRequest?> ToRequestAsync(CancellationToken ct)
+    {
+        if (References.Sum(file => file.Length) > AiStudioFrameService.MaximumSourceBytes) return null;
+        var references = new List<AiStudioFrameReferenceInput>(References.Count);
+        foreach (var file in References)
+        {
+            await using var stream = file.OpenReadStream();
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            references.Add(new AiStudioFrameReferenceInput(buffer.ToArray(), file.ContentType));
+        }
+
+        return new AiStudioFrameRequest(SourceMockupId, Layout, OutputFormat, Regenerate,
+            ExpectedFingerprint, ConfirmedEstimatedCostUsd, CustomPrompt, TemplateCode, references,
+            ReferenceRightsConfirmed);
+    }
 }

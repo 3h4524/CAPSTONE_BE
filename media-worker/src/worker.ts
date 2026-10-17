@@ -15,12 +15,18 @@ if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "host.docker.in
 const renderer = new RemotionVideoRenderer();
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort()); process.once("SIGTERM", () => shutdown.abort());
-const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "2");
+// Submit one paid Veo request at a time by default. Some accounts/models become unstable when
+// multiple long-running generations are started together; operators can still opt into 2-4.
+const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "1");
 const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
   ? Math.min(configuredAiConcurrency, 4)
-  : 2;
-async function api(path: string, payload: unknown, signal: AbortSignal) {
-  const response = await fetch(new URL(`/internal/media-jobs/${path}`, baseUrl), { method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key }, body: JSON.stringify(payload), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
+  : 1;
+const internalApiTimeoutMs = 20_000;
+// Starting a Veo scene waits for the API to submit the paid request and persist its operation name.
+// The API's Veo client timeout is three minutes, so the worker must not cancel that request after 20 seconds.
+const aiShotStartTimeoutMs = 4 * 60_000;
+async function api(path: string, payload: unknown, signal: AbortSignal, timeoutMs = internalApiTimeoutMs) {
+  const response = await fetch(new URL(`/internal/media-jobs/${path}`, baseUrl), { method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key }, body: JSON.stringify(payload), signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
   if (!response.ok) {
     const problem = await response.json().catch(() => null) as { code?: unknown } | null;
     throw new ApiError(response.status, typeof problem?.code === "string" ? problem.code : null);
@@ -63,12 +69,22 @@ async function execute(job: WorkerJob) {
       const aiShots = payload.storyboard.aiShots ?? [];
       const sceneErrors: unknown[] = [];
       let nextShot = 0;
+      let completedShots = 0;
+      let stopScheduling = false;
       const generateShot = async (shot: NonNullable<typeof payload.storyboard.aiShots>[number]) => {
         const stored = assets.get(`ai-shots/${shot.sceneOrder}.mp4`);
         if (stored) { clips[shot.sceneOrder] = stored.file; return; }
         stage = "Generating Assets"; progress = Math.max(progress, 15); duringAiShot = true;
         const request = { leaseToken: job.leaseToken };
-        let state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string };
+        let state: { status: string };
+        try {
+          state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal, aiShotStartTimeoutMs) as { status: string };
+        } catch (error) {
+          // The API may have submitted the paid request before this worker timed out. Never classify that
+          // as a normal scene failure, which would make the queue submit it again automatically.
+          if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(409, "VeoSubmissionUncertain");
+          throw error;
+        }
         for (let check = 0; check < 240 && (state.status === "polling" || state.status === "pending"); check++) {
           // "pending" again: Google dropped the clip without charging and the API allows one more submission.
           if (state.status === "pending") { state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string }; continue; }
@@ -86,10 +102,20 @@ async function execute(job: WorkerJob) {
       };
       await Promise.all(Array.from({ length: Math.min(aiSceneConcurrency, aiShots.length) }, async () => {
         while (true) {
+          if (stopScheduling) return;
           const index = nextShot++;
           if (index >= aiShots.length) return;
-          try { await generateShot(aiShots[index]!); }
-          catch (error) { sceneErrors.push(error); }
+          try {
+            await generateShot(aiShots[index]!);
+            completedShots++;
+            progress = Math.max(progress, 15 + Math.round(20 * completedShots / aiShots.length));
+          }
+          catch (error) {
+            stopScheduling = true;
+            sceneErrors.push(error);
+            process.stderr.write(`Media job ${job.id} AI scene ${aiShots[index]!.sceneOrder + 1} failed: ${error instanceof Error ? error.message : "unknown error"}.\n`);
+            return;
+          }
         }
       }));
       if (sceneErrors.length > 0) throw sceneErrors[0];
