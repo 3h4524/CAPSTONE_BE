@@ -186,9 +186,9 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         {
             var metadata = AiStudioFrameIdentity.Read(frame.Regions);
             if (metadata is null) return false;
-            // Once an approved keyframe is chosen as a direct scene source, it is a standalone immutable image.
-            // Its original generation source may no longer be selected or approved in a later workflow run.
-            if (directSceneIds.Contains(frame.Id)) return true;
+            // An explicitly selected approved keyframe is a standalone immutable scene image.
+            // Its generation prompt, references and original source are provenance, not run blockers.
+            if (directSceneIds.Contains(frame.Id) || referencedIds.Contains(frame.Id)) return true;
             var source = approved.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
             var sourceSelected = source is not null && (!hasConfiguredSelection || config.MockupIds!.Contains(source.Id) || referencedIds.Contains(source.Id));
             return source is not null && (selectedIds.Contains(frame.Id) || sourceSelected) &&

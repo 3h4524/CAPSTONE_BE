@@ -15,11 +15,14 @@ public sealed class WorkflowRunsController(IWorkflowRunService runs, IVideoArtif
     public async Task<IActionResult> Quote(Guid id, AiShotQuoteRequest request, CancellationToken ct) =>
         (await quotes.QuoteAsync(id, request, ct)).ToActionResult(this);
     [HttpGet("{id:guid}")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) => (await runs.GetAsync(id, ct)).ToActionResult(this);
     [HttpPost("{id:guid}/actions")]
     public async Task<IActionResult> Action(Guid id, RunActionRequest request, CancellationToken ct) => (await runs.ActionAsync(id, request, ct)).ToActionResult(this);
     [HttpGet("{id:guid}/videos")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> Videos(Guid id, CancellationToken ct) => (await media.ListAsync(id, ct)).ToActionResult(this);
     [HttpGet("{id:guid}/scene-videos")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public async Task<IActionResult> SceneVideos(Guid id, CancellationToken ct) => (await media.ListSceneClipsAsync(id, ct)).ToActionResult(this);
 }

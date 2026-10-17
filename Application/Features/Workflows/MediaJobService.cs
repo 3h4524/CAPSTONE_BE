@@ -140,8 +140,9 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             package.Status = "ready"; package.StorageProvider = "cloudinary"; package.StorageKey = expected;
             foreach (var item in await items.FindAsync(x => x.ExportPackageId == package.Id, ct)) item.ItemStatus = "completed";
         }
-        job.Status = "succeeded"; job.Progress = 100; job.LeaseToken = null; job.LeaseExpiresAt = null;
-        var node = (await nodes.GetByIdAsync(job.WorkflowNodeRunId, ct))!; node.Status = "succeeded"; node.Progress = 100;
+        job.Status = "succeeded"; job.Progress = 100; job.ErrorMessage = null; job.LeaseToken = null; job.LeaseExpiresAt = null;
+        job.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        var node = (await nodes.GetByIdAsync(job.WorkflowNodeRunId, ct))!; node.Status = "succeeded"; node.Progress = 100; node.ErrorMessage = null;
         run!.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
         await uow.SaveChangesAsync(ct); await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Result.Success();

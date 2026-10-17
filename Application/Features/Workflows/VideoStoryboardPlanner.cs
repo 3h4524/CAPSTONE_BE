@@ -147,12 +147,15 @@ public sealed class VideoStoryboardPlanner
                     return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired", $"Choose an approved studio keyframe for AI scene {index + 1}."));
                 studioFrame = eligible.FirstOrDefault(asset => asset.Id == selectedFrameId);
                 var metadata = studioFrame is null ? null : AiStudioFrameIdentity.Read(studioFrame.Regions);
-                studioSource = metadata is null ? null : productSources.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId);
-                if (studioFrame is null || studioSource is null ||
-                    !AiStudioFrameIdentity.IsCurrent(studioFrame, studioSource, layout,
-                        VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt,
-                        requested.TemplateCode, requested.StudioReferenceHashes))
-                    return Result.Failure<Storyboard>(Error.Conflict("StudioFrameStale", $"The studio keyframe for AI scene {index + 1} no longer matches its approved source or video format. Generate or select a current keyframe."));
+                if (studioFrame is null)
+                    return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired", $"Choose an approved studio keyframe for AI scene {index + 1}."));
+
+                // An explicitly selected keyframe is a reviewed scene asset. Its original prompt,
+                // reference files and output format describe how it was created; they do not make
+                // the approved pixels unsafe to send to the video model later.
+                studioSource = metadata is null
+                    ? source
+                    : productSources.FirstOrDefault(asset => asset.Id == metadata.SourceMockupId) ?? source;
             }
             var sceneSource = useStudioFrame ? studioFrame! : source;
             var contextSource = useStudioFrame ? studioSource! : source;

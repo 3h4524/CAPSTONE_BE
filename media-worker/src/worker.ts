@@ -22,6 +22,11 @@ const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configur
   ? Math.min(configuredAiConcurrency, 4)
   : 1;
 const internalApiTimeoutMs = 20_000;
+// A short API restart should not cancel a render that may already have spent minutes generating
+// paid AI clips. Five failed heartbeats at 15-second intervals still stop the job before its
+// two-minute lease can be reclaimed by another worker.
+const heartbeatTimeoutMs = 8_000;
+const heartbeatFailureLimit = 5;
 // Starting a Veo scene waits for the API to submit the paid request and persist its operation name.
 // The API's Veo client timeout is three minutes, so the worker must not cancel that request after 20 seconds.
 const aiShotStartTimeoutMs = 4 * 60_000;
@@ -49,10 +54,21 @@ async function execute(job: WorkerJob) {
   const signal = AbortSignal.any([abort.signal, shutdown.signal, AbortSignal.timeout(30 * 60_000)]);
   let stage = "Planning", progress = 5, duringAiShot = false;
   let heartbeatRunning = false;
+  let consecutiveHeartbeatFailures = 0;
   const heartbeat = setInterval(() => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
-    void api(`${job.id}/heartbeat`, { leaseToken: job.leaseToken, stage, progress }, signal).catch(() => abort.abort()).finally(() => { heartbeatRunning = false; });
+    void api(`${job.id}/heartbeat`, { leaseToken: job.leaseToken, stage, progress }, signal, heartbeatTimeoutMs)
+      .then(() => { consecutiveHeartbeatFailures = 0; })
+      .catch(error => {
+        if (signal.aborted) return;
+        consecutiveHeartbeatFailures++;
+        process.stderr.write(
+          `Media job ${job.id} heartbeat failed (${consecutiveHeartbeatFailures}/${heartbeatFailureLimit}): ${error instanceof Error ? error.message : "unknown error"}.\n`
+        );
+        if (consecutiveHeartbeatFailures >= heartbeatFailureLimit) abort.abort();
+      })
+      .finally(() => { heartbeatRunning = false; });
   }, 15_000);
   try {
     stage = "Generating Assets"; progress = 10;

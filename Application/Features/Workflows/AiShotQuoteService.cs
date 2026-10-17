@@ -48,9 +48,15 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             return Result.Failure(Error.Validation("Confirm the current AI Shot cost before continuing."));
         var evaluated = await EvaluateAsync(run, config, regenerate, sceneOrder, ct);
         if (evaluated.IsFailure) return Result.Failure(evaluated.Error);
-        var (board, cost, _) = evaluated.Value;
-        return claims.StoryboardFingerprint == board.Fingerprint && claims.EstimatedCostUsd == cost
-            ? Result.Success() : Result.Failure(Error.Conflict("AiShotQuoteChanged", "AI Shot settings or source changed. Review the cost again."));
+        var (_, cost, _) = evaluated.Value;
+
+        // The confirmation token authorizes a maximum charge for this run/action/scene. The
+        // storyboard can legitimately get a different fingerprint between quote and action when
+        // keyframe provenance is recovered, an approved keyframe is reselected, or a clip becomes
+        // reusable. None of those changes needs another confirmation unless the charge increases.
+        return cost <= claims.EstimatedCostUsd
+            ? Result.Success()
+            : Result.Failure(Error.Conflict("AiShotQuoteChanged", "The estimated AI Shot cost increased. Review the updated cost before continuing."));
     }
 
     private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)

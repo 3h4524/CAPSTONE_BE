@@ -15,7 +15,8 @@ public static class WorkflowJson
 
 public sealed record Point(double X = .5, double Y = .5);
 public sealed record Region(double X, double Y, double Width, double Height);
-public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null, Region? Detail = null);
+public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null,
+    Region? Detail = null, AiStudioFrameMetadata? StudioFrame = null);
 public sealed record WorkflowNode(string Id, string Type, string Label, Point Position, JsonElement Config);
 public sealed record WorkflowEdge(string Id, string Source, string Target);
 public sealed record WorkflowDefinition(int Version, IReadOnlyList<WorkflowNode> Nodes, IReadOnlyList<WorkflowEdge> Edges, JsonElement? Viewport = null);
