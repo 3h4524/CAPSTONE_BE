@@ -34,10 +34,10 @@ public sealed class PayOsOptions
     public string ChecksumKey { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the USD-to-VND conversion rate used to translate a plan's USD price into the
-    /// VND amount PayOS requires.
+    /// Gets or sets the conversion rate to translate a plan's price into the
+    /// VND amount PayOS requires. Default is 1000m since prices are stored in thousands of VND (nghìn đồng).
     /// </summary>
-    public decimal UsdToVndRate { get; set; } = 25000m;
+    public decimal UsdToVndRate { get; set; } = 1000m;
 
     /// <summary>
     /// Gets or sets a fixed VND amount that, when set, is charged for every checkout instead of

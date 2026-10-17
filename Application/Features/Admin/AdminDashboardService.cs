@@ -65,9 +65,13 @@ public sealed class AdminDashboardService(
                 .Where(s => s.Status.ToLower() == "active")
                 .SumAsync(s => s.MonthlyPriceUsd, cancellationToken);
 
-            // 5. Active Batch Jobs (running or queued)
+            // 5. Total and Active Batch Jobs
+            var totalBatchJobs = await batchJobRepository.Query()
+                .Where(j => j.DeletedAt == null)
+                .CountAsync(cancellationToken);
+
             var activeBatchJobs = await batchJobRepository.Query()
-                .Where(j => j.Status.ToLower() == "running" || j.Status.ToLower() == "queued" || j.Status.ToLower() == "pending")
+                .Where(j => j.DeletedAt == null && (j.Status.ToLower() == "running" || j.Status.ToLower() == "queued" || j.Status.ToLower() == "pending" || j.Status.ToLower() == "paused"))
                 .CountAsync(cancellationToken);
 
             // 6. Pending Tickets (open or pending)
@@ -165,7 +169,8 @@ public sealed class AdminDashboardService(
                 pendingTickets,
                 revenueChart,
                 latestTickets,
-                recentBatchJobs
+                recentBatchJobs,
+                totalBatchJobs
             );
 
             return Result.Success(metrics);
@@ -197,6 +202,7 @@ public sealed class AdminDashboardService(
         sb.AppendLine($"Active Paid Users,{metrics.ActivePaidUsers}");
         sb.AppendLine($"Total Revenue,{metrics.TotalRevenue}");
         sb.AppendLine($"Recurring Revenue,{metrics.RecurringRevenue}");
+        sb.AppendLine($"Total Batch Jobs,{metrics.TotalBatchJobs}");
         sb.AppendLine($"Active Batch Jobs,{metrics.ActiveBatchJobs}");
         sb.AppendLine($"Pending Tickets,{metrics.PendingTickets}");
         sb.AppendLine();
