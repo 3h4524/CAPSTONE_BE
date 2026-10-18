@@ -78,8 +78,10 @@ public sealed class AiShotJobServiceTests
         provider.VerifyNoOtherCalls();
     }
 
+    // The scene's own source (the approved keyframe) is checked by id, hash, revision and approval. Editing the mock-up
+    // it was made from afterwards does not make it unsafe, and refusing it could strand a run that was already paid for.
     [TestMethod]
-    public async Task StartAsync_StudioFrameOriginalSourceChangedAfterQuote_DoesNotSubmit()
+    public async Task StartAsync_StudioFrameOriginalSourceChangedAfterQuote_StillSubmitsTheApprovedFrame()
     {
         var service = Service();
         var original = source;
@@ -106,12 +108,14 @@ public sealed class AiShotJobServiceTests
         original.ContentHash = new string('d', 64);
         original.MetadataRevision++;
         original.ApprovedRevision++;
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Operation);
 
         var result = await service.StartAsync(job.Id, 0, Lease(), default);
 
-        result.Error.Code.Should().Be("SourceChanged");
-        provider.VerifyNoOtherCalls();
-        State().Status.Should().Be("pending");
+        result.Value.Status.Should().Be("polling");
+        State().Status.Should().Be("polling");
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]

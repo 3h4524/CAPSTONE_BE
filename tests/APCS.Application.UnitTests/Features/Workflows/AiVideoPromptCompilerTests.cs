@@ -16,7 +16,7 @@ public sealed class AiVideoPromptCompilerTests
         source.GarmentColor = "#1F2A44";
         source.BackgroundColor = "#FFFFFF";
         var config = new GenerateVideoConfig(Mode: "ai_shot", AiGlobalInstructions: "Use a warm sunset studio background.",
-            AiScenes: [new(ExtraInstructions: "Keep the print easy to read.")]);
+            AiScenes: [new(MockupId: source.Id, ExtraInstructions: "Keep the print easy to read.")]);
 
         var storyboard = new VideoStoryboardPlanner().Plan(product, [source], config).Value;
         var prompt = storyboard.Scenes.Single().CompiledPrompt!;
@@ -89,7 +89,7 @@ public sealed class AiVideoPromptCompilerTests
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()]);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)]);
         var planner = new VideoStoryboardPlanner();
         var current = AiVideoPromptCompiler.Catalog().Single(item => item.Code == "cinematic_product_showcase");
         var older = new VideoTemplate

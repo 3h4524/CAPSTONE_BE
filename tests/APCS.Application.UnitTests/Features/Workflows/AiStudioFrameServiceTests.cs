@@ -115,7 +115,9 @@ public sealed class AiStudioFrameServiceTests
         saved.ApprovedRevision.Should().BeNull();
         AiStudioFrameIdentity.IsCurrent(saved, source, AiStudioFrameIdentity.HangingWindow, "9:16").Should().BeTrue();
         context.UsageRows.Should().ContainSingle().Which.CostUsd.Should().Be(0.05m);
-        context.Images.Verify(x => x.ComposeAsync("decrypted-gemini-key", It.Is<string>(prompt => prompt.Contains("does not float") && prompt.Contains("window daylight")),
+        // No preset staging: without a direction from the user, the product keeps the arrangement of its source image.
+        context.Images.Verify(x => x.ComposeAsync("decrypted-gemini-key", It.Is<string>(prompt =>
+                prompt.Contains("Follow the user's additional visual direction") && prompt.Contains("preserve the product's natural arrangement from the source image")),
             It.Is<IReadOnlyList<ImageReference>>(images => images.Count == 1), It.IsAny<CancellationToken>()), Times.Once);
         context.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -157,7 +159,7 @@ public sealed class AiStudioFrameServiceTests
     }
 
     [TestMethod]
-    public async Task GenerateAsync_ProductOtherThanATShirt_IsStagedAsARigidProduct()
+    public async Task GenerateAsync_ProductOtherThanATShirt_IsNamedAsThatProduct()
     {
         var context = CreateContext("mug");
         var source = context.Fixture.AddAsset(context.Product);
@@ -168,7 +170,7 @@ public sealed class AiStudioFrameServiceTests
             request with { ExpectedFingerprint = quote.Fingerprint, ConfirmedEstimatedCostUsd = quote.EstimatedCostUsd }, default);
 
         result.IsSuccess.Should().BeTrue();
-        context.Images.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.Is<string>(prompt => prompt.Contains("same mug resting securely") && prompt.Contains("keep its shape rigid")),
+        context.Images.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.Is<string>(prompt => prompt.Contains("identity reference for the mug") && !prompt.Contains("T-shirt")),
             It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
