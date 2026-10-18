@@ -15,6 +15,7 @@ using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignTemplates;
 using APCS.Application.Features.Notifications;
+using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -50,6 +51,7 @@ public static class DependencyInjection
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
+        services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
