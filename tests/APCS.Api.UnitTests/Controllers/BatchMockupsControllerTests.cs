@@ -96,6 +96,20 @@ public sealed class BatchMockupsControllerTests
     }
 
     [TestMethod]
+    public async Task SaveOverrides_ReturnsTheJobsMockups()
+    {
+        var batchId = Guid.NewGuid();
+        var request = new SaveMockupOverridesRequestDto([new SaveMockupOverrideRequestDto("slot", new MockupOverrideDto(Guid.NewGuid(), null, "#EDE6DA", null), Guid.NewGuid())]);
+        var response = new GenerateAllMockupsResultDto(1, 0, 0, [], []);
+        var service = new Mock<IMockupTemplateService>();
+        service.Setup(x => x.SaveOverridesAsync(batchId, request, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(response));
+
+        var result = await new BatchMockupsController(service.Object).SaveOverrides(batchId, request, CancellationToken.None);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+    }
+
+    [TestMethod]
     public async Task ResetOverride_PassesTheSlotAndTheReplacedMockup()
     {
         var batchId = Guid.NewGuid();

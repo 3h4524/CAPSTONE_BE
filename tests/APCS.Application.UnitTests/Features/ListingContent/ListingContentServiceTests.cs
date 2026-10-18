@@ -36,6 +36,18 @@ public sealed class ListingContentServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_TagLongerThanEtsyAllows_FailsInsteadOfOverflowingTheColumn()
+    {
+        var tags = string.Join(",", Enumerable.Range(1, 12).Select(i => $$"""{"value":"tag {{i}}","type":"primary"}"""));
+        Answer($$"""{"title":"Road trip tee","description":"A soft tee.","tags":[{{tags}},{"value":"vintage camping adventure","type":"long_tail"}]}""");
+
+        var result = await Service().GenerateAsync(product.Id);
+
+        result.Error.Code.Should().Be("ListingContent.IncompleteResponse");
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_AnswerThatIsNotJson_FailsInsteadOfThrowing()
     {
         Answer("Sorry, I cannot help with that.");

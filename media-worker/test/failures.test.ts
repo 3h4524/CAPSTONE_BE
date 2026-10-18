@@ -13,6 +13,7 @@ test("an AI scene failure is named by the API's error code, not by its status al
   // Other conflicts (a lost lease, a clip that is not ready) say nothing about the submission.
   assert.equal(failureCode(new ApiError(409, "LeaseLost"), true), "AiShotFailed");
   assert.equal(failureCode(new ApiError(400, "validation.failed"), true), "AiShotRejected");
-  assert.equal(failureCode(new ApiError(500, "VeoBusy"), true), "AiShotFailed");
+  assert.equal(failureCode(new ApiError(500, "VeoBusy"), true), "AiVideoBusy");
+  assert.equal(failureCode(new ApiError(500, "AiVideoProviderBusy"), true), "AiVideoBusy");
   assert.equal(failureCode(new Error("AI Shot scene 1 did not finish"), true), "AiShotFailed");
 });

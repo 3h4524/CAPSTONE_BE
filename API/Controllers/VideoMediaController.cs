@@ -1,3 +1,4 @@
+using System.Globalization;
 using APCS.Api.Extensions;
 using APCS.Application.Features.Workflows;
 using APCS.Common.Constants;
@@ -48,7 +49,9 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> QuoteStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
     {
-        var request = await form.ToRequestAsync(ct);
+        if (!form.TryGetConfirmedEstimatedCostUsd(out var confirmedEstimatedCostUsd))
+            return BadRequest(new { message = "Confirmed estimated image cost must use an invariant decimal value, such as 0.04." });
+        var request = await form.ToRequestAsync(confirmedEstimatedCostUsd, ct);
         if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
         return (await studioFrames.QuoteAsync(productId, request, ct)).ToActionResult(this);
     }
@@ -62,7 +65,9 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GenerateStudioFrameFromForm(Guid productId, [FromForm] AiStudioFrameFormRequest form, CancellationToken ct)
     {
-        var request = await form.ToRequestAsync(ct);
+        if (!form.TryGetConfirmedEstimatedCostUsd(out var confirmedEstimatedCostUsd))
+            return BadRequest(new { message = "Confirmed estimated image cost must use an invariant decimal value, such as 0.04." });
+        var request = await form.ToRequestAsync(confirmedEstimatedCostUsd, ct);
         if (request is null) return BadRequest(new { message = "Reference images must total 20 MB or less." });
         var result = await studioFrames.GenerateAsync(productId, request, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
@@ -98,13 +103,26 @@ public sealed class AiStudioFrameFormRequest
     public string OutputFormat { get; set; } = "";
     public bool Regenerate { get; set; }
     public string? ExpectedFingerprint { get; set; }
-    public decimal? ConfirmedEstimatedCostUsd { get; set; }
+    public string? ConfirmedEstimatedCostUsd { get; set; }
     public string? CustomPrompt { get; set; }
     public string? TemplateCode { get; set; }
     public bool ReferenceRightsConfirmed { get; set; }
     public List<IFormFile> References { get; set; } = [];
 
-    public async Task<AiStudioFrameRequest?> ToRequestAsync(CancellationToken ct)
+    public bool TryGetConfirmedEstimatedCostUsd(out decimal? value)
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(ConfirmedEstimatedCostUsd)) return true;
+
+        if (!decimal.TryParse(ConfirmedEstimatedCostUsd.Trim(), NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture, out var parsed) || parsed < 0)
+            return false;
+
+        value = parsed;
+        return true;
+    }
+
+    public async Task<AiStudioFrameRequest?> ToRequestAsync(decimal? confirmedEstimatedCostUsd, CancellationToken ct)
     {
         if (References.Sum(file => file.Length) > AiStudioFrameService.MaximumSourceBytes) return null;
         var references = new List<AiStudioFrameReferenceInput>(References.Count);
@@ -117,7 +135,7 @@ public sealed class AiStudioFrameFormRequest
         }
 
         return new AiStudioFrameRequest(SourceMockupId, Layout, OutputFormat, Regenerate,
-            ExpectedFingerprint, ConfirmedEstimatedCostUsd, CustomPrompt, TemplateCode, references,
+            ExpectedFingerprint, confirmedEstimatedCostUsd, CustomPrompt, TemplateCode, references,
             ReferenceRightsConfirmed);
     }
 }

@@ -6,12 +6,14 @@ export type StandardVideoScene = {
   crop: VideoRegion;
   endCrop: VideoRegion;
   motion: string;
-  transition: "fade" | "cut";
+  transition: VideoTransition;
   text: string;
 };
 export type StandardVideoOutput = { width: number; height: number };
 export type StandardVideoStoryboard = { durationSeconds: number; width: number; height: number; scenes: StandardVideoScene[] };
 export type StandardVideoSource = { url: string; width: number; height: number };
+export type VideoTransition = "none" | "fade" | "swipe" | "zoom" | "flash" | "whip_pan" | "blur" | "cut";
+export type TransitionSide = "incoming" | "outgoing";
 export type ShotImageGeometry =
   | { mode: "contain"; scale: number }
   | { mode: "crop"; width: number; height: number; left: number; top: number };
@@ -24,10 +26,18 @@ export const getSceneFrame = (scene: StandardVideoScene, frame: number) => {
   const crop = Object.fromEntries((["x", "y", "width", "height"] as const).map(key =>
     [key, mix(scene.crop[key], scene.endCrop[key], progress)]
   )) as VideoRegion;
-  const fadeIn = clamp(frame / 8);
-  const fadeOut = clamp((scene.durationFrames - 1 - frame) / 8);
-  const opacity = scene.transition === "fade" ? Math.min(fadeIn, fadeOut) : 1;
-  return { crop, opacity, containScale: scene.motion === "contain_gentle" ? .97 + .03 * progress : 1 };
+  return { crop, opacity: 1, containScale: scene.motion === "contain_gentle" ? .97 + .03 * progress : 1 };
+};
+
+export const getTransitionFrameStyle = (transition: VideoTransition, frame: number, overlapFrames: number, side: TransitionSide) => {
+  if (overlapFrames <= 0 || transition === "none" || transition === "cut") return { opacity: 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: 0 };
+  const progress = clamp(frame / Math.max(1, overlapFrames - 1));
+  if (transition === "fade") return { opacity: side === "incoming" ? progress : 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: 0 };
+  if (transition === "swipe") return { opacity: 1, transform: "none", clipPath: side === "incoming" ? `inset(0 ${(1 - progress) * 100}% 0 0)` : "none", filter: "none", flashOpacity: 0 };
+  if (transition === "zoom") return { opacity: side === "incoming" ? .35 + .65 * progress : 1, transform: `scale(${side === "incoming" ? .9 + .1 * progress : 1 + .08 * progress})`, clipPath: "none", filter: "none", flashOpacity: 0 };
+  if (transition === "flash") return { opacity: 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: Math.sin(progress * Math.PI) * .82 };
+  if (transition === "whip_pan") return { opacity: 1, transform: `translateX(${side === "incoming" ? (1 - progress) * 100 : -progress * 12}%)`, clipPath: "none", filter: `blur(${(side === "incoming" ? 1 - progress : progress) * 7}px)`, flashOpacity: 0 };
+  return { opacity: side === "incoming" ? progress : 1, transform: "none", clipPath: "none", filter: side === "incoming" ? `blur(${(1 - progress) * 14}px)` : "none", flashOpacity: 0 };
 };
 
 export const getShotImageGeometry = (scene: StandardVideoScene, source: StandardVideoSource, frame: number,

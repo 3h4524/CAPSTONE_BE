@@ -114,9 +114,9 @@ VALUES
  ('a1dc0c01-7336-4e24-a173-7a882e310001','Product Showcase','product_showcase','etsy',12,'9:16','1080x1920','{}',null,true,true,'product_showcase',1),
  ('a1dc0c01-7336-4e24-a173-7a882e310002','Design Detail','product_showcase','etsy',12,'9:16','1080x1920','{}',null,true,true,'design_detail',1),
  ('a1dc0c01-7336-4e24-a173-7a882e310003','Variant Showcase','product_showcase','etsy',12,'9:16','1080x1920','{}',null,true,true,'variant_showcase',1),
- ('a1dc0c02-7336-4e24-a173-7a882e310001','Product Showcase','product_showcase','etsy',12,'9:16','1080x1920','{"description":"A balanced product-first video that works with one or more approved mockups.","defaultTransition":"fade","defaultMotionPreset":"varied","requirements":{"minimumAssets":1,"requiresDetail":false,"minimumVariants":0}}','/video-templates/product-showcase-v2.mp4',true,true,'product_showcase',2),
- ('a1dc0c02-7336-4e24-a173-7a882e310002','Design Detail','product_showcase','etsy',12,'9:16','1080x1920','{"description":"Moves from the complete product to a close look at the artwork.","defaultTransition":"fade","defaultMotionPreset":"varied","requirements":{"minimumAssets":1,"requiresDetail":true,"minimumVariants":0}}','/video-templates/design-detail-v2.mp4',true,true,'design_detail',2),
- ('a1dc0c02-7336-4e24-a173-7a882e310003','Variant Showcase','product_showcase','etsy',12,'9:16','1080x1920','{"description":"Shows distinct product variants before returning to the strongest view.","defaultTransition":"fade","defaultMotionPreset":"varied","requirements":{"minimumAssets":2,"requiresDetail":false,"minimumVariants":2}}','/video-templates/variant-showcase-v2.mp4',true,true,'variant_showcase',2)
+ ('a1dc0c02-7336-4e24-a173-7a882e310001','Product Showcase','product_showcase','etsy',12,'9:16','1080x1920','{"description":"A balanced product-first video that works with one or more approved mockups.","defaultTransition":"none","defaultMotionPreset":"varied","requirements":{"minimumAssets":1,"requiresDetail":false,"minimumVariants":0}}','/video-templates/product-showcase-v2.mp4',true,true,'product_showcase',2),
+ ('a1dc0c02-7336-4e24-a173-7a882e310002','Design Detail','product_showcase','etsy',12,'9:16','1080x1920','{"description":"Moves from the complete product to a close look at the artwork.","defaultTransition":"none","defaultMotionPreset":"varied","requirements":{"minimumAssets":1,"requiresDetail":true,"minimumVariants":0}}','/video-templates/design-detail-v2.mp4',true,true,'design_detail',2),
+ ('a1dc0c02-7336-4e24-a173-7a882e310003','Variant Showcase','product_showcase','etsy',12,'9:16','1080x1920','{"description":"Shows distinct product variants before returning to the strongest view.","defaultTransition":"none","defaultMotionPreset":"varied","requirements":{"minimumAssets":2,"requiresDetail":false,"minimumVariants":2}}','/video-templates/variant-showcase-v2.mp4',true,true,'variant_showcase',2)
 ON CONFLICT(id) DO UPDATE SET aspect_ratio=EXCLUDED.aspect_ratio, resolution=EXCLUDED.resolution;
 
 -- AI video prompt catalog: the provider-independent prompt/settings definition is versioned in
@@ -167,6 +167,20 @@ SET effects_config = jsonb_set(
   '{aiVideo,basePrompt}', to_jsonb('Create a premium e-commerce hero shot of the exact product shown in the approved image supplied for this scene. Keep the product clear and stable while the camera uses {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use realistic materials, clean commercial composition and natural shadows. Product motion is {{SUBJECT_MOTION}}. Create a {{DURATION}}-second shot.'::text), true)
 WHERE code = 'cinematic_product_showcase' AND template_version = 1 AND is_system_template = true;
 
+-- Camera-first prompt revisions: product stability applies to identity, while the selected camera
+-- movement remains a required visible action for Showcase and Macro Detail scenes.
+UPDATE public.video_templates
+SET effects_config = jsonb_set(
+  jsonb_set(effects_config, '{aiVideo,promptVersion}', '5'::jsonb, true),
+  '{aiVideo,basePrompt}', to_jsonb('Create one continuous premium e-commerce hero shot from the approved source image. The selected {{CAMERA_MOVEMENT}} is the primary visible action: it begins in the first frame and continues smoothly for the full {{DURATION}} seconds from {{CAMERA_ANGLE}}, using {{FRAMING}}. Keep the product itself still and preserve its exact identity and artwork while the camera moves. {{LIGHTING}} Use realistic materials, coherent background parallax, clean commercial composition and natural shadows. Camera motion intensity is {{MOTION_INTENSITY}}.'::text), true)
+WHERE code = 'cinematic_product_showcase' AND template_version = 1 AND is_system_template = true;
+
+UPDATE public.video_templates
+SET effects_config = jsonb_set(
+  jsonb_set(effects_config, '{aiVideo,promptVersion}', '3'::jsonb, true),
+  '{aiVideo,basePrompt}', to_jsonb('Create one continuous photorealistic macro commercial shot from the approved detail image. The selected {{CAMERA_MOVEMENT}} is the primary visible action and continues smoothly across the artwork for the full {{DURATION}} seconds from {{CAMERA_ANGLE}}, using {{FRAMING}}. Keep the focus plane locked to the printed surface so fine material texture, print edges and all visible lettering remain sharp and readable while the camera moves. {{LIGHTING}} Use controlled reflections without glare or focus hunting. Keep the artwork physically attached to the product. Camera motion intensity is {{MOTION_INTENSITY}}.'::text), true)
+WHERE code = 'macro_detail_reveal' AND template_version = 1 AND is_system_template = true;
+
 ALTER TABLE public.promo_videos DROP CONSTRAINT IF EXISTS chk_promo_videos_duration;
 ALTER TABLE public.promo_videos ADD CONSTRAINT chk_promo_videos_duration CHECK (video_duration_seconds BETWEEN 3 AND 30);
 ALTER TABLE public.promo_videos ADD COLUMN IF NOT EXISTS mode varchar(30) NOT NULL DEFAULT 'standard';
@@ -197,5 +211,10 @@ ALTER TABLE public.promo_video_scenes ADD COLUMN IF NOT EXISTS warnings jsonb NO
 ALTER TABLE public.export_package_items ADD COLUMN IF NOT EXISTS promo_video_id uuid REFERENCES public.promo_videos(id);
 ALTER TABLE public.export_packages ADD COLUMN IF NOT EXISTS workflow_run_id uuid REFERENCES public.workflow_runs(id);
 ALTER TABLE public.export_packages ADD COLUMN IF NOT EXISTS manifest jsonb NOT NULL DEFAULT '{}';
+
+-- Keep the Showcase default still while preserving any explicit scene-level selection.
+UPDATE public.video_templates
+SET effects_config = jsonb_set(effects_config, '{aiVideo,defaults,subjectMotion}', '"none"'::jsonb, true)
+WHERE code = 'cinematic_product_showcase' AND template_version = 1 AND is_system_template = true;
 
 COMMIT;

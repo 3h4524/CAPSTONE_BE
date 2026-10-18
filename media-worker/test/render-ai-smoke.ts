@@ -27,16 +27,19 @@ if (process.argv.includes("--all")) {
   const mixedDirectory = join(directory, "mixed");
   await mkdir(mixedDirectory, { recursive: true });
   const mixedBase = fixtureBoard("tshirt", image, 12);
-  const mixed = { ...mixedBase, mode: "ai_shot" as const, aiShots: [{ ...board.aiShots[0]!, durationSeconds: 6 as const }],
-    scenes: [{ ...mixedBase.scenes[0]!, generationStrategy: "ai_shot" as const, durationFrames: 180 }, { ...mixedBase.scenes[1]!, durationFrames: 180 }] };
+  const mixed = { ...mixedBase, mode: "ai_shot" as const, outputDurationFrames: 360, transitionOverlapFrames: 12,
+    aiShots: [{ ...board.aiShots[0]!, durationSeconds: 6 as const }],
+    scenes: [{ ...mixedBase.scenes[0]!, generationStrategy: "ai_shot" as const, durationFrames: 180, transition: "none" as const },
+      { ...mixedBase.scenes[1]!, durationFrames: 192, transition: "fade" as const }] };
   const mixedResult = await renderer.render({ storyboard: mixed, sources: { [scene.mockupId]: source }, clips: { 0: clip } }, mixedDirectory, AbortSignal.timeout(300_000), () => {});
   process.stdout.write(`Mixed AI+Standard smoke: ${JSON.stringify(mixedResult.qa)}\n`);
   const fullDirectory = join(directory, "full-15");
   await mkdir(fullDirectory, { recursive: true });
   const fullBase = fixtureBoard("tshirt", image, 15);
-  const full = { ...fullBase, mode: "ai_shot" as const, transitionOverlapFrames: 30,
+  const full = { ...fullBase, mode: "ai_shot" as const, outputDurationFrames: 468, transitionOverlapFrames: 12,
     aiShots: [{ ...board.aiShots[0]! }, { ...board.aiShots[0]!, sceneOrder: 1, fingerprint: "c".repeat(64) }],
-    scenes: [{ ...fullBase.scenes[0]!, generationStrategy: "ai_shot" as const, durationFrames: 240 }, { ...fullBase.scenes[1]!, generationStrategy: "ai_shot" as const, durationFrames: 240 }] };
+    scenes: [{ ...fullBase.scenes[0]!, generationStrategy: "ai_shot" as const, durationFrames: 240, transition: "none" as const },
+      { ...fullBase.scenes[1]!, generationStrategy: "ai_shot" as const, durationFrames: 240, transition: "fade" as const }] };
   const fullResult = await renderer.render({ storyboard: full, sources: { [scene.mockupId]: source }, clips: { 0: clip, 1: clip } }, fullDirectory, AbortSignal.timeout(360_000), () => {});
   process.stdout.write(`Full 15-second AI smoke: ${JSON.stringify(fullResult.qa)}\n`);
 }

@@ -50,26 +50,16 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
     public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
         int durationSeconds, bool people, APCS.Application.Features.Workflows.Region? sourceCrop, CancellationToken ct)
     {
-        if (durationSeconds is not (4 or 6 or 8) || aspectRatio is not ("9:16" or "16:9"))
-            throw new ArgumentException("Unsupported Veo video settings.");
-        using var source = await clients.CreateClient("PrivateMedia").GetAsync(sourceImageUrl, ct);
-        source.EnsureSuccessStatusCode();
-        var bytes = await source.Content.ReadAsByteArrayAsync(ct);
-        if (bytes.Length is < 24 or > 20_000_000 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
-            throw new InvalidOperationException("AI Shot source must be a valid approved PNG under 20 MB.");
-        if (sourceCrop is not null)
+        byte[] bytes;
+        // Everything up to the POST happens on our side: a failure here is certain to have cost nothing at Google.
+        // A stop asked for here is reported the same way, so the scene is put back instead of looking half-sent.
+        try { bytes = await SourceAsync(sourceImageUrl, aspectRatio, durationSeconds, sourceCrop, ct); }
+        catch (Exception ex)
         {
-            using var image = Image.Load(bytes);
-            var x = Math.Clamp((int)Math.Floor(sourceCrop.X * image.Width), 0, image.Width - 1);
-            var y = Math.Clamp((int)Math.Floor(sourceCrop.Y * image.Height), 0, image.Height - 1);
-            var width = Math.Clamp((int)Math.Ceiling(sourceCrop.Width * image.Width), 1, image.Width - x);
-            var height = Math.Clamp((int)Math.Ceiling(sourceCrop.Height * image.Height), 1, image.Height - y);
-            if (Math.Min(width, height) < 512)
-                throw new InvalidOperationException("AI macro source region must be at least 512 pixels on its shortest side.");
-            image.Mutate(context => context.Crop(new Rectangle(x, y, width, height)));
-            await using var cropped = new MemoryStream();
-            await image.SaveAsPngAsync(cropped, ct);
-            bytes = cropped.ToArray();
+            throw new AiVideoNotSubmittedException(ex is OperationCanceledException && ct.IsCancellationRequested
+                ? "Stopped before the request was sent."
+                : ex is TaskCanceledException
+                    ? "Timed out reading the approved source image." : $"Could not prepare the approved source image: {ex.Message}", ex);
         }
         using var request = new HttpRequestMessage(HttpMethod.Post, Base + "models/" + ModelName + ":predictLongRunning");
         request.Headers.Add("x-goog-api-key", apiKey);
@@ -80,18 +70,60 @@ public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVide
             // The duration goes as a number: the endpoint refuses a string.
             parameters = new { aspectRatio, durationSeconds, resolution = "720p", personGeneration = "allow_adult" }
         });
-        using var response = await clients.CreateClient("Veo").SendAsync(request, ct);
+        HttpResponseMessage sent;
+        try { sent = await clients.CreateClient("Veo").SendAsync(request, ct); }
+        catch (HttpRequestException ex) when (ex.HttpRequestError is HttpRequestError.NameResolutionError
+            or HttpRequestError.ConnectionError or HttpRequestError.SecureConnectionError)
+        {
+            // No connection to Google was made, so the request never left this server.
+            throw new AiVideoNotSubmittedException($"Could not reach Google Veo: {ex.Message}", ex);
+        }
+        using var response = sent;
+        // An error status means Google made no operation: there is nothing to follow and nothing billed.
         if (!response.IsSuccessStatusCode) throw await RefusedAsync(response, "start", ct);
-        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-        var name = body.RootElement.TryGetProperty("name", out var value) ? value.GetString() : null;
+        string? name;
+        try
+        {
+            using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+            name = body.RootElement.ValueKind == JsonValueKind.Object && body.RootElement.TryGetProperty("name", out var value) &&
+                value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        }
+        catch (Exception ex) when (ex is JsonException or HttpRequestException or IOException)
+        {
+            throw new AiVideoSubmissionUnknownException("Veo accepted the request, but its answer could not be read.", ex);
+        }
         if (string.IsNullOrWhiteSpace(name) || !OperationName.IsMatch(name))
         {
             // Google accepted the request, so a clip is being made; without a usable name it cannot be followed.
             logger.LogWarning("Veo accepted the request but named its operation unexpectedly: {Name}", name);
-            throw new VeoProviderException(502);
+            throw new AiVideoSubmissionUnknownException("Veo accepted the request, but did not name an operation to follow.");
         }
 
         return name;
+    }
+
+    private async Task<byte[]> SourceAsync(string sourceImageUrl, string aspectRatio, int durationSeconds,
+        APCS.Application.Features.Workflows.Region? sourceCrop, CancellationToken ct)
+    {
+        if (durationSeconds is not (4 or 6 or 8) || aspectRatio is not ("9:16" or "16:9"))
+            throw new ArgumentException("Unsupported Veo video settings.");
+        using var source = await clients.CreateClient("PrivateMedia").GetAsync(sourceImageUrl, ct);
+        source.EnsureSuccessStatusCode();
+        var bytes = await source.Content.ReadAsByteArrayAsync(ct);
+        if (bytes.Length is < 24 or > 20_000_000 || !bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            throw new InvalidOperationException("AI Shot source must be a valid approved PNG under 20 MB.");
+        if (sourceCrop is null) return bytes;
+        using var image = Image.Load(bytes);
+        var x = Math.Clamp((int)Math.Floor(sourceCrop.X * image.Width), 0, image.Width - 1);
+        var y = Math.Clamp((int)Math.Floor(sourceCrop.Y * image.Height), 0, image.Height - 1);
+        var width = Math.Clamp((int)Math.Ceiling(sourceCrop.Width * image.Width), 1, image.Width - x);
+        var height = Math.Clamp((int)Math.Ceiling(sourceCrop.Height * image.Height), 1, image.Height - y);
+        if (Math.Min(width, height) < 512)
+            throw new InvalidOperationException("AI macro source region must be at least 512 pixels on its shortest side.");
+        image.Mutate(context => context.Crop(new Rectangle(x, y, width, height)));
+        await using var cropped = new MemoryStream();
+        await image.SaveAsPngAsync(cropped, ct);
+        return cropped.ToArray();
     }
 
     // What the operation of an accepted request is called: "models/<model>/operations/<id>" on this API,

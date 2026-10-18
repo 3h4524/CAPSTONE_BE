@@ -11,8 +11,8 @@ public sealed record AiStudioFrameMetadata(string Fingerprint, Guid SourceMockup
 
 public static class AiStudioFrameIdentity
 {
-    public const int PromptVersion = 7;
-    public const int DetailCompositionPromptVersion = 8;
+    public const int PromptVersion = 9;
+    public const int DetailCompositionPromptVersion = 10;
     public const string HangingWindow = "hanging_window";
     public const string FlatLay = "flat_lay";
     public const string None = "none";

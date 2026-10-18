@@ -141,7 +141,7 @@ public sealed class WorkflowRunServiceTests
         result.Value.Status.Should().Be("waiting_for_input");
         fixture.JobRows.Should().BeEmpty();
         fixture.Quotes.Verify(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(),
-            It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
