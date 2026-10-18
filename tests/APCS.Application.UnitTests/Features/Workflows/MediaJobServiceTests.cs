@@ -63,7 +63,7 @@ public sealed class MediaJobServiceTests
         result.IsSuccess.Should().BeTrue();
         fixture.ExportRows.Single().Status.Should().Be("ready");
         fixture.ExportRows.Single().StorageKey.Should().Be(completion.StorageKey);
-        fixture.ItemRows.Single().ItemStatus.Should().Be("completed");
+        fixture.ItemRows.Single().ItemStatus.Should().Be("packed");
         fixture.RunRows.Single().Status.Should().Be("completed");
         fixture.RunRows.Single().CompletedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
         job.Status.Should().Be("succeeded");

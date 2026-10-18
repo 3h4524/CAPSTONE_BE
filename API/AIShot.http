@@ -1,6 +1,15 @@
 @api = http://localhost:5191
 @bearer = replace-with-user-access-token
+@workflowId = 00000000-0000-0000-0000-000000000000
 @runId = 00000000-0000-0000-0000-000000000000
+
+### Restore the most recent run when reopening a workflow
+GET {{api}}/api/workflows/{{workflowId}}/runs/latest
+Authorization: Bearer {{bearer}}
+
+### List earlier runs that still contain generated videos
+GET {{api}}/api/workflows/{{workflowId}}/video-runs
+Authorization: Bearer {{bearer}}
 
 ### Quote new AI clips for the saved run configuration
 POST {{api}}/api/workflow-runs/{{runId}}/ai-shot-quote

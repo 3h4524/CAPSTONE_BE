@@ -81,6 +81,8 @@ public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid
     int? SceneOrder = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes);
+/// <summary>Identifies a previous workflow run that still has generated video versions available.</summary>
+public sealed record VideoRunSummaryResponse(Guid Id, string Status, DateTimeOffset CreatedAt, int VideoCount, int LatestVersion);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings);

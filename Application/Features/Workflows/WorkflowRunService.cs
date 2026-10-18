@@ -10,6 +10,8 @@ namespace APCS.Application.Features.Workflows;
 public interface IWorkflowRunService
 {
     Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct);
+    Task<Result<RunResponse>> GetLatestAsync(Guid workflowId, CancellationToken ct);
+    Task<Result<IReadOnlyList<VideoRunSummaryResponse>>> ListVideoRunsAsync(Guid workflowId, CancellationToken ct);
     Task<Result<RunResponse>> GetAsync(Guid id, CancellationToken ct);
     Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct);
 }
@@ -63,6 +65,37 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (failed != null) await runtime.FailAsync(run, failed.WorkflowNodeRunId, failed.ErrorMessage ?? "Render failed.", ct);
         }
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(await MapAsync(run, ct));
+    }
+    public async Task<Result<RunResponse>> GetLatestAsync(Guid workflowId, CancellationToken ct)
+    {
+        var latest = (await runs.FindAsync(x => x.WorkflowId == workflowId && x.UserId == user.UserId, ct))
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefault();
+        return latest is null
+            ? Result.Failure<RunResponse>(Missing())
+            : Result.Success(await MapAsync(latest, ct));
+    }
+    public async Task<Result<IReadOnlyList<VideoRunSummaryResponse>>> ListVideoRunsAsync(Guid workflowId, CancellationToken ct)
+    {
+        var ownedRuns = (await runs.FindAsync(x => x.WorkflowId == workflowId && x.UserId == user.UserId, ct))
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .ToArray();
+        if (ownedRuns.Length == 0) return Result.Success<IReadOnlyList<VideoRunSummaryResponse>>([]);
+
+        var runIds = ownedRuns.Select(x => x.Id).ToArray();
+        var generatedVideos = await videos.FindAsync(x => x.WorkflowRunId.HasValue && runIds.Contains(x.WorkflowRunId.Value) &&
+            x.DeletedAt == null && x.Status == "completed" && x.StorageKey != null, ct);
+        var versionsByRun = generatedVideos
+            .GroupBy(x => x.WorkflowRunId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var result = ownedRuns
+            .Where(run => versionsByRun.ContainsKey(run.Id))
+            .Select(run => new VideoRunSummaryResponse(run.Id, run.Status, run.CreatedAt,
+                versionsByRun[run.Id].Length, versionsByRun[run.Id].Max(video => video.VersionNumber)))
+            .ToArray();
+        return Result.Success<IReadOnlyList<VideoRunSummaryResponse>>(result);
     }
     public async Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct)
     {

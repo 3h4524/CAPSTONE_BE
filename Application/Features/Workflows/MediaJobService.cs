@@ -138,7 +138,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             }
             var package = (await exports.GetByIdAsync(payload.ExportId, ct))!;
             package.Status = "ready"; package.StorageProvider = "cloudinary"; package.StorageKey = expected;
-            foreach (var item in await items.FindAsync(x => x.ExportPackageId == package.Id, ct)) item.ItemStatus = "completed";
+            foreach (var item in await items.FindAsync(x => x.ExportPackageId == package.Id, ct)) item.ItemStatus = "packed";
         }
         job.Status = "succeeded"; job.Progress = 100; job.ErrorMessage = null; job.LeaseToken = null; job.LeaseExpiresAt = null;
         job.UpdatedAt = time.GetUtcNow().UtcDateTime;
