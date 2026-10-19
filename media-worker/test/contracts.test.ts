@@ -4,6 +4,39 @@ import { exportPayloadSchema, storyboardSchema } from "../src/contracts";
 import { pngSource } from "../src/media-files";
 import { fixtureBoard, fixtureImage } from "./fixture";
 test("storyboard pins exact frame total and Standard provenance", () => { const board = fixtureBoard(); assert.equal(storyboardSchema.parse(board).scenes.length, 2); assert.equal(storyboardSchema.safeParse({ ...board, durationSeconds: 4 }).success, false); assert.equal(storyboardSchema.safeParse({ ...board, scenes: [{ ...board.scenes[0], generationStrategy: "ai_shot" }, board.scenes[1]] }).success, false); });
+test("Standard custom framing preserves normalized start and end crops and supported motion presets", () => {
+  const board = fixtureBoard();
+  const startCrop = { x: 0.1, y: 0.12, width: 0.8, height: 0.76 };
+  const endCrop = { x: 0.2, y: 0.18, width: 0.6, height: 0.62 };
+  const parsed = storyboardSchema.parse({ ...board, scenes: board.scenes.map((scene, index) => index === 0
+    ? { ...scene, crop: startCrop, endCrop, motion: "custom" }
+    : { ...scene, motion: "pan_up" }) });
+  assert.deepEqual(parsed.scenes[0]?.crop, startCrop);
+  assert.deepEqual(parsed.scenes[0]?.endCrop, endCrop);
+  assert.equal(parsed.scenes[0]?.motion, "custom");
+  assert.equal(parsed.scenes[1]?.motion, "pan_up");
+  for (const motion of ["zoom", "pan_left", "pan_up", "custom"])
+    assert.equal(storyboardSchema.safeParse({ ...board, scenes: [{ ...board.scenes[0]!, motion }, board.scenes[1]] }).success, true);
+  assert.equal(storyboardSchema.safeParse({ ...board, scenes: [{ ...board.scenes[0]!, motion: "spin" }, board.scenes[1]] }).success, false);
+
+  for (const invalidCrop of [
+    { x: -0.01, y: 0, width: 0.5, height: 0.5 },
+    { x: 0.8, y: 0, width: 0.3, height: 0.5 },
+    { x: 0, y: 0.8, width: 0.5, height: 0.3 },
+  ]) {
+    const invalid = { ...board, scenes: [{ ...board.scenes[0]!, endCrop: invalidCrop }, board.scenes[1]] };
+    assert.equal(storyboardSchema.safeParse(invalid).success, false);
+  }
+});
+test("Standard storyboard enforces the two-to-four scene range independently of frame totals", () => {
+  const board = fixtureBoard();
+  const oneScene = { ...board, scenes: [{ ...board.scenes[0]!, durationFrames: 360 }] };
+  const fiveScenes = { ...board, scenes: Array.from({ length: 5 }, (_, index) => ({
+    ...board.scenes[0]!, sceneOrder: index, durationFrames: 72,
+  })) };
+  assert.equal(storyboardSchema.safeParse(oneScene).success, false);
+  assert.equal(storyboardSchema.safeParse(fiveScenes).success, false);
+});
 test("AI Shot storyboard accepts a mixed 6-second clip and a full 15-second overlap", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);
   const ai = { sceneOrder: 0, mockupId: base.scenes[0]!.mockupId, sourceHash: base.scenes[0]!.sourceHash, model: "veo-3.1-lite-generate-preview", preset: "product_cinematic", prompt: "Smooth product motion", durationSeconds: 6, fingerprint: "b".repeat(64) };

@@ -25,6 +25,7 @@ public sealed record WorkflowResponse(Guid Id, string Name, string Description, 
 public sealed record ProductInputConfig(Guid BatchId, Guid ProductId);
 public sealed record MockupConfig(IReadOnlyList<Guid>? MockupIds = null, string? ArtworkGroupKey = null);
 public sealed record StandardOptions(string MotionPreset = "gentle", string Crop = "safe", string Transition = "none");
+public sealed record StandardSceneOptions(Guid MockupId, Region? StartCrop = null, Region? EndCrop = null, Region? BaseCrop = null);
 public sealed record AiVideoSceneOptions(
     Guid? MockupId = null,
     string TemplateCode = "cinematic_product_showcase",
@@ -42,7 +43,11 @@ public sealed record AiVideoSceneOptions(
     string? StudioLayout = null,
     Guid? StudioFrameId = null,
     string? StudioPrompt = null,
-    IReadOnlyList<string>? StudioReferenceHashes = null);
+    IReadOnlyList<string>? StudioReferenceHashes = null,
+    string? StandardMotionPreset = null,
+    Region? StandardBaseCrop = null,
+    Region? StandardStartCrop = null,
+    Region? StandardEndCrop = null);
 public sealed record VideoOutputSpec(string Format, int Width, int Height, string AspectRatio);
 public static class VideoOutputFormats
 {
@@ -66,7 +71,8 @@ public sealed record GenerateVideoConfig(
     IReadOnlyList<string?>? SceneMotionPresets = null, int? TemplateVersion = null, string OutputFormat = VideoOutputFormats.Default,
     IReadOnlyList<AiVideoSceneOptions>? AiScenes = null, string? AiGlobalInstructions = null,
     string AiStudioMode = "direct", string AiStudioLayout = "hanging_window",
-    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null);
+    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null,
+    IReadOnlyList<StandardSceneOptions>? StandardScenes = null);
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
     string? PreviewVideoUrl, int DefaultDurationSeconds, string DefaultTransition, string DefaultMotionPreset,

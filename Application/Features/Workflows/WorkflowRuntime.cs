@@ -240,6 +240,16 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             if (config.AiStudioSourceMockupId is Guid sourceId && sourceId != Guid.Empty) referenced.Add(sourceId);
             if (config.AiStudioFrameId is Guid frameId && frameId != Guid.Empty) referenced.Add(frameId);
         }
+        if (config.Mode == "standard")
+        {
+            foreach (var id in (config.SelectedMockupIds ?? []).Concat(config.SceneOrder ?? [])
+                         .Concat(config.StandardScenes?.Select(scene => scene.MockupId) ?? []))
+            {
+                if (id == Guid.Empty) continue;
+                referenced.Add(id);
+                direct.Add(id);
+            }
+        }
         return (referenced, direct);
     }
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)

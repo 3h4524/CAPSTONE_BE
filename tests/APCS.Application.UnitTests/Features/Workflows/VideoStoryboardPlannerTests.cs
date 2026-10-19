@@ -91,7 +91,7 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_AutoTemplate_PrefersVariantsThenArtworkDetail()
+    public void Plan_StandardAutoTemplate_ChoosesOnlyProductOrDesignDetail()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -100,7 +100,8 @@ public sealed class VideoStoryboardPlannerTests
         _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("design_detail");
         hero.VariantKey = "red";
         detail.VariantKey = "blue";
-        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("variant_showcase");
+        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("design_detail");
+        _planner.Plan(product, [hero], new()).Value.Template.Should().Be("product_showcase");
     }
 
     [TestMethod]
@@ -136,7 +137,7 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_VersionTwoVariantTemplate_PrioritizesDistinctVariantsDeterministically()
+    public void Plan_VersionTwoStandard_RejectsVariantShowcaseEvenWhenVariantsExist()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -144,21 +145,21 @@ public sealed class VideoStoryboardPlannerTests
         var redAngle = fixture.AddAsset(product, "AlternativeAngle"); redAngle.VariantKey = "red";
         var blue = fixture.AddAsset(product, "Variant"); blue.VariantKey = "blue";
 
-        var result = _planner.Plan(product, [redAngle, blue, redHero], new(TemplateVersion: 2));
+        var result = _planner.Plan(product, [redAngle, blue, redHero], new(Template: "variant_showcase", TemplateVersion: 2));
 
-        result.Value.Template.Should().Be("variant_showcase");
-        result.Value.Scenes.Take(2).Select(x => x.MockupId).Should().Equal(redHero.Id, blue.Id);
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Message.Should().Contain("Product Showcase and Design Detail");
     }
 
     [TestMethod]
-    public void Plan_VersionTwoExplicitTemplateWithoutRequirements_ReturnsValidation()
+    public void Plan_VersionTwoStandardTemplate_ValidatesDetailAndRejectsVariantShowcase()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var asset = fixture.AddAsset(product);
 
         _planner.Plan(product, [asset], new(Template: "design_detail", TemplateVersion: 2)).Error.Message.Should().Contain("requires");
-        _planner.Plan(product, [asset], new(Template: "variant_showcase", TemplateVersion: 2)).Error.Message.Should().Contain("two named variants");
+        _planner.Plan(product, [asset], new(Template: "variant_showcase", TemplateVersion: 2)).Error.Message.Should().Contain("Product Showcase and Design Detail");
     }
 
     [TestMethod]
@@ -186,6 +187,90 @@ public sealed class VideoStoryboardPlannerTests
         var result = _planner.Plan(product, [hero, angle, omitted], new(AssetSelection: "manual", SelectedMockupIds: [hero.Id, angle.Id], SceneOrder: [angle.Id, hero.Id]));
         result.Value.Scenes.Select(x => x.MockupId).Should().Equal(angle.Id, hero.Id);
         result.Value.Scenes.Should().NotContain(x => x.MockupId == omitted.Id);
+    }
+
+    [TestMethod]
+    public void Plan_StandardSceneCustomFraming_UsesConfiguredEndpointsForEachApprovedSource()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var detail = fixture.AddAsset(product, "ArtworkDetail");
+        var heroStart = new Region(.1, .1, .8, .8);
+        var heroEnd = new Region(.15, .15, .7, .7);
+        var detailStart = new Region(.12, .1, .76, .8);
+        var detailEnd = new Region(.2, .15, .6, .7);
+        var config = new GenerateVideoConfig(Template: "product_showcase", TemplateVersion: 2,
+            AssetSelection: "manual", SelectedMockupIds: [hero.Id, detail.Id], SceneOrder: [detail.Id, hero.Id],
+            StandardScenes: [new(detail.Id, detailStart, detailEnd), new(hero.Id, heroStart, heroEnd)]);
+
+        var result = _planner.Plan(product, [hero, detail], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Should().HaveCount(2);
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Equal(detail.Id, hero.Id);
+        result.Value.Scenes[0].Crop.Should().Be(detailStart);
+        result.Value.Scenes[0].EndCrop.Should().Be(detailEnd);
+        result.Value.Scenes[1].Crop.Should().Be(heroStart);
+        result.Value.Scenes[1].EndCrop.Should().Be(heroEnd);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Plan_StandardSceneCustomFraming_RejectsEndpointThatClipsProtectedProductRegion(bool clipsAtStart)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var fullImage = new Region(0, 0, 1, 1);
+        var clippedProduct = new Region(.1, .1, .3, .3);
+        var config = new GenerateVideoConfig(TemplateVersion: 2,
+            StandardScenes: [new(hero.Id,
+                clipsAtStart ? clippedProduct : fullImage,
+                clipsAtStart ? fullImage : clippedProduct)]);
+
+        var result = _planner.Plan(product, [hero], config);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Message.ToLowerInvariant().Should().Contain("scene");
+    }
+
+    [TestMethod]
+    public void Plan_StandardMode_RejectsVariantShowcaseTemplate()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var red = fixture.AddAsset(product); red.VariantKey = "red";
+        var blue = fixture.AddAsset(product, "Variant"); blue.VariantKey = "blue";
+
+        var result = _planner.Plan(product, [red, blue], new(Template: "variant_showcase", TemplateVersion: 2));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Message.ToLowerInvariant().Should().Contain("template");
+    }
+
+    [TestMethod]
+    public void Plan_ApprovedGeneratedVideoScene_IsEligibleOnlyAtCurrentApprovedRevision()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var frame = fixture.AddAsset(product, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.ApprovalStatus = "pending";
+        frame.ApprovedRevision = null;
+        var config = new GenerateVideoConfig(AssetSelection: "manual", SelectedMockupIds: [frame.Id], SceneOrder: [frame.Id]);
+
+        var pending = _planner.Plan(product, [frame], config);
+        pending.IsSuccess.Should().BeFalse();
+        pending.Error.Code.Should().Be("WaitingForInput");
+
+        frame.ApprovalStatus = "approved";
+        frame.ApprovedRevision = frame.MetadataRevision;
+        var approved = _planner.Plan(product, [frame], config);
+
+        approved.IsSuccess.Should().BeTrue();
+        approved.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id);
     }
 
     [TestMethod]

@@ -30,6 +30,8 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
         var node = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).Single();
         var config = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
+        if (!HasAiVideoScene(config))
+            return Result.Failure<AiShotQuoteResponse>(Error.Validation("This storyboard has no AI video scenes to quote."));
         if (request.SceneOrder.HasValue && !request.Regenerate)
             return Result.Failure<AiShotQuoteResponse>(Error.Validation("A scene can only be selected for regeneration."));
         var evaluated = await EvaluateAsync(run, config, request.Regenerate, request.SceneOrder, ct);
@@ -43,6 +45,10 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
     public async Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Success();
+        if (!HasAiVideoScene(config))
+            return regenerate
+                ? Result.Failure(Error.Validation("Only an AI video scene can be regenerated."))
+                : Result.Success();
         var claims = string.IsNullOrWhiteSpace(token) ? null : signer.Read(token);
         if (claims == null || claims.ExpiresAtUtc <= time.GetUtcNow() || claims.RunId != run.Id || claims.Regenerate != regenerate || claims.SceneOrder != sceneOrder)
             return Result.Failure(Error.Validation("Confirm the current AI Shot cost before continuing."));
@@ -58,6 +64,9 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             ? Result.Success()
             : Result.Failure(Error.Conflict("AiShotQuoteChanged", "The estimated AI Shot cost increased. Review the updated cost before continuing."));
     }
+
+    private static bool HasAiVideoScene(GenerateVideoConfig config) =>
+        config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard");
 
     private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)
     {

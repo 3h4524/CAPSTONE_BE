@@ -81,6 +81,17 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
+    public void VideoConfig_Standard_RejectsVariantShowcase()
+    {
+        var validator = new GenerateVideoConfigValidator();
+
+        validator.Validate(new GenerateVideoConfig(Template: "product_showcase")).IsValid.Should().BeTrue();
+        validator.Validate(new GenerateVideoConfig(Template: "design_detail")).IsValid.Should().BeTrue();
+        validator.Validate(new GenerateVideoConfig(Template: "variant_showcase"))
+            .Errors.Should().Contain(x => x.ErrorMessage.Contains("Product Showcase and Design Detail"));
+    }
+
+    [TestMethod]
     [DataRow("gentle")]
     [DataRow("static")]
     [DataRow("zoom")]
@@ -125,6 +136,38 @@ public sealed class WorkflowValidatorTests
             .Errors.Should().Contain(x => x.PropertyName == "SceneMotionPresets");
         validator.Validate(new GenerateVideoConfig(SceneMotionPresets: ["zoom", "pan", "static", "zoom_out", "pan_up"]))
             .Errors.Should().Contain(x => x.PropertyName == "SceneMotionPresets");
+    }
+
+    [TestMethod]
+    public void VideoConfig_StandardSceneFraming_AcceptsNormalizedEndpointsAndRejectsInvalidBoundsOrSources()
+    {
+        var validator = new GenerateVideoConfigValidator();
+        var id = Guid.NewGuid();
+        var fullImage = new Region(0, 0, 1, 1);
+        var detailCrop = new Region(.1, .1, .8, .8);
+
+        validator.Validate(new GenerateVideoConfig(StandardScenes: [new(id, fullImage, detailCrop)]))
+            .IsValid.Should().BeTrue();
+
+        foreach (var invalid in new[]
+        {
+            new StandardSceneOptions(id, new(-.01, .1, .5, .5), detailCrop),
+            new StandardSceneOptions(id, new(.8, .1, .3, .5), detailCrop),
+            new StandardSceneOptions(id, new(.1, .1, 0, .5), detailCrop),
+            new StandardSceneOptions(id, detailCrop, new(.1, .8, .5, .3)),
+            new StandardSceneOptions(id, detailCrop, detailCrop, new(.8, .1, .3, .5)),
+            new StandardSceneOptions(Guid.Empty, detailCrop, detailCrop),
+        })
+        {
+            validator.Validate(new GenerateVideoConfig(StandardScenes: [invalid]))
+                .Errors.Should().Contain(x => x.PropertyName == "StandardScenes");
+        }
+
+        validator.Validate(new GenerateVideoConfig(StandardScenes: [new(id, detailCrop, detailCrop), new(id, detailCrop, detailCrop)]))
+            .Errors.Should().Contain(x => x.PropertyName == "StandardScenes");
+        var five = Enumerable.Range(0, 5).Select(_ => new StandardSceneOptions(Guid.NewGuid(), detailCrop, detailCrop)).ToArray();
+        validator.Validate(new GenerateVideoConfig(StandardScenes: five))
+            .Errors.Should().Contain(x => x.PropertyName == "StandardScenes");
     }
 
     [TestMethod]

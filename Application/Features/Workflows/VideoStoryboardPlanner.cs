@@ -23,7 +23,8 @@ public sealed class VideoStoryboardPlanner
         IReadOnlyList<VideoTemplate>? aiVideoTemplates = null)
     {
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
-        if (config.Mode == "ai_shot" && config.OutputFormat == "square")
+        if (config.Mode == "ai_shot" && config.OutputFormat == "square" &&
+            (config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard")))
             return Result.Failure<Storyboard>(Error.Validation("AI video supports portrait or landscape output."));
         var eligible = assets.Where(x => x.ProductId == product.Id && x.DeletedAt == null && x.ApprovalStatus == "approved" &&
             x.ApprovedRevision == x.MetadataRevision && !string.IsNullOrEmpty(x.ContentHash)).ToList();
@@ -36,8 +37,12 @@ public sealed class VideoStoryboardPlanner
             return PlanAiScenes(product, eligible, config, aiVideoTemplates);
         var templateVersion = config.TemplateVersion ?? 1;
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
+        if (config.Mode == "standard" && config.Template == "variant_showcase")
+            return Result.Failure<Storyboard>(Error.Validation("Standard video supports Product Showcase and Design Detail templates."));
         var template = config.Mode == "ai_shot" && config.AiShotOptions?.Coverage == "full_video"
-            ? "product_showcase" : ResolveTemplate(config.Template, eligible, templateVersion);
+            ? "product_showcase" : config.Mode == "standard"
+                ? ResolveStandardTemplate(config.Template, eligible, templateVersion)
+                : ResolveTemplate(config.Template, eligible, templateVersion);
         if (templateVersion >= 2 && template == "design_detail" &&
             !eligible.Any(x => x.Role == "ArtworkDetail" || WorkflowJson.Read<MockupRegions>(x.Regions).Detail != null))
             return Result.Failure<Storyboard>(Error.Validation("Design Detail requires an artwork-detail image or a marked detail region."));
@@ -66,13 +71,30 @@ public sealed class VideoStoryboardPlanner
             if (config.SceneOrder.Any(id => eligible.All(x => x.Id != id))) return Result.Failure<Storyboard>(Error.Validation("Scene order contains an unavailable mockup."));
             ordered = config.SceneOrder.Select(id => eligible.Single(x => x.Id == id)).ToList();
         }
+        if (config.Mode == "standard" && config.StandardScenes is { Count: > 0 })
+        {
+            if (config.StandardScenes.Any(scene => ordered.All(asset => asset.Id != scene.MockupId)))
+                return Result.Failure<Storyboard>(Error.Validation("Custom framing refers to a mockup that is not in the scene order."));
+            foreach (var scene in config.StandardScenes)
+            {
+                if (!ValidRegion(scene.BaseCrop) || !ValidRegion(scene.StartCrop) || !ValidRegion(scene.EndCrop))
+                    return Result.Failure<Storyboard>(Error.Validation("Custom scene framing must stay inside the source image."));
+                var asset = ordered.First(candidate => candidate.Id == scene.MockupId);
+                var regions = WorkflowJson.Read<MockupRegions>(asset.Regions);
+                var protectedRegion = asset.Role == "ArtworkDetail" ? regions.Detail ?? regions.Artwork ?? regions.Product : regions.Product;
+                if (protectedRegion != null && (scene.StartCrop is { } start && !Contains(start, protectedRegion) ||
+                    scene.EndCrop is { } end && !Contains(end, protectedRegion)))
+                    return Result.Failure<Storyboard>(Error.Validation($"Scene {ordered.FindIndex(candidate => candidate.Id == scene.MockupId) + 1} custom framing must keep the product and artwork visible."));
+            }
+        }
         if (ordered.Count == 1) ordered.Add(ordered[0]);
         var outputFrames = config.DurationSeconds * 30;
         var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
         var overlapFrames = transition == "none" ? 0 : TransitionFrames;
         var totalFrames = outputFrames + overlapFrames * (ordered.Count - 1);
         var scenes = ordered.Select((asset, index) => CreateScene(asset, product.ProductType, config, index,
-            totalFrames / ordered.Count + (index < totalFrames % ordered.Count ? 1 : 0)) with
+            totalFrames / ordered.Count + (index < totalFrames % ordered.Count ? 1 : 0),
+            config.Mode == "standard" ? config.StandardScenes?.SingleOrDefault(scene => scene.MockupId == asset.Id) : null) with
             { Transition = index == 0 ? "none" : transition }).ToArray();
         if (templateVersion >= 2 && ordered.Count == 2 && ordered[0].Id == ordered[1].Id &&
             scenes[0].Motion == scenes[1].Motion && config.SceneMotionPresets is not { Count: > 0 })
@@ -89,10 +111,10 @@ public sealed class VideoStoryboardPlanner
     {
         var requestedScenes = config.AiScenes!;
         if (requestedScenes.Count is < 1 or > 4)
-            return Result.Failure<Storyboard>(Error.Validation("Configure between one and four AI scenes."));
+            return Result.Failure<Storyboard>(Error.Validation("Configure between one and four scenes."));
         if (requestedScenes.Any(scene => scene.DurationSeconds is not (4 or 6 or 8)) || requestedScenes.Sum(scene => scene.DurationSeconds) > 30)
-            return Result.Failure<Storyboard>(Error.Validation("AI scenes must be 4, 6 or 8 seconds each, with a maximum combined duration of 30 seconds."));
-        if (config.AiGlobalInstructions is { Length: > 500 })
+            return Result.Failure<Storyboard>(Error.Validation("Scenes must be 4, 6 or 8 seconds each, with a maximum combined duration of 30 seconds."));
+        if (requestedScenes.Any(scene => scene.Mode != "standard") && config.AiGlobalInstructions is { Length: > 500 })
             return Result.Failure<Storyboard>(Error.Validation("Keep the shared AI scene direction under 500 characters."));
         if (config.AiStudioMode is not ("direct" or "studio"))
             return Result.Failure<Storyboard>(Error.Validation("Choose direct mock-up or a studio keyframe."));
@@ -107,6 +129,58 @@ public sealed class VideoStoryboardPlanner
         for (var index = 0; index < requestedScenes.Count; index++)
         {
             var requested = requestedScenes[index];
+            if (requested.Mode is not ("ai" or "standard"))
+                return Result.Failure<Storyboard>(Error.Validation($"Choose AI video or Standard motion for scene {index + 1}."));
+            if (requested.Mode == "standard")
+            {
+                if (requested.MockupId is not Guid selectedStandardMockupId || selectedStandardMockupId == Guid.Empty)
+                    return Result.Failure<Storyboard>(Error.Validation($"Choose an approved product image or keyframe for scene {index + 1}."));
+                var selectedSource = productSources.FirstOrDefault(asset => asset.Id == selectedStandardMockupId);
+                if (selectedSource == null)
+                    return Result.Failure<Storyboard>(Error.Validation($"Scene {index + 1} source is not an approved mockup."));
+                if (requested.StartFrameMode is not (null or "direct" or "studio"))
+                    return Result.Failure<Storyboard>(Error.Validation($"Scene {index + 1} has an unsupported frame source."));
+
+                var standardSource = selectedSource;
+                if (requested.StartFrameMode == "studio")
+                {
+                    if (requested.StudioFrameId is not Guid selectedFrameId ||
+                        productSources.FirstOrDefault(asset => asset.Id == selectedFrameId) is not { } selectedFrame ||
+                        AiStudioFrameIdentity.Read(selectedFrame.Regions) is null)
+                        return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired", $"Choose an approved keyframe for scene {index + 1}."));
+                    standardSource = selectedFrame;
+                }
+
+                var motion = requested.StandardMotionPreset ?? "gentle";
+                if (motion is not ("gentle" or "contain_gentle" or "static" or "pan" or "zoom" or "zoom_out" or "pan_left" or "pan_up" or "pan_down" or
+                    "diagonal_up_right" or "diagonal_up_left" or "diagonal_down_right" or "diagonal_down_left" or "custom"))
+                    return Result.Failure<Storyboard>(Error.Validation($"Scene {index + 1} uses an unsupported Standard camera movement."));
+                if (!ValidRegion(requested.StandardBaseCrop) || !ValidRegion(requested.StandardStartCrop) || !ValidRegion(requested.StandardEndCrop))
+                    return Result.Failure<Storyboard>(Error.Validation("Standard camera framing must stay inside the source image."));
+
+                var sourceRegions = WorkflowJson.Read<MockupRegions>(standardSource.Regions);
+                var protectedSourceRegion = standardSource.Role == "ArtworkDetail"
+                    ? sourceRegions.Detail ?? sourceRegions.Artwork ?? sourceRegions.Product
+                    : sourceRegions.Product;
+                if (protectedSourceRegion != null &&
+                    (requested.StandardStartCrop is { } standardStart && !Contains(standardStart, protectedSourceRegion) ||
+                     requested.StandardEndCrop is { } standardEnd && !Contains(standardEnd, protectedSourceRegion)))
+                    return Result.Failure<Storyboard>(Error.Validation($"Scene {index + 1} framing must keep the product and artwork visible."));
+
+                var sceneMotions = (config.SceneMotionPresets ?? []).ToList();
+                while (sceneMotions.Count <= index) sceneMotions.Add(null);
+                sceneMotions[index] = motion;
+                var standardConfig = config with { SceneMotionPresets = sceneMotions };
+                var customFraming = requested.StandardStartCrop != null || requested.StandardEndCrop != null || requested.StandardBaseCrop != null
+                    ? new StandardSceneOptions(standardSource.Id, requested.StandardStartCrop, requested.StandardEndCrop, requested.StandardBaseCrop)
+                    : null;
+                plannedScenes.Add(CreateScene(standardSource, product.ProductType, standardConfig, index, requested.DurationSeconds * 30, customFraming) with
+                {
+                    Transition = index == 0 ? "none" : NormalizeTransition(config.StandardOptions?.Transition ?? "none"),
+                });
+                continue;
+            }
+
             var definition = templates.SingleOrDefault(item => item.Code == requested.TemplateCode);
             if (definition == null)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} uses an unavailable template."));
@@ -201,16 +275,17 @@ public sealed class VideoStoryboardPlanner
         var overlapFrames = requestedScenes.Count > 1 && transition != "none" ? TransitionFrames : 0;
         var outputFrames = duration * 30 - overlapFrames * (requestedScenes.Count - 1);
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
+        var boardMode = shots.Count > 0 ? "ai_shot" : "standard";
         var fingerprintAll = WorkflowJson.Hash(WorkflowJson.Write(new
         {
             Product = product.Id,
             config.OutputFormat,
-            Mode = "ai_shot",
+            Mode = boardMode,
             PlannedScenes = plannedScenes,
             Shots = shots
         }));
         return Result.Success(new Storyboard("product_showcase", 2, duration, product.ProductType, plannedScenes,
-            fingerprintAll, output.Format, output.Width, output.Height, output.AspectRatio, "ai_shot", overlapFrames, shots, outputFrames));
+            fingerprintAll, output.Format, output.Width, output.Height, output.AspectRatio, boardMode, overlapFrames, shots, outputFrames));
     }
 
     private static string NormalizeTransition(string transition) => transition == "cut" ? "none" : transition;
@@ -305,7 +380,8 @@ public sealed class VideoStoryboardPlanner
             (string.IsNullOrWhiteSpace(instruction) ? "" : instruction.Trim());
     }
 
-    public ScenePlan CreateScene(MockupImage asset, string productType, GenerateVideoConfig config, int index, int frames)
+    public ScenePlan CreateScene(MockupImage asset, string productType, GenerateVideoConfig config, int index, int frames,
+        StandardSceneOptions? customFraming = null)
     {
         var regions = WorkflowJson.Read<MockupRegions>(asset.Regions);
         var focus = regions.FocalPoint ?? new Point();
@@ -324,7 +400,13 @@ public sealed class VideoStoryboardPlanner
         var height = sourceRatio < outputRatio ? sourceRatio / outputRatio : 1;
         var width = sourceRatio > outputRatio ? outputRatio / sourceRatio : 1;
         var candidate = new Region(Math.Clamp(focus.X - width / 2, 0, 1 - width), Math.Clamp(focus.Y - height / 2, 0, 1 - height), width, height);
-        if (motion == "contain_gentle")
+        if (customFraming is not null)
+        {
+            crop = customFraming.StartCrop ?? candidate;
+            end = customFraming.EndCrop ?? crop;
+            motion = "custom";
+        }
+        else if (motion == "contain_gentle")
         {
             crop = full;
             end = full;
@@ -383,6 +465,12 @@ public sealed class VideoStoryboardPlanner
             return "design_detail";
         return "product_showcase";
     }
+    private static string ResolveStandardTemplate(string requested, IReadOnlyList<MockupImage> eligible, int templateVersion)
+    {
+        if (requested != "auto") return requested;
+        return eligible.Any(x => x.Role == "ArtworkDetail" || templateVersion >= 2 && WorkflowJson.Read<MockupRegions>(x.Regions).Detail != null)
+            ? "design_detail" : "product_showcase";
+    }
     private static bool HasDetail(MockupImage asset) => asset.Role == "ArtworkDetail" ||
         WorkflowJson.Read<MockupRegions>(asset.Regions) is { Detail: not null } or { Artwork: not null };
     private static bool HasMarkedDetail(MockupImage asset) =>
@@ -407,4 +495,6 @@ public sealed class VideoStoryboardPlanner
     }
     private static bool Contains(Region outer, Region inner) => inner.X >= outer.X && inner.Y >= outer.Y &&
         inner.X + inner.Width <= outer.X + outer.Width + 1e-9 && inner.Y + inner.Height <= outer.Y + outer.Height + 1e-9;
+    private static bool ValidRegion(Region? region) => region is null || double.IsFinite(region.X + region.Y + region.Width + region.Height) &&
+        region.X >= 0 && region.Y >= 0 && region.Width > 0 && region.Height > 0 && region.X + region.Width <= 1 && region.Y + region.Height <= 1;
 }
