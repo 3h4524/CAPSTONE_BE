@@ -14,6 +14,7 @@ public class RevenueTrendPointDto
 {
     public string DateLabel { get; set; } = null!;
     public decimal Amount { get; set; }
+    public decimal PreviousAmount { get; set; }
     public Dictionary<string, decimal> PlanBreakdown { get; set; } = new();
 }
 

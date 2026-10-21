@@ -88,10 +88,18 @@ public sealed class RevenueService(
 
     public async Task<Result<RevenueChartDto>> GetChartsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default)
     {
+        int days = (filter.EndDate.ToDateTime(TimeOnly.MinValue) - filter.StartDate.ToDateTime(TimeOnly.MinValue)).Days + 1;
+        var previousStartDate = filter.StartDate.AddDays(-days);
+        var previousEndDate = filter.EndDate.AddDays(-days);
+
         var invoices = await invoiceRepository.Query()
             .Include(i => i.Subscription)
             .ThenInclude(s => s.Plan)
             .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= filter.StartDate && (i.PaymentDate ?? i.InvoiceDate) <= filter.EndDate)
+            .ToListAsync(cancellationToken);
+
+        var previousInvoices = await invoiceRepository.Query()
+            .Where(i => i.Status.ToLower() == "paid" && (i.PaymentDate ?? i.InvoiceDate) >= previousStartDate && (i.PaymentDate ?? i.InvoiceDate) <= previousEndDate)
             .ToListAsync(cancellationToken);
 
         var chartDto = new RevenueChartDto();
@@ -101,17 +109,32 @@ public sealed class RevenueService(
         {
             chartDto.Trend = invoices
                 .GroupBy(i => new { (i.PaymentDate ?? i.InvoiceDate).Year, (i.PaymentDate ?? i.InvoiceDate).Month })
-                .Select(g => new RevenueTrendPointDto
+                .Select(g =>
                 {
-                    DateLabel = $"{g.Key.Year}-{g.Key.Month:D2}",
-                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
-                    PlanBreakdown = g
-                        .Where(i => i.Subscription?.Plan != null)
-                        .GroupBy(i => i.Subscription.Plan.Name)
-                        .ToDictionary(
-                            pg => pg.Key,
-                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                        )
+                    var pointDate = new DateOnly(g.Key.Year, g.Key.Month, 1);
+                    var prevPointDate = pointDate.AddDays(-days);
+
+                    var prevAmount = previousInvoices
+                        .Where(p => {
+                            var d = p.PaymentDate ?? p.InvoiceDate;
+                            return (d.Year == g.Key.Year - 1 && d.Month == g.Key.Month)
+                                || (d.Year == prevPointDate.Year && d.Month == prevPointDate.Month);
+                        })
+                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+
+                    return new RevenueTrendPointDto
+                    {
+                        DateLabel = $"{g.Key.Year}-{g.Key.Month:D2}",
+                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        PreviousAmount = prevAmount,
+                        PlanBreakdown = g
+                            .Where(i => i.Subscription?.Plan != null)
+                            .GroupBy(i => i.Subscription.Plan.Name)
+                            .ToDictionary(
+                                pg => pg.Key,
+                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                            )
+                    };
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
@@ -120,17 +143,25 @@ public sealed class RevenueService(
         {
             chartDto.Trend = invoices
                 .GroupBy(i => (i.PaymentDate ?? i.InvoiceDate).Year)
-                .Select(g => new RevenueTrendPointDto
+                .Select(g =>
                 {
-                    DateLabel = g.Key.ToString(),
-                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
-                    PlanBreakdown = g
-                        .Where(i => i.Subscription?.Plan != null)
-                        .GroupBy(i => i.Subscription.Plan.Name)
-                        .ToDictionary(
-                            pg => pg.Key,
-                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                        )
+                    var prevAmount = previousInvoices
+                        .Where(p => (p.PaymentDate ?? p.InvoiceDate).Year == g.Key - 1)
+                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+
+                    return new RevenueTrendPointDto
+                    {
+                        DateLabel = g.Key.ToString(),
+                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        PreviousAmount = prevAmount,
+                        PlanBreakdown = g
+                            .Where(i => i.Subscription?.Plan != null)
+                            .GroupBy(i => i.Subscription.Plan.Name)
+                            .ToDictionary(
+                                pg => pg.Key,
+                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                            )
+                    };
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
@@ -139,17 +170,25 @@ public sealed class RevenueService(
         {
             chartDto.Trend = invoices
                 .GroupBy(i => (i.PaymentDate ?? i.InvoiceDate))
-                .Select(g => new RevenueTrendPointDto
+                .Select(g =>
                 {
-                    DateLabel = g.Key.ToString("yyyy-MM-dd"),
-                    Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
-                    PlanBreakdown = g
-                        .Where(i => i.Subscription?.Plan != null)
-                        .GroupBy(i => i.Subscription.Plan.Name)
-                        .ToDictionary(
-                            pg => pg.Key,
-                            pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                        )
+                    var prevAmount = previousInvoices
+                        .Where(p => (p.PaymentDate ?? p.InvoiceDate) == g.Key.AddDays(-days))
+                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+
+                    return new RevenueTrendPointDto
+                    {
+                        DateLabel = g.Key.ToString("yyyy-MM-dd"),
+                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        PreviousAmount = prevAmount,
+                        PlanBreakdown = g
+                            .Where(i => i.Subscription?.Plan != null)
+                            .GroupBy(i => i.Subscription.Plan.Name)
+                            .ToDictionary(
+                                pg => pg.Key,
+                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                            )
+                    };
                 })
                 .OrderBy(x => x.DateLabel)
                 .ToList();
