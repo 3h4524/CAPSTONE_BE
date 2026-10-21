@@ -92,6 +92,7 @@ public sealed class AdminDashboardServiceTests
         result.Value.RecurringRevenue.Should().Be(40.0m);
         result.Value.TotalRevenue.Should().Be(80.0m); // 50 + 30
         result.Value.ActiveBatchJobs.Should().Be(2);
+        result.Value.TotalBatchJobs.Should().Be(3);
         result.Value.PendingTickets.Should().Be(2);
     }
 

@@ -97,7 +97,7 @@ public sealed class AdminUserService(
             Roles: u.UserRoleUsers.Select(ur => ur.Role.Name).ToList(),
             Plan: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: u.BatchJobs.Count,
-            MonthlyApiCost: u.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            MonthlyApiCost: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
             Birthday: u.Birthday,
             CreatedAt: u.CreatedAt
         )).ToList();
@@ -143,7 +143,7 @@ public sealed class AdminUserService(
             Roles: user.UserRoleUsers.Select(ur => ur.Role.Name).ToList(),
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
-            MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            MonthlyApiCost: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
             Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );
@@ -355,7 +355,7 @@ public sealed class AdminUserService(
             Roles: resultRoles,
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
-            MonthlyApiCost: user.Invoices.Where(i => i.InvoiceDate >= startOfMonth && i.Status.ToLower() == "paid").Sum(i => i.TotalAmount),
+            MonthlyApiCost: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
             Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );

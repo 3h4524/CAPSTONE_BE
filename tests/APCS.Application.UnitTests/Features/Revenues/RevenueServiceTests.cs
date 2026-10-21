@@ -206,6 +206,15 @@ public sealed class RevenueServiceTests
         chart.ByPlan[1].PlanName.Should().Be("Starter");
         chart.ByPlan[1].Amount.Should().Be(200m);
         chart.ByPlan[1].Percentage.Should().Be(40m);
+
+        // PlanBreakdown per trend point verification
+        chart.Trend[0].PlanBreakdown.Should().ContainKey("Pro").WhoseValue.Should().Be(300m);
+        chart.Trend[0].PlanBreakdown.Should().NotContainKey("Starter");
+        chart.Trend[1].PlanBreakdown.Should().ContainKey("Starter").WhoseValue.Should().Be(200m);
+        chart.Trend[1].PlanBreakdown.Should().NotContainKey("Pro");
+
+        // AvailablePlans verification
+        chart.AvailablePlans.Should().BeEquivalentTo(new[] { "Pro", "Starter" });
     }
 
     [TestMethod]

@@ -1,0 +1,174 @@
+using System.Text.Json;
+using APCS.Application.Features.Workflows;
+using FluentAssertions;
+
+namespace APCS.Application.UnitTests.Features.Workflows;
+
+[TestClass]
+public sealed class WorkflowGraphValidatorTests
+{
+    private readonly WorkflowGraphValidator _validator = new(new(), new());
+
+    [TestMethod]
+    public void Validate_StandardPipeline_PreservesBothApprovalGates()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        _validator.Validate(definition).Should().BeNull();
+        var shuffled = definition with { Nodes = definition.Nodes.Reverse().ToArray(), Edges = definition.Edges.Reverse().ToArray() };
+        _validator.Validate(shuffled).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_LegacyAiBackground_ReturnsUnsupportedVideoMode()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct(), new(Mode: "ai_background"));
+        _validator.Validate(definition)!.Code.Should().Be("UnsupportedVideoMode");
+    }
+
+    [TestMethod]
+    public void Validate_AiShotWithOptions_AllowsWorkflow()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct(),
+            new(Mode: "ai_shot", AiShotOptions: new()));
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    [DataRow("publish-etsy")]
+    [DataRow("publish-printify")]
+    public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode(string type)
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "apply-mockup" ? x with { Type = type } : x).ToArray() };
+        _validator.Validate(definition)!.Code.Should().Be("UnsupportedNode");
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(3)]
+    public void Validate_BypassedApprovalGate_RejectsGraph(int edgeIndex)
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with { Edges = definition.Edges.Select((x, i) => i == edgeIndex ? x with { Target = "node-5" } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
+    [DataRow("node-0")]
+    [DataRow("node-3")]
+    [DataRow("node-5")]
+    public void Validate_ListingContentHangingOffAnyStep_NeedsNoApproval(string source)
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges, new("edge-listing", source, "listing")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentBetweenTwoSteps_IsAccepted()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Skip(1), new("edge-in", "node-0", "listing"), new("edge-out", "listing", "node-1")]
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_ListingContentUsedToSkipMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        // Apply Mockup -> Listing Content -> Generate Video, with Mockup Approval left out of the line.
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, new("listing", "generate-listing", "Listing content", new(0, 200), JsonSerializer.SerializeToElement(new { }))],
+            Edges = [.. definition.Edges.Where(x => x.Target != "node-2"), new("edge-in", "node-1", "listing"), new("edge-out", "listing", "node-3")]
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
+    public void Validate_DesignStepsBeforeApplyMockup_AreAccepted()
+    {
+        var definition = WithDesignSteps(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), "prompt-synthesis", "design-image", "design-approval");
+        _validator.Validate(definition).Should().BeNull();
+        _validator.Validate(WithDesignSteps(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), "design-image")).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_DesignStepAfterApplyMockup_RejectsGraph()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        var design = new WorkflowNode("design", "design-image", "design-image", new(), JsonSerializer.SerializeToElement(new { }));
+        // Product Input → Apply Mockup → Design image → Mockup Approval: the designs would come after the mock-ups made from them.
+        definition = definition with
+        {
+            Nodes = definition.Nodes.Append(design).ToArray(),
+            Edges = definition.Edges.Select(x => x.Source == "node-1" ? x with { Target = "design" } : x)
+                .Append(new("design-next", "design", "node-2")).ToArray()
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
+    public void Validate_RepeatedDesignStep_RejectsGraph()
+    {
+        var definition = WithDesignSteps(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), "design-image", "design-image");
+        _validator.Validate(definition)!.Message.Should().Contain("only once");
+    }
+
+    [TestMethod]
+    public void Validate_DesignStepInPlaceOfApplyMockup_RejectsGraph()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "apply-mockup" ? x with { Type = "design-image" } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Contain("exactly once");
+    }
+
+    [TestMethod]
+    public void Validate_DuplicateNodeIdentity_RejectsGraph()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with { Nodes = definition.Nodes.Select((x, i) => i == 1 ? x with { Id = "node-0" } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Contain("unique");
+    }
+
+    [TestMethod]
+    public void Validate_MalformedConfig_ReturnsValidationInsteadOfThrowing()
+    {
+        var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "generate-video" ? x with { Config = JsonSerializer.SerializeToElement("invalid") } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Be("Invalid node configuration.");
+    }
+
+    // Places the design steps in a line between Product Input (node-0) and Apply Mockup (node-1).
+    private static WorkflowDefinition WithDesignSteps(WorkflowDefinition definition, params string[] types)
+    {
+        var steps = types.Select((type, i) => new WorkflowNode("design-" + i, type, type, new(), JsonSerializer.SerializeToElement(new { }))).ToArray();
+        var line = new[] { "node-0" }.Concat(steps.Select(x => x.Id)).Append("node-1").ToArray();
+        return definition with
+        {
+            Nodes = definition.Nodes.Concat(steps).ToArray(),
+            Edges = definition.Edges.Where(x => x.Source != "node-0")
+                .Concat(line.Skip(1).Select((target, i) => new WorkflowEdge("design-edge-" + i, line[i], target))).ToArray()
+        };
+    }
+
+    [TestMethod]
+    public void Capabilities_StandardAndAiShot_ExcludesAiBackground()
+    {
+        var capabilities = new WorkflowCapabilityRegistry().Get();
+        capabilities.DefinitionVersion.Should().Be(2);
+        capabilities.VideoModes.Single(x => x.Mode == "standard").Enabled.Should().BeTrue();
+        capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
+            x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
+        capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps).Concat(WorkflowCapabilityRegistry.ListingSteps));
+    }
+}

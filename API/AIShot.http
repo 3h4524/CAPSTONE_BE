@@ -1,0 +1,25 @@
+@api = http://localhost:5191
+@bearer = replace-with-user-access-token
+@runId = 00000000-0000-0000-0000-000000000000
+
+### Quote new AI clips for the saved run configuration
+POST {{api}}/api/workflow-runs/{{runId}}/ai-shot-quote
+Authorization: Bearer {{bearer}}
+Content-Type: application/json
+
+{"regenerate":false}
+
+### Continue after mockup approval; use the token and current revision returned above
+POST {{api}}/api/workflow-runs/{{runId}}/actions
+Authorization: Bearer {{bearer}}
+Content-Type: application/json
+
+{"expectedRevision":1,"action":"resume_mockups","aiShotQuoteToken":"replace-with-quote-token"}
+
+### Inspect run progress
+GET {{api}}/api/workflow-runs/{{runId}}
+Authorization: Bearer {{bearer}}
+
+### Review generated video versions
+GET {{api}}/api/workflow-runs/{{runId}}/videos
+Authorization: Bearer {{bearer}}

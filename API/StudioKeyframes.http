@@ -1,0 +1,20 @@
+@api = http://localhost:5191
+@bearer = replace-with-user-access-token
+@productId = 00000000-0000-0000-0000-000000000000
+@sourceMockupId = 00000000-0000-0000-0000-000000000000
+@fingerprint = replace-with-fingerprint-from-quote
+@estimate = 0.04
+
+### Quote or find a reusable studio keyframe. This request does not call Gemini.
+POST {{api}}/api/products/{{productId}}/studio-keyframe/quote
+Authorization: Bearer {{bearer}}
+Content-Type: application/json
+
+{"sourceMockupId":"{{sourceMockupId}}","layout":"hanging_window","outputFormat":"portrait","regenerate":false}
+
+### Generate after confirming the estimate returned above; result remains pending review.
+POST {{api}}/api/products/{{productId}}/studio-keyframe/generate
+Authorization: Bearer {{bearer}}
+Content-Type: application/json
+
+{"sourceMockupId":"{{sourceMockupId}}","layout":"hanging_window","outputFormat":"portrait","regenerate":false,"expectedFingerprint":"{{fingerprint}}","confirmedEstimatedCostUsd":{{estimate}}}
