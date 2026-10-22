@@ -51,26 +51,36 @@ public static class PlaywrightReportParser
         var groups = new Dictionary<(string File, string Project), List<TestReportSpecDto>>();
         var order = new List<(string File, string Project)>();
 
-        foreach (var suite in root.GetProperty("suites").EnumerateArray())
+        if (root.TryGetProperty("suites", out var suites))
         {
-            CollectSuite(suite, suite.GetProperty("file").GetString() ?? "unknown", [], groups, order, addOwnTitle: false);
+            foreach (var suite in suites.EnumerateArray())
+            {
+                var file = suite.TryGetProperty("file", out var fileElement)
+                    ? fileElement.GetString() ?? "unknown"
+                    : "unknown";
+                CollectSuite(suite, file, [], groups, order, addOwnTitle: false);
+            }
         }
 
         var files = order
             .Select(key => BuildFile(key.File, key.Project, groups[key]))
             .ToList();
 
-        var stats = root.GetProperty("stats");
+        var expected = ReadCount(root, "expected");
+        var unexpected = ReadCount(root, "unexpected");
+        var flaky = ReadCount(root, "flaky");
+        var skipped = ReadCount(root, "skipped");
+        var stats = root.TryGetProperty("stats", out var statsElement) ? statsElement : default;
+
         return new TestReportSummary(
             files,
-            stats.GetProperty("expected").GetInt32() + stats.GetProperty("unexpected").GetInt32()
-                + stats.GetProperty("skipped").GetInt32() + stats.GetProperty("flaky").GetInt32(),
-            stats.GetProperty("expected").GetInt32(),
-            stats.GetProperty("unexpected").GetInt32(),
-            stats.GetProperty("flaky").GetInt32(),
-            stats.GetProperty("skipped").GetInt32(),
+            expected + unexpected + flaky + skipped,
+            expected,
+            unexpected,
+            flaky,
+            skipped,
             ReadStartTime(stats),
-            (long)stats.GetProperty("duration").GetDouble());
+            ReadDurationMs(stats));
     }
 
     private static void CollectSuite(
@@ -88,29 +98,35 @@ public static class PlaywrightReportParser
             ? [.. describePath, title]
             : describePath;
 
-        foreach (var spec in suite.GetProperty("specs").EnumerateArray())
+        if (suite.TryGetProperty("specs", out var specs))
         {
+            foreach (var spec in specs.EnumerateArray())
+            {
             var test = spec.GetProperty("tests").EnumerateArray().FirstOrDefault();
             if (test.ValueKind == JsonValueKind.Undefined)
             {
                 continue;
             }
 
-            var project = ReadString(test, "projectName") ?? "default";
-            var key = (file, project);
-            if (!groups.TryGetValue(key, out var specs))
-            {
-                specs = [];
-                groups[key] = specs;
-                order.Add(key);
-            }
+                var project = ReadString(test, "projectName") ?? "default";
+                var key = (file, project);
+                if (!groups.TryGetValue(key, out var fileSpecs))
+                {
+                    fileSpecs = [];
+                    groups[key] = fileSpecs;
+                    order.Add(key);
+                }
 
-            specs.Add(ReadSpec(spec, test, currentPath));
+                fileSpecs.Add(ReadSpec(spec, test, currentPath));
+            }
         }
 
-        foreach (var child in suite.GetProperty("suites").EnumerateArray())
+        if (suite.TryGetProperty("suites", out var children))
         {
-            CollectSuite(child, file, currentPath, groups, order, addOwnTitle: true);
+            foreach (var child in children.EnumerateArray())
+            {
+                CollectSuite(child, file, currentPath, groups, order, addOwnTitle: true);
+            }
         }
     }
 
@@ -198,6 +214,20 @@ public static class PlaywrightReportParser
             ? parsed
             : null;
     }
+
+    private static int ReadCount(JsonElement root, string name) =>
+        root.TryGetProperty("stats", out var stats)
+        && stats.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Number
+            ? value.GetInt32()
+            : 0;
+
+    private static long ReadDurationMs(JsonElement stats) =>
+        stats.ValueKind == JsonValueKind.Object
+        && stats.TryGetProperty("duration", out var duration)
+        && duration.ValueKind == JsonValueKind.Number
+            ? (long)duration.GetDouble()
+            : 0;
 
     private static string? ReadString(JsonElement element, string propertyName)
     {

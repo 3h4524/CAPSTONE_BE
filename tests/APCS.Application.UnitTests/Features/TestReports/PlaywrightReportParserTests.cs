@@ -249,6 +249,62 @@ public sealed class PlaywrightReportParserTests
     }
 
     [TestMethod]
+    public void Parse_ReadsASuiteThatHasNoSuiteOfItsOwn()
+    {
+        // Playwright leaves the "suites" key out of a suite that holds no describe block.
+        const string report = """
+        {
+          "config": {},
+          "suites": [
+            {
+              "title": "landing.spec.ts",
+              "file": "e2e/public/landing.spec.ts",
+              "column": 0,
+              "line": 0,
+              "specs": [
+                {
+                  "title": "shows the hero",
+                  "ok": true,
+                  "tags": [],
+                  "id": "1",
+                  "file": "e2e/public/landing.spec.ts",
+                  "line": 5,
+                  "column": 3,
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "expectedStatus": "passed",
+                      "projectId": "public",
+                      "projectName": "public",
+                      "results": [
+                        { "status": "passed", "duration": 90, "retry": 0, "error": null, "errors": [] }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "errors": [],
+          "stats": {
+            "startTime": "2026-10-22T02:45:54.530Z",
+            "duration": 90.0,
+            "expected": 1,
+            "unexpected": 0,
+            "flaky": 0,
+            "skipped": 0
+          }
+        }
+        """;
+
+        var summary = PlaywrightReportParser.Parse(report);
+
+        summary.TotalTests.Should().Be(1);
+        summary.Files.Should().HaveCount(1);
+        summary.Files[0].Specs[0].Title.Should().Be("shows the hero");
+    }
+
+    [TestMethod]
     public void Parse_RejectsAnEmptyReport()
     {
         var act = () => PlaywrightReportParser.Parse("  ");
