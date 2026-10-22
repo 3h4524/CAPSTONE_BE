@@ -23,5 +23,15 @@ public interface ITestReportRunner
     /// <summary>
     /// Runs the test suite once.
     /// </summary>
-    Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default);
+    /// <param name="runId">The run the suite belongs to.</param>
+    /// <param name="environment">
+    /// The variables the suite reads, such as the seller credentials. They go into the environment
+    /// of the child process, never into the command line, so they do not show up in the process
+    /// list.
+    /// </param>
+    /// <param name="cancellationToken">Stops the run.</param>
+    Task<TestReportRunnerResult> RunAsync(
+        string runId,
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken = default);
 }

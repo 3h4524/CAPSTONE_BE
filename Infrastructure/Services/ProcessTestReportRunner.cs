@@ -37,7 +37,10 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
     }
 
     /// <inheritdoc />
-    public async Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default)
+    public async Task<TestReportRunnerResult> RunAsync(
+        string runId,
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken = default)
     {
         var branch = ReadGit("rev-parse --abbrev-ref HEAD");
         var commit = ReadGit("rev-parse --short HEAD");
@@ -47,13 +50,15 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
             File.Delete(_reportFile);
         }
 
-        var log = await RunCommandAsync(cancellationToken);
+        var log = await RunCommandAsync(environment, cancellationToken);
         var rawReport = File.Exists(_reportFile) ? await File.ReadAllTextAsync(_reportFile, cancellationToken) : null;
 
         return new TestReportRunnerResult(log.ExitCode, log.Output, rawReport, branch, commit);
     }
 
-    private async Task<(int ExitCode, string Output)> RunCommandAsync(CancellationToken cancellationToken)
+    private async Task<(int ExitCode, string Output)> RunCommandAsync(
+        IReadOnlyDictionary<string, string> environment,
+        CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -66,6 +71,13 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
 
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(_options.RunnerCommand);
+
+        // The environment of the child process, not its command line: a secret passed on the
+        // command line shows up in the process list of every user on the machine.
+        foreach (var (name, value) in environment)
+        {
+            startInfo.Environment[name] = value;
+        }
 
         using var process = new Process { StartInfo = startInfo };
         var output = new StringBuilder();

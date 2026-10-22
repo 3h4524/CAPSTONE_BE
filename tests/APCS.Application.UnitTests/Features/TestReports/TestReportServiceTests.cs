@@ -5,7 +5,10 @@ using System.Threading.Tasks;
 using APCS.Application.Abstractions;
 using APCS.Application.Features.TestReports;
 using APCS.Application.Features.TestReports.Dtos;
+using APCS.Common.Models;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
@@ -63,12 +66,32 @@ public sealed class TestReportServiceTests
 
     private readonly Mock<ITestReportStore> _store = new();
     private readonly Mock<ITestReportRunner> _runner = new();
+    private readonly Mock<ITestSellerProvisioner> _seller = new();
     private readonly FakeTimeProvider _timeProvider = new(new DateTimeOffset(2026, 10, 22, 9, 0, 0, TimeSpan.Zero));
     private readonly TestReportService _sut;
 
     public TestReportServiceTests()
     {
-        _sut = new TestReportService(_store.Object, _runner.Object, _timeProvider);
+        var provider = new Mock<IServiceProvider>();
+        provider.Setup(p => p.GetService(typeof(ITestSellerProvisioner))).Returns(_seller.Object);
+
+        var scope = new Mock<IServiceScope>();
+        scope.Setup(s => s.ServiceProvider).Returns(provider.Object);
+
+        var scopeFactory = new Mock<IServiceScopeFactory>();
+        scopeFactory.Setup(f => f.CreateScope()).Returns(scope.Object);
+
+        _seller.Setup(s => s.EnsureAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestSellerCredentials("e2e.seller@apcs.test", "E2e!secret"));
+        _seller.Setup(s => s.RemoveAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        _sut = new TestReportService(
+            _store.Object,
+            _runner.Object,
+            scopeFactory.Object,
+            new NullLogger<TestReportService>(),
+            _timeProvider);
     }
 
     private static TestReportRunDto Run(string runId, DateTime startedAtUtc, string status = "passed") => new()
@@ -185,7 +208,10 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunWhileItGoesAndCountsWhatItFound()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(
+            It.IsAny<string>(),
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", ReportJson, "feat/fe-test-reports", "abc1234"));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -209,7 +235,10 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunAsBrokenWhenTheSuiteWroteNoReport()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(
+            It.IsAny<string>(),
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", null, null, null));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -228,7 +257,10 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_RefusesToStartASecondRunWhileOneGoes()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(
+            It.IsAny<string>(),
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<CancellationToken>()))
             .Returns(async () =>
             {
                 await Task.Delay(50);
@@ -244,6 +276,31 @@ public sealed class TestReportServiceTests
         second.Error.Code.Should().Be("test_reports.run_in_progress");
 
         await WaitForTheRunToFinish();
+    }
+
+    [TestMethod]
+    public async Task StartRunAsync_HandsTheSellerCredentialsToTheSuiteAndRemovesTheSellerAfterwards()
+    {
+        _runner.Setup(runner => runner.RunAsync(
+                It.IsAny<string>(),
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestReportRunnerResult(0, string.Empty, ReportJson, null, null));
+        _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        await _sut.StartRunAsync("admin@apcs.test");
+        await WaitForTheRunToFinish();
+
+        _runner.Verify(
+            runner => runner.RunAsync(
+                It.IsAny<string>(),
+                It.Is<IReadOnlyDictionary<string, string>>(environment =>
+                    environment["E2E_SELLER_EMAIL"] == "e2e.seller@apcs.test" &&
+                    environment["E2E_SELLER_PASSWORD"] == "E2e!secret"),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        _seller.Verify(seller => seller.RemoveAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
