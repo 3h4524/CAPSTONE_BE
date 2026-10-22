@@ -62,9 +62,11 @@ public sealed class ApiKeyEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var providers = await response.Content.ReadFromJsonAsync<JsonElement>();
-        providers.EnumerateArray()
+        var ids = providers.EnumerateArray()
             .Select(item => item.GetProperty("id").GetString())
-            .Should().Contain(["gemini", "replicate", "printify"]);
+            .ToList();
+        ids.Should().Contain(["gemini", "replicate", "printify"]);
+        ids.Should().OnlyHaveUniqueItems();
     }
 
     [TestMethod]

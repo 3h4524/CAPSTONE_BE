@@ -153,6 +153,21 @@ public sealed class AccountService(
         return accountRepository.EmailExistsAsync(NormalizeEmail(email), cancellationToken);
     }
 
+    public async Task<bool> DeleteUserAsync(Guid userId, CancellationToken cancellationToken = default)
+    {
+        var user = await accountRepository.GetByIdAsync(userId, cancellationToken);
+
+        if (user is null)
+        {
+            return false;
+        }
+
+        // Staged like every other change here: the caller commits it.
+        await accountRepository.RemoveAsync(user, cancellationToken: cancellationToken);
+        _cachedUser = null;
+        return true;
+    }
+
     public async Task<AccountCreationResultDto> CreateUserAsync(
         string email,
         string password,
