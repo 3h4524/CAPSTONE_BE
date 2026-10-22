@@ -67,9 +67,10 @@ public sealed class ApiKeyService(
             return Result.Failure<IReadOnlyList<ApiKeyProviderResponseDto>>(error);
         return Result.Success<IReadOnlyList<ApiKeyProviderResponseDto>>(new ApiKeyProviderResponseDto[]
         {
-            new("gemini", "Google Gemini", true, ["Read models (connection check)", "Model inference for listing content"]),
+            // One entry per provider: the two Gemini rows were the same provider listed twice,
+            // which showed the user the same choice twice and stored the same id twice.
+            new("gemini", "Google Gemini", true, ["Read models (connection check)", "List models (connection check)", "Model inference for listing content", "Generate design images (Nano Banana)"]),
             new("replicate", "Replicate", true, ["Read account (connection check)", "Run predictions for image generation"]),
-            new("gemini", "Google Gemini", true, ["List models (connection check)", "Generate design images (Nano Banana)"]),
             new("printify", "Printify", true, ["Read shops (connection check)", "Manage and publish products", "No order or payment access needed"]),
             new("etsy", "Etsy", false, ["Etsy requires an OAuth account connection; API key entry is not supported."])
         });
