@@ -216,6 +216,8 @@ public sealed class TestReportService : ITestReportService
                     FailedTests = summary.FailedTests,
                     FlakyTests = summary.FlakyTests,
                     SkippedTests = summary.SkippedTests,
+                    KnownIssueTests = summary.KnownIssueTests,
+                    UnexpectedFailedTests = summary.FailedTests - summary.KnownIssueTests,
                     FileCount = summary.Files.Count,
                     SuiteCount = summary.Files.Sum(file => file.Specs.Count),
                 };

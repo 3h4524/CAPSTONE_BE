@@ -26,6 +26,12 @@ public sealed record TestReportSpecDto
     public int Retries { get; init; }
 
     /// <summary>
+    /// Gets whether the test pins a gap that is known, which the team names "BUG B".
+    /// Such a test fails while the gap is there and stops failing once it is fixed.
+    /// </summary>
+    public bool IsKnownIssue { get; init; }
+
+    /// <summary>
     /// Gets the message of the failure.
     /// </summary>
     public string? ErrorMessage { get; init; }

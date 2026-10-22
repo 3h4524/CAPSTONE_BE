@@ -305,6 +305,33 @@ public sealed class PlaywrightReportParserTests
     }
 
     [TestMethod]
+    public void Parse_KnowsATestThatPinsAGap()
+    {
+        var report = ReportWithOneFailure.Replace(
+            "loads the profile",
+            "BUG B7: the profile never loads",
+            StringComparison.Ordinal);
+
+        var summary = PlaywrightReportParser.Parse(report);
+
+        summary.Files[0].Specs[0].IsKnownIssue.Should().BeTrue();
+        summary.Files[0].Specs[1].IsKnownIssue.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void Parse_CountsTheFailedTestsThatPinAGap()
+    {
+        var report = ReportWithOneFailure.Replace(
+            "rejects an empty name",
+            "BUG B7: the empty name is not rejected",
+            StringComparison.Ordinal);
+
+        var summary = PlaywrightReportParser.Parse(report);
+
+        summary.KnownIssueTests.Should().Be(1);
+    }
+
+    [TestMethod]
     public void Parse_RejectsAnEmptyReport()
     {
         var act = () => PlaywrightReportParser.Parse("  ");

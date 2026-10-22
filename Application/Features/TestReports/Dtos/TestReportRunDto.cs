@@ -71,6 +71,16 @@ public sealed record TestReportRunDto
     public int SkippedTests { get; init; }
 
     /// <summary>
+    /// Gets how many of the failed tests pin a known gap instead of a new problem.
+    /// </summary>
+    public int KnownIssueTests { get; init; }
+
+    /// <summary>
+    /// Gets how many of the failed tests are new problems that need a look.
+    /// </summary>
+    public int UnexpectedFailedTests { get; init; }
+
+    /// <summary>
     /// Gets how many spec files the run covered.
     /// </summary>
     public int FileCount { get; init; }

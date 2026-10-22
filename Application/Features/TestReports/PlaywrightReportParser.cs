@@ -17,6 +17,7 @@ namespace APCS.Application.Features.TestReports;
 /// <param name="FailedTests">How many tests failed.</param>
 /// <param name="FlakyTests">How many tests passed only after a retry.</param>
 /// <param name="SkippedTests">How many tests were skipped.</param>
+/// <param name="KnownIssueTests">How many of the failed tests pin a known gap.</param>
 /// <param name="StartedAtUtc">When the run started.</param>
 /// <param name="DurationMs">How long the run took, in milliseconds.</param>
 public sealed record TestReportSummary(
@@ -26,6 +27,7 @@ public sealed record TestReportSummary(
     int FailedTests,
     int FlakyTests,
     int SkippedTests,
+    int KnownIssueTests,
     DateTime? StartedAtUtc,
     long DurationMs);
 
@@ -35,6 +37,10 @@ public sealed record TestReportSummary(
 public static class PlaywrightReportParser
 {
     private static readonly Regex AnsiEscape = new("\u001b\\[[0-9;]*m", RegexOptions.Compiled);
+
+    // The team names a test that pins a known gap "BUG B4: ...", so the name tells that a
+    // failure of such a test is the known gap and not a new problem.
+    private static readonly Regex KnownIssueMarker = new(@"^BUG B\d+\b", RegexOptions.Compiled);
 
     /// <summary>
     /// Parses a Playwright JSON report.
@@ -79,6 +85,7 @@ public static class PlaywrightReportParser
             unexpected,
             flaky,
             skipped,
+            files.Sum(file => file.Specs.Count(spec => spec.IsKnownIssue && spec.Status == "failed")),
             ReadStartTime(stats),
             ReadDurationMs(stats));
     }
@@ -140,9 +147,12 @@ public static class PlaywrightReportParser
             ? errorElement
             : default;
 
+        var ownTitle = ReadString(spec, "title") ?? string.Empty;
+
         return new TestReportSpecDto
         {
             Title = ReadTitle(spec, describePath),
+            IsKnownIssue = KnownIssueMarker.IsMatch(ownTitle),
             Status = status,
             DurationMs = ReadDuration(results),
             Retries = Math.Max(0, results.Count - 1),
