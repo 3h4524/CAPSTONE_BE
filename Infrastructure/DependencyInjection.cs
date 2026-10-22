@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Subscriptions;
@@ -80,6 +81,13 @@ public static class DependencyInjection
 
         services.AddOptions<CloudinaryOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
+
+        // Not required/ValidateOnStart: the test reports are a developer tool, and a box that
+        // never runs the suite still boots.
+        services.AddOptions<TestReportOptions>()
+            .Bind(configuration.GetSection(TestReportOptions.SectionName));
+        services.AddSingleton<ITestReportStore, FileTestReportStore>();
+        services.AddSingleton<ITestReportRunner, ProcessTestReportRunner>();
 
         // Not required/ValidateOnStart: the Gemini key itself is per-Seller BYOK (ApiKeys table),
         // not a platform credential, so a box with no override here still boots on the defaults.

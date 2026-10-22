@@ -168,12 +168,14 @@ print('export E2E_SELLER_PASSWORD=%s' % d['password'])
 run_unit() {
   resolve_toolchain
   say "FE unit test"
-  (cd "${FE_ROOT}" && "${PNPM}" test 2>&1 | tail -4)
+  # tail cắt mất dòng summary vì vitest in thêm gợi ý tối ưu ở cuối, nên grep đúng hai dòng kết quả.
+  (cd "${FE_ROOT}" && "${PNPM}" test 2>&1 \
+    | grep -E "^[[:space:]]+(Test Files|Tests)[[:space:]]" | sed 's/^[[:space:]]*/   /')
 }
 
 run_be_unit() {
   resolve_toolchain
-  say "BE unit test (707 test + coverage gate)"
+  say "BE unit test + coverage gate"
   (cd "${REPO_ROOT}" && DOTNET_ROOT="${HOME}/.dotnet" \
     && "${DOTNET}" test Capstone.sln -c Debug 2>&1 | grep -E "Passed!|Failed!" | sed 's/^/   /')
 }
@@ -195,9 +197,34 @@ run_be_integration() {
 
 run_e2e() {
   resolve_toolchain
-  say "FE E2E (54 test)"
+  say "FE E2E"
   load_credentials || { bad "chưa có seller.json — chạy 'seed-seller.sh' trước"; return 1; }
-  (cd "${FE_ROOT}" && "${PNPM}" test:e2e 2>&1 | tail -6)
+
+  # Headed chỉ bật khi có màn hình; CI và shell không có display thì chạy headless.
+  local browser_flag=""
+  if [ "${E2E_HEADED:-}" = "1" ]; then
+    browser_flag="--headed --workers=1"
+    log "chạy headed (cần display; nếu không có thì đặt DISPLAY)"
+  fi
+
+  (cd "${FE_ROOT}" && "${PNPM}" test:e2e ${browser_flag} 2>&1 \
+    | grep -E "passed|failed|flaky|skipped" | sed 's/^[[:space:]]*/   /')
+}
+
+run_all_tests() {
+  local failures=()
+
+  run_unit || failures+=("FE unit")
+  run_be_integration || failures+=("BE unit + integration")
+  # Từng tầng chạy độc lập: một tầng đỏ không được che các tầng còn lại.
+  run_e2e || failures+=("FE E2E")
+
+  if [ "${#failures[@]}" -gt 0 ]; then
+    bad "tầng đỏ: ${failures[*]}"
+    return 1
+  fi
+
+  ok "cả 4 tầng xanh"
 }
 
 case "${1:-all}" in
@@ -205,6 +232,6 @@ case "${1:-all}" in
   unit)   run_unit; run_be_unit ;;
   e2e)    bring_up && run_e2e ;;
   integ)  bring_up && run_be_integration ;;
-  all)    bring_up && run_unit && run_be_integration && run_e2e ;;
+  all)    bring_up && run_all_tests ;;
   *)      bad "tham số không hợp lệ: $1 (all|unit|e2e|integ|down)"; exit 1 ;;
 esac

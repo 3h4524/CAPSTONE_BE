@@ -11,9 +11,11 @@ using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Application.Features.SupportTickets;
+using APCS.Application.Features.TestReports;
 using APCS.Application.Features.Batches;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignTemplates;
+using APCS.Application.Abstractions;
 using APCS.Application.Features.Notifications;
 using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
@@ -73,6 +75,9 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();
         services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
         services.AddScoped<IListingContentService, ListingContentService>();
+        // The test reports are files on the machine that ran the suite, so the service keeps
+        // them for as long as the API lives.
+        services.AddSingleton<ITestReportService, TestReportService>();
 
         return services;
     }
