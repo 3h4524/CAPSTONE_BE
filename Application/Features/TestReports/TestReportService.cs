@@ -54,7 +54,6 @@ public static class TestReportStatuses
 /// </summary>
 public sealed class TestReportService : ITestReportService
 {
-    private readonly ITestReportStore _store;
     private readonly ITestReportRunner _runner;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TestReportService> _logger;
@@ -66,13 +65,11 @@ public sealed class TestReportService : ITestReportService
     /// Creates the service.
     /// </summary>
     public TestReportService(
-        ITestReportStore store,
         ITestReportRunner runner,
         IServiceScopeFactory scopeFactory,
         ILogger<TestReportService> logger,
         TimeProvider? timeProvider = null)
     {
-        _store = store;
         _runner = runner;
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -82,7 +79,9 @@ public sealed class TestReportService : ITestReportService
     /// <inheritdoc />
     public async Task<Result<PagedResult<TestReportRunDto>>> ListAsync(TestReportFilterDto filter, CancellationToken cancellationToken = default)
     {
-        var runs = await _store.ListAsync(cancellationToken);
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+        var runs = await store.ListAsync(cancellationToken);
 
         IEnumerable<TestReportRunDto> filtered = runs;
         if (filter.FromUtc is not null)
@@ -111,13 +110,16 @@ public sealed class TestReportService : ITestReportService
     /// <inheritdoc />
     public async Task<Result<TestReportDetailDto>> GetAsync(string runId, CancellationToken cancellationToken = default)
     {
-        var run = await _store.GetRunAsync(runId, cancellationToken);
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+
+        var run = await store.GetRunAsync(runId, cancellationToken);
         if (run is null)
         {
             return Result.Failure<TestReportDetailDto>(Error.NotFound(ErrorCodes.TestReportNotFound, "No test run with that id exists."));
         }
 
-        var rawReport = await _store.GetRawReportAsync(runId, cancellationToken);
+        var rawReport = await store.GetRawReportAsync(runId, cancellationToken);
         if (rawReport is null)
         {
             return Result.Success(new TestReportDetailDto { Run = run, Files = [] });
@@ -170,7 +172,9 @@ public sealed class TestReportService : ITestReportService
 
         try
         {
-            await _store.SaveRunAsync(run, null, cancellationToken);
+            using var scope = _scopeFactory.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+            await store.SaveRunAsync(run, null, cancellationToken);
         }
         catch
         {
@@ -189,13 +193,16 @@ public sealed class TestReportService : ITestReportService
     /// <inheritdoc />
     public async Task<Result<bool>> DeleteRunAsync(string runId, CancellationToken cancellationToken = default)
     {
-        var run = await _store.GetRunAsync(runId, cancellationToken);
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+
+        var run = await store.GetRunAsync(runId, cancellationToken);
         if (run is null)
         {
             return Result.Failure<bool>(Error.NotFound(ErrorCodes.TestReportNotFound, "No test run with that id exists."));
         }
 
-        await _store.DeleteRunAsync(runId, cancellationToken);
+        await store.DeleteRunAsync(runId, cancellationToken);
         return Result.Success(true);
     }
 
@@ -262,7 +269,9 @@ public sealed class TestReportService : ITestReportService
 
         try
         {
-            await _store.SaveRunAsync(finished, rawReport, CancellationToken.None);
+            using var scope = _scopeFactory.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+            await store.SaveRunAsync(finished, rawReport, CancellationToken.None);
         }
         finally
         {

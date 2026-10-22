@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(59);
+        mappedTables.Should().HaveCount(60);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
@@ -35,8 +35,20 @@ public sealed class DatabaseFirstModelTests
             "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
-            "rag_documents", "rag_chunks", "rag_embeddings"
+            "rag_documents", "rag_chunks", "rag_embeddings",
+            "test_report_runs"
         });
+    }
+
+    [TestMethod]
+    public void Model_TestReportRun_KeepsTheReportAsJson()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(TestReportRun))!;
+        entityType.GetTableName().Should().Be("test_report_runs");
+        entityType.FindProperty(nameof(TestReportRun.Report))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(TestReportRun.RunId))!.IsNullable.Should().BeFalse();
     }
 
     [TestMethod]

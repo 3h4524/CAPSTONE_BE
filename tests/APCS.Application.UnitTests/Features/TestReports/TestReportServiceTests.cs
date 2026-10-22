@@ -74,6 +74,7 @@ public sealed class TestReportServiceTests
     {
         var provider = new Mock<IServiceProvider>();
         provider.Setup(p => p.GetService(typeof(ITestSellerProvisioner))).Returns(_seller.Object);
+        provider.Setup(p => p.GetService(typeof(ITestReportStore))).Returns(_store.Object);
 
         var scope = new Mock<IServiceScope>();
         scope.Setup(s => s.ServiceProvider).Returns(provider.Object);
@@ -87,7 +88,6 @@ public sealed class TestReportServiceTests
             .ReturnsAsync(Result.Success());
 
         _sut = new TestReportService(
-            _store.Object,
             _runner.Object,
             scopeFactory.Object,
             new NullLogger<TestReportService>(),

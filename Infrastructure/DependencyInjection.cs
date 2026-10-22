@@ -86,7 +86,7 @@ public static class DependencyInjection
         // never runs the suite still boots.
         services.AddOptions<TestReportOptions>()
             .Bind(configuration.GetSection(TestReportOptions.SectionName));
-        services.AddSingleton<ITestReportStore, FileTestReportStore>();
+        services.AddScoped<ITestReportStore, DatabaseTestReportStore>();
         services.AddSingleton<ITestReportRunner, ProcessTestReportRunner>();
 
         // Not required/ValidateOnStart: the Gemini key itself is per-Seller BYOK (ApiKeys table),

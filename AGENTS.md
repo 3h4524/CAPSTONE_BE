@@ -45,6 +45,9 @@ when the API runs next to the frontend.
   that file or run the API with another environment (the E2E stack uses `E2E`).
 - The local `.env` points at the **shared Neon database**, not at a local Postgres: the rows of
   every run and every account land there. `scripts/e2e/` starts a database of its own with Docker.
+- The reports of the end-to-end suite live in the `test_report_runs` table, so a run outlives the
+  machine that made it. The table was created in the database first; `scripts/sql/test-report-runs.sql`
+  is the record of it.
 
 ## Before changing files
 
