@@ -11,7 +11,11 @@ const renderer = new RemotionVideoRenderer();
 const types = process.argv.includes("--all") ? ["tshirt", "hoodie", "mug", "poster", "tote_bag", "phone_case"] : ["tshirt"];
 for (const [index, type] of types.entries()) {
   const directory = resolve("artifacts", type); await mkdir(directory, { recursive: true });
-  const image = fixtureImage(index); const board = fixtureBoard(type, image);
+  const image = fixtureImage(index); const base = fixtureBoard(type, image);
+  const overlapFrames = 12;
+  const sceneFrames = (base.durationSeconds * 30 + overlapFrames) / 2;
+  const board = { ...base, outputDurationFrames: base.durationSeconds * 30, transitionOverlapFrames: overlapFrames,
+    scenes: base.scenes.map((scene, sceneIndex) => ({ ...scene, durationFrames: sceneFrames, transition: sceneIndex === 0 ? "none" as const : "fade" as const })) };
   await writeFile(join(directory, "source.png"), image);
   const source = pngSource(image, board.scenes[0]!.sourceHash);
   const rendered = await renderer.render({ storyboard: board, sources: { [board.scenes[0]!.mockupId]: source } }, directory, AbortSignal.timeout(240_000), () => {});

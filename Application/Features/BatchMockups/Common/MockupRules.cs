@@ -85,6 +85,9 @@ public static class MockupRules
 
     public const string SlotKeyPattern = "^[0-9a-f]{32}\\.[0-9a-f]{32}\\.([0-9A-F]{6}|own)$";
 
+    /// <summary>The most mock-ups one save may change, enough for a large job's every mock-up.</summary>
+    public const int MaxOverridesPerSave = 500;
+
     /// <summary>
     /// Names one mock-up that a job's shared settings make: a design on one selected template in one garment color
     /// (or in the template's own). A mock-up made its own way is kept under this name, so the change applies again

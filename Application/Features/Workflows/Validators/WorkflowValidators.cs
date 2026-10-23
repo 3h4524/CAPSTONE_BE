@@ -12,6 +12,8 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.Template).Must(x => new[] { "auto", "product_showcase", "design_detail", "variant_showcase" }.Contains(x));
         RuleFor(x => x.TemplateVersion).Must(x => x is null or 1 or 2);
         RuleFor(x => x.OutputFormat).Must(VideoOutputFormats.IsSupported).WithMessage("Choose a supported video output format.");
+        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.OutputFormat != "square")
+            .WithMessage("AI video supports portrait or landscape output.");
         RuleFor(x => x.AiStudioMode).Must(x => x is "direct" or "studio").WithMessage("Choose direct mock-up or a studio keyframe.");
         RuleFor(x => x.AiStudioLayout).Must(AiStudioFrameIdentity.IsSupportedLayout).WithMessage("Choose a supported studio layout.");
         RuleFor(x => x.DurationSeconds).InclusiveBetween(3, 30);
@@ -22,6 +24,9 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.AiShotOptions).NotNull().When(x => x.Mode == "ai_shot" && x.AiScenes is not { Count: > 0 });
         RuleFor(x => x.AiScenes).Must(x => x is null || x.Count is >= 1 and <= 4)
             .WithMessage("Configure between one and four AI scenes.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
+            .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
+            .WithMessage("Choose an approved product image or keyframe for every AI scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.DurationSeconds is 4 or 6 or 8) && x.Sum(scene => scene.DurationSeconds) <= 30)
             .WithMessage("AI scenes must be 4, 6 or 8 seconds each, with a maximum combined duration of 30 seconds.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.ExtraInstructions is null or { Length: <= 500 }))
@@ -36,7 +41,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
             new[] { "varied", "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
                 "diagonal_up_right", "diagonal_up_left", "diagonal_down_right", "diagonal_down_left" }.Contains(x.MotionPreset) && x.Crop == "safe" &&
-            new[] { "fade", "cut" }.Contains(x.Transition));
+            new[] { "none", "fade", "swipe", "zoom", "flash", "whip_pan", "blur", "cut" }.Contains(x.Transition));
         RuleFor(x => x.SceneMotionPresets).Must(x => x is null || x.Count <= 4 && x.All(m => m is null ||
             new[] { "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
                 "diagonal_up_right", "diagonal_up_left", "diagonal_down_right", "diagonal_down_left" }.Contains(m)));

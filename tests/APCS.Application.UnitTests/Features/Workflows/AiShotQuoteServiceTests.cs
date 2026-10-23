@@ -71,13 +71,14 @@ public sealed class AiShotQuoteServiceTests
             AiStudioFrameIdentity.Fingerprint(context.Asset, AiStudioFrameIdentity.HangingWindow, aspect), context.Asset.Id,
             context.Asset.ContentHash!, context.Asset.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion));
         context.Fixture.AssetRows.Add(frame);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()], AiStudioMode: "studio",
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: context.Asset.Id)], AiStudioMode: "studio",
             AiStudioSourceMockupId: context.Asset.Id, AiStudioFrameId: frame.Id);
 
         var result = await context.Service.QuoteAsync(context.Run.Id, new(config), default);
 
+        // A keyframe that is not approved cannot be selected at all.
         result.IsFailure.Should().BeTrue();
-        result.Error.Code.Should().Be("StudioFrameStale");
+        result.Error.Code.Should().Be("StudioFrameRequired");
         context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
     }
 
@@ -127,7 +128,7 @@ public sealed class AiShotQuoteServiceTests
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
         context.Fixture.Time.Advance(TimeSpan.FromMinutes(11));
 
-        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
         result.IsFailure.Should().BeTrue();
         result.Error.Message.Should().Contain("Confirm");
@@ -140,9 +141,9 @@ public sealed class AiShotQuoteServiceTests
         var config = Config(context.Asset);
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
 
-        var missing = await context.Service.VerifyAsync(context.Run, config, null, false, default);
+        var missing = await context.Service.VerifyAsync(context.Run, config, null, false, null, default);
         context.Claims = context.Claims! with { RunId = Guid.NewGuid() };
-        var foreignToken = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var foreignToken = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
         missing.IsFailure.Should().BeTrue();
         foreignToken.IsFailure.Should().BeTrue();
@@ -151,20 +152,34 @@ public sealed class AiShotQuoteServiceTests
     }
 
     [TestMethod]
-    public async Task VerifyAsync_SourceHashOrRegenerationChoiceChanged_RejectsStaleQuote()
+    public async Task VerifyAsync_RegenerationChoiceOrAHigherCostChanged_RejectsStaleQuote()
     {
         var context = CreateContext();
         var config = Config(context.Asset);
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
 
-        var wrongChoice = await context.Service.VerifyAsync(context.Run, config, "signed-quote", true, default);
+        var wrongChoice = await context.Service.VerifyAsync(context.Run, config, "signed-quote", true, null, default);
+        var costlier = await context.Service.VerifyAsync(context.Run, Config(context.Asset, "full_video", 15), "signed-quote", false, null, default);
+
+        wrongChoice.IsFailure.Should().BeTrue();
+        costlier.Error.Code.Should().Be("AiShotQuoteChanged");
+    }
+
+    // The confirmation caps what the run may be charged: a storyboard that changed (the source mock-up was edited and
+    // approved again) without costing more does not need another one.
+    [TestMethod]
+    public async Task VerifyAsync_SourceChangedAtTheSameCost_KeepsQuote()
+    {
+        var context = CreateContext();
+        var config = Config(context.Asset);
+        (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
+
         context.Asset.ContentHash = new string('b', 64);
         context.Asset.MetadataRevision++;
         context.Asset.ApprovedRevision++;
-        var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, default);
+        var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
-        wrongChoice.IsFailure.Should().BeTrue();
-        changedSource.Error.Code.Should().Be("AiShotQuoteChanged");
+        changedSource.IsSuccess.Should().BeTrue();
     }
 
     private static GenerateVideoConfig Config(MockupImage source, string coverage = "single_scene", int duration = 12) =>

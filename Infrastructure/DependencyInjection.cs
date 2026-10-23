@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Subscriptions;
@@ -81,6 +82,13 @@ public static class DependencyInjection
         services.AddOptions<CloudinaryOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Cloudinary));
 
+        // Not required/ValidateOnStart: the test reports are a developer tool, and a box that
+        // never runs the suite still boots.
+        services.AddOptions<TestReportOptions>()
+            .Bind(configuration.GetSection(TestReportOptions.SectionName));
+        services.AddScoped<ITestReportStore, DatabaseTestReportStore>();
+        services.AddSingleton<ITestReportRunner, ProcessTestReportRunner>();
+
         // Not required/ValidateOnStart: the Gemini key itself is per-Seller BYOK (ApiKeys table),
         // not a platform credential, so a box with no override here still boots on the defaults.
         services.AddOptions<GeminiOptions>()
@@ -99,6 +107,7 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -124,6 +133,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
 
         return services;
     }

@@ -10,6 +10,8 @@ namespace APCS.Application.Features.Workflows;
 public interface IWorkflowRunService
 {
     Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct);
+    Task<Result<RunResponse>> GetLatestAsync(Guid workflowId, CancellationToken ct);
+    Task<Result<IReadOnlyList<VideoRunSummaryResponse>>> ListVideoRunsAsync(Guid workflowId, CancellationToken ct);
     Task<Result<RunResponse>> GetAsync(Guid id, CancellationToken ct);
     Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct);
 }
@@ -64,6 +66,37 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         }
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(await MapAsync(run, ct));
     }
+    public async Task<Result<RunResponse>> GetLatestAsync(Guid workflowId, CancellationToken ct)
+    {
+        var latest = (await runs.FindAsync(x => x.WorkflowId == workflowId && x.UserId == user.UserId, ct))
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .FirstOrDefault();
+        return latest is null
+            ? Result.Failure<RunResponse>(Missing())
+            : Result.Success(await MapAsync(latest, ct));
+    }
+    public async Task<Result<IReadOnlyList<VideoRunSummaryResponse>>> ListVideoRunsAsync(Guid workflowId, CancellationToken ct)
+    {
+        var ownedRuns = (await runs.FindAsync(x => x.WorkflowId == workflowId && x.UserId == user.UserId, ct))
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .ToArray();
+        if (ownedRuns.Length == 0) return Result.Success<IReadOnlyList<VideoRunSummaryResponse>>([]);
+
+        var runIds = ownedRuns.Select(x => x.Id).ToArray();
+        var generatedVideos = await videos.FindAsync(x => x.WorkflowRunId.HasValue && runIds.Contains(x.WorkflowRunId.Value) &&
+            x.DeletedAt == null && x.Status == "completed" && x.StorageKey != null, ct);
+        var versionsByRun = generatedVideos
+            .GroupBy(x => x.WorkflowRunId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+        var result = ownedRuns
+            .Where(run => versionsByRun.ContainsKey(run.Id))
+            .Select(run => new VideoRunSummaryResponse(run.Id, run.Status, run.CreatedAt,
+                versionsByRun[run.Id].Length, versionsByRun[run.Id].Max(video => video.VersionNumber)))
+            .ToArray();
+        return Result.Success<IReadOnlyList<VideoRunSummaryResponse>>(result);
+    }
     public async Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
@@ -88,10 +121,11 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var gate = checkpoints.Single(x => x.NodeType == "approval-gate");
             var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
             var config = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
-            var approved = await runtime.ApprovedAssetsAsync(run, config, ct);
-            if (approved.Count == 0) return Result.Failure<RunResponse>(Error.Conflict("WaitingForInput", "Select and approve at least one current mockup."));
             var generate = checkpoints.Single(x => x.NodeType == "generate-video");
-            var consent = await quotes.VerifyAsync(run, WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot), request.AiShotQuoteToken, false, ct);
+            var videoConfig = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+            var approved = await runtime.ApprovedAssetsAsync(run, config, videoConfig, ct);
+            if (approved.Count == 0) return Result.Failure<RunResponse>(Error.Conflict("WaitingForInput", "Select and approve at least one current mockup or keyframe."));
+            var consent = await quotes.VerifyAsync(run, videoConfig, request.AiShotQuoteToken, false, null, ct);
             if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             gate.Status = "succeeded"; gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision) });
             run.Status = "running"; await runtime.AdvanceAsync(run, ct);
@@ -145,7 +179,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             {
                 if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
                     return Result.Failure<RunResponse>(Error.Validation("Regeneration requires AI Shot mode."));
-                var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", ct);
+                if (request.SceneOrder.HasValue && request.Action != "regenerate_ai_shot")
+                    return Result.Failure<RunResponse>(Error.Validation("A scene can only be selected for AI clip regeneration."));
+                var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
                 if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             }
             var failedExport = checkpoints.Single(x => x.NodeType == "export-zip");
@@ -161,7 +197,17 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 if (request.Action == "regenerate_ai_shot")
                 {
                     var previousJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id, ct)).SingleOrDefault();
-                    if (previousJob?.Kind == "render") previousJob.Payload = "{}";
+                    if (previousJob?.Kind == "render" && request.SceneOrder.HasValue)
+                    {
+                        try
+                        {
+                            var payload = WorkflowJson.Read<AiRenderJobPayload>(previousJob.Payload);
+                            previousJob.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(item =>
+                                item.SceneOrder == request.SceneOrder.Value ? new AiShotJobState(item.SceneOrder, item.Fingerprint) : item).ToArray() });
+                        }
+                        catch (JsonException) { previousJob.Payload = "{}"; }
+                    }
+                    else if (previousJob?.Kind == "render") previousJob.Payload = "{}";
                 }
                 checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
             }

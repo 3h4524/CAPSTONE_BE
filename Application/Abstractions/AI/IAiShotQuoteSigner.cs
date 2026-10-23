@@ -1,7 +1,7 @@
 namespace APCS.Application.Abstractions.AI;
 
 public sealed record AiShotQuoteClaims(Guid RunId, string StoryboardFingerprint, bool Regenerate,
-    decimal EstimatedCostUsd, DateTimeOffset ExpiresAtUtc);
+    decimal EstimatedCostUsd, DateTimeOffset ExpiresAtUtc, int? SceneOrder = null);
 
 public interface IAiShotQuoteSigner
 {

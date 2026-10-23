@@ -67,7 +67,7 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             return new VideoTemplateCatalogItem(x.Code!, x.TemplateVersion, x.Name,
                 effects.Description ?? x.Name,
                 x.PreviewVideoUrl, x.DurationSeconds,
-                effects.DefaultTransition ?? "fade",
+                effects.DefaultTransition is null or "fade" or "cut" ? "none" : effects.DefaultTransition,
                 effects.DefaultMotionPreset ?? "varied",
                 effects.Requirements ?? FallbackRequirements(x.Code));
         }).ToArray();

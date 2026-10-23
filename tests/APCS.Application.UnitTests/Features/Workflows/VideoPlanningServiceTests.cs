@@ -25,7 +25,8 @@ public sealed class VideoPlanningServiceTests
         result.Value.Select(x => x.Code).Should().Equal("product_showcase", "design_detail", "variant_showcase");
         result.Value.Single(x => x.Code == "design_detail").Should().Match<VideoTemplateCatalogItem>(x =>
             x.Version == 2 && x.PreviewVideoUrl == "/detail.mp4" && x.DefaultDurationSeconds == 12 &&
-            x.DefaultTransition == "fade" && x.DefaultMotionPreset == "varied" &&
+            // A stored fade (or cut) default is offered as none, the transition new videos start with.
+            x.DefaultTransition == "none" && x.DefaultMotionPreset == "varied" &&
             x.Requirements == new VideoTemplateRequirements(1, true, 0));
         result.Value.Single(x => x.Code == "variant_showcase").Requirements.Should().Be(new VideoTemplateRequirements(2, false, 2));
     }
@@ -43,7 +44,7 @@ public sealed class VideoPlanningServiceTests
 
         var item = result.Value.Single(x => x.Code == "product_showcase");
         item.Description.Should().NotBeNullOrEmpty();
-        item.DefaultTransition.Should().Be("fade");
+        item.DefaultTransition.Should().Be("none");
         item.DefaultMotionPreset.Should().Be("varied");
         item.Requirements.Should().Be(new VideoTemplateRequirements(1, false, 0));
     }
@@ -126,7 +127,7 @@ public sealed class VideoPlanningServiceTests
             source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion,
             TemplateCode: "cinematic_product_showcase"));
         fixture.AssetRows.Add(frame);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new()],
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new(MockupId: source.Id)],
             AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], source.ArtworkGroupKey), default);

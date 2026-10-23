@@ -16,7 +16,7 @@ public sealed class AiVideoPromptCompilerTests
         source.GarmentColor = "#1F2A44";
         source.BackgroundColor = "#FFFFFF";
         var config = new GenerateVideoConfig(Mode: "ai_shot", AiGlobalInstructions: "Use a warm sunset studio background.",
-            AiScenes: [new(ExtraInstructions: "Keep the print easy to read.")]);
+            AiScenes: [new(MockupId: source.Id, ExtraInstructions: "Keep the print easy to read.")]);
 
         var storyboard = new VideoStoryboardPlanner().Plan(product, [source], config).Value;
         var prompt = storyboard.Scenes.Single().CompiledPrompt!;
@@ -29,7 +29,7 @@ public sealed class AiVideoPromptCompilerTests
         prompt.Should().Contain("background and lighting may develop naturally");
         prompt.Should().Contain("Shared direction for all scenes: Use a warm sunset studio background.");
         prompt.Should().Contain("Keep the print easy to read.");
-        storyboard.Scenes.Single().PromptVersion.Should().Be(4);
+        storyboard.Scenes.Single().PromptVersion.Should().Be(5);
     }
 
     [TestMethod]
@@ -89,7 +89,7 @@ public sealed class AiVideoPromptCompilerTests
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()]);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)]);
         var planner = new VideoStoryboardPlanner();
         var current = AiVideoPromptCompiler.Catalog().Single(item => item.Code == "cinematic_product_showcase");
         var older = new VideoTemplate
@@ -102,7 +102,7 @@ public sealed class AiVideoPromptCompilerTests
         var currentPlan = planner.Plan(product, [source], config).Value;
         var oldVersionPlan = planner.Plan(product, [source], config, [older]).Value;
 
-        currentPlan.Scenes.Single().PromptVersion.Should().Be(4);
+        currentPlan.Scenes.Single().PromptVersion.Should().Be(5);
         currentPlan.Scenes.Single().AiModelKey.Should().Be(AiVideoModel.ModelKey);
         currentPlan.Scenes.Single().AiModelName.Should().Be(AiVideoModel.ModelName);
         currentPlan.AiShots!.Single().Model.Should().Be(AiVideoModel.ModelName);

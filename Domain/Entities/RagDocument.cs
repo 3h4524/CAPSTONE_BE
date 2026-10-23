@@ -12,7 +12,9 @@ public sealed class RagDocument
     public string? Version { get; set; }
     public string Language { get; set; } = "en";
     public string ContentHash { get; set; } = null!;
-    public string Status { get; set; } = "ready";
+    public string IngestionContent { get; set; } = null!;
+    public string IngestionMetadata { get; set; } = "{}";
+    public string Status { get; set; } = "queued";
     public string? IngestionError { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

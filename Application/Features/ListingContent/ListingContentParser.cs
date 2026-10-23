@@ -5,6 +5,9 @@ namespace APCS.Application.Features.ListingContent;
 
 public static class ListingContentParser
 {
+    /// <summary>Etsy's limit for one tag, and the size of the column that stores it.</summary>
+    public const int MaxTagLength = 20;
+
     public static GeneratedListingContent Parse(string rawResponse)
     {
         var json = rawResponse.Trim();
@@ -26,6 +29,9 @@ public static class ListingContentParser
         var tags = result.Tags?
             .Where(tag => !string.IsNullOrWhiteSpace(tag.Value))
             .Select(tag => new GeneratedListingTag(tag.Value!.Trim(), tag.Type?.Trim()))
+            // The prompt asks for short tags, but the model does not always keep to it. A longer tag could not be
+            // stored, so it is left out like a repeated one; too few left makes the listing incomplete.
+            .Where(tag => tag.Value.Length <= MaxTagLength)
             .GroupBy(tag => tag.Value, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .Take(13)

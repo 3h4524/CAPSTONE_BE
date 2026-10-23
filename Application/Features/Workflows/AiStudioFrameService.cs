@@ -103,7 +103,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
                 providerReferences.Add(new ImageReference(bytes, mimeType));
             }
             generated = await images.ComposeAsync(credentials.Unprotect(key.KeyValueEncrypted),
-                BuildPrompt(context.Value.Product.ProductType, source, request.Layout, aspectRatio, request.CustomPrompt,
+                BuildPrompt(context.Value.Product.ProductType, source, aspectRatio, request.CustomPrompt,
                     request.TemplateCode, references), providerReferences, ct);
         }
         catch (HttpRequestException error)
@@ -205,7 +205,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         return Result.Success(new StudioFrameContext(product, source, requestedReferences, referenceMetadata, aspectRatio, fingerprint));
     }
 
-    private static string BuildPrompt(string productType, MockupImage source, string layout, string aspectRatio,
+    private static string BuildPrompt(string productType, MockupImage source, string aspectRatio,
         string? customPrompt, string? templateCode, IReadOnlyList<AiStudioFrameReferenceInput> references)
     {
         var type = NormalizeProductType(productType);
@@ -226,25 +226,9 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
                 Create one photorealistic lifestyle keyframe for a {normalizedTemplate.Replace('_', ' ')} scene. Image 1 is the authoritative identity reference for the {type}: preserve its construction, main color, proportions, distinctive details, and the exact placement, scale, colors and lettering of all visible artwork and logos. Keep printed designs attached to the product surface; do not invent, redraw, translate or replace them. {referenceGuide}
                 Show one adult naturally using or wearing the product in a believable setting. Use the additional reference images according to the user's direction. If image 1 already contains a person and the user does not request a different approved reference person, preserve that person. {additionalDirection} Use coherent natural light, realistic anatomy, fabric behavior, contact shadows and perspective. No extra products, copied reference branding, added text, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
                 """;
-        var staging = (type, layout) switch
-        {
-            (_, AiStudioFrameIdentity.None) => "Do not apply a preset arrangement. Follow the user's custom visual direction for staging; if none is given, preserve the product's arrangement from the reference. Keep it naturally supported and grounded, with believable contact shadows.",
-            ("T-shirt" or "hoodie" or "tote bag", AiStudioFrameIdentity.HangingWindow) => $"Stage the same {type} hanging naturally from a suitable simple hanger or hook against a warm neutral studio wall. Show soft window daylight, realistic contact shadows, and natural gravity-driven fabric folds; its support is visible and the product does not float.",
-            ("T-shirt" or "hoodie" or "tote bag", _) => $"Stage the same {type} resting naturally on a matte warm-neutral studio surface. Show believable gravity-driven folds, soft contact shadows, gentle window daylight and a quiet premium product-photography atmosphere.",
-            ("poster", AiStudioFrameIdentity.HangingWindow) => "Stage the same poster upright on a simple neutral studio wall, with its edges supported naturally. Use soft window daylight and a realistic wall contact shadow; preserve its flat paper surface.",
-            ("poster", _) => "Stage the same poster flat on a matte warm-neutral studio surface. Keep the paper flat with only subtle natural edge lift and soft contact shadows under gentle window daylight.",
-            (_, AiStudioFrameIdentity.HangingWindow) => $"Stage the same {type} upright in a simple, stable product display on a warm neutral studio surface, at a natural viewing angle. Use soft window daylight and a grounded contact shadow; do not suspend or float it.",
-            _ => $"Stage the same {type} resting securely on a matte warm-neutral studio surface at a natural viewing angle. Use soft window daylight and a grounded contact shadow; keep its shape rigid and do not make it float."
-        };
-        var background = layout == AiStudioFrameIdentity.None
-            ? "Use the environment requested in the custom direction, or preserve the reference background when no environment is specified."
-            : "Use a simple natural background with realistic light and shadow.";
-        var framing = layout == AiStudioFrameIdentity.None && !string.IsNullOrWhiteSpace(customPrompt)
-            ? "Follow the requested framing. If a close-up is requested, fill the frame with the specified artwork or material detail instead of showing the whole item."
-            : "Keep one product only, centered with the whole item visible.";
         return $"""
-            Create one photorealistic studio product photograph. Image 1 is the authoritative identity reference for the {type} and every visible product detail or artwork. {referenceGuide} {staging}
-            {framing} Preserve the visible product construction, main color, proportions, distinctive details and the placement, scale, colors and lettering of any artwork or logo. Keep printed designs attached to the product surface and do not invent or redraw them. {additionalDirection} {background} No extra products, added text, extra logos, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
+            Create one photorealistic product keyframe. Image 1 is the authoritative identity reference for the {type} and every visible product detail or artwork. {referenceGuide}
+            Follow the user's additional visual direction for product placement, staging, background, composition, lighting, framing and camera angle. If no direction is given, preserve the product's natural arrangement from the source image. Preserve the visible product construction, main color, proportions, distinctive details and the placement, scale, colors and lettering of any artwork or logo. Keep printed designs attached to the product surface and do not invent or redraw them. {additionalDirection} No extra products, added text, extra logos, borders or watermarks. Compose for a {aspectRatio} frame with comfortable margins.
             """;
     }
 

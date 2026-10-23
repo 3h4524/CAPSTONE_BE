@@ -15,7 +15,7 @@ public sealed class RagController(IRagService service) : ControllerBase
     public async Task<IActionResult> Ingest(RagIngestRequest request, CancellationToken cancellationToken)
     {
         var documentId = await service.IngestAsync(request, cancellationToken);
-        return Ok(new { documentId });
+        return Accepted(new { documentId, status = "queued" });
     }
 
     [HttpPost("search")]

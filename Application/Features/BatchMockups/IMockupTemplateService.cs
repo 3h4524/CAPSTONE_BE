@@ -65,6 +65,12 @@ public interface IMockupTemplateService
     /// </summary>
     Task<Result<GenerateAllMockupsResultDto>> SaveOverrideAsync(Guid batchJobId, SaveMockupOverrideRequestDto request, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Makes several of the job's mock-ups their own way in one go, as <see cref="SaveOverrideAsync"/> does for one,
+    /// and returns the job's mock-ups made once. Nothing is kept unless every change can be.
+    /// </summary>
+    Task<Result<GenerateAllMockupsResultDto>> SaveOverridesAsync(Guid batchJobId, SaveMockupOverridesRequestDto request, CancellationToken cancellationToken = default);
+
     /// <summary>Puts one of the job's mock-ups back on the job's shared settings and returns the job's mock-ups made again.</summary>
     Task<Result<GenerateAllMockupsResultDto>> ResetOverrideAsync(Guid batchJobId, string slotKey, Guid? replacedMockupImageId, CancellationToken cancellationToken = default);
 }

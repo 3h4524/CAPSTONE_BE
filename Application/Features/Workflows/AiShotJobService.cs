@@ -4,6 +4,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Workflows;
 
@@ -25,7 +26,7 @@ public interface IAiShotJobService
 public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<MockupImage> assets,
     IApiKeyRepository keys, IApiKeyCredentials credentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
-    IAiVideoGenerationStrategyFactory? providerFactory = null) : IAiShotJobService
+    IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null) : IAiShotJobService
 {
     /// <summary>How often one scene is sent again without asking, and only after Google said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
@@ -47,64 +48,84 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             var source = await assets.GetByIdAsync(shot.MockupId, ct);
             if (source is null || source.ContentHash != shot.SourceHash || source.ApprovalStatus != "approved" || source.MetadataRevision != scene.SourceRevision || source.ApprovedRevision != scene.SourceRevision)
                 return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "AI Shot source changed or is no longer approved."));
-            if (source.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && AiStudioFrameIdentity.Read(source.Regions) is not null)
-            {
-                var metadata = AiStudioFrameIdentity.Read(source.Regions);
-                if (metadata is null)
-                    return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "Studio keyframe metadata is missing."));
-                var original = await assets.GetByIdAsync(metadata.SourceMockupId, ct);
-                var selectedAsStudioFrame = scene.AiSettings?.StartFrameMode == "studio";
-                var expectedLayout = selectedAsStudioFrame ? scene.AiSettings?.StudioLayout ?? metadata.Layout : metadata.Layout;
-                var expectedAspect = selectedAsStudioFrame ? ReadAspect(job.Payload) : metadata.AspectRatio;
-                var expectedPrompt = selectedAsStudioFrame ? scene.AiSettings?.StudioPrompt : metadata.CustomPrompt;
-                var expectedTemplate = selectedAsStudioFrame ? scene.AiSettings?.TemplateCode : metadata.TemplateCode;
-                var expectedReferences = selectedAsStudioFrame
-                    ? scene.AiSettings?.StudioReferenceHashes
-                    : metadata.References?.Select(reference => reference.ContentHash).ToArray();
-                if (original is null || original.ProductId != source.ProductId || original.DeletedAt != null ||
-                    original.ApprovalStatus != "approved" || original.ApprovedRevision != original.MetadataRevision ||
-                    !AiStudioFrameIdentity.IsCurrent(source, original, expectedLayout, expectedAspect, expectedPrompt,
-                        expectedTemplate, expectedReferences))
-                    return Result.Failure<AiShotProgressResponse>(Error.Conflict("SourceChanged", "Studio keyframe source changed or is no longer approved."));
-            }
+            // The immutable scene source itself is checked above by id, hash, revision and approval.
+            // Re-checking the prompt, references or original image would reject a valid approved
+            // keyframe after harmless workflow edits and could strand an already paid run.
             Replace(job, payload, item with { Status = "submitting" });
             await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        }
+        string key;
+        try { key = await KeyAsync(job.UserId, shot.ProviderKey, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Nothing was sent: the scene is put back, or the next attempt would take it for a half-sent request.
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", null, CancellationToken.None);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Nothing has been sent yet; the seller has to reconnect the key before a retry can work.
+            logger?.LogWarning(ex, "AI scene {Scene} of job {Job} has no usable {Provider} key", sceneOrder, jobId, shot.ProviderKey);
+            var missing = $"The connected {shot.ProviderKey} API key is missing or failed its last check. Reconnect it, then retry.";
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", missing, ct);
+            return Result.Failure<AiShotProgressResponse>(Error.Validation(missing));
         }
         string operation;
         try
         {
-            var key = await KeyAsync(job.UserId, shot.ProviderKey, ct);
             var source = (await assets.GetByIdAsync(shot.MockupId, ct))!;
             operation = await ProviderFor(shot).StartAsync(key, storage.SignRead(source.StorageKey, "image", source.StorageVersion),
                 shot.Prompt, ReadAspect(job.Payload), shot.DurationSeconds,
                 shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment",
                 shot.SourceCrop, ct);
         }
-        catch (AiVideoProviderException ex) when (ex.StatusCode is 400 or 401 or 403 or 404)
+        // Every HTTP error from Google below means it made no operation: nothing is being generated or billed, so
+        // only a request whose outcome is really unknown (no answer, or an answer that cannot be read) is uncertain.
+        catch (AiVideoProviderException ex) when (ex.StatusCode is 408 or 429 or >= 500)
+        {
+            // Over quota, overloaded or failing on Google's side: the scene goes back to pending and the job's next
+            // attempt may submit it again.
+            var providerName = shot.ProviderKey == "gemini" ? "Google Veo" : shot.ProviderKey;
+            var errorCode = shot.ProviderKey == "gemini" ? "VeoBusy" : "AiVideoProviderBusy";
+            var busy = ex.StatusCode switch
+            {
+                429 => $"{providerName} quota or rate limit reached: this key allows only a few video requests per minute and per day. Check its usage in Google AI Studio, then try again.",
+                503 => $"{providerName} is overloaded right now. Try again in a few minutes.",
+                _ => $"{providerName} had a temporary error ({ex.StatusCode}) and made no clip. Try again in a few minutes."
+            };
+            logger?.LogWarning("AI scene {Scene} of job {Job} was refused by {Provider} with status {Status}: {Detail}", sceneOrder, jobId, providerName, ex.StatusCode, ex.Detail);
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Detail == null ? busy : $"{busy} Google: {ex.Detail}", ct);
+            return Result.Failure<AiShotProgressResponse>(Error.Failure(errorCode, busy));
+        }
+        catch (AiVideoProviderException ex)
         {
             var providerName = shot.ProviderKey == "gemini" ? "Google Veo" : shot.ProviderKey;
             var refusal = ex.StatusCode is 401 or 403
                 ? $"{providerName} access denied. Check the connected {shot.ProviderKey} key, billing and model availability."
-                : $"{providerName} rejected this source or prompt. Review the AI scene settings.";
+                : ex.StatusCode is 400 or 404
+                    ? $"{providerName} rejected this source or prompt. Review the AI scene settings."
+                    : $"{providerName} refused the request ({ex.StatusCode}). Review the AI scene settings.";
             // Kept with the scene, so the run can show the seller what Google said and not only that it refused.
             await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ex.Detail == null ? refusal : $"{refusal} Google: {ex.Detail}", ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(refusal));
         }
-        catch (AiVideoProviderException ex) when (ex.StatusCode is 429 or 503)
+        catch (AiVideoNotSubmittedException ex)
         {
-            // Google answered that it is over quota or overloaded: it took nothing and charged nothing, so the
-            // scene goes back to pending and the job's next attempt may submit it again.
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", null, ct);
-            var providerName = shot.ProviderKey == "gemini" ? "Google Veo" : shot.ProviderKey;
-            var errorCode = shot.ProviderKey == "gemini" ? "VeoBusy" : "AiVideoProviderBusy";
-            return Result.Failure<AiShotProgressResponse>(Error.Failure(errorCode, ex.StatusCode == 429
-                ? $"{providerName} quota or rate limit reached. Check the connected key's usage, then try again."
-                : $"{providerName} is overloaded right now. Try again in a few minutes."));
+            // Failed before the POST reached Google, so the job's next attempt may submit it. Recorded even when the
+            // worker has gone, or the scene would be left looking half-sent.
+            logger?.LogWarning(ex, "AI scene {Scene} of job {Job} was not submitted", sceneOrder, jobId);
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Message, CancellationToken.None);
+            return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoNotSubmitted", ex.Message));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch
+        catch (Exception ex)
         {
-            // The provider may have accepted a timed-out POST. Never re-submit automatically.
+            // The provider may have accepted a timed-out POST. Never re-submit automatically, but say what happened.
+            logger?.LogError(ex, "AI scene {Scene} of job {Job} has an unknown Veo submission result", sceneOrder, jobId);
+            var unknown = ex is AiVideoSubmissionUnknownException ? ex.Message
+                : ex is TaskCanceledException or TimeoutException ? "Google Veo did not answer in time."
+                : $"The request to Google Veo broke off: {ex.Message}";
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "submitting", unknown, CancellationToken.None);
             return Result.Failure<AiShotProgressResponse>(Error.Conflict("VeoSubmissionUncertain", "Veo submission failed or has an unknown result. Do not auto-retry this paid request."));
         }
         await using (var tx = await uow.BeginTransactionAsync(ct))
@@ -212,7 +233,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     private static string ReadAspect(string payload)
     {
         var board = WorkflowJson.Read<AiRenderJobPayload>(payload).Storyboard;
-        return board.OutputFormat == "landscape" ? "16:9" : "9:16";
+        return VideoOutputFormats.Resolve(board.OutputFormat).AspectRatio;
     }
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";

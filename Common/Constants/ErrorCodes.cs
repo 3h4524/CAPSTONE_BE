@@ -39,4 +39,7 @@ public static class ErrorCodes
     public const string SubscriptionInvoicePdfGenerationFailed = "subscriptions.invoice_pdf_generation_failed";
     public const string SubscriptionPlanNameOrTierTaken = "subscriptions.plan_name_or_tier_taken";
     public const string SubscriptionPlanHasSubscriptionHistory = "subscriptions.plan_has_subscription_history";
+    public const string TestReportNotFound = "test_reports.not_found";
+    public const string TestReportRunInProgress = "test_reports.run_in_progress";
+    public const string TestReportRunFailed = "test_reports.run_failed";
 }

@@ -26,7 +26,10 @@ public sealed class VideoStoryboardPlannerTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Should().HaveCount(2);
+        // No transition is chosen, and the default is none, so the scenes fill the video without overlapping.
         result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", "none");
         result.Value.Scenes.Select(x => x.SceneOrder).Should().Equal(0, 1);
         foreach (var scene in result.Value.Scenes)
         {
@@ -53,8 +56,38 @@ public sealed class VideoStoryboardPlannerTests
         var assets = new[] { fixture.AddAsset(product, "Lifestyle"), fixture.AddAsset(product, "ArtworkDetail"), fixture.AddAsset(product, "Hero"), fixture.AddAsset(product, "AlternativeAngle") };
         var result = _planner.Plan(product, assets, new(Template: "product_showcase", DurationSeconds: duration));
         result.Value.Scenes.Select(x => x.Role).Should().Equal("Hero", "AlternativeAngle", "Lifestyle", "ArtworkDetail");
+        // The default transition is none: no overlap to add (Plan_StandardScenes_UsesSelectedTransitionAtEveryBoundary covers it).
         result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(duration * 30);
+        result.Value.OutputDurationFrames.Should().Be(duration * 30);
+        result.Value.TransitionOverlapFrames.Should().Be(0);
         result.Value.Scenes.Max(x => x.DurationFrames).Should().BeLessThanOrEqualTo(result.Value.Scenes.Min(x => x.DurationFrames) + 1);
+    }
+
+    [TestMethod]
+    [DataRow("none", 0)]
+    [DataRow("fade", 12)]
+    [DataRow("swipe", 12)]
+    [DataRow("zoom", 12)]
+    [DataRow("flash", 12)]
+    [DataRow("whip_pan", 12)]
+    [DataRow("blur", 12)]
+    [DataRow("cut", 0)]
+    public void Plan_StandardScenes_UsesSelectedTransitionAtEveryBoundary(string transition, int overlap)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var assets = new[] { fixture.AddAsset(product), fixture.AddAsset(product, "AlternativeAngle"),
+            fixture.AddAsset(product, "Lifestyle"), fixture.AddAsset(product, "ArtworkDetail") };
+
+        var result = _planner.Plan(product, assets, new(Template: "product_showcase", DurationSeconds: 12,
+            StandardOptions: new(Transition: transition)));
+
+        result.IsSuccess.Should().BeTrue();
+        var normalized = transition == "cut" ? "none" : transition;
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized, normalized);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360 + overlap * 3);
     }
 
     [TestMethod]
@@ -338,7 +371,7 @@ public sealed class VideoStoryboardPlannerTests
         var lifestyle = fixture.AddAsset(product, "Lifestyle");
         var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 13,
             SceneOrder: [hero.Id, angle.Id, lifestyle.Id], TextOverlay: "Keep standard text",
-            AiShotOptions: new(SceneIndex: 1, MockupId: angle.Id));
+            AiShotOptions: new(SceneIndex: 1, MockupId: angle.Id), StandardOptions: new(Transition: "fade"));
 
         var result = _planner.Plan(product, [hero, angle, lifestyle], config);
 
@@ -346,7 +379,10 @@ public sealed class VideoStoryboardPlannerTests
         var board = result.Value;
         board.Mode.Should().Be("ai_shot");
         board.Scenes.Select(x => x.GenerationStrategy).Should().Equal("standard", "ai_shot", "standard");
-        board.Scenes.Select(x => x.DurationFrames).Should().Equal(105, 180, 105);
+        board.Scenes.Select(x => x.DurationFrames).Should().Equal(117, 180, 117);
+        board.OutputDurationFrames.Should().Be(390);
+        board.TransitionOverlapFrames.Should().Be(12);
+        board.Scenes.Select(x => x.Transition).Should().Equal("none", "fade", "fade");
         board.Scenes[1].MockupId.Should().Be(angle.Id);
         board.Scenes[1].Text.Should().Be("Keep standard text");
         board.Scenes[0].Text.Should().Be("Keep standard text");
@@ -355,15 +391,17 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    [DataRow(8, 1, 0)]
-    [DataRow(15, 2, 30)]
-    public void Plan_FullAiVideo_UsesEightSecondClipsAndExpectedOverlap(int duration, int clipCount, int overlap)
+    [DataRow(8, 1, "fade", 0, 240)]
+    [DataRow(15, 2, "fade", 12, 468)]
+    [DataRow(15, 2, "none", 0, 480)]
+    [DataRow(15, 2, "cut", 0, 480)]
+    public void Plan_FullAiVideo_UsesSelectedTransitionAndActualOutputFrames(int duration, int clipCount, string transition, int overlap, int outputFrames)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var hero = fixture.AddAsset(product);
         var angle = fixture.AddAsset(product, "AlternativeAngle");
-        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: duration,
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: duration, StandardOptions: new(Transition: transition),
             AiShotOptions: new(Coverage: "full_video", FullSceneMockupIds: [hero.Id, angle.Id]));
 
         var result = _planner.Plan(product, [hero, angle], config);
@@ -374,8 +412,56 @@ public sealed class VideoStoryboardPlannerTests
             x.GenerationStrategy == "ai_shot" && x.DurationFrames == 240 && x.Motion == "static");
         result.Value.AiShots.Should().HaveCount(clipCount).And.OnlyContain(x => x.DurationSeconds == 8);
         result.Value.TransitionOverlapFrames.Should().Be(overlap);
-        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap).Should().Be(duration * 30);
+        result.Value.OutputDurationFrames.Should().Be(outputFrames);
+        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap * (clipCount - 1)).Should().Be(outputFrames);
+        if (clipCount == 1) result.Value.Scenes.Select(x => x.Transition).Should().Equal("none");
+        else result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", transition == "cut" ? "none" : transition);
         if (clipCount == 2) result.Value.Scenes.Select(x => x.MockupId).Should().Equal(hero.Id, angle.Id);
+    }
+
+    [TestMethod]
+    [DataRow("none", 0)]
+    [DataRow("fade", 12)]
+    [DataRow("swipe", 12)]
+    [DataRow("zoom", 12)]
+    [DataRow("flash", 12)]
+    [DataRow("whip_pan", 12)]
+    [DataRow("blur", 12)]
+    [DataRow("cut", 0)]
+    public void Plan_MultipleAiScenes_UsesSelectedTransitionAtEveryBoundary(string transition, int overlap)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 12,
+            AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id), new(MockupId: source.Id)], StandardOptions: new(Transition: transition));
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var normalized = transition == "cut" ? "none" : transition;
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        result.Value.OutputDurationFrames.Should().Be(360 - overlap * 2);
+        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap * 2).Should().Be(result.Value.OutputDurationFrames);
+    }
+
+    [TestMethod]
+    public void Plan_ChangingTransition_ReusesAiClipsAndChangesStoryboardFingerprint()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8, AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id)],
+            StandardOptions: new(Transition: "fade"));
+
+        var withFade = _planner.Plan(product, [source], config).Value;
+        var withNone = _planner.Plan(product, [source], config with { StandardOptions = config.StandardOptions! with { Transition = "none" } }).Value;
+
+        withFade.Fingerprint.Should().NotBe(withNone.Fingerprint);
+        withFade.AiShots!.Select(shot => shot.Fingerprint).Should().Equal(withNone.AiShots!.Select(shot => shot.Fingerprint));
+        withFade.OutputDurationFrames.Should().Be(228);
+        withNone.OutputDurationFrames.Should().Be(240);
     }
 
     [TestMethod]
@@ -448,7 +534,7 @@ public sealed class VideoStoryboardPlannerTests
         var source = fixture.AddAsset(product);
         var frame = CreateStudioFrame(source);
         var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
-            AiScenes: [new(), new(CameraMovement: "pan_right")], AiStudioMode: "studio",
+            AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id, CameraMovement: "pan_right")], AiStudioMode: "studio",
             AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var result = _planner.Plan(product, [source, frame], config);
@@ -456,7 +542,7 @@ public sealed class VideoStoryboardPlannerTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id &&
             scene.SourceHash == frame.ContentHash && scene.CompiledPrompt!.Contains("keep its reviewed studio set and background stable"));
-        result.Value.Scenes[0].CompiledPrompt.Should().Contain("use the supplied keyframe as the exact opening composition");
+        result.Value.Scenes[0].CompiledPrompt.Should().Contain("use the supplied keyframe as the exact first frame only");
         result.Value.Scenes[0].CompiledPrompt.Should().EndWith("No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.");
         result.Value.AiShots!.Select(shot => shot.Fingerprint).Should().OnlyHaveUniqueItems();
     }
@@ -468,13 +554,13 @@ public sealed class VideoStoryboardPlannerTests
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
         var frame = CreateStudioFrame(source);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()], AiStudioMode: "studio",
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
             AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var original = _planner.Plan(product, [source, frame], config).Value;
         var changedCamera = _planner.Plan(product, [source, frame], config with
         {
-            AiScenes = [new(CameraMovement: "pan_left")]
+            AiScenes = [new(MockupId: source.Id, CameraMovement: "pan_left")]
         }).Value;
         frame.ContentHash = new string('c', 64);
         frame.MetadataRevision++;
@@ -489,8 +575,6 @@ public sealed class VideoStoryboardPlannerTests
     [DataRow("missing")]
     [DataRow("pending")]
     [DataRow("rejected")]
-    [DataRow("stale_source")]
-    [DataRow("wrong_layout")]
     [DataRow("different_product")]
     public void Plan_StudioMode_InvalidFrameStates_RejectsFrame(string state)
     {
@@ -504,17 +588,41 @@ public sealed class VideoStoryboardPlannerTests
             case "missing": frameId = Guid.Empty; break;
             case "pending": frame.ApprovalStatus = "pending"; frame.ApprovedRevision = null; break;
             case "rejected": frame.ApprovalStatus = "rejected"; frame.ApprovedRevision = null; break;
-            case "stale_source": source.MetadataRevision++; source.ApprovedRevision++; break;
             case "different_product": frame.ProductId = Guid.NewGuid(); break;
         }
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new()], AiStudioMode: "studio",
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
             AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id,
             AiStudioFrameId: frameId == Guid.Empty ? null : frameId);
 
         var result = _planner.Plan(product, [source, frame], config);
 
         result.IsFailure.Should().BeTrue();
-        result.Error.Code.Should().Be(state == "missing" ? "StudioFrameRequired" : "StudioFrameStale");
+        result.Error.Code.Should().Be("StudioFrameRequired");
+    }
+
+    // A reviewed keyframe stays usable after its source mock-up is edited again or another layout is chosen: how it
+    // was made does not make the approved picture unsafe to animate.
+    [TestMethod]
+    [DataRow("stale_source")]
+    [DataRow("wrong_layout")]
+    public void Plan_StudioMode_ApprovedFrameMadeDifferently_IsStillUsed(string state)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source, state == "wrong_layout" ? AiStudioFrameIdentity.FlatLay : AiStudioFrameIdentity.HangingWindow);
+        if (state == "stale_source")
+        {
+            source.MetadataRevision++;
+            source.ApprovedRevision++;
+        }
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
+            AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = _planner.Plan(product, [source, frame], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(frame.Id);
     }
 
     [TestMethod]
@@ -524,7 +632,7 @@ public sealed class VideoStoryboardPlannerTests
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
         var frame = CreateStudioFrame(source);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(TemplateCode: "signature_product_reveal")],
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id, TemplateCode: "signature_product_reveal")],
             AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var result = _planner.Plan(product, [source, frame], config);
@@ -541,7 +649,7 @@ public sealed class VideoStoryboardPlannerTests
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
 
-        var result = _planner.Plan(product, [source], new(Mode: "ai_shot", AiScenes: [new()]));
+        var result = _planner.Plan(product, [source], new(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)]));
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Single().MockupId.Should().Be(source.Id);

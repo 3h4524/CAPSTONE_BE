@@ -33,4 +33,17 @@ public sealed class WorkflowsController(IWorkflowService workflows, IWorkflowRun
         var result = await runs.StartAsync(id, request, ct);
         return result.IsSuccess ? Accepted($"/api/workflow-runs/{result.Value.Id}", result.Value) : result.ToActionResult(this);
     }
+    /// <summary>Returns the most recent run for a workflow so its generated media can be restored.</summary>
+    [HttpGet("{id:guid}/runs/latest")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType(typeof(RunResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> LatestRun(Guid id, CancellationToken ct) =>
+        (await runs.GetLatestAsync(id, ct)).ToActionResult(this);
+    /// <summary>Lists previous runs that contain generated videos available for review or download.</summary>
+    [HttpGet("{id:guid}/video-runs")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType(typeof(VideoRunSummaryResponse[]), StatusCodes.Status200OK)]
+    public async Task<IActionResult> VideoRuns(Guid id, CancellationToken ct) =>
+        (await runs.ListVideoRunsAsync(id, ct)).ToActionResult(this);
 }

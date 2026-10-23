@@ -487,3 +487,6 @@ $RECYCLE.BIN/
 models/*.onnx
 media-worker/node_modules/
 media-worker/artifacts/
+
+# Test reports written by the admin test-run button
+/test-reports/

@@ -63,7 +63,7 @@ public sealed class MediaJobServiceTests
         result.IsSuccess.Should().BeTrue();
         fixture.ExportRows.Single().Status.Should().Be("ready");
         fixture.ExportRows.Single().StorageKey.Should().Be(completion.StorageKey);
-        fixture.ItemRows.Single().ItemStatus.Should().Be("completed");
+        fixture.ItemRows.Single().ItemStatus.Should().Be("packed");
         fixture.RunRows.Single().Status.Should().Be("completed");
         fixture.RunRows.Single().CompletedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
         job.Status.Should().Be("succeeded");
@@ -129,6 +129,15 @@ public sealed class MediaJobServiceTests
         MediaJobService.ValidQa(WorkflowTestData.Qa() with { DurationSeconds = 12.04, Bytes = 100 * 1024 * 1024 - 1 }, 12).Should().BeTrue();
         MediaJobService.ValidQa(WorkflowTestData.Qa() with { DurationSeconds = 12.044 }, 12).Should().BeFalse();
         MediaJobService.ValidQa(null, 12).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void ValidQa_TransitionedAiOutput_UsesFractionalRenderedDuration()
+    {
+        var transitioned = WorkflowTestData.Qa() with { DurationSeconds = 15.6 };
+
+        MediaJobService.ValidQa(transitioned, 15.6).Should().BeTrue();
+        MediaJobService.ValidQa(transitioned, 16).Should().BeFalse();
     }
 
     [TestMethod]
@@ -270,6 +279,38 @@ public sealed class MediaJobServiceTests
     }
 
     [TestMethod]
+    public async Task CompleteAsync_TransitionedStoryboard_ValidatesQaAgainstOutputDurationFrames()
+    {
+        static void SetTransitionedPayload(WorkflowTestData fixture)
+        {
+            var job = fixture.JobRows.Single();
+            var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
+            var scenes = payload.Storyboard.Scenes.Select((scene, index) => scene with
+            { DurationFrames = 240, GenerationStrategy = "ai_shot", Transition = index == 0 ? "none" : "fade" }).ToArray();
+            var storyboard = payload.Storyboard with { Mode = "ai_shot", DurationSeconds = 16, Scenes = scenes,
+                TransitionOverlapFrames = 12, OutputDurationFrames = 468, AiShots = [] };
+            job.Payload = WorkflowJson.Write(new AiRenderJobPayload(payload.VideoId, storyboard, []));
+        }
+
+        var validFixture = RenderFixture();
+        SetTransitionedPayload(validFixture);
+        var validJob = validFixture.JobRows.Single();
+        SetupVerification(validFixture);
+        var valid = await validFixture.MediaService.CompleteAsync(validJob.Id,
+            Completion(validJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 15.6 } }, default);
+        valid.IsSuccess.Should().BeTrue();
+
+        var invalidFixture = RenderFixture();
+        SetTransitionedPayload(invalidFixture);
+        var invalidJob = invalidFixture.JobRows.Single();
+        SetupVerification(invalidFixture);
+        var invalid = await invalidFixture.MediaService.CompleteAsync(invalidJob.Id,
+            Completion(invalidJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 16 } }, default);
+        invalid.Error.Message.Should().Be("Video failed technical QA.");
+        invalidFixture.VideoRows.Single().Status.Should().Be("queued");
+    }
+
+    [TestMethod]
     public async Task CompleteAsync_WrongStorageKey_DoesNotAcceptAnotherAttemptArtifact()
     {
         var fixture = RenderFixture();
@@ -343,6 +384,40 @@ public sealed class MediaJobServiceTests
         job.ErrorMessage.Should().Contain("Audio issue. You have not been charged for this attempt.").And.Contain("Retry checkpoint");
         fixture.RunRows.Single().Status.Should().Be("failed");
         fixture.RunRows.Single().ErrorMessage.Should().Be(job.ErrorMessage);
+    }
+
+    [TestMethod]
+    [DataRow(1, "queued")]
+    [DataRow(3, "failed")]
+    public async Task FailAsync_GoogleBusyOrOverQuota_WaitsAMinuteThenSaysNothingWasBilled(int attempt, string expected)
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = attempt;
+        var board = WorkflowJson.Read<RenderJobPayload>(job.Payload).Storyboard;
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            [new AiShotJobState(0, "fingerprint", Status: "pending", Failure: "Google Veo quota or rate limit reached.")]));
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "AiVideoBusy"), default);
+
+        job.Status.Should().Be(expected);
+        // A per-minute limit has reset by the next attempt.
+        job.AvailableAt.Should().Be(WorkflowTestData.Now.AddSeconds(attempt * 70).UtcDateTime);
+        job.ErrorMessage.Should().Contain("quota or rate limit reached").And.Contain("Nothing was billed");
+    }
+
+    [TestMethod]
+    public async Task FailAsync_UncertainSubmission_SaysWhatWasKnown()
+    {
+        var fixture = RenderFixture();
+        var job = fixture.JobRows.Single(); job.Attempt = 1;
+        var board = WorkflowJson.Read<RenderJobPayload>(job.Payload).Storyboard;
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            [new AiShotJobState(0, "fingerprint", Status: "submitting", Failure: "Google Veo did not answer in time.")]));
+
+        await fixture.MediaService.FailAsync(job.Id, new(job.LeaseToken!.Value, "VeoSubmissionUncertain"), default);
+
+        job.Status.Should().Be("failed");
+        job.ErrorMessage.Should().Contain("Google Veo did not answer in time.").And.Contain("Regenerate AI clips");
     }
 
     [TestMethod]

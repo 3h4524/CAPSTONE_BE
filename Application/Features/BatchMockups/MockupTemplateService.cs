@@ -35,6 +35,7 @@ public sealed class MockupTemplateService(
     IValidator<UpdateMockupTemplateRequestDto> updateValidator,
     IValidator<GenerateMockupImageRequestDto> generateValidator,
     IValidator<SaveMockupOverrideRequestDto> overrideValidator,
+    IValidator<SaveMockupOverridesRequestDto> overridesValidator,
     TimeProvider timeProvider,
     ILogger<MockupTemplateService> logger) : IMockupTemplateService
 {
@@ -718,42 +719,83 @@ public sealed class MockupTemplateService(
         if (!validation.IsValid)
             return Result.Failure<GenerateAllMockupsResultDto>(validation.ToValidationError());
 
-        var found = await FindEditableSlotAsync(batchJobId, request.SlotKey, cancellationToken);
+        return await SaveOverridesCoreAsync(batchJobId, userId, [request], cancellationToken);
+    }
+
+    public async Task<Result<GenerateAllMockupsResultDto>> SaveOverridesAsync(Guid batchJobId, SaveMockupOverridesRequestDto request, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.Unauthenticated("edit"));
+
+        var validation = await overridesValidator.ValidateAsync(request, cancellationToken);
+        if (!validation.IsValid)
+            return Result.Failure<GenerateAllMockupsResultDto>(validation.ToValidationError());
+
+        return await SaveOverridesCoreAsync(batchJobId, userId, request.Overrides, cancellationToken);
+    }
+
+    // Checks every change against its mock-up's product and the template it names, keeps all of them or none, and
+    // makes the job's mock-ups once.
+    private async Task<Result<GenerateAllMockupsResultDto>> SaveOverridesCoreAsync(Guid batchJobId, Guid userId,
+        IReadOnlyList<SaveMockupOverrideRequestDto> changes, CancellationToken cancellationToken)
+    {
+        var found = await FindEditableSlotsAsync(batchJobId, changes.Select(change => change.SlotKey).ToList(), cancellationToken);
         if (found.IsFailure)
             return Result.Failure<GenerateAllMockupsResultDto>(found.Error);
-        var (batch, product) = found.Value;
+        var (batch, productsBySlot) = found.Value;
 
-        var requested = request.Override;
-        MockupOverrideDto kept;
-        if (requested.Removed)
+        // Changes copied across a job name the same few templates: each is looked up, and its cut mask made sure of, once.
+        var templatesById = new Dictionary<Guid, MockupTemplate?>();
+        var cutMaskByTemplate = new Dictionary<Guid, bool>();
+        var overrides = new Dictionary<string, MockupOverrideDto>(ReadOverrides(batch.Config));
+        foreach (var change in changes)
         {
-            kept = new MockupOverrideDto(requested.MockupTemplateId, null, null, null, Removed: true);
+            var kept = await CheckOverrideAsync(change.Override, productsBySlot[change.SlotKey], userId, templatesById, cutMaskByTemplate, cancellationToken);
+            if (kept.IsFailure)
+                return Result.Failure<GenerateAllMockupsResultDto>(kept.Error);
+            overrides[change.SlotKey] = kept.Value;
         }
-        else
+
+        var replaced = changes.Select(change => change.ReplacedMockupImageId).OfType<Guid>().ToList();
+        return await StoreOverridesAndRegenerateAsync(batch, userId, overrides, replaced, cancellationToken);
+    }
+
+    // The change as it is kept, when the mock-up's product and the template it names can take it.
+    private async Task<Result<MockupOverrideDto>> CheckOverrideAsync(MockupOverrideDto requested, Product product, Guid userId,
+        Dictionary<Guid, MockupTemplate?> templatesById, Dictionary<Guid, bool> cutMaskByTemplate, CancellationToken cancellationToken)
+    {
+        if (requested.Removed)
+            return Result.Success(new MockupOverrideDto(requested.MockupTemplateId, null, null, null, Removed: true));
+
+        if (!templatesById.TryGetValue(requested.MockupTemplateId, out var template))
         {
-            var template = await templates.Query()
+            template = await templates.Query()
                 .SingleOrDefaultAsync(item => item.Id == requested.MockupTemplateId && item.IsActive == true
                     && (item.UserId == null || item.UserId == userId), cancellationToken);
-            if (template is null)
-                return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.TemplateNotFoundSingle());
-            if (!string.Equals(template.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase))
-                return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.TemplateNotForProduct(template.Name));
-            if (requested.GarmentColor is not null && !(template.AllowRecolor && MockupRules.HasCurrentMaps(template)))
-                return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.RecolorNotAllowed(template.Name));
-            if (requested.BackgroundColor is not null && !await TryEnsureCutMaskAsync(template, cancellationToken))
-                return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.BackgroundNotAllowed(template.Name));
-            if (requested.PrintArea is { } area
-                && !FitsWithin(new MockupPosition(area.X, area.Y, area.Width, area.Height), template.OutputWidthPx, template.OutputHeightPx))
-                return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.InvalidPrintArea());
-            kept = requested with
-            {
-                GarmentColor = requested.GarmentColor?.ToUpperInvariant(),
-                BackgroundColor = requested.BackgroundColor?.ToUpperInvariant()
-            };
+            templatesById[requested.MockupTemplateId] = template;
         }
+        if (template is null)
+            return Result.Failure<MockupOverrideDto>(MockupErrors.TemplateNotFoundSingle());
+        if (!string.Equals(template.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase))
+            return Result.Failure<MockupOverrideDto>(MockupErrors.TemplateNotForProduct(template.Name));
+        if (requested.GarmentColor is not null && !(template.AllowRecolor && MockupRules.HasCurrentMaps(template)))
+            return Result.Failure<MockupOverrideDto>(MockupErrors.RecolorNotAllowed(template.Name));
+        if (requested.BackgroundColor is not null)
+        {
+            if (!cutMaskByTemplate.TryGetValue(template.Id, out var canCut))
+                cutMaskByTemplate[template.Id] = canCut = await TryEnsureCutMaskAsync(template, cancellationToken);
+            if (!canCut)
+                return Result.Failure<MockupOverrideDto>(MockupErrors.BackgroundNotAllowed(template.Name));
+        }
+        if (requested.PrintArea is { } area
+            && !FitsWithin(new MockupPosition(area.X, area.Y, area.Width, area.Height), template.OutputWidthPx, template.OutputHeightPx))
+            return Result.Failure<MockupOverrideDto>(MockupErrors.InvalidPrintArea());
 
-        var overrides = new Dictionary<string, MockupOverrideDto>(ReadOverrides(batch.Config)) { [request.SlotKey] = kept };
-        return await StoreOverridesAndRegenerateAsync(batch, userId, overrides, request.ReplacedMockupImageId, cancellationToken);
+        return Result.Success(requested with
+        {
+            GarmentColor = requested.GarmentColor?.ToUpperInvariant(),
+            BackgroundColor = requested.BackgroundColor?.ToUpperInvariant()
+        });
     }
 
     public async Task<Result<GenerateAllMockupsResultDto>> ResetOverrideAsync(Guid batchJobId, string slotKey, Guid? replacedMockupImageId, CancellationToken cancellationToken = default)
@@ -761,14 +803,15 @@ public sealed class MockupTemplateService(
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.Unauthenticated("edit"));
 
-        var found = await FindEditableSlotAsync(batchJobId, slotKey, cancellationToken);
+        var found = await FindEditableSlotsAsync(batchJobId, [slotKey], cancellationToken);
         if (found.IsFailure)
             return Result.Failure<GenerateAllMockupsResultDto>(found.Error);
         var batch = found.Value.Batch;
 
         var overrides = new Dictionary<string, MockupOverrideDto>(ReadOverrides(batch.Config));
         overrides.Remove(slotKey);
-        return await StoreOverridesAndRegenerateAsync(batch, userId, overrides, replacedMockupImageId, cancellationToken);
+        return await StoreOverridesAndRegenerateAsync(batch, userId, overrides,
+            replacedMockupImageId is Guid replacedId ? [replacedId] : [], cancellationToken);
     }
 
     // What the job's settings no longer make (a template taken out, a color dropped, a template photo or print area edited
@@ -792,54 +835,76 @@ public sealed class MockupTemplateService(
         return outdated.Count;
     }
 
-    // The job and product a slot key names, when the job can have its mock-ups changed now.
-    private async Task<Result<(BatchJob Batch, Product Product)>> FindEditableSlotAsync(Guid batchJobId, string slotKey, CancellationToken cancellationToken)
+    // The job, and the product of each mock-up the slot keys name, when the job can have its mock-ups changed now.
+    private async Task<Result<(BatchJob Batch, IReadOnlyDictionary<string, Product> Products)>> FindEditableSlotsAsync(Guid batchJobId,
+        IReadOnlyCollection<string> slotKeys, CancellationToken cancellationToken)
     {
         var batch = await FindOwnedBatchAsync(batchJobId, cancellationToken);
         if (batch is null)
-            return Result.Failure<(BatchJob, Product)>(MockupErrors.BatchNotFound());
+            return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.BatchNotFound());
         if (BatchJobStatuses.Active.Contains(batch.Status.ToLowerInvariant()))
-            return Result.Failure<(BatchJob, Product)>(MockupErrors.JobGenerating());
+            return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.JobGenerating());
         if (string.Equals(batch.Status, BatchJobStatuses.Draft, StringComparison.OrdinalIgnoreCase))
-            return Result.Failure<(BatchJob, Product)>(MockupErrors.JobNotReady());
+            return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.JobNotReady());
 
-        // Only a mock-up the job's settings make: a design of this job on one of its selected templates.
-        if (!MockupRules.TryReadSlotKey(slotKey, out var designImageId, out var templateId) || !ReadSelection(batch.Config).Contains(templateId))
-            return Result.Failure<(BatchJob, Product)>(MockupErrors.SlotNotFound());
+        // Only mock-ups the job's settings make: designs of this job on its selected templates.
+        var selection = ReadSelection(batch.Config);
+        var designBySlot = new Dictionary<string, Guid>();
+        foreach (var slotKey in slotKeys)
+        {
+            if (!MockupRules.TryReadSlotKey(slotKey, out var designImageId, out var templateId) || !selection.Contains(templateId))
+                return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.SlotNotFound());
+            designBySlot[slotKey] = designImageId;
+        }
+
         var rowIds = await rows.Query().Where(row => row.BatchJobId == batch.Id).Select(row => row.Id).ToListAsync(cancellationToken);
-        var designImage = await designImages.Query()
-            .SingleOrDefaultAsync(image => image.Id == designImageId && image.DeletedAt == null
-                && image.BatchJobProductId != null && rowIds.Contains(image.BatchJobProductId.Value), cancellationToken);
-        if (designImage is null)
-            return Result.Failure<(BatchJob, Product)>(MockupErrors.SlotNotFound());
-        var product = await products.Query().SingleOrDefaultAsync(item => item.Id == designImage.ProductId, cancellationToken);
-        return product is null
-            ? Result.Failure<(BatchJob, Product)>(MockupErrors.SlotNotFound())
-            : Result.Success((batch, product));
+        var designIds = designBySlot.Values.Distinct().ToList();
+        var designs = await designImages.Query()
+            .Where(image => designIds.Contains(image.Id) && image.DeletedAt == null
+                && image.BatchJobProductId != null && rowIds.Contains(image.BatchJobProductId.Value))
+            .ToListAsync(cancellationToken);
+        var productIds = designs.Select(image => image.ProductId).Distinct().ToList();
+        var productsById = (await products.Query().Where(item => productIds.Contains(item.Id)).ToListAsync(cancellationToken))
+            .ToDictionary(item => item.Id);
+
+        var productsBySlot = new Dictionary<string, Product>();
+        foreach (var (slotKey, designImageId) in designBySlot)
+        {
+            var design = designs.FirstOrDefault(image => image.Id == designImageId);
+            if (design is null || !productsById.TryGetValue(design.ProductId, out var product))
+                return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.SlotNotFound());
+            productsBySlot[slotKey] = product;
+        }
+        return Result.Success<(BatchJob, IReadOnlyDictionary<string, Product>)>((batch, productsBySlot));
     }
 
     private async Task<Result<GenerateAllMockupsResultDto>> StoreOverridesAndRegenerateAsync(BatchJob batch, Guid userId,
-        IReadOnlyDictionary<string, MockupOverrideDto> overrides, Guid? replacedMockupImageId, CancellationToken cancellationToken)
+        IReadOnlyDictionary<string, MockupOverrideDto> overrides, IReadOnlyCollection<Guid> replacedMockupImageIds, CancellationToken cancellationToken)
     {
         batch.Config = WriteOverrides(batch.Config, overrides);
         batch.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batches.UpdateAsync(batch, saveChange: true, cancellationToken);
 
         var result = await GenerateAllCoreAsync(batch, userId, cancellationToken);
-        if (result.IsFailure || replacedMockupImageId is not Guid replacedId || result.Value.Images.Any(image => image.Id == replacedId))
+        if (result.IsFailure)
+            return result;
+        var goneIds = replacedMockupImageIds.Where(id => result.Value.Images.All(image => image.Id != id)).ToList();
+        if (goneIds.Count == 0)
             return result;
 
-        // The mock-up shown until now is not one of the job's any more. It goes, unless it was already added to the
+        // A mock-up shown until now that is not one of the job's any more goes, unless it was already added to the
         // video sources: there it may be approved or in use, so the seller decides about it at Mockup Approval.
         var designImageIds = result.Value.Images.Select(image => image.DesignImageId)
             .Concat(result.Value.Removed?.Select(slot => slot.DesignImageId) ?? []).ToHashSet();
         var replaced = await mockupImages.Query()
-            .SingleOrDefaultAsync(image => image.Id == replacedId && image.DeletedAt == null && image.ContentHash == null
-                && image.SourceType == MockupSources.Generated && image.DesignImageId != null && designImageIds.Contains(image.DesignImageId.Value), cancellationToken);
-        if (replaced is not null)
+            .Where(image => goneIds.Contains(image.Id) && image.DeletedAt == null && image.ContentHash == null
+                && image.SourceType == MockupSources.Generated && image.DesignImageId != null && designImageIds.Contains(image.DesignImageId.Value))
+            .ToListAsync(cancellationToken);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        foreach (var image in replaced)
         {
-            replaced.DeletedAt = timeProvider.GetUtcNow().UtcDateTime;
-            await mockupImages.UpdateAsync(replaced, saveChange: true, cancellationToken);
+            image.DeletedAt = now;
+            await mockupImages.UpdateAsync(image, saveChange: true, cancellationToken);
         }
         return result;
     }

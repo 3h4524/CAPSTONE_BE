@@ -57,6 +57,18 @@ public sealed class BatchMockupsController(IMockupTemplateService service) : Con
         CancellationToken cancellationToken) =>
         (await service.SaveOverrideAsync(batchJobId, request, cancellationToken)).ToActionResult(this);
 
+    /// <summary>Makes several of the job's mock-ups their own way at once, all or none, and returns the job's mock-ups.</summary>
+    [HttpPut("overrides/bulk")]
+    [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SaveOverrides(
+        Guid batchJobId,
+        [FromBody] SaveMockupOverridesRequestDto request,
+        CancellationToken cancellationToken) =>
+        (await service.SaveOverridesAsync(batchJobId, request, cancellationToken)).ToActionResult(this);
+
     /// <summary>Puts one of the job's mock-ups back on the job's settings and returns the job's mock-ups.</summary>
     [HttpDelete("overrides/{slotKey}")]
     [ProducesResponseType(typeof(GenerateAllMockupsResultDto), StatusCodes.Status200OK)]

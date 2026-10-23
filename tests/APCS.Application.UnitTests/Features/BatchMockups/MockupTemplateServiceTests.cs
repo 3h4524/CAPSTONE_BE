@@ -2146,6 +2146,134 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task SaveOverridesAsync_KeepsEveryChangeAndMakesTheMockupsOnce()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (secondRow, secondProduct, second) = MakeProductRow(userId, job.Id, "tshirt");
+        var batches = MockBatches(job);
+        var positions = new List<MockupPosition>();
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, key, position, _) => { positions.Add(position); return $"https://cdn/{key}/{position.X}.jpg"; });
+        var first = MockupRules.SlotKey(image.Id, templateId, null);
+        var other = MockupRules.SlotKey(second.Id, templateId, null);
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: batches, rows: MockRows(row, secondRow),
+                products: MockProducts(product, secondProduct), designImages: MockDesignImages(image, second), mockupImages: MockRepo<MockupImage>(), compositor: compositor)
+            .SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([
+                new(first, new(templateId, null, null, new(5, 6, 50, 60))),
+                new(other, new(templateId, null, null, new(5, 6, 50, 60)))]));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Images.Should().HaveCount(2).And.OnlyContain(item => item.Override!.PrintArea == new MockupPrintAreaDto(5, 6, 50, 60));
+        positions.Should().Equal(new MockupPosition(5, 6, 50, 60), new MockupPosition(5, 6, 50, 60));
+        job.Config.Should().Contain(first).And.Contain(other);
+        batches.Verify(x => x.UpdateAsync(job, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task SaveOverridesAsync_ABackgroundForMockupsOfOneTemplate_MakesSureOfItsCutMaskOnce()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (secondRow, secondProduct, second) = MakeProductRow(userId, job.Id, "tshirt");
+        var mapService = MockMapService();
+        mapService.Setup(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(RecolorableTemplate(templateId)), batches: MockBatches(job),
+                rows: MockRows(row, secondRow), products: MockProducts(product, secondProduct), designImages: MockDesignImages(image, second), mockupImages: mockupImages,
+                compositor: ColorAwareCompositor(), mapService: mapService)
+            .SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([
+                new(MockupRules.SlotKey(image.Id, templateId, null), new(templateId, null, "#ede6da", null)),
+                new(MockupRules.SlotKey(second.Id, templateId, null), new(templateId, null, "#ede6da", null))]));
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().HaveCount(2).And.OnlyContain(item => item.BackgroundColor == "#EDE6DA");
+        mapService.Verify(x => x.EnsureCutMaskAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task SaveOverridesAsync_OneChangeThatCannotBeKept_KeepsNone()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (secondRow, secondProduct, second) = MakeProductRow(userId, job.Id, "tshirt");
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row, secondRow), products: MockProducts(product, secondProduct), designImages: MockDesignImages(image, second))
+            .SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([
+                new(MockupRules.SlotKey(image.Id, templateId, null), new(templateId, null, null, new(5, 6, 50, 60))),
+                new(MockupRules.SlotKey(second.Id, templateId, null), new(templateId, "#B22222", null, null))]));
+
+        result.Error.Code.Should().Be("BatchMockups.RecolorNotAllowed");
+        job.Config.Should().NotContain("mockupOverrides");
+    }
+
+    [TestMethod]
+    public async Task SaveOverridesAsync_AMockupTheJobDoesNotMake_KeepsNone()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (_, _, otherImage) = MakeProductRow(userId, Guid.NewGuid(), "tshirt");
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image, otherImage))
+            .SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([
+                new(MockupRules.SlotKey(image.Id, templateId, null), new(templateId, null, null, null)),
+                new(MockupRules.SlotKey(otherImage.Id, templateId, null), new(templateId, null, null, null))]));
+
+        result.Error.Code.Should().Be("BatchMockups.SlotNotFound");
+        job.Config.Should().NotContain("mockupOverrides");
+    }
+
+    [TestMethod]
+    public async Task SaveOverridesAsync_EveryMockupItReplaces_GoesUnlessItIsAlreadyAVideoSource()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (secondRow, secondProduct, second) = MakeProductRow(userId, job.Id, "tshirt");
+        var oldFirst = ExistingMockup(image, product, templateId, "https://cdn/old-1.jpg");
+        var oldSecond = ExistingMockup(second, secondProduct, templateId, "https://cdn/old-2.jpg");
+        var imported = ExistingMockup(second, secondProduct, templateId, "https://cdn/imported.jpg");
+        foreach (var old in new[] { oldFirst, oldSecond, imported })
+            old.SourceType = MockupSources.Generated;
+        imported.ContentHash = "a-hash";
+        var mockupImages = MockRepo(oldFirst, oldSecond, imported);
+        CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")), batches: MockBatches(job),
+                rows: MockRows(row, secondRow), products: MockProducts(product, secondProduct), designImages: MockDesignImages(image, second), mockupImages: mockupImages,
+                compositor: ColorAwareCompositor())
+            .SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([
+                new(MockupRules.SlotKey(image.Id, templateId, null), new(templateId, null, null, new(1, 1, 10, 10)), oldFirst.Id),
+                new(MockupRules.SlotKey(second.Id, templateId, null), new(templateId, null, null, new(1, 1, 10, 10)), imported.Id)]));
+
+        result.IsSuccess.Should().BeTrue();
+        oldFirst.DeletedAt.Should().NotBeNull();
+        imported.DeletedAt.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task SaveOverridesAsync_NoChangeOrTheSameMockupTwice_IsRefused()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var slot = MockupRules.SlotKey(image.Id, templateId, null);
+        MockupTemplateService Service() => CreateService(userId, templates: TemplateRepository(MakeTemplate(templateId, "tshirt")),
+            batches: MockBatches(job), rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image));
+
+        (await Service().SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([]))).Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        (await Service().SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([new(slot, new(templateId, null, null, null)), new(slot, new(templateId, null, null, null))])))
+            .Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        (await CreateService(null, batches: MockBatches(job)).SaveOverridesAsync(job.Id, new SaveMockupOverridesRequestDto([new(slot, new(templateId, null, null, null))])))
+            .Error.Type.Should().Be(APCS.Common.Models.ErrorType.Unauthorized);
+        job.Config.Should().NotContain("mockupOverrides");
+    }
+
+    [TestMethod]
     public void SlotKey_NamesTheDesignTemplateAndColor_AndReadsBack()
     {
         var (designId, templateId) = (Guid.NewGuid(), Guid.NewGuid());
@@ -2229,6 +2357,7 @@ public sealed class MockupTemplateServiceTests
             new UpdateMockupTemplateValidator(),
             new GenerateMockupImageValidator(),
             new SaveMockupOverrideValidator(),
+            new SaveMockupOverridesValidator(),
             TimeProvider.System,
             NullLogger<MockupTemplateService>.Instance);
     }

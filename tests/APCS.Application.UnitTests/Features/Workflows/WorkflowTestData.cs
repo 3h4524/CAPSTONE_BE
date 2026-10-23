@@ -78,7 +78,7 @@ internal sealed class WorkflowTestData
             .ReturnsAsync((Guid id, CancellationToken _) => AssetRows.SingleOrDefault(x => x.Id == id));
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
         Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
-            It.IsAny<bool>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+            It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
@@ -89,7 +89,7 @@ internal sealed class WorkflowTestData
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
-        ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Storage.Object, Time);
+        ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Nodes.Object, Jobs.Object, Storage.Object, Time);
         foreach (var version in new[] { 1, 2 })
         foreach (var code in new[] { "product_showcase", "design_detail", "variant_showcase" })
             TemplateRows.Add(new() { Id = Guid.NewGuid(), Code = code, Name = code, Type = "product_showcase",
