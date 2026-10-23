@@ -59,7 +59,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18-alpine
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: apcs
           POSTGRES_PASSWORD: apcs
@@ -114,6 +114,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: backend-integration-results
-          path: TestResults
+          path: "**/TestResults"
           if-no-files-found: warn
           retention-days: 14
