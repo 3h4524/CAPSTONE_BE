@@ -66,6 +66,9 @@ public sealed class AuthorizationMatrixTests
 
     private static Guid _sellerUserId;
 
+    /// <summary>One hash of <see cref="Password"/>, reused so reseeding after each reset skips PBKDF2.</summary>
+    private static string _passwordHash = null!;
+
     private static Guid _adminUserId;
 
     private static Guid _superAdminUserId;
@@ -179,12 +182,12 @@ public sealed class AuthorizationMatrixTests
 
         _seeder = AuthTestSeeder.Create(_host.Factory.Services);
 
-        var sellerRoleId = await _seeder.SeedRoleAsync(SellerRole, SellerRole);
-        var adminRoleId = await _seeder.SeedRoleAsync(AdminRole, AdminRole);
-
-        _sellerUserId = await SeedIdentityAsync("authz-seller@apcs.test", sellerRoleId);
-        _adminUserId = await SeedIdentityAsync("authz-admin@apcs.test", sellerRoleId, adminRoleId);
-        _superAdminUserId = await SeedIdentityAsync("authz-super-admin@apcs.test", sellerRoleId, adminRoleId);
+        _passwordHash = _host.Factory.Services.GetRequiredService<IPasswordHasher<User>>()
+            .HashPassword(new User { Email = string.Empty, FullName = string.Empty, PasswordHash = string.Empty }, Password);
+        _sellerUserId = Guid.NewGuid();
+        _adminUserId = Guid.NewGuid();
+        _superAdminUserId = Guid.NewGuid();
+        await SeedIdentitiesAsync();
     }
 
     [ClassCleanup]
@@ -200,7 +203,14 @@ public sealed class AuthorizationMatrixTests
     }
 
     [TestInitialize]
-    public Task ResetDatabaseAsync() => _host.ResetDatabaseAsync();
+    public async Task ResetDatabaseAsync()
+    {
+        // Respawn truncates every table, the class's identities included, and the services behind
+        // several Seller endpoints (API keys, batches) look the account up in the database rather
+        // than trusting the token, so they answered 403 once the seller row was gone.
+        await _host.ResetDatabaseAsync();
+        await SeedIdentitiesAsync();
+    }
 
     [TestMethod]
     [DynamicData(nameof(AuthorizedEndpoints))]
@@ -397,20 +407,28 @@ public sealed class AuthorizationMatrixTests
             path);
     }
 
-    private static async Task<Guid> SeedIdentityAsync(string email, params Guid[] roleIds)
+    /// <summary>
+    /// Seeds the roles and the three identities under their fixed ids. Every seeding call is an
+    /// upsert, so this runs both once for the class and again after each database reset.
+    /// </summary>
+    private static async Task SeedIdentitiesAsync()
     {
-        var id = Guid.NewGuid();
-        var user = new User { Id = id, Email = email, FullName = email, PasswordHash = string.Empty };
-        var hasher = _host.Factory.Services.GetRequiredService<IPasswordHasher<User>>();
+        var sellerRoleId = await _seeder.SeedRoleAsync(SellerRole, SellerRole);
+        var adminRoleId = await _seeder.SeedRoleAsync(AdminRole, AdminRole);
 
-        await _seeder.SeedActiveUserAsync(email, email, hasher.HashPassword(user, Password), id);
+        await SeedIdentityAsync(_sellerUserId, "authz-seller@apcs.test", sellerRoleId);
+        await SeedIdentityAsync(_adminUserId, "authz-admin@apcs.test", sellerRoleId, adminRoleId);
+        await SeedIdentityAsync(_superAdminUserId, "authz-super-admin@apcs.test", sellerRoleId, adminRoleId);
+    }
+
+    private static async Task SeedIdentityAsync(Guid id, string email, params Guid[] roleIds)
+    {
+        await _seeder.SeedActiveUserAsync(email, email, _passwordHash, id);
 
         foreach (var roleId in roleIds)
         {
             await _seeder.GrantRoleAsync(id, roleId);
         }
-
-        return id;
     }
 
     private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string method, string path)
