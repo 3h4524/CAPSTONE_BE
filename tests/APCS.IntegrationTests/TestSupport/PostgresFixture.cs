@@ -1,6 +1,7 @@
 using APCS.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Pgvector.EntityFrameworkCore;
 using Respawn;
 using Respawn.Graph;
 using Testcontainers.PostgreSql;
@@ -232,7 +233,9 @@ public sealed class PostgresFixture : IAsyncDisposable
             .ExecuteNonQueryAsync().ConfigureAwait(false);
 
         await using var context = new AppDbContext(
-            new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString).Options);
+            new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(connectionString, npgsql => npgsql.UseVector())
+                .Options);
         await context.Database.EnsureCreatedAsync().ConfigureAwait(false);
     }
 

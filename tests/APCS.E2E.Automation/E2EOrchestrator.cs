@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using APCS.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Pgvector.EntityFrameworkCore;
 
 namespace APCS.E2E;
 
@@ -214,7 +215,9 @@ public sealed class E2EOrchestrator(E2EOptions options)
         }
 
         await using var context = new AppDbContext(
-            new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(options.ApiDbConnectionString).Options);
+            new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(options.ApiDbConnectionString, npgsql => npgsql.UseVector())
+                .Options);
 
         await context.Database.EnsureDeletedAsync(cancellationToken).ConfigureAwait(false);
         await context.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
