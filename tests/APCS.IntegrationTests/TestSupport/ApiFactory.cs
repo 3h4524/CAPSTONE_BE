@@ -41,6 +41,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 {
     private const string BlockedOutboundClientName = "ApiKeyValidation";
 
+    /// <summary>The hosted service that installs and loads the segmentation model; see <see cref="RemoveSegmentationModelInstaller"/>.</summary>
+    internal const string SegmentationModelInstallerTypeName = "APCS.Infrastructure.Services.SegmentationModelInstaller";
+
     private readonly PostgresFixture _database;
     private readonly FakeEmailService _email = new();
     private readonly FakePaymentGatewayClient _paymentGateway = new();
@@ -140,6 +143,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     private void NeutralizeThirdParties(IServiceCollection services)
     {
         RemoveUnbanUsersJob(services);
+        RemoveSegmentationModelInstaller(services);
 
         services.RemoveAll<IEmailService>();
         services.AddSingleton<IEmailService>(_email);
@@ -165,6 +169,30 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         var descriptors = services
             .Where(descriptor => descriptor.ServiceType == typeof(IHostedService)
                 && descriptor.ImplementationType == typeof(UnbanUsersJob))
+            .ToList();
+
+        foreach (var descriptor in descriptors)
+        {
+            services.Remove(descriptor);
+        }
+    }
+
+    /// <summary>
+    /// Removes the hosted service that downloads the 180 MB segmentation model and loads it into
+    /// ONNX Runtime on boot.
+    /// </summary>
+    /// <remarks>
+    /// No HTTP test segments a photo, and on Linux the native ONNX Runtime crashes while the test
+    /// process exits (SIGSEGV, exit code 139), failing the run after every test has passed. The
+    /// segmenter itself loads the model lazily, so without the installer ONNX Runtime is never
+    /// touched. The installer is internal to Infrastructure, hence the match by name.
+    /// </remarks>
+    /// <param name="services">The service collection under test.</param>
+    private static void RemoveSegmentationModelInstaller(IServiceCollection services)
+    {
+        var descriptors = services
+            .Where(descriptor => descriptor.ServiceType == typeof(IHostedService)
+                && descriptor.ImplementationType?.FullName == SegmentationModelInstallerTypeName)
             .ToList();
 
         foreach (var descriptor in descriptors)

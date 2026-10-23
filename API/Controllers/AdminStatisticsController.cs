@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.SystemStatistics.Dtos;
+using APCS.Common.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -11,7 +12,7 @@ namespace APCS.Api.Controllers;
 
 [Route("api/admin/statistics")]
 [ApiController]
-[Authorize(Roles = "Admin")]
+[Authorize(Roles = AuthConstants.AdminRole)]
 public class AdminStatisticsController(ISystemStatisticsService statisticsService) : ControllerBase
 {
     [HttpGet("overview")]

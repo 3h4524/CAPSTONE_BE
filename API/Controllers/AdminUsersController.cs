@@ -1,6 +1,8 @@
+using APCS.Api.Extensions;
 using APCS.Application.Features.Admin;
 using APCS.Application.Features.Admin.Dtos.Request;
 using APCS.Application.Features.Admin.Dtos.Response;
+using APCS.Common.Constants;
 using APCS.Common.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -13,7 +15,7 @@ namespace APCS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/admin/users")]
-[Authorize(Roles = "Admin,Super Admin")]
+[Authorize(Roles = AuthConstants.AdminRole)]
 public sealed class AdminUsersController(IAdminUserService adminUserService) : ControllerBase
 {
     /// <summary>
@@ -26,7 +28,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.GetUsersAsync(request, cancellationToken);
-        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+        return result.ToActionResult(this);
     }
 
     /// <summary>
@@ -37,7 +39,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
     public async Task<IActionResult> GetPlans(CancellationToken cancellationToken)
     {
         var result = await adminUserService.GetAvailablePlanNamesAsync(cancellationToken);
-        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+        return result.ToActionResult(this);
     }
 
     /// <summary>
@@ -51,7 +53,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.GetUserByIdAsync(id, cancellationToken);
-        return result.IsSuccess ? Ok(result.Value) : NotFound(result.Error);
+        return result.ToActionResult(this);
     }
 
     /// <summary>
@@ -59,6 +61,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
     /// </summary>
     [HttpPost("{id:guid}/suspend")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> SuspendUser(
         Guid id,
@@ -66,7 +69,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.SuspendUserAsync(id, request, cancellationToken);
-        return result.IsSuccess ? NoContent() : NotFound(result.Error);
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
     }
 
     /// <summary>
@@ -80,7 +83,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.UnlockUserAsync(id, cancellationToken);
-        return result.IsSuccess ? NoContent() : NotFound(result.Error);
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
     }
 
     /// <summary>
@@ -88,6 +91,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
     /// </summary>
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(AdminUserDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> UpdateUser(
@@ -96,7 +100,7 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.UpdateUserAsync(id, request, cancellationToken);
-        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+        return result.ToActionResult(this);
     }
 
     /// <summary>
@@ -110,6 +114,6 @@ public sealed class AdminUsersController(IAdminUserService adminUserService) : C
         CancellationToken cancellationToken)
     {
         var result = await adminUserService.SendResetPasswordLinkAsync(id, cancellationToken);
-        return result.IsSuccess ? NoContent() : NotFound(result.Error);
+        return result.IsSuccess ? NoContent() : result.ToActionResult(this);
     }
 }

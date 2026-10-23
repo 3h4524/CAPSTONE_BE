@@ -234,13 +234,16 @@ public sealed class PostgresFixture : IAsyncDisposable
     /// The repository is database-first and ships no migrations, so the dump taken from the
     /// production server is the only description of the schema. Testcontainers 4 removed
     /// <c>WithInitScript</c>, so the dump is executed over Npgsql once the container's entrypoint
-    /// has finished creating the database.
+    /// has finished creating the database. pg_dump 18.6+ wraps the dump in psql-only
+    /// <c>\restrict</c>/<c>\unrestrict</c> meta-commands that the server cannot parse, so lines
+    /// starting with a backslash are dropped before execution.
     /// </remarks>
     /// <param name="connectionString">The container connection string.</param>
     /// <returns>A task that completes once every statement in the dump has run.</returns>
     private static async Task ApplyBootstrapSchemaAsync(string connectionString)
     {
-        var dump = await File.ReadAllTextAsync(ResolveBootstrapScriptPath()).ConfigureAwait(false);
+        var lines = await File.ReadAllLinesAsync(ResolveBootstrapScriptPath()).ConfigureAwait(false);
+        var dump = string.Join('\n', lines.Where(line => !line.StartsWith('\\')));
 
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync().ConfigureAwait(false);
