@@ -54,4 +54,13 @@ public sealed class BatchJobsController(IDesignGenerationService service) : Cont
     [HttpPost("api/batch-jobs/{batchJobId:guid}/retry-failed")]
     public async Task<IActionResult> RetryFailed(Guid batchJobId, CancellationToken cancellationToken) =>
         (await service.RetryFailedAsync(batchJobId, cancellationToken)).ToActionResult(this);
+
+    /// <summary>Generates one product of a finished job again after saving its image prompt and design text; earlier designs are kept.</summary>
+    [HttpPost("api/batch-jobs/{batchJobId:guid}/products/{batchJobProductId:guid}/regenerate")]
+    public async Task<IActionResult> RegenerateProduct(
+        Guid batchJobId,
+        Guid batchJobProductId,
+        RegenerateProductRequestDto request,
+        CancellationToken cancellationToken) =>
+        (await service.RegenerateProductAsync(batchJobId, batchJobProductId, request, cancellationToken)).ToActionResult(this);
 }

@@ -82,6 +82,68 @@ public sealed class BatchProductPromptServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_WithACustomPrompt_StoresItOnTheProduct_WithoutTheTemplateFields()
+    {
+        var ids = TestIds();
+        var product = new Product { Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending" };
+        var products = MockProducts(product);
+        var service = CreateService(ids.UserId,
+            rows: MockRows(new BatchJobProduct { Id = ids.RowId, BatchJobId = ids.BatchId, ProductId = ids.ProductId, Status = "pending" }),
+            batches: MockBatches(new BatchJob { Id = ids.BatchId, UserId = ids.UserId, Name = "B", Status = "draft", Config = "{}" }),
+            products: products);
+
+        var result = await service.SaveAsync(ids.RowId,
+            new UpdateBatchProductPromptRequestDto("", "", "", "", "", "A fox curled up asleep under a pine tree."));
+
+        result.IsSuccess.Should().BeTrue();
+        product.CustomPrompt.Should().Be("A fox curled up asleep under a pine tree.");
+        result.Value.CustomPrompt.Should().Be("A fox curled up asleep under a pine tree.");
+        result.Value.EffectivePrompt.Should().Be("A fox curled up asleep under a pine tree.");
+        products.Verify(r => r.UpdateAsync(product, false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithACustomPrompt_KeepsNoArtStyle_NeitherTheSellersNorThePresets()
+    {
+        var ids = TestIds();
+        var product = new Product { Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending", StylePreset = "Minimalist" };
+        var row = new BatchJobProduct { Id = ids.RowId, BatchJobId = ids.BatchId, ProductId = ids.ProductId, Status = "pending" };
+        var styles = new Mock<IRepository<StyleArtPreset>>();
+        styles.Setup(r => r.Query()).Returns(new[]
+        {
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Minimalist", IsActive = true, StyleModifiers = "soft neutral tones" }
+        }.AsQueryable().BuildMock());
+        var service = CreateService(ids.UserId,
+            rows: MockRows(row),
+            batches: MockBatches(new BatchJob { Id = ids.BatchId, UserId = ids.UserId, Name = "B", Status = "draft", Config = "{}" }),
+            products: MockProducts(product),
+            styles: styles);
+
+        var result = await service.SaveAsync(ids.RowId,
+            new UpdateBatchProductPromptRequestDto("", "Watercolor", "", "", "", "A lighthouse on a rocky coast under a stormy sky."));
+
+        result.IsSuccess.Should().BeTrue();
+        row.CustomArtStyle.Should().BeEmpty();
+        result.Value.ArtStyle.Should().BeEmpty();
+        result.Value.EffectivePrompt.Should().Be("A lighthouse on a rocky coast under a stormy sky.");
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_WithoutACustomPrompt_StillNeedsTheTemplateFields()
+    {
+        var ids = TestIds();
+        var service = CreateService(ids.UserId,
+            rows: MockRows(new BatchJobProduct { Id = ids.RowId, BatchJobId = ids.BatchId, ProductId = ids.ProductId, Status = "pending" }),
+            batches: MockBatches(new BatchJob { Id = ids.BatchId, UserId = ids.UserId, Name = "B", Status = "draft", Config = "{}" }),
+            products: MockProducts(new Product { Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending" }));
+
+        var result = await service.SaveAsync(ids.RowId, new UpdateBatchProductPromptRequestDto("", "", "", "", ""));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+    }
+
+    [TestMethod]
     public async Task RestoreAsync_WhenCalled_ClearsBackToDefault()
     {
         var ids = TestIds();

@@ -10,9 +10,10 @@ public sealed class GeminiOptions
 
     public string DefaultModel { get; set; } = "gemini-3.1-flash-image";
 
-    /// <summary>Placeholder estimate used only for the <c>ApiUsageRecord.CostUsd</c> display until a
-    /// confirmed official per-image price is available.</summary>
-    public decimal EstimatedCostPerImageUsd { get; set; } = 0.04m;
+    /// <summary>Google's price for one image from the default model, recorded as <c>ApiUsageRecord.CostUsd</c>:
+    /// a 1K image is 1,120 output tokens at $60 per 1M ($0.0672), plus the prompt and any input images
+    /// (1,120 tokens each at $0.50 per 1M, about $0.0006).</summary>
+    public decimal EstimatedCostPerImageUsd { get; set; } = 0.068m;
 
     /// <summary>How many images of one design generation job are requested at the same time, all on the
     /// Seller's own key. 1 makes one image at a time.</summary>

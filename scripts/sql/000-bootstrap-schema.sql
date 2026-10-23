@@ -114,7 +114,7 @@ CREATE TABLE public.api_usage_records (
     error_code character varying(100),
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_api_usage_feature CHECK (((feature)::text = ANY (ARRAY[('image_generation'::character varying)::text, ('mockup'::character varying)::text, ('video'::character varying)::text, ('listing'::character varying)::text, ('seo'::character varying)::text, ('integration'::character varying)::text]))),
-    CONSTRAINT chk_api_usage_provider CHECK (((provider)::text = ANY (ARRAY[('leonardo'::character varying)::text, ('stable_diffusion'::character varying)::text, ('openai'::character varying)::text, ('gemini'::character varying)::text, ('printify'::character varying)::text, ('etsy'::character varying)::text, ('ffmpeg_local'::character varying)::text]))),
+    CONSTRAINT chk_api_usage_provider CHECK (((provider)::text = ANY (ARRAY[('leonardo'::character varying)::text, ('stable_diffusion'::character varying)::text, ('openai'::character varying)::text, ('gemini'::character varying)::text, ('printify'::character varying)::text, ('etsy'::character varying)::text, ('ffmpeg_local'::character varying)::text, ('ideogram'::character varying)::text]))),
     CONSTRAINT chk_api_usage_status CHECK (((status)::text = ANY (ARRAY[('success'::character varying)::text, ('failed'::character varying)::text, ('timeout'::character varying)::text])))
 );
 
@@ -809,6 +809,7 @@ CREATE TABLE public.products (
     target_audience character varying(255),
     input_description text NOT NULL,
     desired_design_text text,
+    custom_prompt text,
     style_preset character varying(100),
     main_keywords character varying(500),
     color_preference character varying(255),
@@ -818,6 +819,7 @@ CREATE TABLE public.products (
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     deleted_at timestamp with time zone,
     batch_id uuid NOT NULL,
+    CONSTRAINT chk_products_custom_prompt_length CHECK (((custom_prompt IS NULL) OR (char_length(custom_prompt) <= 1000))),
     CONSTRAINT chk_products_status CHECK (((processing_status)::text = ANY (ARRAY[('pending'::character varying)::text, ('validating'::character varying)::text, ('queued'::character varying)::text, ('generating_image'::character varying)::text, ('image_review_required'::character varying)::text, ('generating_mockup'::character varying)::text, ('generating_video'::character varying)::text, ('generating_listing'::character varying)::text, ('review_required'::character varying)::text, ('approved'::character varying)::text, ('exported'::character varying)::text, ('published'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('cancelled'::character varying)::text]))),
     CONSTRAINT chk_products_type CHECK (((product_type)::text = ANY (ARRAY[('tshirt'::character varying)::text, ('hoodie'::character varying)::text, ('mug'::character varying)::text, ('poster'::character varying)::text, ('tote_bag'::character varying)::text, ('phone_case'::character varying)::text])))
 );

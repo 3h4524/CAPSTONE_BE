@@ -138,6 +138,41 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
+    public async Task PreviewAsync_StandardGeneratedKeyframeRequiresApprovalAndUsesItsCustomFraming()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = WorkflowTestData.Asset(product.Id, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        frame.ApprovalStatus = "pending";
+        frame.ApprovedRevision = null;
+        fixture.AssetRows.Add(frame);
+        var startCrop = new Region(.1, .1, .8, .8);
+        var endCrop = new Region(.15, .15, .7, .7);
+        var config = new GenerateVideoConfig(Template: "product_showcase", TemplateVersion: 2,
+            AssetSelection: "manual", SelectedMockupIds: [frame.Id], SceneOrder: [frame.Id],
+            StandardScenes: [new(frame.Id, startCrop, endCrop)]);
+        var request = new PreviewStoryboardRequest(config, [source.Id], source.ArtworkGroupKey);
+
+        var pending = await Service(fixture).PreviewAsync(product.Id, request, default);
+        pending.IsSuccess.Should().BeFalse();
+        pending.Error.Code.Should().Be("WaitingForInput");
+
+        frame.ApprovalStatus = "approved";
+        frame.ApprovedRevision = frame.MetadataRevision;
+        var approved = await Service(fixture).PreviewAsync(product.Id, request, default);
+
+        approved.IsSuccess.Should().BeTrue();
+        approved.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id);
+        approved.Value.Scenes.Should().OnlyContain(scene => scene.Crop == startCrop && scene.EndCrop == endCrop);
+        fixture.JobRows.Should().BeEmpty();
+        fixture.VideoRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task PreviewAsync_SelectedApprovedSources_ProducesBoardWithoutMutatingWorkflow()
     {
         var fixture = new WorkflowTestData();
