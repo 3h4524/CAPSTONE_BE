@@ -20,13 +20,4 @@
     <ProjectReference Include="..\..\API\API.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Content Include="..\..\scripts\sql\000-bootstrap-schema.sql"
-             Link="scripts\sql\000-bootstrap-schema.sql"
-             CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\scripts\sql\test-report-runs.sql"
-             Link="scripts\sql\test-report-runs.sql"
-             CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
 </Project>
