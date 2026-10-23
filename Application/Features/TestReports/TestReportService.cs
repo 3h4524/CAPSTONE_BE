@@ -141,15 +141,6 @@ public sealed class TestReportService : ITestReportService
     /// <inheritdoc />
     public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default)
     {
-        // The suite signs in as a seller, and the person who starts the run has no seller
-        // account to hand over, so one is prepared for the length of the run.
-        TestSellerCredentials credentials;
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var seller = scope.ServiceProvider.GetRequiredService<ITestSellerProvisioner>();
-            credentials = await seller.EnsureAsync(cancellationToken);
-        }
-
         TestReportRunDto run;
         lock (_runLock)
         {
@@ -186,7 +177,7 @@ public sealed class TestReportService : ITestReportService
             throw;
         }
 
-        _ = RunInBackgroundAsync(run, credentials);
+        _ = RunInBackgroundAsync(run);
         return Result.Success(run);
     }
 
@@ -206,21 +197,14 @@ public sealed class TestReportService : ITestReportService
         return Result.Success(true);
     }
 
-    private async Task RunInBackgroundAsync(TestReportRunDto run, TestSellerCredentials credentials)
+    private async Task RunInBackgroundAsync(TestReportRunDto run)
     {
         TestReportRunDto finished;
         string? rawReport = null;
 
         try
         {
-            var result = await _runner.RunAsync(
-                run.RunId,
-                new Dictionary<string, string>
-                {
-                    ["E2E_SELLER_EMAIL"] = credentials.Email,
-                    ["E2E_SELLER_PASSWORD"] = credentials.Password,
-                },
-                CancellationToken.None);
+            var result = await _runner.RunAsync(run.RunId, CancellationToken.None);
             rawReport = result.RawReport;
 
             if (rawReport is null)
@@ -275,29 +259,10 @@ public sealed class TestReportService : ITestReportService
         }
         finally
         {
-            await RemoveTestSellerAsync();
             lock (_runLock)
             {
                 _runningRunId = null;
             }
-        }
-    }
-
-    private async Task RemoveTestSellerAsync()
-    {
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var seller = scope.ServiceProvider.GetRequiredService<ITestSellerProvisioner>();
-            var removal = await seller.RemoveAsync(CancellationToken.None);
-            if (removal.IsFailure)
-            {
-                _logger.LogWarning("The seller account of the test suite could not be removed: {Message}", removal.Error.Message);
-            }
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "The seller account of the test suite could not be removed.");
         }
     }
 
