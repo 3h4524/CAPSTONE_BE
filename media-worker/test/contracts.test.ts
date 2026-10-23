@@ -48,11 +48,11 @@ test("AI Shot storyboard accepts a mixed 6-second clip and a full 15-second over
 });
 test("transitioned storyboards use one overlap per scene boundary and validate output frames", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);
-  const fourScenes = Array.from({ length: 4 }, (_, i) => ({ ...base.scenes[0]!, sceneOrder: i, durationFrames: 99, transition: i ? "whip_pan" as const : "none" as const }));
+  const fourScenes = Array.from({ length: 4 }, (_, i) => ({ ...base.scenes[0]!, sceneOrder: i, durationFrames: 99, transition: i ? "whip_pan" as const : "none" as const, transitionFrames: i ? 12 : 0 }));
   const standard = { ...base, outputDurationFrames: 360, transitionOverlapFrames: 12, scenes: fourScenes };
   assert.equal(storyboardSchema.safeParse(standard).success, true);
   assert.equal(storyboardSchema.safeParse({ ...standard, outputDurationFrames: 372 }).success, false);
-  assert.equal(storyboardSchema.safeParse({ ...standard, transitionOverlapFrames: 0 }).success, false);
+  assert.equal(storyboardSchema.safeParse({ ...standard, scenes: fourScenes.map(scene => ({ ...scene, transitionFrames: 0 })) }).success, false);
 
   const legacy = { ...base, scenes: base.scenes.map(scene => ({ ...scene, transition: "cut" as const })) };
   assert.equal(storyboardSchema.safeParse(legacy).success, true);

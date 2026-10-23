@@ -17,7 +17,8 @@ public interface IMediaJobService
 public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<WorkflowNodeRun> nodes,
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<ExportPackage> exports, IRepository<ExportPackageItem> items,
-    IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time) : IMediaJobService
+    IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
+    IRepository<MusicTrack>? musicTracks = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
     {
@@ -48,6 +49,13 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                         workerAssets.Add(new(Guid.Empty, storage.SignRead(clip.StorageKey, "video", clip.StorageVersion), $"ai-shots/{shot.SceneOrder}.mp4"));
                     else uploads[$"ai-shot-{shot.SceneOrder}"] = storage.CreateUploadGrant(AiShotJobService.OutputKey(job, token, shot.SceneOrder), "video");
                 }
+            }
+            if (payload.Storyboard.VideoEdit?.Music is { } music)
+            {
+                var track = musicTracks is null ? null : await musicTracks.GetByIdAsync(music.TrackId, ct);
+                if (track is not { IsAvailable: true, RoyaltyFree: true, DeletedAt: null } || string.IsNullOrWhiteSpace(track.LicenseType) || string.IsNullOrWhiteSpace(track.AudioUrl))
+                { await FailAsync(job.Id, new(token, "Selected music track is no longer available. Choose another track."), ct); return Result.Success<WorkerJob?>(null); }
+                workerAssets.Add(new(Guid.Empty, track.AudioUrl, $"music/{track.Id}.mp3"));
             }
             uploads["video"] = storage.CreateUploadGrant(OutputKey(job, token, "video"), "video");
             uploads["thumbnail"] = storage.CreateUploadGrant(OutputKey(job, token, "thumbnail"), "image");
@@ -110,7 +118,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var width = payload.Storyboard.Width > 0 ? payload.Storyboard.Width : output.Width;
             var height = payload.Storyboard.Height > 0 ? payload.Storyboard.Height : output.Height;
             var outputDurationSeconds = (payload.Storyboard.OutputDurationFrames ?? payload.Storyboard.DurationSeconds * 30) / 30d;
-            if (!ValidQa(request.Qa, outputDurationSeconds, width, height)) return Result.Failure(Error.Validation("Video failed technical QA."));
+            var expectsAudio = payload.Storyboard.VideoEdit?.Music is { Muted: false };
+            if (!ValidQa(request.Qa, outputDurationSeconds, width, height, expectsAudio)) return Result.Failure(Error.Validation("Video failed technical QA."));
             var thumb = OutputKey(job, request.LeaseToken, "thumbnail");
             if (request.ThumbnailStorageKey != thumb || string.IsNullOrEmpty(request.ThumbnailStorageVersion) ||
                 !await storage.VerifyAsync(thumb, "image", request.ThumbnailStorageVersion, null, ct)) return Result.Failure(Error.Validation("Thumbnail verification failed."));
@@ -121,6 +130,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                     return Result.Failure(Error.Conflict("SourceChanged", "Source mockup approval changed during render."));
             }
             var video = (await videos.GetByIdAsync(payload.VideoId, ct))!;
+            video.MusicTrackId = payload.Storyboard.VideoEdit?.Music?.TrackId;
             video.Status = "completed"; video.StorageProvider = "cloudinary"; video.StorageKey = expected; video.StorageVersion = request.StorageVersion;
             video.ThumbnailStorageKey = thumb; video.ThumbnailStorageVersion = request.ThumbnailStorageVersion; video.QaResult = WorkflowJson.Write(request.Qa);
             video.FileSizeMb = request.Qa!.Bytes / (1024m * 1024m); video.UpdatedAt = time.GetUtcNow().UtcDateTime;
@@ -200,7 +210,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run?.Status == "running";
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Job lease expired or run was cancelled.");
     private static string OutputKey(MediaJob job, Guid token, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/{suffix}";
-    public static bool ValidQa(MediaQa? qa, double duration, int width = 1080, int height = 1920) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
+    public static bool ValidQa(MediaQa? qa, double duration, int width = 1080, int height = 1920, bool expectAudio = false) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&
         qa.Width == width && qa.Height == height && Math.Abs(qa.Fps - 30) < .01 && Math.Abs(qa.DurationSeconds - duration) <= 1d / 30 + .01 &&
-        qa.Bytes is > 0 and < 100 * 1024 * 1024 && !qa.HasAudio && qa.FullDecode;
+        qa.Bytes is > 0 and < 100 * 1024 * 1024 && qa.HasAudio == expectAudio && qa.FullDecode;
 }

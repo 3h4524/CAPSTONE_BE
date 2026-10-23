@@ -11,13 +11,13 @@ public sealed class VideoStoryboardPlannerTests
     private readonly VideoStoryboardPlanner _planner = new();
 
     [TestMethod]
-    [DataRow("tshirt", .97)]
-    [DataRow("hoodie", .97)]
-    [DataRow("mug", .985)]
-    [DataRow("poster", .97)]
-    [DataRow("tote_bag", .97)]
-    [DataRow("phone_case", .985)]
-    public void Plan_SixProductProfiles_ProducesSafeContinuousStandardScenes(string productType, double scale)
+    [DataRow("tshirt")]
+    [DataRow("hoodie")]
+    [DataRow("mug")]
+    [DataRow("poster")]
+    [DataRow("tote_bag")]
+    [DataRow("phone_case")]
+    public void Plan_SixProductProfiles_ProducesSmoothConstantScaleStandardScenes(string productType)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct(productType);
@@ -38,11 +38,14 @@ public sealed class VideoStoryboardPlannerTests
             scene.SourceHash.Should().Be(asset.ContentHash);
             // The fixture's mock-up is 9:16 like the default output, so it fills the frame uncropped.
             scene.Crop.Should().Be(new Region(0, 0, 1, 1));
-            scene.EndCrop.Width.Should().BeApproximately(scale, 1e-9);
-            scene.EndCrop.X.Should().BeApproximately((1 - scale) / 2, 1e-9);
+            scene.EndCrop.Should().Be(scene.Crop);
             scene.Text.Should().Be("Original artwork");
             scene.Warnings.Should().BeEmpty();
         }
+        result.Value.Scenes[0].StartScale.Should().Be(1);
+        result.Value.Scenes[0].EndScale.Should().Be(1.1);
+        result.Value.Scenes[1].StartScale.Should().Be(1);
+        result.Value.Scenes[1].EndScale.Should().Be(1.1);
     }
 
     [TestMethod]
@@ -91,21 +94,44 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_StandardAutoTemplate_ChoosesOnlyProductOrDesignDetail()
+    public void Plan_StandardAutoTemplate_UsesNeutralInternalTemplate()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var hero = fixture.AddAsset(product);
         var detail = fixture.AddAsset(product, "ArtworkDetail");
-        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("design_detail");
+        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("product_showcase");
         hero.VariantKey = "red";
         detail.VariantKey = "blue";
-        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("design_detail");
+        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("product_showcase");
         _planner.Plan(product, [hero], new()).Value.Template.Should().Be("product_showcase");
     }
 
     [TestMethod]
-    public void Plan_VersionTwoSingleUnmarkedAsset_CreatesTwoSafeContainScenes()
+    public void Plan_StandardSceneTimeline_UsesTheSelectedImagesAndCameraMovements()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var first = fixture.AddAsset(product);
+        var second = fixture.AddAsset(product, "AlternativeAngle");
+        var config = new GenerateVideoConfig(Mode: "standard", DurationSeconds: 5,
+            AiScenes:
+            [
+                new(MockupId: second.Id, DurationSeconds: 3, Mode: "standard", StandardMotionPreset: "pan_left"),
+                new(MockupId: first.Id, DurationSeconds: 2, Mode: "standard", StandardMotionPreset: "zoom_out")
+            ]);
+
+        var result = _planner.Plan(product, [first, second], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("standard");
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Equal(second.Id, first.Id);
+        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("pan_left", "zoom_out");
+        result.Value.Scenes.Select(scene => scene.DurationFrames).Should().Equal(90, 60);
+    }
+
+    [TestMethod]
+    public void Plan_VersionTwoSingleUnmarkedAsset_PreservesTheSelectedCameraMotion()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -118,11 +144,12 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene =>
             scene.MockupId == asset.Id &&
             scene.Crop == new Region(0, 0, 1, 1) && scene.EndCrop == new Region(0, 0, 1, 1));
-        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("contain_gentle", "static");
+        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("zoom", "static");
+        result.Value.Scenes.Select(scene => scene.EndScale).Should().Equal(1.1, 1);
     }
 
     [TestMethod]
-    public void Plan_VersionTwoDesignDetail_PutsMarkedDetailBeforeUnmarkedHero()
+    public void Plan_VersionTwoStandard_DoesNotPrioritizeDetailImages()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -132,12 +159,12 @@ public sealed class VideoStoryboardPlannerTests
 
         var result = _planner.Plan(product, [hero, markedDetail], new(TemplateVersion: 2));
 
-        result.Value.Template.Should().Be("design_detail");
-        result.Value.Scenes[0].MockupId.Should().Be(markedDetail.Id);
+        result.Value.Template.Should().Be("product_showcase");
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Contain(hero.Id).And.Contain(markedDetail.Id);
     }
 
     [TestMethod]
-    public void Plan_VersionTwoStandard_RejectsVariantShowcaseEvenWhenVariantsExist()
+    public void Plan_VersionTwoStandard_IgnoresLegacyVariantTemplate()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -147,19 +174,19 @@ public sealed class VideoStoryboardPlannerTests
 
         var result = _planner.Plan(product, [redAngle, blue, redHero], new(Template: "variant_showcase", TemplateVersion: 2));
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Message.Should().Contain("Product Showcase and Design Detail");
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Template.Should().Be("product_showcase");
     }
 
     [TestMethod]
-    public void Plan_VersionTwoStandardTemplate_ValidatesDetailAndRejectsVariantShowcase()
+    public void Plan_VersionTwoStandard_IgnoresLegacyTemplateRequirements()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var asset = fixture.AddAsset(product);
 
-        _planner.Plan(product, [asset], new(Template: "design_detail", TemplateVersion: 2)).Error.Message.Should().Contain("requires");
-        _planner.Plan(product, [asset], new(Template: "variant_showcase", TemplateVersion: 2)).Error.Message.Should().Contain("Product Showcase and Design Detail");
+        _planner.Plan(product, [asset], new(Template: "design_detail", TemplateVersion: 2)).IsSuccess.Should().BeTrue();
+        _planner.Plan(product, [asset], new(Template: "variant_showcase", TemplateVersion: 2)).IsSuccess.Should().BeTrue();
     }
 
     [TestMethod]
@@ -171,7 +198,6 @@ public sealed class VideoStoryboardPlannerTests
         var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new("pan_left"), TemplateVersion: 2), 0, 180);
 
         scene.Motion.Should().Be("contain_gentle");
-        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
         scene.EndCrop.Should().Be(scene.Crop);
         scene.Warnings.Should().Contain("Motion reduced to preserve product/artwork bounds.");
     }
@@ -218,7 +244,7 @@ public sealed class VideoStoryboardPlannerTests
     [TestMethod]
     [DataRow(true)]
     [DataRow(false)]
-    public void Plan_StandardSceneCustomFraming_RejectsEndpointThatClipsProtectedProductRegion(bool clipsAtStart)
+    public void Plan_StandardSceneCustomFraming_PreservesExplicitEndpoints(bool clipsAtStart)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -232,12 +258,15 @@ public sealed class VideoStoryboardPlannerTests
 
         var result = _planner.Plan(product, [hero], config);
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Message.ToLowerInvariant().Should().Contain("scene");
+        result.IsSuccess.Should().BeTrue();
+        var expectedStart = clipsAtStart ? clippedProduct : fullImage;
+        var expectedEnd = clipsAtStart ? fullImage : clippedProduct;
+        result.Value.Scenes[0].Crop.Should().Be(expectedStart);
+        result.Value.Scenes[0].EndCrop.Should().Be(expectedEnd);
     }
 
     [TestMethod]
-    public void Plan_StandardMode_RejectsVariantShowcaseTemplate()
+    public void Plan_StandardMode_IgnoresLegacyVariantShowcaseTemplate()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -246,8 +275,8 @@ public sealed class VideoStoryboardPlannerTests
 
         var result = _planner.Plan(product, [red, blue], new(Template: "variant_showcase", TemplateVersion: 2));
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Message.ToLowerInvariant().Should().Contain("template");
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Template.Should().Be("product_showcase");
     }
 
     [TestMethod]
@@ -332,25 +361,28 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void CreateScene_MissingRegionsAndLowResolution_PreservesImageAndReportsBothWarnings()
+    public void CreateScene_MissingRegionsAndLowResolution_PreservesSelectedMotionAndReportsResolutionWarning()
     {
         var asset = WorkflowTestData.Asset(Guid.NewGuid());
         asset.MockupWidthPx = 500; asset.MockupHeightPx = 900; asset.Regions = "{}";
         var scene = _planner.CreateScene(asset, "mug", new(), 0, 180);
-        scene.Motion.Should().Be("static");
-        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
-        scene.Warnings.Should().HaveCount(2).And.Contain(x => x.Contains("not marked")).And.Contain(x => x.Contains("Low-resolution"));
+        scene.Motion.Should().Be("zoom");
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.EndScale.Should().Be(1.1);
+        scene.Warnings.Should().Contain(x => x.Contains("Low-resolution"));
     }
 
     [TestMethod]
-    public void CreateScene_ZoomWouldClipProtectedRegion_ReducesMotionToStatic()
+    public void CreateScene_ZoomUsesConstantScaleWhenTheBaseFrameContainsTheProtectedRegion()
     {
         var asset = WorkflowTestData.Asset(Guid.NewGuid());
         asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(0, 0, 1, 1)));
         var scene = _planner.CreateScene(asset, "poster", new(), 0, 180);
-        scene.Motion.Should().Be("static");
+        scene.Motion.Should().Be("zoom");
         scene.EndCrop.Should().Be(scene.Crop);
-        scene.Warnings.Should().Contain("Motion reduced to preserve product/artwork bounds.");
+        scene.StartScale.Should().Be(1);
+        scene.EndScale.Should().Be(1.1);
+        scene.Warnings.Should().BeEmpty();
     }
 
     [TestMethod]
@@ -373,10 +405,10 @@ public sealed class VideoStoryboardPlannerTests
         var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new(preset)), 0, 180);
 
         scene.Motion.Should().Be(preset);
-        scene.Crop.Width.Should().BeApproximately(zoomIn ? 1 : .92, 1e-9);
-        scene.EndCrop.Width.Should().BeApproximately(zoomIn ? .92 : 1, 1e-9);
-        scene.Crop.X.Should().BeApproximately(zoomIn ? 0 : .04, 1e-9);
-        scene.EndCrop.X.Should().BeApproximately(zoomIn ? .04 : 0, 1e-9);
+        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.StartScale.Should().Be(zoomIn ? 1 : 1.1);
+        scene.EndScale.Should().Be(zoomIn ? 1.1 : 1);
         scene.Warnings.Should().BeEmpty();
     }
 
@@ -395,8 +427,8 @@ public sealed class VideoStoryboardPlannerTests
         var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new(preset)), 0, 180);
 
         scene.Motion.Should().Be(preset);
-        scene.Crop.Width.Should().BeApproximately(.9, 1e-9);
-        scene.EndCrop.Width.Should().BeApproximately(.9, 1e-9);
+        scene.Crop.Width.Should().BeApproximately(1d / 1.2d, 1e-9);
+        scene.EndCrop.Width.Should().BeApproximately(1d / 1.2d, 1e-9);
         Math.Sign(scene.EndCrop.X - scene.Crop.X).Should().Be(horizontal);
         Math.Sign(scene.EndCrop.Y - scene.Crop.Y).Should().Be(vertical);
         scene.Warnings.Should().BeEmpty();
@@ -428,7 +460,8 @@ public sealed class VideoStoryboardPlannerTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.Scenes.Select(x => x.Motion).Should().Equal("zoom", "pan_left", "diagonal_up_right", "zoom_out");
-        result.Value.Scenes.Should().OnlyContain(x => x.Crop != x.EndCrop && x.Warnings.Count == 0);
+        result.Value.Scenes.Should().OnlyContain(x =>
+            (x.Crop != x.EndCrop || x.StartScale != x.EndScale) && x.Warnings.Count == 0);
     }
 
     [TestMethod]

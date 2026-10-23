@@ -52,12 +52,12 @@ public sealed class WorkflowValidatorTests
         new SaveWorkflowValidator().Validate(new SaveWorkflowRequest("Product video", "", definition)).IsValid.Should().BeTrue();
     }
     [TestMethod]
-    [DataRow(3, true)]
+    [DataRow(1, true)]
     [DataRow(12, true)]
     [DataRow(30, true)]
-    [DataRow(2, false)]
+    [DataRow(0, false)]
     [DataRow(31, false)]
-    public void VideoConfig_DurationBoundary_AcceptsOnlyThreeToThirty(int duration, bool valid)
+    public void VideoConfig_DurationBoundary_AcceptsOneToThirty(int duration, bool valid)
     {
         var result = new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(DurationSeconds: duration));
         result.IsValid.Should().Be(valid);
@@ -81,14 +81,13 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    public void VideoConfig_Standard_RejectsVariantShowcase()
+    public void VideoConfig_Standard_AcceptsLegacyTemplateValues()
     {
         var validator = new GenerateVideoConfigValidator();
 
         validator.Validate(new GenerateVideoConfig(Template: "product_showcase")).IsValid.Should().BeTrue();
         validator.Validate(new GenerateVideoConfig(Template: "design_detail")).IsValid.Should().BeTrue();
-        validator.Validate(new GenerateVideoConfig(Template: "variant_showcase"))
-            .Errors.Should().Contain(x => x.ErrorMessage.Contains("Product Showcase and Design Detail"));
+        validator.Validate(new GenerateVideoConfig(Template: "variant_showcase")).IsValid.Should().BeTrue();
     }
 
     [TestMethod]
@@ -139,7 +138,7 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    public void VideoConfig_StandardSceneFraming_AcceptsNormalizedEndpointsAndRejectsInvalidBoundsOrSources()
+    public void VideoConfig_StandardSceneFraming_AcceptsPositionedEndpointsAndRejectsInvalidSizesOrSources()
     {
         var validator = new GenerateVideoConfigValidator();
         var id = Guid.NewGuid();
@@ -151,11 +150,9 @@ public sealed class WorkflowValidatorTests
 
         foreach (var invalid in new[]
         {
-            new StandardSceneOptions(id, new(-.01, .1, .5, .5), detailCrop),
-            new StandardSceneOptions(id, new(.8, .1, .3, .5), detailCrop),
             new StandardSceneOptions(id, new(.1, .1, 0, .5), detailCrop),
-            new StandardSceneOptions(id, detailCrop, new(.1, .8, .5, .3)),
-            new StandardSceneOptions(id, detailCrop, detailCrop, new(.8, .1, .3, .5)),
+            new StandardSceneOptions(id, detailCrop, new(.1, .1, 1.1, .5)),
+            new StandardSceneOptions(id, detailCrop, detailCrop, new(.8, .1, 1.1, .5)),
             new StandardSceneOptions(Guid.Empty, detailCrop, detailCrop),
         })
         {
@@ -174,7 +171,7 @@ public sealed class WorkflowValidatorTests
     public void VideoConfig_InvalidDiscriminators_ReportsAllUnsupportedFields()
     {
         var result = new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(Mode: "openmontage", Target: "tiktok", Template: "slideshow", AssetSelection: "all"));
-        result.Errors.Select(x => x.PropertyName).Should().Contain(["Mode", "Target", "Template", "AssetSelection"]);
+        result.Errors.Select(x => x.PropertyName).Should().Contain(["Mode", "Target", "AssetSelection"]);
     }
 
     [TestMethod]

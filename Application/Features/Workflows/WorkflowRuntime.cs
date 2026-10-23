@@ -51,8 +51,16 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                 case "generate-video":
                     var config = WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
                     var plan = await PlanAsync(run, config, ct);
-                    if (plan.IsFailure) { node.Status = "waiting_for_input"; run.Status = "waiting_for_input"; node.ErrorMessage = plan.Error.Message; return; }
+                    if (plan.IsFailure)
+                    {
+                        node.Status = "waiting_for_input";
+                        run.Status = "waiting_for_input";
+                        node.ErrorMessage = plan.Error.Message;
+                        run.ErrorMessage = plan.Error.Message;
+                        return;
+                    }
                     var board = plan.Value;
+                    run.ErrorMessage = null;
                     var previous = (await videos.FindAsync(x => x.WorkflowRunId == run.Id, ct)).OrderByDescending(x => x.VersionNumber).FirstOrDefault();
                     var series = previous?.SeriesId ?? Guid.NewGuid();
                     var reuse = previous is { Status: "failed" } && previous.Fingerprint == board.Fingerprint && node.Attempt == previous.VersionNumber;
@@ -60,8 +68,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         VideoTemplateId = (await templates.FindAsync(x => x.Code == board.Template && x.TemplateVersion == board.TemplateVersion, ct)).Single().Id,
                         Mode = board.Mode, SeriesId = series, VersionNumber = (previous?.VersionNumber ?? 0) + 1, ReviewRevision = 1,
                         Fingerprint = board.Fingerprint, TemplateVersion = board.TemplateVersion, ConfigSnapshot = WorkflowJson.Write(new { config, storyboard = board }),
-                        QaResult = "{}", VideoDurationSeconds = config.DurationSeconds, VideoResolution = $"{board.Width}x{board.Height}", AspectRatio = board.AspectRatio,
-                        FileFormat = "mp4", PlatformTarget = "etsy", Status = "queued", ApprovalStatus = "pending", IsFinal = false, CreatedAt = time.GetUtcNow().UtcDateTime };
+                        QaResult = "{}", VideoDurationSeconds = Math.Max(1, (int)Math.Ceiling((board.OutputDurationFrames ?? config.DurationSeconds * 30) / 30d)), VideoResolution = $"{board.Width}x{board.Height}", AspectRatio = board.AspectRatio,
+                        FileFormat = "mp4", PlatformTarget = "etsy", MusicTrackId = board.VideoEdit?.Music?.TrackId, Status = "queued", ApprovalStatus = "pending", IsFinal = false, CreatedAt = time.GetUtcNow().UtcDateTime };
                     if (!reuse) await videos.AddAsync(video, cancellationToken: ct);
                     video.Status = "queued";
                     foreach (var scene in reuse ? Array.Empty<ScenePlan>() : board.Scenes) await scenes.AddAsync(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = scene.MockupId,
