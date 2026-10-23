@@ -48,11 +48,12 @@ public sealed class E2EOrchestrator(E2EOptions options)
         Directory.CreateDirectory(options.RunDirectory);
         await using var lockHandle = AcquireLock();
 
-        await BringInfraUpAsync(cancellationToken).ConfigureAwait(false);
-        var smtpSink = StartSmtpSink();
-
+        LaunchedProcess? smtpSink = null;
         try
         {
+            await BringInfraUpAsync(cancellationToken).ConfigureAwait(false);
+            smtpSink = StartSmtpSink();
+
             var (apiProcess, apiPort) = StartApi();
             try
             {
@@ -72,7 +73,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
         }
         finally
         {
-            smtpSink.KillTree();
+            smtpSink?.KillTree();
             await ComposeAsync("down", "-v", "--remove-orphans").ConfigureAwait(false);
         }
     }
@@ -172,7 +173,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
         if (roleExists is null)
         {
             await new NpgsqlCommand(
-                $"CREATE ROLE \"{options.DbRole}\" LOGIN PASSWORD '{options.DbPassword}'",
+                $"CREATE ROLE \"{options.DbRole}\" LOGIN SUPERUSER PASSWORD '{options.DbPassword}'",
                 connection)
                 .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -195,23 +196,40 @@ public sealed class E2EOrchestrator(E2EOptions options)
 
     private async Task ApplyModelSchemaAsync(CancellationToken cancellationToken)
     {
-        await using var dataSource = NpgsqlDataSource.Create(options.ApiDbConnectionString);
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-        await new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"", connection)
-            .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-        try
+        await using (var dataSource = NpgsqlDataSource.Create(options.PostgresConnectionString))
         {
-            await new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS \"vector\"", connection)
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await new NpgsqlCommand(
+                $"DROP DATABASE IF EXISTS \"{options.DbName}\" WITH (FORCE)",
+                connection)
+                .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            await new NpgsqlCommand(
+                $"CREATE DATABASE \"{options.DbName}\" OWNER \"{options.DbRole}\"",
+                connection)
                 .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (PostgresException exception) when (exception.SqlState == "58P01")
+
+        await using (var dataSource = NpgsqlDataSource.Create(options.ApiDbConnectionString))
         {
-            throw new InvalidOperationException(
-                "The Postgres server of the test infrastructure has no pgvector extension. "
-                + "docker-compose.yml must use the image pgvector/pgvector:pg18.",
-                exception);
+            await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"", connection)
+                .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                await new NpgsqlCommand("CREATE EXTENSION IF NOT EXISTS \"vector\"", connection)
+                    .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (PostgresException exception) when (exception.SqlState == "58P01")
+            {
+                throw new InvalidOperationException(
+                    "The Postgres server of the test infrastructure has no pgvector extension. "
+                    + "docker-compose.yml must use the image pgvector/pgvector:pg18.",
+                    exception);
+            }
         }
 
         await using var context = new AppDbContext(
@@ -219,8 +237,49 @@ public sealed class E2EOrchestrator(E2EOptions options)
                 .UseNpgsql(options.ApiDbConnectionString, npgsql => npgsql.UseVector())
                 .Options);
 
-        await context.Database.EnsureDeletedAsync(cancellationToken).ConfigureAwait(false);
         await context.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+
+        context.AddRange(BuildSystemPresets());
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IEnumerable<APCS.Domain.Entities.StyleArtPreset> BuildSystemPresets()
+    {
+        var now = DateTime.UtcNow;
+
+        return
+        [
+            new APCS.Domain.Entities.StyleArtPreset
+            {
+                Id = Guid.NewGuid(),
+                Name = "Line Art Illustration",
+                Description = "Clean black line art with flat accents.",
+                StyleModifiers = """
+                    {"style":"line art","prompt_additions":"flat vector shapes, uniform line weight, minimal shading"}
+                    """,
+                Recommendations = "[]",
+                IsSystemTemplate = true,
+                IsActive = true,
+                UsageCount = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            new APCS.Domain.Entities.StyleArtPreset
+            {
+                Id = Guid.NewGuid(),
+                Name = "Soft Watercolor",
+                Description = "Pastel watercolor washes.",
+                StyleModifiers = """
+                    {"style":"watercolor","prompt_additions":"soft pastel palette, paper texture, gentle gradients"}
+                    """,
+                Recommendations = "[]",
+                IsSystemTemplate = true,
+                IsActive = true,
+                UsageCount = 0,
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+        ];
     }
 
     private LaunchedProcess StartSmtpSink()
