@@ -239,14 +239,71 @@ public sealed class E2EOrchestrator(E2EOptions options)
 
         await context.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
 
-        context.AddRange(BuildSystemPresets());
+        var now = DateTime.UtcNow;
+        context.AddRange(SeedRoles(now));
+        context.AddRange(BuildSystemPresets(now));
+        context.Add(SeedAdminUser(context, now));
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static IEnumerable<APCS.Domain.Entities.StyleArtPreset> BuildSystemPresets()
+    private static APCS.Domain.Entities.User SeedAdminUser(AppDbContext context, DateTime now)
     {
-        var now = DateTime.UtcNow;
+        var hasher = new Microsoft.AspNetCore.Identity.PasswordHasher<APCS.Domain.Entities.User>();
+        var admin = new APCS.Domain.Entities.User
+        {
+            Id = Guid.NewGuid(),
+            Email = "demo.admin@apcs.test",
+            PasswordHash = hasher.HashPassword(null!, "Passw0rdTest1!"),
+            FullName = "Demo Admin",
+            AccountStatus = APCS.Common.Constants.AccountStatuses.Active,
+            EmailVerified = true,
+            EmailVerifiedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
 
+        var adminRoleId = context.Roles.Local.Single(role => role.Code == APCS.Common.Constants.AuthConstants.AdminRole).Id;
+        context.Add(new APCS.Domain.Entities.UserRole
+        {
+            UserId = admin.Id,
+            RoleId = adminRoleId,
+            GrantedAt = now,
+            User = admin,
+        });
+
+        return admin;
+    }
+
+    private static IEnumerable<APCS.Domain.Entities.Role> SeedRoles(DateTime now) =>
+    [
+        new APCS.Domain.Entities.Role
+        {
+            Id = Guid.NewGuid(),
+            Code = APCS.Common.Constants.AuthConstants.UserRole,
+            Name = "Seller",
+            IsSystemRole = true,
+            CreatedAt = now,
+        },
+        new APCS.Domain.Entities.Role
+        {
+            Id = Guid.NewGuid(),
+            Code = APCS.Common.Constants.AuthConstants.AdminRole,
+            Name = "Admin",
+            IsSystemRole = true,
+            CreatedAt = now,
+        },
+        new APCS.Domain.Entities.Role
+        {
+            Id = Guid.NewGuid(),
+            Code = "Super Admin",
+            Name = "Super Admin",
+            IsSystemRole = true,
+            CreatedAt = now,
+        },
+    ];
+
+    private static IEnumerable<APCS.Domain.Entities.StyleArtPreset> BuildSystemPresets(DateTime now)
+    {
         return
         [
             new APCS.Domain.Entities.StyleArtPreset
