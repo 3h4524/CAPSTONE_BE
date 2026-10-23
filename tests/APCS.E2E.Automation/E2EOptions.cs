@@ -43,8 +43,6 @@ public sealed class E2EOptions
 
     public string SellerFullName { get; init; } = "E2E Seller";
 
-    public TimeSpan InfraTimeout { get; init; } = TimeSpan.FromMinutes(5);
-
     public TimeSpan HealthTimeout { get; init; } = TimeSpan.FromMinutes(5);
 
     public TimeSpan SuiteTimeout { get; init; } = TimeSpan.FromMinutes(60);
@@ -89,7 +87,6 @@ public sealed class E2EOptions
             SellerEmail = Read("E2E_SELLER_EMAIL") ?? "e2e.seller@apcs.test",
             SellerPassword = Read("E2E_SELLER_PASSWORD") ?? "Passw0rdTest1!",
             SellerFullName = Read("E2E_SELLER_FULL_NAME") ?? "E2E Seller",
-            InfraTimeout = TimeSpan.FromSeconds(ReadInt("E2E_INFRA_TIMEOUT_SECONDS") ?? 300),
             HealthTimeout = TimeSpan.FromSeconds(ReadInt("E2E_HEALTH_TIMEOUT_SECONDS") ?? 300),
             SuiteTimeout = TimeSpan.FromMinutes(ReadInt("E2E_SUITE_TIMEOUT_MINUTES") ?? 60),
         };

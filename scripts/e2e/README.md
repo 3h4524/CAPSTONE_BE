@@ -24,10 +24,21 @@ Biến `E2E_ORCHESTRATION_COMMAND` điều khiển hành vi của test project:
 
 | Mode | Làm gì |
 |---|---|
-| `test` (mặc định) | Dựng infra → schema từ EF model → start SMTP sink + API → tự seed seller (register → verify qua mail → login) → chạy Playwright suite → trả report |
-| `up` | Chỉ dựng infra + API, giữ mọi thứ chạy để debug bằng tay |
-| `down` | Dừng API + SMTP sink, `docker compose down -v` |
-| `clean` | Xoá sạch database `apcs_e2e` |
+| `test` (mặc định) | Stack còn sống → **dùng lại**: truncate toàn bộ bảng ứng dụng (giữ `test_report_runs`), FLUSH Redis, reseed catalog + admin; sink/API còn sống thì tái sử dụng. Stack chưa sống → dựng mới (compose → role/db → schema EF model → SMTP sink → API) → seed seller (register → verify qua mail → login) → chạy Playwright suite → trả report. Chi tiết bên dưới |
+| `up` | Giống nhánh dựng lại của `test` nhưng bỏ qua Playwright, giữ stack chạy để debug tay |
+| `down` | Dừng API + SMTP sink (theo pid file), `docker compose down -v`, xoá pid file |
+| `clean` | Xoá database `apcs_e2e` và dựng lại từ EF model |
+
+### Nhánh reuse của `test`
+
+Orchestrator health-check API trước khi dựng lại. API đang sống (kể cả API của một run qua nút **Run**) thì:
+
+- `TRUNCATE` mọi bảng ứng dụng, **trừ `test_report_runs`** — vì bảng này nằm trong chính DB `apcs_e2e`, một drop/recreate database sẽ xoá luôn lịch sử run; row `running` của run hiện hành phải sống sót qua truncate để service tự cập nhật khi suite kết thúc.
+- `FLUSHALL` Redis, reseed roles + system presets + admin (admin id cố định `3f4e5d6c-…`).
+- SMTP sink bận thì dùng lại và xoá nội dung `mail.jsonl`; chỉ viết pid file cho process do run này tự start — API/sink của run khác không bị coi là của mình.
+- Con `dotnet test` của nút **Run** luôn chạy với `E2E_ORCHESTRATION_COMMAND=test`, không kế thừa `up` từ shell đã start API.
+
+API không trả `/health` → orchestrator kill pid file cũ, dựng lại stack toàn bộ như nhánh trên.
 
 Chạy lại nhiều lần vẫn cho cùng kết quả: schema dựng bằng `EnsureDeleted + EnsureCreated`, seller seed idempotent (đã tồn tại thì đăng nhập luôn).
 
