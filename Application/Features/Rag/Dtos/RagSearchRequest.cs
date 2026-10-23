@@ -7,4 +7,7 @@ public sealed record RagSearchRequest(
     int TopK = 5,
     string? SourceType = null,
     string? Language = null,
-    string? ContentType = null);
+    string? ContentType = null,
+    string? Platform = null,
+    string? Niche = null,
+    double? MinimumViralScore = null);

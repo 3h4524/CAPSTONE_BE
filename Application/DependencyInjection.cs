@@ -19,6 +19,8 @@ using APCS.Application.Abstractions;
 using APCS.Application.Features.Notifications;
 using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.Commerce;
+using APCS.Application.Abstractions.Commerce;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -79,6 +81,11 @@ public static class DependencyInjection
         // them for as long as the API lives.
         services.AddSingleton<ITestReportService, TestReportService>();
         services.AddScoped<ITestSellerProvisioner, TestSellerProvisioner>();
+        services.AddScoped<ICommerceConnectorFactory, CommerceConnectorFactory>();
+        services.AddScoped<ICommerceMarketDataConnectorFactory, CommerceMarketDataConnectorFactory>();
+        services.AddScoped<IMarketResearchService, MarketResearchService>();
+        services.AddScoped<IOpportunityService, OpportunityService>();
+        services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
 
         return services;
     }

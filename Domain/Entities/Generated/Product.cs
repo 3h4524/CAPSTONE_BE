@@ -41,6 +41,8 @@ public partial class Product
 
     public Guid BatchId { get; set; }
 
+    public string? CustomPrompt { get; set; }
+
     public virtual ICollection<AiPrompt> AiPrompts { get; set; } = new List<AiPrompt>();
 
     public virtual ICollection<ApiUsageRecord> ApiUsageRecords { get; set; } = new List<ApiUsageRecord>();
