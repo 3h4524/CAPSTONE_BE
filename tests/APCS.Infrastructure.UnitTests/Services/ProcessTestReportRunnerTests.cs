@@ -36,7 +36,6 @@ public sealed class ProcessTestReportRunnerTests
     {
         var options = MsOptions.Create(new TestReportOptions
         {
-            Directory = Path.Combine(_root, "reports"),
             WorkingDirectory = _root,
             FrontendRoot = "frontend",
             ReportFileName = "report.json",
