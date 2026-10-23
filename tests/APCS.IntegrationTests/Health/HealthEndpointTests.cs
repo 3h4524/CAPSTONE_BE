@@ -97,4 +97,18 @@ public sealed class HealthEndpointTests
         services.GetServices<IHostedService>()
             .Should().NotContain(service => service is UnbanUsersJob);
     }
+
+    [TestMethod]
+    public void Host_WhenItIsBooted_DoesNotInstallOrLoadTheSegmentationModel()
+    {
+        _host.EnsureAvailable();
+
+        // The factory matches the internal installer by name; a rename would silently bring ONNX
+        // Runtime back into the test process, and with it the SIGSEGV on exit under Linux.
+        typeof(UnbanUsersJob).Assembly.GetType(ApiFactory.SegmentationModelInstallerTypeName)
+            .Should().NotBeNull("the factory removes the installer by this name");
+
+        _host.Factory.Services.GetServices<IHostedService>()
+            .Should().NotContain(service => service.GetType().FullName == ApiFactory.SegmentationModelInstallerTypeName);
+    }
 }
