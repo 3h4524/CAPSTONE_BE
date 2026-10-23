@@ -25,6 +25,7 @@ public class MetricDetail
 {
     public decimal Value { get; set; }
     public decimal PreviousValue { get; set; }
-    public decimal PercentageChange { get; set; }
+    /// <summary>Change vs. <see cref="PreviousValue"/>; null when the previous period was zero.</summary>
+    public decimal? PercentageChange { get; set; }
     public List<decimal> Sparkline { get; set; } = new();
 }

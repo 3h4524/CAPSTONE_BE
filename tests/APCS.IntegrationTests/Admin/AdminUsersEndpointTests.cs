@@ -12,8 +12,8 @@ namespace APCS.IntegrationTests.Admin;
 /// </summary>
 /// <remarks>
 /// <para>
-/// User management is gated on two literal role names rather than the shared seller and admin
-/// constants, so the matrix proves the gate while this suite proves the lifecycle: list contains
+/// User management is gated on <c>AuthConstants.AdminRole</c>; the authorization matrix proves the
+/// gate while this suite proves the lifecycle: list contains
 /// a freshly registered seller, read returns their row, suspend flips the status, unlock restores
 /// it, and send-reset-password issues a reset link through the fake inbox without leaking the
 /// caller. A seller token is stopped by the gate on every route.

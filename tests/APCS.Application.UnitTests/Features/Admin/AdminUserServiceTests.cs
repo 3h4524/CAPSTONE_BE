@@ -200,10 +200,12 @@ public sealed class AdminUserServiceTests
         userRoleRepository.Setup(x => x.Query()).Returns(userRoles);
 
         var unitOfWork = new Mock<IUnitOfWork>();
+        var auditLogRepository = new Mock<IRepository<AuditLog>>();
         var service = CreateService(
-            userRepository: userRepository, 
-            roleRepository: roleRepository, 
-            userRoleRepository: userRoleRepository, 
+            userRepository: userRepository,
+            roleRepository: roleRepository,
+            userRoleRepository: userRoleRepository,
+            auditLogRepository: auditLogRepository,
             unitOfWork: unitOfWork);
 
         // Act
@@ -212,7 +214,50 @@ public sealed class AdminUserServiceTests
         // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value.FullName.Should().Be("New Name");
+        auditLogRepository.Verify(x => x.AddAsync(It.Is<AuditLog>(l =>
+            l.ActionType == "UpdateUser" && l.ResourceId == userId &&
+            l.OldValue != null && l.OldValue.Contains("Old Name") &&
+            l.NewValue != null && l.NewValue.Contains("New Name")), false, It.IsAny<CancellationToken>()), Times.Once);
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task UpdateUserAsync_GrantsAdminRole_RecordsRoleChangeInAuditLog()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        Guid? adminId = Guid.NewGuid();
+        var sellerRole = new Role { Id = Guid.NewGuid(), Name = "Seller" };
+        var adminRole = new Role { Id = Guid.NewGuid(), Name = "Admin" };
+        var user = new User { Id = userId, FullName = "Seller User", Email = "seller@test.com", AccountStatus = "active" };
+        user.UserRoleUsers.Add(new UserRole { UserId = userId, RoleId = sellerRole.Id, Role = sellerRole });
+        var request = new UpdateAdminUserDto("Seller User", "seller@test.com", null, null, "Active", new[] { "Admin" });
+
+        var userRepository = new Mock<IRepository<User>>();
+        userRepository.Setup(x => x.Query()).Returns(new List<User> { user }.AsQueryable().BuildMock());
+
+        var roleRepository = new Mock<IRepository<Role>>();
+        roleRepository.Setup(x => x.Query()).Returns(new List<Role> { sellerRole, adminRole }.AsQueryable().BuildMock());
+
+        var currentUserService = new Mock<APCS.Application.Abstractions.Authentication.ICurrentUser>();
+        currentUserService.Setup(x => x.UserId).Returns(adminId);
+
+        var auditLogRepository = new Mock<IRepository<AuditLog>>();
+        var service = CreateService(
+            userRepository: userRepository,
+            roleRepository: roleRepository,
+            auditLogRepository: auditLogRepository,
+            currentUser: currentUserService);
+
+        // Act
+        var result = await service.UpdateUserAsync(userId, request, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        auditLogRepository.Verify(x => x.AddAsync(It.Is<AuditLog>(l =>
+            l.ActionType == "UpdateUser" && l.ActorUserId == adminId &&
+            l.OldValue != null && l.OldValue.Contains("\"roles\":[\"Seller\"]") &&
+            l.NewValue != null && l.NewValue.Contains("\"roles\":[\"Admin\"]")), false, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -280,7 +325,8 @@ public sealed class AdminUserServiceTests
         user.SuspendedUntil.Should().NotBeNull();
         user.SuspendedUntil.Value.Date.Should().Be(DateTime.UtcNow.AddDays(7).Date);
         auditLogRepository.Verify(x => x.AddAsync(It.Is<AuditLog>(l => 
-            l.ActionType == "SuspendUser" && l.NewValue != null && l.NewValue.Contains("\"status\":\"suspended\"")), false, It.IsAny<CancellationToken>()), Times.Once);
+            l.ActionType == "SuspendUser" && l.OldValue != null && l.OldValue.Contains("\"status\":\"Active\"") &&
+            l.NewValue != null && l.NewValue.Contains("\"status\":\"suspended\"")), false, It.IsAny<CancellationToken>()), Times.Once);
 
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }

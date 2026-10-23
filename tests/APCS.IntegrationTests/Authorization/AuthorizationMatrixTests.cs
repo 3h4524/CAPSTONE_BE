@@ -71,9 +71,16 @@ public sealed class AuthorizationMatrixTests
     private static Guid _superAdminUserId;
 
     /// <summary>Gets the endpoints gated on <c>AuthConstants.AdminRole</c> alone.</summary>
-    /// <returns>Every HTTP verb and route of the dashboard, subscription-plan, and ticket admins.</returns>
+    /// <returns>Every HTTP verb and route of the user, dashboard, subscription-plan, and ticket admins.</returns>
     public static string[][] AdminGatedEndpoints =>
     [
+        ["GET", "/api/admin/users"],
+        ["GET", "/api/admin/users/plans"],
+        ["GET", $"/api/admin/users/{PlaceholderId}"],
+        ["PUT", $"/api/admin/users/{PlaceholderId}"],
+        ["POST", $"/api/admin/users/{PlaceholderId}/suspend"],
+        ["POST", $"/api/admin/users/{PlaceholderId}/unlock"],
+        ["POST", $"/api/admin/users/{PlaceholderId}/send-reset-password"],
         ["GET", "/api/admin/dashboard/metrics"],
         ["GET", "/api/admin/dashboard/export"],
         ["GET", "/api/admin/subscription-plans"],
@@ -143,19 +150,6 @@ public sealed class AuthorizationMatrixTests
         ["GET", "/api/usage"]
     ];
 
-    /// <summary>Gets the endpoints <c>AdminUsersController</c> gates on two literal role names.</summary>
-    /// <returns>Every HTTP verb and route of the admin user management surface.</returns>
-    public static string[][] MultiRoleAdminEndpoints =>
-    [
-        ["GET", "/api/admin/users"],
-        ["GET", "/api/admin/users/plans"],
-        ["GET", $"/api/admin/users/{PlaceholderId}"],
-        ["PUT", $"/api/admin/users/{PlaceholderId}"],
-        ["POST", $"/api/admin/users/{PlaceholderId}/suspend"],
-        ["POST", $"/api/admin/users/{PlaceholderId}/unlock"],
-        ["POST", $"/api/admin/users/{PlaceholderId}/send-reset-password"]
-    ];
-
     /// <summary>Gets the endpoints that require an identity but name no role.</summary>
     /// <returns>Every HTTP verb and route of the profile and session endpoints.</returns>
     public static string[][] IdentityOnlyEndpoints =>
@@ -170,7 +164,7 @@ public sealed class AuthorizationMatrixTests
     /// <summary>Gets every endpoint in the API that sits behind an authorization gate.</summary>
     /// <returns>The union of the role-gated and identity-only routes.</returns>
     public static string[][] AuthorizedEndpoints =>
-        Combine(AdminGatedEndpoints, SellerGatedEndpoints, MultiRoleAdminEndpoints, IdentityOnlyEndpoints);
+        Combine(AdminGatedEndpoints, SellerGatedEndpoints, IdentityOnlyEndpoints);
 
     /// <summary>Gets every endpoint gated on exactly one role.</summary>
     /// <returns>The routes whose gate lists a single role and therefore cannot accept a second one.</returns>
@@ -334,92 +328,9 @@ public sealed class AuthorizationMatrixTests
 
         response.StatusCode.Should().Be(
             HttpStatusCode.Forbidden,
-            "{0} {1} lists a single role, which the super administrator claim is not; only AdminUsersController accepts it",
+            "{0} {1} lists a single role, which the retired super administrator claim is not",
             method,
             path);
-    }
-
-    [TestMethod]
-    [DynamicData(nameof(MultiRoleAdminEndpoints))]
-    public async Task MultiRoleAdminEndpoint_WhenTheTokenCarriesNoRoleClaim_ReturnsForbidden(
-        string method,
-        string path)
-    {
-        _host.EnsureAvailable();
-        var token = TestAuth.MintToken([], _sellerUserId);
-        using var client = _host.Factory.CreateAuthenticatedClient(token);
-
-        using var response = await SendAsync(client, method, path);
-
-        response.StatusCode.Should().Be(
-            HttpStatusCode.Forbidden,
-            "{0} {1} is gated on one of two admin roles, which a token without any role claim does not satisfy",
-            method,
-            path);
-    }
-
-    [TestMethod]
-    [DynamicData(nameof(MultiRoleAdminEndpoints))]
-    public async Task MultiRoleAdminEndpoint_WhenTheTokenCarriesTheSellerRole_ReturnsForbidden(
-        string method,
-        string path)
-    {
-        _host.EnsureAvailable();
-        var token = TestAuth.MintToken([SellerRole], _sellerUserId);
-        using var client = _host.Factory.CreateAuthenticatedClient(token);
-
-        using var response = await SendAsync(client, method, path);
-
-        response.StatusCode.Should().Be(
-            HttpStatusCode.Forbidden,
-            "{0} {1} is gated on one of two admin roles, which the seller claim does not satisfy",
-            method,
-            path);
-    }
-
-    [TestMethod]
-    [DynamicData(nameof(MultiRoleAdminEndpoints))]
-    public async Task MultiRoleAdminEndpoint_WhenTheTokenCarriesTheAdminRole_ReachesTheController(
-        string method,
-        string path)
-    {
-        _host.EnsureAvailable();
-        var token = TestAuth.MintToken([AdminRole], _adminUserId);
-        using var client = _host.Factory.CreateAuthenticatedClient(token);
-
-        using var response = await SendAsync(client, method, path);
-
-        ShouldReachTheController(response, method, path, AdminRole);
-    }
-
-    [TestMethod]
-    [DynamicData(nameof(MultiRoleAdminEndpoints))]
-    public async Task MultiRoleAdminEndpoint_WhenTheTokenCarriesTheSuperAdminRole_ReachesTheController(
-        string method,
-        string path)
-    {
-        _host.EnsureAvailable();
-        var token = TestAuth.MintToken([SuperAdminRole], _superAdminUserId);
-        using var client = _host.Factory.CreateAuthenticatedClient(token);
-
-        using var response = await SendAsync(client, method, path);
-
-        ShouldReachTheController(response, method, path, SuperAdminRole);
-    }
-
-    [TestMethod]
-    [DynamicData(nameof(MultiRoleAdminEndpoints))]
-    public async Task MultiRoleAdminEndpoint_WhenTheTokenCarriesBothAdminRoles_ReachesTheController(
-        string method,
-        string path)
-    {
-        _host.EnsureAvailable();
-        var token = TestAuth.MintToken([AdminRole, SuperAdminRole], _superAdminUserId);
-        using var client = _host.Factory.CreateAuthenticatedClient(token);
-
-        using var response = await SendAsync(client, method, path);
-
-        ShouldReachTheController(response, method, path, $"{AdminRole} + {SuperAdminRole}");
     }
 
     [TestMethod]
