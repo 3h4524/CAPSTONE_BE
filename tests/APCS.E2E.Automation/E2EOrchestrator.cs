@@ -48,34 +48,105 @@ public sealed class E2EOrchestrator(E2EOptions options)
         Directory.CreateDirectory(options.RunDirectory);
         await using var lockHandle = AcquireLock();
 
-        LaunchedProcess? smtpSink = null;
+        var reuseSink = IsPortOpen(options.SmtpPort);
+        var smtpSink = reuseSink ? null : StartSmtpSink();
+
+        await EnsureComposeUpAsync(cancellationToken).ConfigureAwait(false);
+
+        LaunchedProcess? apiProcess = null;
+        var apiPort = options.ApiPort;
+
+        if (await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Console.WriteLine("[e2e] reusing the API that already serves this machine; its data is reset without a schema rebuild, so the run rows survive");
+            await TruncateApplicationDataAsync(cancellationToken).ConfigureAwait(false);
+            await FlushRedisAsync(cancellationToken).ConfigureAwait(false);
+            await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            ReclaimStoppedRun();
+            await EnsureRoleAndDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            await ApplyModelSchemaAsync(cancellationToken).ConfigureAwait(false);
+
+            (apiProcess, apiPort) = StartApi();
+            await WaitUntilHttpHealthyAsync("API", $"http://localhost:{apiPort}/health", apiProcess, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (smtpSink is not null)
+        {
+            await WaitUntilSmtpReadyAsync(smtpSink, cancellationToken).ConfigureAwait(false);
+        }
+        else if (File.Exists(options.MailFile))
+        {
+            File.WriteAllText(options.MailFile, string.Empty);
+        }
+
+        await new SellerSeeder(options).RegisterVerifiedSellerAsync(cancellationToken).ConfigureAwait(false);
+        Console.WriteLine($"[e2e] seller seeded: {options.SellerEmail}");
+
+        var outcome = await RunPlaywrightAsync(apiPort, cancellationToken).ConfigureAwait(false);
+
+        if (apiProcess is not null)
+        {
+            File.WriteAllText(Path.Combine(options.RunDirectory, "api.pid"), apiProcess.Pid.ToString());
+        }
+
+        if (smtpSink is not null)
+        {
+            File.WriteAllText(Path.Combine(options.RunDirectory, "smtp.pid"), smtpSink.Pid.ToString());
+        }
+
+        Console.WriteLine($"[e2e] the stack stays up for later runs: API on http://localhost:{apiPort}, sink on 127.0.0.1:{options.SmtpPort}");
+        return outcome;
+    }
+
+    private void ReclaimStoppedRun()
+    {
+        ProcessLauncher.KillPidFromFile(Path.Combine(options.RunDirectory, "api.pid"));
+        ProcessLauncher.KillPidFromFile(Path.Combine(options.RunDirectory, "smtp.pid"));
+    }
+
+    private async Task<bool> IsApiHealthyAsync(CancellationToken cancellationToken)
+    {
         try
         {
-            await BringInfraUpAsync(cancellationToken).ConfigureAwait(false);
-            smtpSink = StartSmtpSink();
-
-            var (apiProcess, apiPort) = StartApi();
-            try
-            {
-                await WaitUntilHttpHealthyAsync("API", $"http://localhost:{apiPort}/health", apiProcess, cancellationToken)
-                    .ConfigureAwait(false);
-                await WaitUntilSmtpReadyAsync(smtpSink, cancellationToken).ConfigureAwait(false);
-
-                await new SellerSeeder(options).RegisterVerifiedSellerAsync(cancellationToken).ConfigureAwait(false);
-                Console.WriteLine($"[e2e] seller seeded: {options.SellerEmail}");
-
-                return await RunPlaywrightAsync(apiPort, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                apiProcess.KillTree();
-            }
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var response = await client.GetAsync(
+                $"http://localhost:{options.ApiPort}/health",
+                cancellationToken).ConfigureAwait(false);
+            return (int)response.StatusCode == 200;
         }
-        finally
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
-            smtpSink?.KillTree();
-            await ComposeAsync("down", "-v", "--remove-orphans").ConfigureAwait(false);
+            return false;
         }
+    }
+
+    private async Task TruncateApplicationDataAsync(CancellationToken cancellationToken)
+    {
+        await using var context = new AppDbContext(
+            new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(options.ApiDbConnectionString, npgsql => npgsql.UseVector())
+                .Options);
+
+        var tables = context.Model.GetEntityTypes()
+            .Select(entityType => entityType.GetTableName())
+            .Where(name => !string.IsNullOrWhiteSpace(name)
+                && !string.Equals(name, "test_report_runs", StringComparison.OrdinalIgnoreCase))
+            .Distinct()
+            .ToList();
+
+        var statement = $"TRUNCATE TABLE {string.Join(", ", tables.Select(name => $"\"{name}\""))} RESTART IDENTITY CASCADE";
+        await using var dataSource = NpgsqlDataSource.Create(options.ApiDbConnectionString);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await new NpgsqlCommand(statement, connection).ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task FlushRedisAsync(CancellationToken cancellationToken)
+    {
+        await ComposeAsync("exec", "-T", "redis", "redis-cli", "FLUSHALL").ConfigureAwait(false);
     }
 
     private async Task<E2EOutcome> BringUpAsync(CancellationToken cancellationToken)
@@ -83,21 +154,54 @@ public sealed class E2EOrchestrator(E2EOptions options)
         Directory.CreateDirectory(options.RunDirectory);
         await using var lockHandle = AcquireLock();
 
-        await BringInfraUpAsync(cancellationToken).ConfigureAwait(false);
-        var smtpSink = StartSmtpSink();
-        var (apiProcess, apiPort) = StartApi();
+        var reuseSink = IsPortOpen(options.SmtpPort);
+        var smtpSink = reuseSink ? null : StartSmtpSink();
 
-        await WaitUntilHttpHealthyAsync("API", $"http://localhost:{apiPort}/health", apiProcess, cancellationToken)
-            .ConfigureAwait(false);
-        await WaitUntilSmtpReadyAsync(smtpSink, cancellationToken).ConfigureAwait(false);
+        LaunchedProcess? apiProcess = null;
+        var apiPort = options.ApiPort;
+
+        if (await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Console.WriteLine("[e2e] reusing the API that already serves this machine; its data is reset");
+            await TruncateApplicationDataAsync(cancellationToken).ConfigureAwait(false);
+            await FlushRedisAsync(cancellationToken).ConfigureAwait(false);
+            await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            ReclaimStoppedRun();
+            await EnsureComposeUpAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureRoleAndDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            await ApplyModelSchemaAsync(cancellationToken).ConfigureAwait(false);
+
+            (apiProcess, apiPort) = StartApi();
+            await WaitUntilHttpHealthyAsync("API", $"http://localhost:{apiPort}/health", apiProcess, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (smtpSink is not null)
+        {
+            await WaitUntilSmtpReadyAsync(smtpSink, cancellationToken).ConfigureAwait(false);
+        }
+        else if (File.Exists(options.MailFile))
+        {
+            File.WriteAllText(options.MailFile, string.Empty);
+        }
 
         await new SellerSeeder(options).RegisterVerifiedSellerAsync(cancellationToken).ConfigureAwait(false);
 
-        File.WriteAllText(Path.Combine(options.RunDirectory, "api.pid"), apiProcess.Pid.ToString());
-        File.WriteAllText(Path.Combine(options.RunDirectory, "smtp.pid"), smtpSink.Pid.ToString());
+        if (apiProcess is not null)
+        {
+            File.WriteAllText(Path.Combine(options.RunDirectory, "api.pid"), apiProcess.Pid.ToString());
+        }
 
-        Console.WriteLine($"[e2e] API up on http://localhost:{apiPort} (pid {apiProcess.Pid}, pid file api.pid)");
-        Console.WriteLine($"[e2e] smtp sink up on 127.0.0.1:{options.SmtpPort} (pid {smtpSink.Pid}, pid file smtp.pid)");
+        if (smtpSink is not null)
+        {
+            File.WriteAllText(Path.Combine(options.RunDirectory, "smtp.pid"), smtpSink.Pid.ToString());
+        }
+
+        Console.WriteLine($"[e2e] API up on http://localhost:{apiPort} (pid file api.pid)");
+        Console.WriteLine($"[e2e] smtp sink up on 127.0.0.1:{options.SmtpPort} (pid file smtp.pid)");
         Console.WriteLine("[e2e] stop it later with E2E_ORCHESTRATION_COMMAND=down");
 
         return new E2EOutcome(0, 0, 0, 0, 0, options.ReportPath, string.Empty, string.Empty);
@@ -128,13 +232,6 @@ public sealed class E2EOrchestrator(E2EOptions options)
 
         Console.WriteLine("[e2e] apcs_e2e deleted and recreated from the EF model");
         return new E2EOutcome(0, 0, 0, 0, 0, options.ReportPath, string.Empty, string.Empty);
-    }
-
-    private async Task BringInfraUpAsync(CancellationToken cancellationToken)
-    {
-        await EnsureComposeUpAsync(cancellationToken).ConfigureAwait(false);
-        await EnsureRoleAndDatabaseAsync(cancellationToken).ConfigureAwait(false);
-        await ApplyModelSchemaAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task EnsureComposeUpAsync(CancellationToken cancellationToken)
@@ -238,6 +335,15 @@ public sealed class E2EOrchestrator(E2EOptions options)
                 .Options);
 
         await context.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+        await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SeedCatalogAsync(CancellationToken cancellationToken)
+    {
+        await using var context = new AppDbContext(
+            new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(options.ApiDbConnectionString, npgsql => npgsql.UseVector())
+                .Options);
 
         var now = DateTime.UtcNow;
         context.AddRange(SeedRoles(now));
@@ -251,7 +357,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
         var hasher = new Microsoft.AspNetCore.Identity.PasswordHasher<APCS.Domain.Entities.User>();
         var admin = new APCS.Domain.Entities.User
         {
-            Id = Guid.NewGuid(),
+            Id = Guid.Parse("3f4e5d6c-7b8a-49f0-9c1d-2e3f4a5b6c7d"),
             Email = "demo.admin@apcs.test",
             PasswordHash = hasher.HashPassword(null!, "Passw0rdTest1!"),
             FullName = "Demo Admin",
@@ -412,7 +518,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
             ["App__BaseUrl"] = $"http://localhost:{options.FrontendPort}",
             ["App__VerifyEmailPath"] = "/verify-email",
             ["App__ResetPasswordPath"] = "/reset-password",
-            ["Cors__AllowedOrigins"] = "http://localhost:4010;http://localhost:4020",
+            ["Cors__AllowedOrigins"] = "http://localhost:3000;http://localhost:4010;http://localhost:4020",
             ["Smtp__Host"] = "127.0.0.1",
             ["Smtp__Port"] = options.SmtpPort.ToString(),
             ["Smtp__UseStartTls"] = "false",
@@ -433,6 +539,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
             ["ASPNETCORE_ENVIRONMENT"] = "E2E",
             ["DOTNET_ENVIRONMENT"] = "E2E",
             ["ASPNETCORE_URLS"] = $"http://localhost:{apiPort}",
+            ["E2E_ORCHESTRATION_COMMAND"] = "test",
             ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
             ["DOTNET_NOLOGO"] = "1",
             ["Logging__LogLevel__Default"] = "Information",
