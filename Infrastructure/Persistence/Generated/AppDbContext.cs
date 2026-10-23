@@ -104,6 +104,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<SupportTicket> SupportTickets { get; set; }
 
+    public virtual DbSet<TestReportRun> TestReportRuns { get; set; }
+
     public virtual DbSet<TicketAttachment> TicketAttachments { get; set; }
 
     public virtual DbSet<TicketReply> TicketReplies { get; set; }
@@ -2699,6 +2701,73 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.SupportTicketUsers)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("support_tickets_user_id_fkey");
+        });
+
+        modelBuilder.Entity<TestReportRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_test_report_runs");
+
+            entity.ToTable("test_report_runs");
+
+            entity.HasIndex(e => e.RunId, "uq_test_report_runs_run_id").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.Branch)
+                .HasMaxLength(255)
+                .HasColumnName("branch");
+            entity.Property(e => e.CommitSha)
+                .HasMaxLength(64)
+                .HasColumnName("commit_sha");
+            entity.Property(e => e.CreatedAtUtc)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at_utc");
+            entity.Property(e => e.DurationMs)
+                .HasDefaultValue(0L)
+                .HasColumnName("duration_ms");
+            entity.Property(e => e.FailedTests)
+                .HasDefaultValue(0)
+                .HasColumnName("failed_tests");
+            entity.Property(e => e.FailureSummary).HasColumnName("failure_summary");
+            entity.Property(e => e.FileCount)
+                .HasDefaultValue(0)
+                .HasColumnName("file_count");
+            entity.Property(e => e.FinishedAtUtc).HasColumnName("finished_at_utc");
+            entity.Property(e => e.FlakyTests)
+                .HasDefaultValue(0)
+                .HasColumnName("flaky_tests");
+            entity.Property(e => e.KnownIssueTests)
+                .HasDefaultValue(0)
+                .HasColumnName("known_issue_tests");
+            entity.Property(e => e.PassedTests)
+                .HasDefaultValue(0)
+                .HasColumnName("passed_tests");
+            entity.Property(e => e.Report)
+                .HasColumnType("jsonb")
+                .HasColumnName("report");
+            entity.Property(e => e.RunId)
+                .HasMaxLength(64)
+                .HasColumnName("run_id");
+            entity.Property(e => e.SkippedTests)
+                .HasDefaultValue(0)
+                .HasColumnName("skipped_tests");
+            entity.Property(e => e.StartedAtUtc).HasColumnName("started_at_utc");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.SuiteCount)
+                .HasDefaultValue(0)
+                .HasColumnName("suite_count");
+            entity.Property(e => e.TotalTests)
+                .HasDefaultValue(0)
+                .HasColumnName("total_tests");
+            entity.Property(e => e.TriggeredBy)
+                .HasMaxLength(320)
+                .HasColumnName("triggered_by");
+            entity.Property(e => e.UnexpectedFailedTests)
+                .HasDefaultValue(0)
+                .HasColumnName("unexpected_failed_tests");
         });
 
         modelBuilder.Entity<TicketAttachment>(entity =>

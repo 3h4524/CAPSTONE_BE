@@ -13,7 +13,6 @@ FE_ROOT="$(cd "${REPO_ROOT}/../CAPSTONE_FE" && pwd)"
 RUN_DIR="${REPO_ROOT}/scripts/e2e/.run"
 PNPM=""
 DOTNET=""
-FE_PORT="${FE_PORT:-4010}"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '   \033[32m%s\033[0m\n' "$*"; }
@@ -27,7 +26,7 @@ bring_up() {
   # chạy đầu tiên không chết ngay ở bước 1.
   mkdir -p "${RUN_DIR}"
 
-  say "1/4 PostgreSQL 18 + Redis"
+  say "1/3 PostgreSQL 18 + Redis"
   # Giữ log thật: nuốt output khiến lỗi không hiện ra thì không ai sửa được.
   if ! "${REPO_ROOT}/scripts/e2e/bootstrap-postgres.sh" >"${RUN_DIR}/bootstrap.log" 2>&1; then
     bad "bootstrap-postgres thất bại:"
@@ -36,7 +35,7 @@ bring_up() {
   fi
   ok "postgres + redis (docker)"
 
-  say "2/4 Backend API + SMTP sink"
+  say "2/3 Backend API + SMTP sink"
   # start-backend.sh từ chối chạy khi API của lần trước còn sống, nên phải dừng trước.
   # Dừng rồi mới bật, và phải kiểm tra exit code — nếu không, bước seed sẽ chạy
   # với backend đã chết rồi báo lỗi khó hiểu.
@@ -49,7 +48,7 @@ bring_up() {
   fi
   ok "API http://localhost:5191 + SMTP sink 127.0.0.1:2525"
 
-  say "3/4 Seed seller"
+  say "3/3 Seed seller"
   if ! "${REPO_ROOT}/scripts/e2e/seed-seller.sh" >"${RUN_DIR}/seed.log" 2>&1; then
     bad "seed-seller thất bại:"
     tail -n 12 "${RUN_DIR}/seed.log" | sed 's/^/     /'
@@ -57,43 +56,11 @@ bring_up() {
   fi
   ok "seller đã tạo qua flow thật (register → verify → login)"
 
-  say "4/4 Frontend (production build)"
-  if curl -sf -o /dev/null --max-time 3 "http://localhost:${FE_PORT}"; then
-    ok "đã có server trên ${FE_PORT} — dùng lại, khỏi build"
-    return 0
-  fi
-
+  # Bước 4 (frontend) không nằm ở đây nữa: Playwright tự build rồi start bản production
+  # của nó (reuseExistingServer: false), nên chạy suite lúc nào cũng test đúng bản build.
   if [ ! -d "${FE_ROOT}/node_modules" ]; then
     bad "CAPSTONE_FE chưa cài dependency:"
     printf '     cd %s && pnpm install\n' "${FE_ROOT}"
-    return 1
-  fi
-
-  # next start cần .next có sẵn, và PORT phải khớp với E2E_BASE_URL — Next mặc
-  # định là 3000, còn Playwright trỏ 4010.
-  log "building frontend (lần đầu mất vài phút)"
-  if ! (cd "${FE_ROOT}" && "${PNPM}" build) >"${RUN_DIR}/fe-build.log" 2>&1; then
-    bad "pnpm build thất bại:"
-    tail -n 15 "${RUN_DIR}/fe-build.log" | sed 's/^/     /'
-    return 1
-  fi
-
-  log "starting frontend trên port ${FE_PORT}"
-  (cd "${FE_ROOT}" \
-    && PORT="${FE_PORT}" \
-       NEXT_PUBLIC_API_BASE_URL="${E2E_API_BASE_URL:-http://localhost:5191}" \
-       NEXT_PUBLIC_GOOGLE_CLIENT_ID="" \
-       nohup "${PNPM}" start >"${RUN_DIR}/fe.log" 2>&1 &)
-
-  for _ in $(seq 1 60); do
-    curl -sf -o /dev/null --max-time 2 "http://localhost:${FE_PORT}" && break
-    sleep 1
-  done
-
-  if curl -sf -o /dev/null --max-time 3 "http://localhost:${FE_PORT}"; then
-    ok "frontend sẵn sàng ở http://localhost:${FE_PORT}"
-  else
-    bad "frontend không lên — xem ${RUN_DIR}/fe.log"
     return 1
   fi
 }
@@ -168,12 +135,14 @@ print('export E2E_SELLER_PASSWORD=%s' % d['password'])
 run_unit() {
   resolve_toolchain
   say "FE unit test"
-  (cd "${FE_ROOT}" && "${PNPM}" test 2>&1 | tail -4)
+  # tail cắt mất dòng summary vì vitest in thêm gợi ý tối ưu ở cuối, nên grep đúng hai dòng kết quả.
+  (cd "${FE_ROOT}" && "${PNPM}" test 2>&1 \
+    | grep -E "^[[:space:]]+(Test Files|Tests)[[:space:]]" | sed 's/^[[:space:]]*/   /')
 }
 
 run_be_unit() {
   resolve_toolchain
-  say "BE unit test (707 test + coverage gate)"
+  say "BE unit test + coverage gate"
   (cd "${REPO_ROOT}" && DOTNET_ROOT="${HOME}/.dotnet" \
     && "${DOTNET}" test Capstone.sln -c Debug 2>&1 | grep -E "Passed!|Failed!" | sed 's/^/   /')
 }
@@ -195,9 +164,34 @@ run_be_integration() {
 
 run_e2e() {
   resolve_toolchain
-  say "FE E2E (54 test)"
+  say "FE E2E"
   load_credentials || { bad "chưa có seller.json — chạy 'seed-seller.sh' trước"; return 1; }
-  (cd "${FE_ROOT}" && "${PNPM}" test:e2e 2>&1 | tail -6)
+
+  # Headed chỉ bật khi có màn hình; CI và shell không có display thì chạy headless.
+  local browser_flag=""
+  if [ "${E2E_HEADED:-}" = "1" ]; then
+    browser_flag="--headed --workers=1"
+    log "chạy headed (cần display; nếu không có thì đặt DISPLAY)"
+  fi
+
+  (cd "${FE_ROOT}" && "${PNPM}" test:e2e ${browser_flag} 2>&1 \
+    | grep -E "passed|failed|flaky|skipped" | sed 's/^[[:space:]]*/   /')
+}
+
+run_all_tests() {
+  local failures=()
+
+  run_unit || failures+=("FE unit")
+  run_be_integration || failures+=("BE unit + integration")
+  # Từng tầng chạy độc lập: một tầng đỏ không được che các tầng còn lại.
+  run_e2e || failures+=("FE E2E")
+
+  if [ "${#failures[@]}" -gt 0 ]; then
+    bad "tầng đỏ: ${failures[*]}"
+    return 1
+  fi
+
+  ok "cả 4 tầng xanh"
 }
 
 case "${1:-all}" in
@@ -205,6 +199,6 @@ case "${1:-all}" in
   unit)   run_unit; run_be_unit ;;
   e2e)    bring_up && run_e2e ;;
   integ)  bring_up && run_be_integration ;;
-  all)    bring_up && run_unit && run_be_integration && run_e2e ;;
+  all)    bring_up && run_all_tests ;;
   *)      bad "tham số không hợp lệ: $1 (all|unit|e2e|integ|down)"; exit 1 ;;
 esac
