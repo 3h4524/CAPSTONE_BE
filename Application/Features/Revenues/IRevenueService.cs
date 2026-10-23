@@ -11,4 +11,5 @@ public interface IRevenueService
     Task<Result<RevenueMetricsDto>> GetMetricsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
     Task<Result<RevenueChartDto>> GetChartsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
     Task<Result<PagedResult<RevenueInvoiceDto>>> GetInvoicesAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
+    Task<Result<RevenueInsightsDto>> GetInsightsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
 }

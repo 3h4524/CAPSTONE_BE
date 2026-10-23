@@ -29,6 +29,26 @@ The list above resolves conflicts. This table decides reading order, so a task r
 
 A change that matches more than one row reads every row that applies.
 
+## Local environment
+
+The API reads its settings from the ignored `.env` in the repository root, and two of them bite
+when the API runs next to the frontend.
+
+- **`Cors__AllowedOrigins` separates its values with `;`, not `,`** and the name is
+  case-sensitive. The configuration binder only reads the values of an array from the child keys,
+  so an environment variable reaches `GetOptionalStringArray` as one string and the helper splits
+  it on `;`. A comma-separated value arrives as one broken origin and every browser call is
+  refused with "no Access-Control-Allow-Origin header".
+- **In `Development` the environment variable is ignored.** `appsettings.Development.json` holds
+  `Cors:AllowedOrigins` as an array, and those child keys win over the environment variable, so
+  only `http://localhost:3000` is allowed. To allow another origin in `Development`, add it to
+  that file or run the API with another environment (the E2E stack uses `E2E`).
+- The local `.env` points at the **shared Neon database**, not at a local Postgres: the rows of
+  every run and every account land there. `scripts/e2e/` starts a database of its own with Docker.
+- The reports of the end-to-end suite live in the `test_report_runs` table, so a run outlives the
+  machine that made it. The table was created in the database first; `scripts/sql/test-report-runs.sql`
+  is the record of it.
+
 ## Before changing files
 
 - Inspect `git status` and preserve unrelated or user-owned changes.

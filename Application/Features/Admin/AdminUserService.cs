@@ -4,6 +4,7 @@ using APCS.Application.Features.Admin.Dtos.Request;
 using APCS.Application.Features.Admin.Dtos.Response;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Dtos.Request;
+using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -85,9 +86,6 @@ public sealed class AdminUserService(
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var startOfMonth = new DateOnly(now.Year, now.Month, 1);
-
         var dtos = users.Select(u => new AdminUserDto(
             Id: u.Id,
             FullName: u.FullName,
@@ -131,9 +129,6 @@ public sealed class AdminUserService(
         if (user is null)
             return Result<AdminUserDto>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var startOfMonth = new DateOnly(now.Year, now.Month, 1);
-
         var dto = new AdminUserDto(
             Id: user.Id,
             FullName: user.FullName,
@@ -160,6 +155,7 @@ public sealed class AdminUserService(
         if (user is null)
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
+        var previousStatus = user.AccountStatus;
         user.AccountStatus = "suspended";
         user.SuspendedUntil = request.DurationDays.HasValue ? timeProvider.GetUtcNow().UtcDateTime.AddDays(request.DurationDays.Value) : null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
@@ -179,7 +175,7 @@ public sealed class AdminUserService(
             ActionType = "SuspendUser",
             ResourceType = "User",
             ResourceId = user.Id,
-            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = previousStatus }),
             NewValue = System.Text.Json.JsonSerializer.Serialize(new 
             { 
                 status = "suspended", 
@@ -202,6 +198,7 @@ public sealed class AdminUserService(
         if (user is null)
             return Result<bool>.Failure(Error.NotFound("User.NotFound", "User not found."));
 
+        var previousStatus = user.AccountStatus;
         user.AccountStatus = "active";
         user.SuspendedUntil = null;
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
@@ -214,7 +211,7 @@ public sealed class AdminUserService(
             ActionType = "UnlockUser",
             ResourceType = "User",
             ResourceId = user.Id,
-            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = "suspended" }),
+            OldValue = System.Text.Json.JsonSerializer.Serialize(new { status = previousStatus }),
             NewValue = System.Text.Json.JsonSerializer.Serialize(new { status = "active" }),
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         };
@@ -261,7 +258,7 @@ public sealed class AdminUserService(
         if (id == currentUser.UserId)
         {
             var newRoleNamesList = request.Roles?.Select(r => r.ToLower()).ToList() ?? new List<string>();
-            if (!newRoleNamesList.Contains("admin") && user.UserRoleUsers.Any(ur => ur.Role.Name.Equals("Admin", StringComparison.OrdinalIgnoreCase)))
+            if (!newRoleNamesList.Contains(AuthConstants.AdminRole.ToLower()) && user.UserRoleUsers.Any(ur => ur.Role.Name.Equals(AuthConstants.AdminRole, StringComparison.OrdinalIgnoreCase)))
             {
                 return Result<AdminUserDto>.Failure(Error.Validation("You cannot remove your own Admin role."));
             }
@@ -279,6 +276,14 @@ public sealed class AdminUserService(
             if (emailExists)
                 return Result<AdminUserDto>.Failure(Error.Conflict("User.EmailExists", "Email address already in use."));
         }
+
+        var oldValue = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            full_name = user.FullName,
+            email = user.Email,
+            status = user.AccountStatus,
+            roles = user.UserRoleUsers.Select(ur => ur.Role.Name).OrderBy(r => r).ToList()
+        });
 
         user.FullName = request.FullName;
         user.Email = request.Email;
@@ -335,16 +340,32 @@ public sealed class AdminUserService(
         user.AccountStatus = request.AccountStatus.ToLower();
         user.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-        
-        // Return updated DTO
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var startOfMonth = new DateOnly(now.Year, now.Month, 1);
-        
         var resultRoles = allRoles
             .Where(r => newRoleNames.Contains(r.Name.ToLower()))
             .Select(r => r.Name)
             .ToList();
+
+        // Role grants (especially Admin) must leave a trail, same as suspend/unlock.
+        var auditLog = new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActorUserId = currentUser.UserId,
+            ActionType = "UpdateUser",
+            ResourceType = "User",
+            ResourceId = user.Id,
+            OldValue = oldValue,
+            NewValue = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                full_name = user.FullName,
+                email = user.Email,
+                status = user.AccountStatus,
+                roles = resultRoles.OrderBy(r => r).ToList()
+            }),
+            CreatedAt = timeProvider.GetUtcNow().UtcDateTime
+        };
+        await auditLogRepository.AddAsync(auditLog, false, cancellationToken);
+
+        await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var dto = new AdminUserDto(
             Id: user.Id,
