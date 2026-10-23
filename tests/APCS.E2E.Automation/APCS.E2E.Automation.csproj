@@ -1,0 +1,10 @@
+<Project Sdk="MSTest.Sdk/4.3.3">
+  <PropertyGroup>
+    <AssemblyName>APCS.E2E.Automation</AssemblyName>
+    <RootNamespace>APCS.E2E</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Infrastructure\Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
