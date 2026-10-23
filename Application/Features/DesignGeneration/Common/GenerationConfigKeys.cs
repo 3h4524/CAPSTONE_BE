@@ -23,6 +23,12 @@ public static class GenerationConfigKeys
     /// </summary>
     public const string WorkflowId = "workflowId";
 
+    /// <summary>
+    /// The image generation provider the job's designs are made with. Absent on jobs started before the
+    /// Seller could choose, which were all made with Gemini.
+    /// </summary>
+    public const string ImageProvider = "imageProvider";
+
     public const int DefaultVariationCount = 1;
     public const string DefaultAspectRatio = "1:1";
 }

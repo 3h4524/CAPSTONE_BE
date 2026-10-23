@@ -1978,6 +1978,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.Property(e => e.DesignTemplateId).HasColumnName("design_template_id");
             entity.Property(e => e.DesiredDesignText).HasColumnName("desired_design_text");
+            entity.Property(e => e.CustomPrompt).HasColumnName("custom_prompt");
             entity.Property(e => e.InputDescription).HasColumnName("input_description");
             entity.Property(e => e.MainKeywords)
                 .HasMaxLength(500)

@@ -86,11 +86,27 @@ public static class DependencyInjection
         services.AddOptions<GeminiOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Gemini));
         services.AddSingleton<IOptions<DesignGenerationSettings>>(provider =>
-            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(
-                Math.Max(1, provider.GetRequiredService<IOptions<GeminiOptions>>().Value.MaxConcurrentImages))));
+        {
+            var gemini = provider.GetRequiredService<IOptions<GeminiOptions>>().Value;
+            var ideogram = provider.GetRequiredService<IOptions<IdeogramOptions>>().Value;
+            return Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(Math.Max(1, gemini.MaxConcurrentImages))
+            {
+                MaxConcurrentImagesByProvider = new Dictionary<string, int>
+                {
+                    [ImageGenerationProviders.Ideogram] = Math.Max(1, ideogram.MaxConcurrentImages)
+                }
+            });
+        });
         services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
+        services.AddOptions<IdeogramOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Ideogram));
+        services.AddHttpClient("Ideogram", client => client.Timeout = TimeSpan.FromSeconds(120))
+            .RedactLoggedHeaders(new[] { "Api-Key" });
+        // Every service takes all the image providers and picks one by name: design generation the one its job names,
+        // lifestyle mock-ups and AI Studio frames Gemini, the only provider that can combine images.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
+        services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });

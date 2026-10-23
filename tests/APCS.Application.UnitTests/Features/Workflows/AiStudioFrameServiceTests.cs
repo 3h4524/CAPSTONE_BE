@@ -223,6 +223,7 @@ public sealed class AiStudioFrameServiceTests
         var credentials = new Mock<IApiKeyCredentials>();
         credentials.Setup(x => x.Unprotect("encrypted-gemini-key")).Returns("decrypted-gemini-key");
         var images = new Mock<IImageGenerationProvider>();
+        images.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Gemini);
         images.SetupGet(x => x.EstimatedCostPerImageUsd).Returns(0.05m);
         images.Setup(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ImageGenerationResult.Success([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0], "image/jpeg", "gemini-image-test", 0.05m));
@@ -245,7 +246,7 @@ public sealed class AiStudioFrameServiceTests
         var unit = new Mock<IUnitOfWork>();
         unit.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
         var service = new AiStudioFrameService(user.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object,
-            apiKeys.Object, credentials.Object, images.Object, storage.Object, mockupService.Object, unit.Object,
+            apiKeys.Object, credentials.Object, [images.Object], storage.Object, mockupService.Object, unit.Object,
             fixture.Time, NullLogger<AiStudioFrameService>.Instance);
 
         return new Context(fixture, product, service, images, unit, usageRows);

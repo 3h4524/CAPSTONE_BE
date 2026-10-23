@@ -70,6 +70,7 @@ public sealed class ApiKeyService(
             new("gemini", "Google Gemini", true, ["Read models (connection check)", "Model inference for listing content"]),
             new("replicate", "Replicate", true, ["Read account (connection check)", "Run predictions for image generation"]),
             new("gemini", "Google Gemini", true, ["List models (connection check)", "Generate design images (Nano Banana)"]),
+            new("ideogram", "Ideogram", true, ["Price a request without generating (connection check)", "Generate design images (Ideogram 4.0)", "Needs a payment method and credits"]),
             new("printify", "Printify", true, ["Read shops (connection check)", "Manage and publish products", "No order or payment access needed"]),
             new("etsy", "Etsy", false, ["Etsy requires an OAuth account connection; API key entry is not supported."])
         });
@@ -202,6 +203,7 @@ public sealed class ApiKeyService(
             // generation code uses Gemini exclusively.
             "openai" => ("OpenAI (legacy)", "Listing content"),
             "replicate" => ("Replicate", "Image generation"),
+            "ideogram" => ("Ideogram", "Image generation"),
             "printify" => ("Printify", "Product publishing"),
             "etsy" => ("Etsy", "Listing publishing"),
             _ => (key.Provider, "Other service")
