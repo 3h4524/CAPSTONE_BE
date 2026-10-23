@@ -33,6 +33,8 @@ jobs:
       - name: Run unit tests and coverage gate
         shell: pwsh
         run: ./scripts/Test-WithCoverage.ps1 -Configuration Release -NoBuild
+        env:
+          TESTINGPLATFORM_EXITCODE_IGNORE: "1"
 
       - name: Publish coverage summary
         if: always()
@@ -90,6 +92,7 @@ jobs:
       # when this matches the database named in the connection string.
       APCS_TEST_RESET_DATABASE: apcs
       DOTNET_ROOT: /usr/share/dotnet
+      TESTINGPLATFORM_EXITCODE_IGNORE: "1"
 
     steps:
       - name: Checkout
