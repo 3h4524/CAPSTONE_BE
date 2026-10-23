@@ -19,7 +19,8 @@ public sealed class RagService(
     AppDbContext dbContext,
     IRagEmbeddingProvider embeddingProvider,
     IOptions<RagRetrievalOptions> retrievalOptions,
-    IRagIngestionQueue ingestionQueue)
+    IRagIngestionQueue ingestionQueue,
+    TimeProvider timeProvider)
     : IRagService
 {
     private const int ChunkSize = 1400;
@@ -45,7 +46,7 @@ public sealed class RagService(
             .AsNoTracking()
             .Where(x => x.SourceId == sourceId && x.ContentHash == hash)
             .OrderByDescending(x => x.UpdatedAt)
-            .Select(x => new { x.Id, x.Status, x.UpdatedAt, ChunkCount = x.Chunks.Count() })
+            .Select(x => new { x.Id, x.Status, x.UpdatedAt, ChunkCount = x.RagChunks.Count() })
             .FirstOrDefaultAsync(cancellationToken);
 
         if (existing is not null && existing.Status != RagDocumentStatuses.Failed)
@@ -162,8 +163,8 @@ public sealed class RagService(
                     Embedding = new Vector(vector),
                     EmbeddingModel = embeddingProvider.ModelName
                 };
-                chunk.Embeddings.Add(embedding);
-                document.Chunks.Add(chunk);
+                chunk.RagEmbeddings.Add(embedding);
+                document.RagChunks.Add(chunk);
                 dbContext.RagChunks.Add(chunk);
                 dbContext.RagEmbeddings.Add(embedding);
             }
@@ -222,7 +223,8 @@ public sealed class RagService(
 
         var topK = Math.Clamp(request.TopK, 1, 50);
         var settings = retrievalOptions.Value;
-        var candidateCount = Math.Min(500, topK * settings.CandidateMultiplier);
+        var candidateCount = Math.Min(500, topK * settings.CandidateMultiplier
+            * (request.Platform is not null || request.Niche is not null || request.MinimumViralScore is not null ? 4 : 1));
         var queryVector = new Vector(await embeddingProvider.CreateEmbeddingAsync(request.Query, cancellationToken));
 
         var query = dbContext.RagEmbeddings
@@ -250,10 +252,13 @@ public sealed class RagService(
                 x.Chunk.Document.SourceUrl,
                 x.Chunk.Document.Version,
                 x.Chunk.Document.Status,
+                x.Chunk.Document.IngestionMetadata,
+                x.Chunk.Document.UpdatedAt,
                 Distance = x.Embedding.CosineDistance(queryVector),
                 x.Chunk.Metadata
             })
             .ToListAsync(cancellationToken);
+        vectorRows = vectorRows.Where(row => MatchesMetadata(row.IngestionMetadata, request)).ToList();
 
         var terms = TokenizeQuery(request.Query);
         var lexicalRows = terms.Length == 0
@@ -267,6 +272,8 @@ public sealed class RagService(
                 x.Chunk.Document.SourceUrl,
                 x.Chunk.Document.Version,
                 x.Chunk.Document.Status,
+                x.Chunk.Document.IngestionMetadata,
+                x.Chunk.Document.UpdatedAt,
                 x.Chunk.Metadata
             }).ToListAsync(cancellationToken)
             : await query
@@ -284,9 +291,12 @@ public sealed class RagService(
                     x.Chunk.Document.SourceUrl,
                     x.Chunk.Document.Version,
                     x.Chunk.Document.Status,
+                    x.Chunk.Document.IngestionMetadata,
+                    x.Chunk.Document.UpdatedAt,
                     x.Chunk.Metadata
                 })
                 .ToListAsync(cancellationToken);
+        lexicalRows = lexicalRows.Where(row => MatchesMetadata(row.IngestionMetadata, request)).ToList();
 
         var lexicalScores = lexicalRows.ToDictionary(
             row => row.ChunkId,
@@ -302,7 +312,8 @@ public sealed class RagService(
                 row.SourceUrl,
                 row.Version,
                 row.Status,
-                row.Metadata,
+                MergeMetadata(row.IngestionMetadata, row.Metadata),
+                row.UpdatedAt,
                 Math.Max(0, 1 - row.Distance),
                 lexicalScores.GetValueOrDefault(row.ChunkId)))
             .Concat(lexicalRows
@@ -316,13 +327,13 @@ public sealed class RagService(
                     row.SourceUrl,
                     row.Version,
                     row.Status,
-                    row.Metadata,
+                    MergeMetadata(row.IngestionMetadata, row.Metadata),
+                    row.UpdatedAt,
                     0,
                     lexicalScores[row.ChunkId])))
             .Select(candidate => candidate with
             {
-                RankScore = (candidate.VectorSimilarity * (1 - settings.LexicalWeight))
-                    + (candidate.LexicalScore * settings.LexicalWeight)
+                RankScore = Rerank(candidate, settings, timeProvider.GetUtcNow())
             })
             .Where(candidate => candidate.VectorSimilarity >= settings.MinimumSimilarity
                 || candidate.LexicalScore > 0)
@@ -377,7 +388,7 @@ public sealed class RagService(
                 x.Language,
                 x.Status,
                 x.IngestionError,
-                x.Chunks.Count,
+                x.RagChunks.Count,
                 x.CreatedAt,
                 x.UpdatedAt))
             .ToListAsync(cancellationToken);
@@ -401,7 +412,7 @@ public sealed class RagService(
                 x.Language,
                 x.Status,
                 x.IngestionError,
-                x.Chunks.Count,
+                x.RagChunks.Count,
                 x.CreatedAt,
                 x.UpdatedAt))
             .SingleOrDefaultAsync(cancellationToken);
@@ -520,9 +531,98 @@ public sealed class RagService(
         string? Version,
         string Status,
         string Metadata,
+        DateTime UpdatedAt,
         double VectorSimilarity,
         double LexicalScore,
         double RankScore = 0);
+
+    private static double Rerank(Candidate candidate, RagRetrievalOptions settings, DateTimeOffset now)
+    {
+        var baseWeight = Math.Max(0, 1 - settings.ViralWeight - settings.FreshnessWeight);
+        var semanticScore = (candidate.VectorSimilarity * (1 - settings.LexicalWeight))
+            + (candidate.LexicalScore * settings.LexicalWeight);
+        var viralScore = Math.Clamp(ReadDouble(candidate.Metadata, "viralScore") / 100, 0, 1);
+        var freshnessScore = FreshnessScore(candidate.Metadata, candidate.UpdatedAt, now, settings.FreshnessHalfLifeDays);
+        return (semanticScore * baseWeight)
+            + (viralScore * settings.ViralWeight)
+            + (freshnessScore * settings.FreshnessWeight);
+    }
+
+    private static bool MatchesMetadata(string metadata, RagSearchRequest request)
+    {
+        if (request.Platform is null && request.Niche is null && request.MinimumViralScore is null)
+            return true;
+
+        using var document = ParseMetadata(metadata);
+        if (request.Platform is not null && !string.Equals(ReadString(document, "platform"), request.Platform, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (request.Niche is not null && !NicheMatches(ReadString(document, "niche"), request.Niche))
+            return false;
+        return request.MinimumViralScore is null || ReadDouble(document, "viralScore") >= request.MinimumViralScore.Value;
+    }
+
+    private static double FreshnessScore(string metadata, DateTime updatedAt, DateTimeOffset now, int halfLifeDays)
+    {
+        using var document = ParseMetadata(metadata);
+        var collectedAt = ReadDateTimeOffset(document, "collectedAtUtc") ?? new DateTimeOffset(updatedAt, TimeSpan.Zero);
+        var ageDays = Math.Max(0, (now - collectedAt).TotalDays);
+        return Math.Clamp(Math.Exp(-Math.Log(2) * ageDays / halfLifeDays), 0, 1);
+    }
+
+    private static JsonDocument ParseMetadata(string metadata)
+    {
+        try
+        {
+            return JsonDocument.Parse(string.IsNullOrWhiteSpace(metadata) ? "{}" : metadata);
+        }
+        catch (JsonException)
+        {
+            return JsonDocument.Parse("{}");
+        }
+    }
+
+    private static string? ReadString(JsonDocument document, string name) =>
+        document.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool NicheMatches(string? storedNiche, string requestedNiche)
+    {
+        if (string.IsNullOrWhiteSpace(storedNiche))
+            return false;
+        if (storedNiche.Contains(requestedNiche, StringComparison.OrdinalIgnoreCase)
+            || requestedNiche.Contains(storedNiche, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var requestedTerms = TokenizeQuery(requestedNiche);
+        var storedTerms = TokenizeQuery(storedNiche);
+        return requestedTerms.Any(term => storedTerms.Contains(term, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static double ReadDouble(string metadata, string name)
+    {
+        using var document = ParseMetadata(metadata);
+        return ReadDouble(document, name);
+    }
+
+    private static double ReadDouble(JsonDocument document, string name) =>
+        document.RootElement.TryGetProperty(name, out var value) && value.TryGetDouble(out var number) ? number : 0;
+
+    private static DateTimeOffset? ReadDateTimeOffset(JsonDocument document, string name) =>
+        document.RootElement.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
+
+    private static string MergeMetadata(string documentMetadata, string chunkMetadata)
+    {
+        var merged = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(documentMetadata) ?? [];
+        var chunk = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(chunkMetadata) ?? [];
+        foreach (var item in chunk)
+            merged[item.Key] = item.Value;
+        return JsonSerializer.Serialize(merged);
+    }
 
     private static string NormalizeContentType(string? value)
     {
