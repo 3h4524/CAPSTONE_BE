@@ -184,19 +184,12 @@ public sealed class AuthorizationMatrixTests
         _host.EnsureAvailable();
 
         _seeder = AuthTestSeeder.Create(_host.Factory.Services);
-
-        var sellerRoleId = await _seeder.SeedRoleAsync(SellerRole, SellerRole);
-        var adminRoleId = await _seeder.SeedRoleAsync(AdminRole, AdminRole);
-
-        _sellerUserId = await SeedIdentityAsync("authz-seller@apcs.test", sellerRoleId);
-        _adminUserId = await SeedIdentityAsync("authz-admin@apcs.test", sellerRoleId, adminRoleId);
-        _superAdminUserId = await SeedIdentityAsync("authz-super-admin@apcs.test", sellerRoleId, adminRoleId);
     }
 
     [ClassCleanup]
     public static async Task StopHostAsync()
     {
-        if (_seeder is not null)
+        if (_seeder is not null && _sellerUserId != Guid.Empty)
         {
             await _seeder.DeleteUsersAsync([_sellerUserId, _adminUserId, _superAdminUserId]);
             await _seeder.DeleteRolesAsync([SellerRole, AdminRole, SuperAdminRole]);
@@ -206,7 +199,17 @@ public sealed class AuthorizationMatrixTests
     }
 
     [TestInitialize]
-    public Task ResetDatabaseAsync() => _host.ResetDatabaseAsync();
+    public async Task ResetDataAndSeedAuthorizationsAsync()
+    {
+        await _host.ResetDatabaseAsync();
+
+        var sellerRoleId = await _seeder.SeedRoleAsync(SellerRole, SellerRole);
+        var adminRoleId = await _seeder.SeedRoleAsync(AdminRole, AdminRole);
+
+        _sellerUserId = await SeedIdentityAsync("authz-seller@apcs.test", sellerRoleId);
+        _adminUserId = await SeedIdentityAsync("authz-admin@apcs.test", sellerRoleId, adminRoleId);
+        _superAdminUserId = await SeedIdentityAsync("authz-super-admin@apcs.test", sellerRoleId, adminRoleId);
+    }
 
     [TestMethod]
     [DynamicData(nameof(AuthorizedEndpoints))]
