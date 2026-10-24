@@ -57,6 +57,7 @@ public sealed class TestReportService : ITestReportService
     private readonly ITestReportRunner _runner;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<TestReportService> _logger;
+    private readonly ITestReportRunBroadcaster? _runBroadcaster;
     private readonly TimeProvider _timeProvider;
     private readonly object _runLock = new();
     private string? _runningRunId;
@@ -68,12 +69,14 @@ public sealed class TestReportService : ITestReportService
         ITestReportRunner runner,
         IServiceScopeFactory scopeFactory,
         ILogger<TestReportService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ITestReportRunBroadcaster? runBroadcaster = null)
     {
         _runner = runner;
         _scopeFactory = scopeFactory;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _runBroadcaster = runBroadcaster;
     }
 
     /// <inheritdoc />
@@ -178,6 +181,7 @@ public sealed class TestReportService : ITestReportService
         }
 
         _ = RunInBackgroundAsync(run);
+        await PublishRunChangedAsync(run.RunId, run.Status, cancellationToken);
         return Result.Success(run);
     }
 
@@ -263,6 +267,25 @@ public sealed class TestReportService : ITestReportService
             {
                 _runningRunId = null;
             }
+
+            await PublishRunChangedAsync(finished.RunId, finished.Status, CancellationToken.None);
+        }
+    }
+
+    private async Task PublishRunChangedAsync(string runId, string status, CancellationToken cancellationToken)
+    {
+        if (_runBroadcaster is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _runBroadcaster.PublishRunChangedAsync(runId, status, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "The test run state could not be pushed for {RunId}.", runId);
         }
     }
 
