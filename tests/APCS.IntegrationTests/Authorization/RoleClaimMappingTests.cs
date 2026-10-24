@@ -95,50 +95,39 @@ public sealed class RoleClaimMappingTests
     }
 
     [TestMethod]
-    public async Task AdminUsersEndpoint_WhenTheRoleCodeMatchesTheGateClaim_ReachesTheController()
+    public async Task AdminUsersEndpoint_WhenTheRoleCodeIsTheRetiredSuperAdmin_ReturnsForbidden()
     {
-        await SeedUserAsync("claim-passes@apcs.test", _gateRoleId);
-        var accessToken = await SignInAsync("claim-passes@apcs.test");
-
-        using var client = _host.Factory.CreateAuthenticatedClient(accessToken);
-        using var response = await client.GetAsync("/api/admin/users");
-
-        response.StatusCode.Should().NotBe(
-            HttpStatusCode.Forbidden,
-            "the claim carries the code the gate lists, so only the framework gate could have refused it");
-    }
-
-    [TestMethod]
-    public async Task AdminUsersEndpoint_WhenTheTokenCarriesTheSuperAdminRole_ReachesTheController()
-    {
-        var accessToken = TestAuth.MintToken([TestAuth.SuperAdminRole], await SeedUserAsync("literal@apcs.test"));
-
-        using var client = _host.Factory.CreateAuthenticatedClient(accessToken);
-        using var response = await client.GetAsync("/api/admin/users");
-
-        response.StatusCode.Should().NotBe(
-            HttpStatusCode.Forbidden,
-            "AdminUsersController declares its gate as the literal \"Admin,Super Admin\", which splits into two accepted roles");
-    }
-
-    [TestMethod]
-    public async Task AdminUsersEndpoint_WhenTheSuperAdminRoleIsWrittenWithoutASpace_ReturnsForbidden()
-    {
-        var accessToken = TestAuth.MintToken(["SuperAdmin"], await SeedUserAsync("literal-gap@apcs.test"));
+        await SeedUserAsync("claim-refused@apcs.test", _gateRoleId);
+        var accessToken = await SignInAsync("claim-refused@apcs.test");
 
         using var client = _host.Factory.CreateAuthenticatedClient(accessToken);
         using var response = await client.GetAsync("/api/admin/users");
 
         response.StatusCode.Should().Be(
             HttpStatusCode.Forbidden,
-            "the gate matches its role list verbatim, so a role seeded as \"SuperAdmin\" would be refused while the code claims otherwise");
+            "AdminUsersController is gated on AuthConstants.AdminRole alone, so a Super Admin code claim no longer passes");
+    }
+
+    [TestMethod]
+    public async Task AdminUsersEndpoint_WhenTheTokenCarriesTheSuperAdminRole_ReturnsForbidden()
+    {
+        var accessToken = TestAuth.MintToken([TestAuth.SuperAdminRole], await SeedUserAsync("literal@apcs.test"));
+
+        using var client = _host.Factory.CreateAuthenticatedClient(accessToken);
+        using var response = await client.GetAsync("/api/admin/users");
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "AdminUsersController is gated on AuthConstants.AdminRole alone");
     }
 
     [TestMethod]
     public async Task AdminRoleGrant_WhenTheRoleNameIsAdminButTheCodeIsNot_IssuesACodeClaimTheGateRefuses()
     {
         var targetId = await SeedUserAsync("misnamed-admin@apcs.test");
-        var adminToken = TestAuth.MintToken([AuthConstants.AdminRole], Guid.NewGuid());
+        // The role change is audited against the acting admin, so the actor must exist in users.
+        var actorId = await SeedUserAsync("role-grant-actor@apcs.test");
+        var adminToken = TestAuth.MintToken([AuthConstants.AdminRole], actorId);
 
         using var adminClient = _host.Factory.CreateAuthenticatedClient(adminToken);
         using var grantResponse = await adminClient.PutAsJsonAsync(
