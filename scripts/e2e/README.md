@@ -3,97 +3,87 @@
 Mọi người chạy **cùng một lệnh**, không phân biệt Windows / macOS / Linux:
 
 ```bash
-./scripts/e2e/run-all.sh
+E2E_ORCHESTRATION_COMMAND=test dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj
 ```
+
+Nút **Run** trên trang admin dùng đúng lệnh này (xem `API/appsettings.json` → `TestReports:RunnerCommand`).
 
 ## Yêu cầu duy nhất
 
-**Docker** — không cần cài Postgres, Redis, .NET hay bất cứ gì khác.
-
-| Hệ điều hành | Cài gì |
-|---|---|
-| Windows | [Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) · [Git for Windows](https://git-scm.com/download/win) (để có `bash`) · Python 3 · .NET 8 SDK · Node 22 + pnpm |
-| macOS | [Docker Desktop](https://docs.docker.com/desktop/install/mac-install/) · `bash`, Python 3, .NET 8, Node 22 |
-| Linux | [Docker Engine](https://docs.docker.com/engine/install/) · `bash`, Python 3, .NET 8, Node 22 |
-
-Docker là khác biệt duy nhất giữa các OS. Script chạy trên **Git Bash** ở Windows nên không cần WSL và không cần PowerShell.
-
-Trên Windows hãy mở **Git Bash** rồi chạy script, đừng chạy trong PowerShell.
-
-## Lần đầu: cài dependency
+**Docker**, cộng với Python 3 (SMTP sink), .NET 8 SDK, và một lần `pnpm install` + Playwright browsers ở `CAPSTONE_FE`:
 
 ```bash
-cd ~/fpt/CAPSTONE_FE
+cd ../CAPSTONE_FE
 pnpm install
+pnpm exec playwright install chromium
 ```
 
-Backend không cần cài gì thêm — script tự `dotnet build`.
+## Các mode
 
-## Các lệnh
+Biến `E2E_ORCHESTRATION_COMMAND` điều khiển hành vi của test project:
 
-```bash
-./scripts/e2e/run-all.sh           # dựng hết rồi chạy unit + integration + e2e
-./scripts/e2e/run-all.sh unit      # chỉ unit test — không cần Docker
-./scripts/e2e/run-all.sh integ     # dựng rồi chạy integration
-./scripts/e2e/run-all.sh e2e       # dựng rồi chạy e2e
-./scripts/e2e/run-all.sh down      # dừng API, SMTP sink và xoá container
-```
+| Mode | Làm gì |
+|---|---|
+| `test` (mặc định) | Stack còn sống → **dùng lại**: truncate toàn bộ bảng ứng dụng (giữ `test_report_runs`), FLUSH Redis, reseed catalog + admin; sink/API còn sống thì tái sử dụng. Stack chưa sống → dựng mới (compose → role/db → schema EF model → SMTP sink → API) → seed seller (register → verify qua mail → login) → chạy Playwright suite → trả report. Chi tiết bên dưới |
+| `up` | Giống nhánh dựng lại của `test` nhưng bỏ qua Playwright, giữ stack chạy để debug tay |
+| `down` | Dừng API + SMTP sink (theo pid file), `docker compose down -v`, xoá pid file |
+| `clean` | Xoá database `apcs_e2e` và dựng lại từ EF model |
 
-Chạy lại nhiều lần vẫn cho cùng kết quả.
+### Nhánh reuse của `test`
 
-## Nếu chưa cài Docker
+Orchestrator health-check API trước khi dựng lại. API đang sống (kể cả API của một run qua nút **Run**) thì:
 
-Chạy `./scripts/e2e/run-all.sh unit` vẫn được — 1044 FE unit test không cần gì ngoài `pnpm install`.
+- `TRUNCATE` mọi bảng ứng dụng, **trừ `test_report_runs`** — vì bảng này nằm trong chính DB `apcs_e2e`, một drop/recreate database sẽ xoá luôn lịch sử run; row `running` của run hiện hành phải sống sót qua truncate để service tự cập nhật khi suite kết thúc.
+- `FLUSHALL` Redis, reseed roles + system presets + admin (admin id cố định `3f4e5d6c-…`).
+- SMTP sink bận thì dùng lại và xoá nội dung `mail.jsonl`; chỉ viết pid file cho process do run này tự start — API/sink của run khác không bị coi là của mình.
+- Con `dotnet test` của nút **Run** luôn chạy với `E2E_ORCHESTRATION_COMMAND=test`, không kế thừa `up` từ shell đã start API.
+
+API không trả `/health` → orchestrator kill pid file cũ, dựng lại stack toàn bộ như nhánh trên.
+
+Chạy lại nhiều lần vẫn cho cùng kết quả: schema dựng bằng `EnsureDeleted + EnsureCreated`, seller seed idempotent (đã tồn tại thì đăng nhập luôn).
+
+Integration test **không chạy qua** project này — `dotnet test Capstone.sln` như thường; fixture tự dựng Postgres/Redis + schema từ EF model qua Testcontainers.
 
 ## Trường hợp port bị chiếm
 
-Postgres và Redis publish ra `55432` và `56379` (không phải `5432`/`6379`) vì `5432` thường đã có PostgreSQL của bạn ở Windows, và Docker **không báo lỗi** khi không bind được — container vẫn healthy nhưng không ai kết nối được.
+| Dịch vụ | Port mặc định | Đổi bằng biến |
+|---|---|---|
+| Postgres + pgvector | `55432` | `E2E_TEST_PG_PORT` (`docker-compose.yml` dùng cùng biến) |
+| Redis | `56379` | `E2E_TEST_REDIS_PORT` |
+| API | tự chọn từ `5191..5195` | `E2E_API_PORT` |
+| SMTP sink | `2525` | `E2E_SMTP_PORT` |
 
-Đổi port nếu cần:
-
-```bash
-TEST_PG_PORT=55440 TEST_REDIS_PORT=56380 ./scripts/e2e/run-all.sh
-```
-
-Script sẽ báo rõ nếu port đã bị chiếm trước khi khởi động.
+Neon dev server đang chạy cục bộ không bị ảnh hưởng: orchestrator chỉ đụng port rảnh, không có lệnh `pkill`.
 
 ## Kiến trúc
 
 ```
-docker-compose.yml          postgres:18-alpine + redis:7-alpine, dữ liệu trong RAM
-  ↓
-bootstrap-postgres.sh       bật container, chờ healthy, xác nhận host kết nối được
-  ↓
-start-backend.sh            tạo DB, nạp schema, bật SMTP sink và API
-  ↓
-seed-seller.sh              register → verify (đọc token từ email) → login
+tests/APCS.E2E.Automation    MSTest SDK project (biến E2E_ORCHESTRATION_COMMAND)
+  ├── E2EOrchestrator        lock file → compose up → schema (EF model) → SMTP sink → API → seed seller → Playwright
+  ├── SellerSeeder           register → đọc token từ mail.jsonl → verify-email → login
+  └── E2EOptions             env-driven cấu hình (port, email seller, timeout)
+docker-compose.yml           pgvector/pgvector:pg18 + redis:7-alpine, dữ liệu trong RAM
+smtp-sink.py                 SMTP giả, ghi JSONL ra .run/mail.jsonl
 ```
 
 | Database | Dùng cho | Xoá khi nào |
 |---|---|---|
-| `apcs_e2e` | E2E chạy thật | `run-all.sh down` |
-| `apcs_test` | integration test | `docker compose down -v` |
-
-Hai database tách nhau có chủ đích: E2E ghi dữ liệu thật (profile, batch, ticket) và sẽ làm hỏng các integration test đếm hoặc sắp xếp.
+| `apcs_e2e` | E2E chạy thật | `clean` mode hoặc `down` |
+| `apcs_test` | integration test (Testcontainers) | container bị xoá ngay sau run |
 
 ## Không gọi được dịch vụ bên ngoài
 
-Các adapter Cloudinary, PayOS, Google Sign-In và SMTP thật đều bị thay bằng fake, và mọi HTTP outbound bị chặn. Ba bảo đảm độc lập:
-
-1. Biến môi trường rỗng chặn `.env` thật trước khi host khởi động.
-2. Ghi đè cấu hình ở tầng host.
-3. Thay adapter qua DI + handler chặn outbound.
-
-Có integration test assert cả ba. Ngoài ra `ALL_PROXY` trỏ về `127.0.0.1:1` làm mọi request ra ngoài chắc chắn thất bại.
+Các adapter Cloudinary, PayOS, Google Sign-In và SMTP thật đều bị thay bằng stub creds
+(`apcs-e2e-stub`), và `NO_PROXY` set rỗng cho localhost. E2E runner không chuyển khoá thật nào sang API.
 
 ## Log và artifact
 
 | | |
 |---|---|
-| Log | `scripts/e2e/.run/{api,smtp,seed,start,schema}.log` |
-| Seller credentials | `scripts/e2e/.run/seller.json` |
+| Log API / SMTP | `scripts/e2e/.run/{api,smtp}.log` |
+| PID files | `scripts/e2e/.run/{api,smtp}.pid` |
 | Email gửi đi | `scripts/e2e/.run/mail.jsonl` |
-| E2E report | `pnpm exec playwright show-report` ở `CAPSTONE_FE` |
-| E2E ảnh lúc fail | `CAPSTONE_FE/test-results/` |
+| E2E report | `CAPSTONE_FE/test-results/report/report.json` + `pnpm exec playwright show-report` |
+| Ảnh lúc fail | `CAPSTONE_FE/test-results/` |
 
-Cả `.run/` đã gitignore.
+Cả `.run/` đã gitignore; lock `orchestration.lock` chặn hai orchestrator chạy đồng thời.

@@ -19,6 +19,8 @@ public sealed class StyleArtPresetRepositoryTests
             return;
         }
 
+        await TestSchema.EnsureReadyAsync(connectionString);
+
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString, o => o.UseVector()).Options;
         await using var db = new AppDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync();
@@ -71,6 +73,8 @@ public sealed class StyleArtPresetRepositoryTests
             Assert.Inconclusive("Set APCS_TEST_CONNECTION_STRING to run the opt-in PostgreSQL test.");
             return;
         }
+
+        await TestSchema.EnsureReadyAsync(connectionString);
 
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString, o => o.UseVector()).Options;
         await using var db = new AppDbContext(options);
