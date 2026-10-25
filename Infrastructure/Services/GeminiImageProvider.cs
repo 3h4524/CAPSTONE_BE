@@ -21,12 +21,19 @@ namespace APCS.Infrastructure.Services;
 /// </remarks>
 public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<GeminiOptions> options) : IImageGenerationProvider
 {
+    public string Provider => ImageGenerationProviders.Gemini;
+
+    // Gemini always paints a backdrop; the caller asks for a plain one and cuts it out.
+    public bool SupportsTransparentBackground => false;
+
     public decimal EstimatedCostPerImageUsd => options.Value.EstimatedCostPerImageUsd;
 
     public Task<ImageGenerationResult> GenerateAsync(
         string apiKey,
         string prompt,
         string aspectRatio,
+        bool transparentBackground = false,
+        bool enrichPrompt = false,
         CancellationToken cancellationToken = default)
     {
         // Aspect ratio is folded into the prompt text rather than a structured field: Gemini's
@@ -81,9 +88,11 @@ public sealed class GeminiImageProvider(IHttpClientFactory clients, IOptions<Gem
                 return ImageGenerationResult.Failed("Gemini did not respond in time (request timed out).", model);
             }
 
-            // Busy: the key's rate limit was reached (several images are requested at once) or the model is
-            // overloaded. The same call usually goes through a few seconds later.
-            if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable)
+            // Busy: the key's rate limit was reached (several images are requested at once), the model is
+            // overloaded, or Google hit a passing internal error (500 INTERNAL, which Google says to retry).
+            // The same call usually goes through a few seconds later.
+            if (response.StatusCode is not (HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable
+                    or HttpStatusCode.InternalServerError)
                 || attempt >= options.Value.MaxRetries)
                 break;
 

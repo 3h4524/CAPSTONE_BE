@@ -10,6 +10,8 @@ public sealed record GeneratedImageDto(
     string ApprovalStatus);
 
 /// <summary>Per-product state and result inside a batch job (SRS 3.4.10 table, 3.5.12 grid).</summary>
+/// <param name="DesignText">The words the product's designs print, as the product has them now.</param>
+/// <param name="CustomPrompt">The product's own image prompt, as it has it now; null when its designs come from the template.</param>
 public sealed record BatchJobProductResultDto(
     Guid Id,
     Guid? ProductId,
@@ -18,7 +20,9 @@ public sealed record BatchJobProductResultDto(
     int Sequence,
     string Status,
     string? ErrorMessage,
-    IReadOnlyList<GeneratedImageDto> Images);
+    IReadOnlyList<GeneratedImageDto> Images,
+    string? DesignText = null,
+    string? CustomPrompt = null);
 
 /// <summary>SRS BR45 counters: Pending, Processing, Completed, Failed.</summary>
 public sealed record BatchJobCountersDto(int Pending, int Processing, int Completed, int Failed);

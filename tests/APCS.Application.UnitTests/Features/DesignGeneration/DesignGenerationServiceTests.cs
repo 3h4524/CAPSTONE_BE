@@ -3,11 +3,13 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchProductPrompts.Common;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Validators;
 using APCS.Common.Constants;
+using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Time.Testing;
@@ -39,11 +41,14 @@ public sealed class DesignGenerationServiceTests
         string jobStatus = BatchJobStatuses.Draft,
         string rowStatus = BatchJobProductStatuses.Pending,
         bool hasGeminiKey = true,
+        string keyProvider = "gemini",
         bool hasOtherActiveJob = false,
         int imageGenerationQuota = 100,
         int alreadyUsedImages = 0,
         bool withImage = false,
-        int[]? existingPromptVersions = null)
+        int[]? existingPromptVersions = null,
+        DesignTemplate? template = null,
+        Action<Product>? editProduct = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -55,8 +60,10 @@ public sealed class DesignGenerationServiceTests
         var product = new Product
         {
             Id = Guid.NewGuid(), UserId = UserId, BatchId = batchId, Name = "Grumpy Cat",
-            ProductType = "t-shirt", NicheCategory = "cats", ProcessingStatus = "pending", CreatedAt = UtcNow.UtcDateTime
+            ProductType = "t-shirt", NicheCategory = "cats", ProcessingStatus = "pending", CreatedAt = UtcNow.UtcDateTime,
+            DesignTemplateId = template?.Id
         };
+        editProduct?.Invoke(product);
         var row = new BatchJobProduct
         {
             Id = Guid.NewGuid(), BatchJobId = job.Id, BatchId = batchId, ProductId = product.Id,
@@ -89,7 +96,7 @@ public sealed class DesignGenerationServiceTests
             }
             : Array.Empty<DesignImage>();
         var imageRepo = MockRepo(images);
-        var templateRepo = MockRepo(Array.Empty<DesignTemplate>());
+        var templateRepo = MockRepo(template is null ? Array.Empty<DesignTemplate>() : new[] { template });
         var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
 
         var addedPrompts = new List<AiPrompt>();
@@ -114,7 +121,7 @@ public sealed class DesignGenerationServiceTests
             {
                 new ApiKey
                 {
-                    Id = Guid.NewGuid(), UserId = UserId, ServiceProvider = "gemini", KeyIdentifier = "Default",
+                    Id = Guid.NewGuid(), UserId = UserId, ServiceProvider = keyProvider, KeyIdentifier = "Default",
                     KeyValueEncrypted = "encrypted", AuthType = "api_key", IsActive = true, LastCheckSucceeded = true,
                     CreatedAt = UtcNow.UtcDateTime
                 }
@@ -162,7 +169,7 @@ public sealed class DesignGenerationServiceTests
             promptRepo.Object, imageRepo.Object, new Mock<IRepository<ApiUsageRecord>>().Object,
             new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
-            Mock.Of<IImageGenerationProvider>(), Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
+            [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)));
 
@@ -208,6 +215,51 @@ public sealed class DesignGenerationServiceTests
         var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
         result.IsFailure.Should().BeTrue();
         result.Error.Code.Should().Be("MSG35");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_IdeogramChosenWithOnlyAGeminiKey_ReturnsMsg35NamingIdeogram()
+    {
+        var fixture = CreateFixture();
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG35");
+        result.Error.Message.Should().Contain("Ideogram");
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_IdeogramChosenWithAnIdeogramKey_RecordsTheProviderOnTheJob()
+    {
+        var fixture = CreateFixture(keyProvider: ImageGenerationProviders.Ideogram);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain("\"imageProvider\":\"ideogram\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NoProviderChosen_UsesGemini()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain("\"imageProvider\":\"gemini\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_UnknownImageProvider_IsRejected()
+    {
+        var fixture = CreateFixture();
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: "midjourney"));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(ErrorType.Validation);
     }
 
     [TestMethod]
@@ -278,6 +330,57 @@ public sealed class DesignGenerationServiceTests
         result.IsSuccess.Should().BeTrue();
         fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().Contain("Use a vintage poster look");
         fixture.Job.Config.Should().Contain("\"instructions\":\"Use a vintage poster look\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PhraseTemplate_KeepsThePhraseOutOfTheMotifsAndDescription_AndMovesTheFeelToTheMood()
+    {
+        var template = new DesignTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Bold Rally", Type = "system", ArtStyle = "bold_typography", ExamplePrompts = "[]",
+            BasePrompt = "Create a {style} composition using the exact phrase \"{subject}\", use {keywords} as small supporting motifs."
+        };
+        var fixture = CreateFixture(template: template, editProduct: product =>
+        {
+            product.DesiredDesignText = "Coffee Then Code";
+            product.MainKeywords = "coffee, coding, funny";
+            product.InputDescription = "A steaming mug and the text Coffee Then Code.";
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        var prompt = fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt;
+        prompt.Should().Contain("use coding as small supporting motifs")
+            .And.Contain("playful feel")
+            .And.Contain("Additional guidance: A steaming mug.")
+            .And.NotContain("the text Coffee Then Code");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ProductWithItsOwnPrompt_UsesItInsteadOfTheTemplate()
+    {
+        var template = new DesignTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Bold Rally", Type = "system", ArtStyle = "bold_typography", ExamplePrompts = "[]",
+            BasePrompt = "Create a {style} composition using the exact phrase \"{subject}\", use {keywords} as small supporting motifs."
+        };
+        var fixture = CreateFixture(template: template, editProduct: product =>
+        {
+            product.CustomPrompt = "A grumpy cat lounging on a stack of books, retro sticker art.";
+            product.DesiredDesignText = "Not Today";
+            product.MainKeywords = "cat, books, funny";
+            product.InputDescription = "A sleepy cat.";
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        var prompt = fixture.AddedPrompts.Should().ContainSingle().Which;
+        prompt.GeneratedPrompt.Should().Be(
+            "A grumpy cat lounging on a stack of books, retro sticker art. The design prints the exact phrase \"Not Today\".");
+        prompt.SystemPrompt.Should().Be(
+            "A grumpy cat lounging on a stack of books, retro sticker art. " + PromptDefaultsResolver.CustomPhraseSentence);
     }
 
     [TestMethod]

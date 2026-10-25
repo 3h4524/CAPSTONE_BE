@@ -26,6 +26,14 @@ public sealed class PromptComposerTests
     }
 
     [TestMethod]
+    public void Compose_EmptyStyle_LeavesNoDoubleSpace()
+    {
+        var prompt = PromptComposer.Compose("Create a print-ready {style} composition of {subject}.", "Cat", "", "", "", "", "pets", "");
+
+        prompt.Should().Be("Create a print-ready composition of Cat.");
+    }
+
+    [TestMethod]
     public void Compose_AcceptsDoubleBracePlaceholders()
     {
         var prompt = Compose("A {{style}} picture of {{subject}} for {{niche}}");

@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.BatchProductPrompts.Common;
+using APCS.Application.Features.Batches.Validators;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Dtos.Response;
@@ -34,7 +35,7 @@ public sealed class DesignGenerationService(
     IApiKeyCredentials apiKeyCredentials,
     ISubscriptionRepository subscriptions,
     IUsageStatisticRepository usageStatistics,
-    IImageGenerationProvider imageProvider,
+    IEnumerable<IImageGenerationProvider> imageProviders,
     IPublicImageService publicImages,
     IDesignBackgroundRemover backgroundRemover,
     IDesignGenerationQueue queue,
@@ -44,8 +45,6 @@ public sealed class DesignGenerationService(
     IValidator<StartGenerationRequestDto> validator,
     IOptions<DesignGenerationSettings> settings) : IDesignGenerationService
 {
-    private const string GeminiProvider = "gemini";
-
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
 
@@ -53,7 +52,10 @@ public sealed class DesignGenerationService(
     private const string GraphicPrintInstruction =
         "Output only the print-ready artwork, centered, on a plain solid white background. "
         + "No t-shirt, mockup, fabric, paper or photo backdrop, and no drop shadow around the artwork.";
-    private static readonly TimeSpan StepTimeout = TimeSpan.FromMinutes(3);
+
+    // The same, for a provider that leaves the background transparent itself: no backdrop is asked for.
+    private const string TransparentGraphicPrintInstruction =
+        "Output only the print-ready artwork, centered. No t-shirt, mockup, fabric, paper or photo backdrop.";
 
     private const string CancelRequestedEvent = "cancel_requested";
     private const string CancelHonoredEvent = "cancel_honored";
@@ -91,13 +93,11 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected Gemini key must exist before the job can start.
+        // BR51: a valid, connected key for the chosen image provider must exist before the job can start.
+        var imageProvider = request.ImageProvider ?? ImageGenerationProviders.Default;
         var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        var geminiKey = ownedKeys.FirstOrDefault(key =>
-            string.Equals(key.ServiceProvider, GeminiProvider, StringComparison.OrdinalIgnoreCase)
-            && key.IsActive == true && key.LastCheckSucceeded == true
-            && (!key.ExpiresAt.HasValue || key.ExpiresAt > now));
-        if (geminiKey is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey());
+        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
 
         // BR50: enough image-generation quota left this billing period.
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
@@ -148,37 +148,10 @@ public sealed class DesignGenerationService(
         foreach (var row in rows)
         {
             var product = row.ProductId.HasValue && productById.TryGetValue(row.ProductId.Value, out var owned) ? owned : null;
-            var defaults = await PromptDefaultsResolver.ResolveAsync(product, designTemplates, styleArtPresets, cancellationToken);
-            var effective = defaults with
-            {
-                Subject = row.CustomSubject ?? defaults.Subject,
-                ArtStyle = row.CustomArtStyle ?? defaults.ArtStyle,
-                MoodTone = row.CustomMoodTone ?? defaults.MoodTone,
-                NegativeTerms = row.CustomNegativeTerms ?? string.Empty,
-                // The job-level wording applies to products that have no instructions of their own.
-                Instructions = row.CustomInstructions ?? request.Instructions?.Trim() ?? string.Empty
-            };
-            var generatedPrompt = PromptComposer.Compose(
-                defaults.BasePrompt, effective.Subject, effective.ArtStyle, effective.MoodTone,
-                effective.NegativeTerms, effective.Instructions, defaults.Niche, defaults.StyleModifiers,
-                defaults.Keywords, defaults.Description);
-
             var promptProductId = row.ProductId!.Value;
             var promptVersion = latestVersionByProduct.GetValueOrDefault(promptProductId) + 1;
             latestVersionByProduct[promptProductId] = promptVersion;
-
-            await aiPrompts.AddAsync(new AiPrompt
-            {
-                Id = Guid.NewGuid(),
-                ProductId = promptProductId,
-                DesignTemplateId = product?.DesignTemplateId,
-                OriginalDescription = product?.InputDescription ?? string.Empty,
-                SystemPrompt = defaults.BasePrompt,
-                GeneratedPrompt = generatedPrompt,
-                VersionNumber = promptVersion,
-                BatchJobProductId = row.Id,
-                CreatedAt = now
-            }, cancellationToken: cancellationToken);
+            await AddPromptAsync(row, product, request.Instructions, promptVersion, now, cancellationToken);
 
             row.Status = BatchJobProductStatuses.GeneratingImage;
             row.StartedAt = now;
@@ -187,7 +160,8 @@ public sealed class DesignGenerationService(
         }
 
         job.Status = BatchJobStatuses.Queued;
-        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio, request.Instructions, request.RequireApproval, request.WorkflowId);
+        job.Config = WriteConfig(job.Config, request.VariationCount, request.AspectRatio, request.Instructions, request.RequireApproval,
+            request.WorkflowId, imageProvider);
         job.StartedAt = now;
         job.UpdatedAt = now;
         await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
@@ -248,13 +222,11 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected Gemini key must still exist.
+        // BR51: a valid, connected key for the job's image provider must still exist.
+        var imageProvider = ReadImageProvider(job.Config);
         var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        var hasKey = ownedKeys.Any(key =>
-            string.Equals(key.ServiceProvider, GeminiProvider, StringComparison.OrdinalIgnoreCase)
-            && key.IsActive == true && key.LastCheckSucceeded == true
-            && (!key.ExpiresAt.HasValue || key.ExpiresAt > now));
-        if (!hasKey) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey());
+        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
 
         // BR50: a retry consumes quota again.
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
@@ -312,22 +284,140 @@ public sealed class DesignGenerationService(
         return Result.Success(new StartGenerationResponseDto(job.Id, failedRows.Count, job.Status));
     }
 
+    public async Task<Result<StartGenerationResponseDto>> RegenerateProductAsync(
+        Guid batchJobId,
+        Guid batchJobProductId,
+        RegenerateProductRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.Unauthenticated("regenerate"));
+        if (request.CustomPrompt?.Trim().Length > ProductRules.MaximumCustomPromptLength)
+            return Result.Failure<StartGenerationResponseDto>(Error.Validation(
+                $"Keep the image prompt under {ProductRules.MaximumCustomPromptLength} characters."));
+        if (request.DesignText?.Trim().Length > ProductRules.MaximumDesignTextLength)
+            return Result.Failure<StartGenerationResponseDto>(Error.Validation(
+                $"Keep the design text under {ProductRules.MaximumDesignTextLength} characters."));
+
+        var job = await batchJobs.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
+        if (job is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.JobNotFound());
+        if (job.Status is not (BatchJobStatuses.Failed or BatchJobStatuses.PartiallyCompleted or BatchJobStatuses.Completed))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NotRegeneratable());
+
+        // BR52: no other active job for the same batch.
+        var hasActiveJob = await batchJobs.Query().AnyAsync(x => x.BatchId == job.BatchId && x.Id != job.Id
+            && x.DeletedAt == null && BatchJobStatuses.Active.Contains(x.Status.ToLower()), cancellationToken);
+        if (hasActiveJob) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.ActiveJobExists());
+
+        var row = await batchJobProducts.Query()
+            .SingleOrDefaultAsync(x => x.Id == batchJobProductId && x.BatchJobId == job.Id, cancellationToken);
+        if (row is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.RowNotFound());
+        if (row.Status is not (BatchJobProductStatuses.ImageReviewRequired or BatchJobProductStatuses.Approved or BatchJobProductStatuses.Failed))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NotRegeneratable());
+        var product = row.ProductId is Guid productId
+            ? await products.Query().SingleOrDefaultAsync(p => p.Id == productId && p.DeletedAt == null, cancellationToken)
+            : null;
+        if (product is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.ProductNotFound());
+
+        // A product that was set back to pending, or already put into a later job, is generated there instead.
+        var takenOver = await batchJobProducts.Query().AnyAsync(other => other.BatchJobId != job.Id && other.ProductId == product.Id
+            && other.CreatedAt > job.CreatedAt, cancellationToken);
+        if (takenOver || product.ProcessingStatus == BatchJobProductStatuses.Pending)
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.ProductMovedOn());
+
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+
+        // BR51: a valid, connected key for the job's image provider must still exist.
+        var imageProvider = ReadImageProvider(job.Config);
+        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
+        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+
+        // BR50: generating again consumes quota again.
+        var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+        if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
+        var (variationCount, _) = ReadConfig(job.Config);
+        var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
+        if (variationCount > subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0))
+            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
+
+        // The Seller's changes are the product's, so a later job makes its designs from them too.
+        if (request.CustomPrompt is not null) product.CustomPrompt = PromptComposer.NullIfEmpty(request.CustomPrompt);
+        if (request.DesignText is not null)
+        {
+            product.DesiredDesignText = PromptComposer.NullIfEmpty(request.DesignText);
+            // A subject changed in the prompt editor would print the old words instead of the new design text.
+            row.CustomSubject = null;
+        }
+        product.ProcessingStatus = BatchJobProductStatuses.Queued;
+        product.UpdatedAt = now;
+        await products.UpdateAsync(product, cancellationToken: cancellationToken);
+
+        // A new prompt version, made from the product as it is now; the earlier designs keep the prompt they came from.
+        var latestVersion = await aiPrompts.Query()
+            .Where(p => p.ProductId == product.Id)
+            .Select(p => (int?)p.VersionNumber)
+            .MaxAsync(cancellationToken) ?? 0;
+        await AddPromptAsync(row, product, ReadInstructions(job.Config), latestVersion + 1, now, cancellationToken);
+
+        var wasFailed = row.Status == BatchJobProductStatuses.Failed;
+        row.Status = BatchJobProductStatuses.GeneratingImage;
+        row.ErrorMessage = null;
+        row.StartedAt = now;
+        row.CompletedAt = null;
+        row.UpdatedAt = now;
+        await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+
+        var total = job.TotalProducts ?? 1;
+        job.ProcessedProducts = Math.Max(0, (job.ProcessedProducts ?? 0) - 1);
+        if (wasFailed) job.FailedProducts = Math.Max(0, (job.FailedProducts ?? 0) - 1);
+        job.ProgressPercentage = total > 0 ? Math.Round(100m * job.ProcessedProducts.Value / total, 0) : 0;
+        job.Status = BatchJobStatuses.Queued;
+        job.CompletedAt = null;
+        job.UpdatedAt = now;
+        await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
+
+        var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
+        if (batch is not null)
+        {
+            batch.Status = BatchStatuses.Processing;
+            batch.UpdatedAt = now;
+            await batches.UpdateAsync(batch, cancellationToken: cancellationToken);
+        }
+
+        await LogAsync(job.Id, row.Id, "info", "regenerate_requested", $"Generating \"{product.Name}\" again.", cancellationToken);
+
+        // Commit before enqueueing so the worker, which uses its own DbContext, sees the new prompt and the reset row.
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        queue.Enqueue(job.Id);
+
+        return Result.Success(new StartGenerationResponseDto(job.Id, 1, job.Status));
+    }
+
     public async Task ProcessBatchJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
     {
         var job = await batchJobs.Query().SingleOrDefaultAsync(x => x.Id == batchJobId, cancellationToken);
         if (job is null) return;
 
+        var providerName = ReadImageProvider(job.Config);
+        var imageProvider = imageProviders.FirstOrDefault(provider => provider.Provider == providerName);
+        if (imageProvider is null)
+        {
+            await FailJobAsync(job.Id, $"Image generation with {ImageGenerationProviders.Label(providerName)} is not available.", cancellationToken);
+            return;
+        }
         var ownedKeys = await apiKeys.ListOwnedAsync(job.UserId, cancellationToken);
-        var geminiKey = ownedKeys.FirstOrDefault(key =>
-            string.Equals(key.ServiceProvider, GeminiProvider, StringComparison.OrdinalIgnoreCase) && key.IsActive == true);
-        if (geminiKey is null)
+        var providerKey = ownedKeys.FirstOrDefault(key =>
+            string.Equals(key.ServiceProvider, providerName, StringComparison.OrdinalIgnoreCase) && key.IsActive == true);
+        if (providerKey is null)
         {
             // Defensive only: StartAsync already required a valid key moments earlier. The job is failed rather
             // than left queued, where nothing would ever finish it.
-            await FailJobAsync(job.Id, "The Gemini API key is no longer available.", cancellationToken);
+            await FailJobAsync(job.Id, $"The {ImageGenerationProviders.Label(providerName)} API key is no longer available.", cancellationToken);
             return;
         }
-        var apiKeyPlain = apiKeyCredentials.Unprotect(geminiKey.KeyValueEncrypted);
+        var apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
         var requireApproval = ReadRequireApproval(job.Config);
         // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
         var reviewedStatus = requireApproval == false ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
@@ -356,10 +446,26 @@ public sealed class DesignGenerationService(
         var productById = await products.Query()
             .Where(p => rowProductIds.Contains(p.Id))
             .ToDictionaryAsync(p => p.Id, cancellationToken);
+        var templateIds = promptByRow.Values.Where(p => p.DesignTemplateId.HasValue).Select(p => p.DesignTemplateId!.Value).Distinct().ToList();
+        var templateById = await designTemplates.Query()
+            .Where(t => templateIds.Contains(t.Id))
+            .ToDictionaryAsync(t => t.Id, cancellationToken);
+        var historyByRow = (await designImages.Query()
+                .Where(image => image.BatchJobProductId != null && rowIds.Contains(image.BatchJobProductId!.Value) && image.DeletedAt == null)
+                .Select(image => new { RowId = image.BatchJobProductId!.Value, image.VariationIndex, image.ApprovalStatus })
+                .ToListAsync(cancellationToken))
+            .GroupBy(image => image.RowId)
+            .ToDictionary(group => group.Key, group => new RowHistory(
+                group.Max(image => image.VariationIndex),
+                group.Any(image => image.ApprovalStatus == ApprovalStatuses.Approved)));
+        // Ideogram fills out itself the prompt of a product the Seller gave next to nothing for.
+        var thinRows = imageProvider.Provider == ImageGenerationProviders.Ideogram
+            ? await ThinRowsAsync(job, rows, productById, cancellationToken)
+            : [];
 
         // Images are mostly waiting on the provider, so several are requested at once, up to what the Seller's key allows.
-        var run = new JobRun(job, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus);
-        var maxImages = Math.Max(1, settings.Value.MaxConcurrentImages);
+        var run = new JobRun(job, imageProvider, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus, new JobStop());
+        var maxImages = settings.Value.MaxConcurrentImagesFor(imageProvider.Provider);
         using var imageSlots = new SemaphoreSlim(maxImages);
         // Just enough products at once to keep every slot busy, so the products shown as being generated are the
         // ones whose images are being made, still taken in their order.
@@ -380,7 +486,10 @@ public sealed class DesignGenerationService(
                 if (skip) return;
 
                 var product = row.ProductId is Guid productId ? productById.GetValueOrDefault(productId) : null;
-                await ProcessRowAsync(run, row, promptByRow.GetValueOrDefault(row.Id), product, imageSlots, token);
+                var prompt = promptByRow.GetValueOrDefault(row.Id);
+                var template = prompt?.DesignTemplateId is Guid templateId ? templateById.GetValueOrDefault(templateId) : null;
+                await ProcessRowAsync(run, row, prompt, product, template, thinRows.Contains(row.Id), historyByRow.GetValueOrDefault(row.Id),
+                    imageSlots, token);
             });
 
         // A cancel that arrived during the last product is consumed too, so a later retry is not stopped by it.
@@ -406,8 +515,95 @@ public sealed class DesignGenerationService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    // Synthesizes the effective prompt of one product from its template or own prompt and the Seller's changes
+    // (SRS 3.5.10), and stores it for the row as the product's next prompt version.
+    private async Task AddPromptAsync(BatchJobProduct row, Product? product, string? jobInstructions, int version, DateTime now,
+        CancellationToken cancellationToken)
+    {
+        var defaults = await PromptDefaultsResolver.ResolveAsync(product, designTemplates, styleArtPresets, cancellationToken);
+        var effective = EffectiveComponents(defaults, row, jobInstructions);
+        var generatedPrompt = PromptComposer.Compose(
+            defaults.BasePrompt, effective.Subject, effective.ArtStyle, effective.MoodTone,
+            effective.NegativeTerms, effective.Instructions, defaults.Niche, defaults.StyleModifiers,
+            effective.Keywords, effective.Description);
+
+        await aiPrompts.AddAsync(new AiPrompt
+        {
+            Id = Guid.NewGuid(),
+            ProductId = row.ProductId!.Value,
+            DesignTemplateId = product?.DesignTemplateId,
+            OriginalDescription = product?.InputDescription ?? string.Empty,
+            SystemPrompt = defaults.BasePrompt,
+            GeneratedPrompt = generatedPrompt,
+            VersionNumber = version,
+            BatchJobProductId = row.Id,
+            CreatedAt = now
+        }, cancellationToken: cancellationToken);
+    }
+
+    // The template's defaults with the Seller's own changes to this product, fitted to the phrase it prints: which motifs
+    // and description words repeat the phrase depends on the phrase.
+    private static PromptComponents EffectiveComponents(PromptComponents defaults, BatchJobProduct row, string? jobInstructions) =>
+        ArtworkPromptRules.Fit(WithSellerChanges(defaults, row, jobInstructions));
+
+    // The product carries the Seller's own image prompt, which replaces the design template.
+    private static bool HasCustomPrompt(Product? product) => !string.IsNullOrWhiteSpace(product?.CustomPrompt);
+
+    private static PromptComponents WithSellerChanges(PromptComponents defaults, BatchJobProduct row, string? jobInstructions) =>
+        defaults with
+        {
+            Subject = row.CustomSubject ?? defaults.Subject,
+            // The product's own image prompt sets the look, so no art style is added to it.
+            ArtStyle = defaults.OwnPrompt ? string.Empty : row.CustomArtStyle ?? defaults.ArtStyle,
+            MoodTone = row.CustomMoodTone ?? defaults.MoodTone,
+            NegativeTerms = row.CustomNegativeTerms ?? string.Empty,
+            // The job-level wording applies to products that have no instructions of their own.
+            Instructions = row.CustomInstructions ?? jobInstructions?.Trim() ?? string.Empty
+        };
+
+    /// <summary>
+    /// The rows whose product the Seller gave next to nothing to design from (<see cref="ArtworkPromptRules.IsThin"/>),
+    /// worked out from the same pieces the stored prompt was made of, read again now (the template, the product and the
+    /// Seller's changes).
+    /// </summary>
+    private async Task<HashSet<Guid>> ThinRowsAsync(BatchJob job, IEnumerable<BatchJobProduct> rows,
+        IReadOnlyDictionary<Guid, Product> productById, CancellationToken cancellationToken)
+    {
+        var thin = new HashSet<Guid>();
+        var jobInstructions = ReadInstructions(job.Config);
+        foreach (var row in rows)
+        {
+            if (row.ProductId is not Guid productId || !productById.TryGetValue(productId, out var product)) continue;
+            // The Seller's own prompt is all there is to design from: it is thin when it is only a few words.
+            if (HasCustomPrompt(product))
+            {
+                if (ArtworkPromptRules.IsThinCustomPrompt(product.CustomPrompt)) thin.Add(row.Id);
+                continue;
+            }
+            var defaults = await PromptDefaultsResolver.ResolveAsync(product, designTemplates, styleArtPresets, cancellationToken);
+            if (ArtworkPromptRules.IsThin(WithSellerChanges(defaults, row, jobInstructions))) thin.Add(row.Id);
+        }
+        return thin;
+    }
+
     // What every product of a job being processed shares.
-    private sealed record JobRun(BatchJob Job, string ApiKey, string AspectRatio, int VariationCount, bool? RequireApproval, string ReviewedStatus);
+    private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string ApiKey, string AspectRatio, int VariationCount,
+        bool? RequireApproval, string ReviewedStatus, JobStop Stop);
+
+    // The designs a product already has in the job when it is generated again: the new ones are numbered after them,
+    // and the product keeps them, so it does not fail when none of the new ones can be made.
+    private sealed record RowHistory(int LastVariation, bool HasApproved);
+
+    // Set once the provider turns the account away (no credits, a refused key): the job asks for no further image.
+    private sealed class JobStop
+    {
+        private string? reason;
+
+        public string? Reason => Volatile.Read(ref reason);
+
+        // True for the image that stopped the job; the ones that meet the same refusal later change nothing.
+        public bool TrySet(string reason) => Interlocked.CompareExchange(ref this.reason, reason, null) is null;
+    }
 
     // Every repository here shares one DbContext, which two images must never use at the same moment: while a
     // job's images are made side by side, each read or write of it waits its turn here.
@@ -434,8 +630,8 @@ public sealed class DesignGenerationService(
         }, cancellationToken);
 
     // Makes every variation of one product, side by side, then records how the product came out.
-    private async Task ProcessRowAsync(JobRun run, BatchJobProduct row, AiPrompt? prompt, Product? product,
-        SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+    private async Task ProcessRowAsync(JobRun run, BatchJobProduct row, AiPrompt? prompt, Product? product, DesignTemplate? template,
+        bool enrich, RowHistory? history, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
     {
         var job = run.Job;
         if (prompt is null)
@@ -456,8 +652,31 @@ public sealed class DesignGenerationService(
             return;
         }
 
+        // A graphic printed on its own needs no backdrop: a provider that can leave it transparent is asked to, any
+        // other is asked for a plain white one that is cut out afterwards.
         var graphicPrint = product is not null && GraphicPrintTypes.Contains(product.ProductType);
-        var requestPrompt = graphicPrint ? $"{prompt.GeneratedPrompt}\n{GraphicPrintInstruction}" : prompt.GeneratedPrompt;
+        var transparent = graphicPrint && run.ImageProvider.SupportsTransparentBackground;
+        var cutOut = graphicPrint && !transparent;
+        if (enrich)
+            await WithDbAsync(() => LogAsync(run.Job.Id, row.Id, "info", "prompt_enriched",
+                "The product has little detail, so the provider fills out the prompt itself.", cancellationToken), cancellationToken);
+        // Which lettering belongs in the artwork is decided by the template the prompt was made from, so prompts
+        // stored before this rule existed get it too when they are retried.
+        var instructions = new List<string>
+        {
+            prompt.GeneratedPrompt,
+            ArtworkPromptRules.LetteringInstruction(prompt.SystemPrompt, graphicPrint, ownPrompt: HasCustomPrompt(product)),
+            ArtworkPromptRules.UnbrandedInstruction
+        };
+        // The template's negative terms, unless the Seller wrote their own: those are already in the stored prompt. A
+        // design made from the Seller's own prompt has no template to take them from, so it avoids the usual faults.
+        var avoid = HasCustomPrompt(product)
+            ? ArtworkPromptRules.CustomAvoidInstruction(prompt.SystemPrompt)
+            : ArtworkPromptRules.AvoidInstruction(template?.NegativePrompt);
+        if (row.CustomNegativeTerms is null && avoid.Length > 0)
+            instructions.Add(avoid);
+        if (graphicPrint) instructions.Add(transparent ? TransparentGraphicPrintInstruction : GraphicPrintInstruction);
+        var requestPrompt = string.Join("\n", instructions);
 
         // Until now the product was only waiting its turn. Saved with the log entry of its first image.
         if (product is not null)
@@ -471,17 +690,19 @@ public sealed class DesignGenerationService(
         }
 
         var saved = await Task.WhenAll(Enumerable.Range(0, run.VariationCount).Select(variation =>
-            GenerateVariationAsync(run, row, prompt, requestPrompt, graphicPrint, variation, imageSlots, cancellationToken)));
+            GenerateVariationAsync(run, row, prompt, requestPrompt, enrich, transparent, cutOut, variation, history?.LastVariation ?? 0,
+                imageSlots, cancellationToken)));
 
-        await WithDbAsync(() => CompleteRowAsync(run, row, product, saved.Count(ok => ok), cancellationToken), cancellationToken);
+        await WithDbAsync(() => CompleteRowAsync(run, row, product, saved.Count(ok => ok), history, cancellationToken), cancellationToken);
     }
 
     /// <summary>
     /// Makes one image once a slot is free and saves it: true when it was saved. Only the provider call, the
     /// cut-out and the upload run alongside other images; everything written goes through WithDbAsync.
     /// </summary>
+    /// <param name="lastVariation">The highest variation number the product already has in the job; the new one follows it.</param>
     private async Task<bool> GenerateVariationAsync(JobRun run, BatchJobProduct row, AiPrompt prompt, string requestPrompt,
-        bool graphicPrint, int variation, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+        bool enrich, bool transparent, bool cutOut, int variation, int lastVariation, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
     {
         var job = run.Job;
         var variationCount = run.VariationCount;
@@ -489,6 +710,9 @@ public sealed class DesignGenerationService(
         await imageSlots.WaitAsync(cancellationToken);
         try
         {
+            // The provider already turned the account away: asking again would only be refused again.
+            if (run.Stop.Reason is not null) return false;
+
             // Saved with the log entry: the job's update time tells other workers it is still being worked on.
             await WithDbAsync(async () =>
             {
@@ -501,15 +725,15 @@ public sealed class DesignGenerationService(
 
             var started = timeProvider.GetUtcNow();
 
-            // Hard cap for one image (provider call + upload) so nothing can hang the job forever. Started only
-            // now: the time spent waiting for a slot does not count.
-            using var stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            stepTimeout.CancelAfter(StepTimeout);
+            // Hard cap for the provider's part of one image (the request, any waiting for it and its download), so
+            // nothing can hang the job forever. Started only now: the time spent waiting for a slot does not count.
+            using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            providerTimeout.CancelAfter(settings.Value.ProviderTimeout);
 
             ImageGenerationResult result;
             try
             {
-                result = await imageProvider.GenerateAsync(run.ApiKey, requestPrompt, run.AspectRatio, stepTimeout.Token);
+                result = await run.ImageProvider.GenerateAsync(run.ApiKey, requestPrompt, run.AspectRatio, transparent, enrich, providerTimeout.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -522,14 +746,22 @@ public sealed class DesignGenerationService(
 
             if (!result.IsSuccess)
             {
-                await WithDbAsync(() => LogAsync(job.Id, row.Id, "warning",
-                    result.IsBlocked ? "generation_blocked" : "generation_failed",
-                    result.ErrorMessage ?? "Unknown error", cancellationToken), cancellationToken);
+                var stopsJob = result.StopsJob && run.Stop.TrySet(result.ErrorMessage ?? "The provider refused the account.");
+                await WithDbAsync(async () =>
+                {
+                    await LogAsync(job.Id, row.Id, "warning",
+                        result.IsBlocked ? "generation_blocked" : "generation_failed",
+                        result.ErrorMessage ?? "Unknown error", cancellationToken);
+                    if (stopsJob)
+                        await LogAsync(job.Id, null, "error", "generation_stopped",
+                            $"{ImageGenerationProviders.Label(run.ImageProvider.Provider)} refused the account, so no further image is requested: "
+                            + run.Stop.Reason, cancellationToken);
+                }, cancellationToken);
                 return false;
             }
 
             var cutOutStarted = timeProvider.GetTimestamp();
-            var (imageBytes, mimeType) = graphicPrint
+            var (imageBytes, mimeType) = cutOut
                 ? CutOutBackground(result.ImageBytes!, result.MimeType!)
                 : (result.ImageBytes!, result.MimeType!);
             var cutOutTime = timeProvider.GetElapsedTime(cutOutStarted);
@@ -540,6 +772,8 @@ public sealed class DesignGenerationService(
             var storageKey = $"design-images/{designImageId:N}";
             PublicImageUploadResult uploaded;
             var uploadStarted = timeProvider.GetTimestamp();
+            using var uploadTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            uploadTimeout.CancelAfter(settings.Value.UploadTimeout);
             using (var stream = new MemoryStream(imageBytes))
             {
                 try
@@ -548,7 +782,7 @@ public sealed class DesignGenerationService(
                     uploaded = await publicImages.UploadImageWithMetadataAsync(
                         new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
                         storageKey,
-                        stepTimeout.Token);
+                        uploadTimeout.Token);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
@@ -568,7 +802,7 @@ public sealed class DesignGenerationService(
                     UserId = job.UserId,
                     BatchJobId = job.Id,
                     ProductId = row.ProductId,
-                    Provider = GeminiProvider,
+                    Provider = run.ImageProvider.Provider,
                     Feature = "image_generation",
                     ModelName = result.ModelUsed,
                     RequestUnits = 1,
@@ -598,13 +832,15 @@ public sealed class DesignGenerationService(
                     FileFormat = FileExtension(mimeType),
                     FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
                     ApprovalStatus = run.RequireApproval == false ? ApprovalStatuses.Approved : ApprovalStatuses.Pending,
-                    // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead.
-                    VariationIndex = variation + 1,
+                    // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead. A product generated
+                    // again numbers its new designs after the ones it keeps.
+                    VariationIndex = lastVariation + variation + 1,
                     GenerationTimeSeconds = elapsedSeconds,
+                    GenerationMetadata = GenerationMetadata(result),
                     CreatedAt = timeProvider.GetUtcNow().UtcDateTime
                 }, cancellationToken: cancellationToken);
                 await LogTimingAsync(job.Id, row.Id, variation + 1, variationCount,
-                    TimeSpan.FromSeconds((double)elapsedSeconds), cutOutTime, uploadTime, cancellationToken);
+                    TimeSpan.FromSeconds((double)elapsedSeconds), result, cutOutTime, uploadTime, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }, cancellationToken);
             return true;
@@ -616,18 +852,31 @@ public sealed class DesignGenerationService(
     }
 
     // Records how one product came out once all its variations are done. Called through WithDbAsync.
-    private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, int successCount, CancellationToken cancellationToken)
+    private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, int successCount, RowHistory? history,
+        CancellationToken cancellationToken)
     {
         var job = run.Job;
-        row.Status = successCount > 0 ? run.ReviewedStatus : BatchJobProductStatuses.Failed;
-        row.ErrorMessage = successCount == 0 ? "All requested variations failed or were blocked." : null;
+        // A product generated again keeps its earlier designs, so it only fails when it has none at all; it counts as
+        // approved while one of its designs is (SetImageApprovalAsync's rule), the new ones being approved automatically
+        // or left for review.
+        var hasDesigns = successCount > 0 || history is not null;
+        var hasApproved = history?.HasApproved == true || (successCount > 0 && run.ReviewedStatus == BatchJobProductStatuses.Approved);
+        var status = !hasDesigns ? BatchJobProductStatuses.Failed
+            : hasApproved ? BatchJobProductStatuses.Approved
+            : BatchJobProductStatuses.ImageReviewRequired;
+        row.Status = status;
+        // A product left without images because the provider refused the account says why, rather than the generic reason.
+        row.ErrorMessage = hasDesigns ? null : run.Stop.Reason ?? "All requested variations failed or were blocked.";
         row.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
         row.UpdatedAt = row.CompletedAt;
         await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
+        if (successCount == 0 && history is not null)
+            await LogAsync(job.Id, row.Id, "warning", "regenerate_failed",
+                run.Stop.Reason ?? "No new design could be made; the earlier ones are kept.", cancellationToken);
 
         if (product is not null)
         {
-            product.ProcessingStatus = successCount > 0 ? run.ReviewedStatus : BatchJobProductStatuses.Failed;
+            product.ProcessingStatus = status;
             product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
             await products.UpdateAsync(product, cancellationToken: cancellationToken);
         }
@@ -635,7 +884,7 @@ public sealed class DesignGenerationService(
         if (successCount > 0) await IncrementImagesGeneratedAsync(job.UserId, successCount, cancellationToken);
 
         job.ProcessedProducts = (job.ProcessedProducts ?? 0) + 1;
-        if (successCount == 0) job.FailedProducts = (job.FailedProducts ?? 0) + 1;
+        if (!hasDesigns) job.FailedProducts = (job.FailedProducts ?? 0) + 1;
         job.ProgressPercentage = job.TotalProducts is > 0
             ? Math.Round(100m * job.ProcessedProducts.Value / job.TotalProducts.Value, 0)
             : job.ProgressPercentage;
@@ -663,7 +912,7 @@ public sealed class DesignGenerationService(
             .ToListAsync(cancellationToken);
         var productIds = rows.Where(r => r.ProductId.HasValue).Select(r => r.ProductId!.Value).ToList();
         var productInfo = await products.Query().Where(p => productIds.Contains(p.Id))
-            .Select(p => new { p.Id, p.Name, p.ProductType })
+            .Select(p => new { p.Id, p.Name, p.ProductType, p.DesiredDesignText, p.CustomPrompt })
             .ToDictionaryAsync(p => p.Id, cancellationToken);
         var images = await designImages.Query()
             .Where(i => i.BatchJobId == job.Id && i.DeletedAt == null)
@@ -682,7 +931,8 @@ public sealed class DesignGenerationService(
             return new BatchJobProductResultDto(
                 r.Id, r.ProductId, info?.Name ?? string.Empty, info?.ProductType ?? string.Empty,
                 r.SequenceOrder, r.Status, r.ErrorMessage,
-                imagesByRow.TryGetValue(r.Id, out var list) ? list : []);
+                imagesByRow.TryGetValue(r.Id, out var list) ? list : [],
+                info?.DesiredDesignText, info?.CustomPrompt);
         }).ToList();
 
         var counters = new BatchJobCountersDto(
@@ -805,7 +1055,23 @@ public sealed class DesignGenerationService(
     /// call, removing the backdrop, and storing the image.
     /// </summary>
     private async Task LogTimingAsync(Guid batchJobId, Guid batchJobProductId, int variation, int variationCount,
-        TimeSpan provider, TimeSpan cutOut, TimeSpan upload, CancellationToken cancellationToken) =>
+        TimeSpan provider, ImageGenerationResult result, TimeSpan cutOut, TimeSpan upload, CancellationToken cancellationToken)
+    {
+        var details = new JsonObject
+        {
+            ["providerMs"] = (long)provider.TotalMilliseconds,
+            ["cutOutMs"] = (long)cutOut.TotalMilliseconds,
+            ["uploadMs"] = (long)upload.TotalMilliseconds,
+        };
+        // A provider that answers with a link reports making the image and downloading it apart.
+        var providerParts = string.Empty;
+        if (result.GenerateTime is TimeSpan generate && result.DownloadTime is TimeSpan download)
+        {
+            details["generateMs"] = (long)generate.TotalMilliseconds;
+            details["downloadMs"] = (long)download.TotalMilliseconds;
+            providerParts = FormattableString.Invariant($" (generate {generate.TotalSeconds:0.0}s, download {download.TotalSeconds:0.0}s)");
+        }
+
         await batchJobLogs.AddAsync(new BatchJobLog
         {
             Id = Guid.NewGuid(),
@@ -814,18 +1080,32 @@ public sealed class DesignGenerationService(
             LogLevel = "debug",
             EventType = ImageTimingEvent,
             Message = FormattableString.Invariant(
-                $"Image {variation}/{variationCount}: provider {provider.TotalSeconds:0.0}s, cut-out {cutOut.TotalSeconds:0.0}s, upload {upload.TotalSeconds:0.0}s."),
-            Details = new JsonObject
-            {
-                ["providerMs"] = (long)provider.TotalMilliseconds,
-                ["cutOutMs"] = (long)cutOut.TotalMilliseconds,
-                ["uploadMs"] = (long)upload.TotalMilliseconds,
-            }.ToJsonString(),
+                $"Image {variation}/{variationCount}: provider {provider.TotalSeconds:0.0}s{providerParts}, cut-out {cutOut.TotalSeconds:0.0}s, upload {upload.TotalSeconds:0.0}s."),
+            Details = details.ToJsonString(),
             DurationMs = (int)(provider + cutOut + upload).TotalMilliseconds,
             CreatedAt = timeProvider.GetUtcNow().UtcDateTime
         }, cancellationToken: cancellationToken);
+    }
 
-    private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval, Guid? workflowId)
+    // What the provider reports about how it made the image (its seed, and the prompt it drew from when it rewrote
+    // the one it was sent), kept with the image so it can be looked into or made again; null when it reports nothing.
+    private static string? GenerationMetadata(ImageGenerationResult result)
+    {
+        if (result.Seed is null && result.ProviderPrompt is null) return null;
+        var metadata = new JsonObject();
+        if (result.Seed is long seed) metadata["seed"] = seed;
+        if (result.ProviderPrompt is { } providerPrompt) metadata["providerPrompt"] = providerPrompt;
+        return metadata.ToJsonString();
+    }
+
+    // Connected, checked and not expired: a key a job can be started with.
+    private static bool IsUsableKey(ApiKey key, string provider, DateTime now) =>
+        string.Equals(key.ServiceProvider, provider, StringComparison.OrdinalIgnoreCase)
+        && key.IsActive == true && key.LastCheckSucceeded == true
+        && (!key.ExpiresAt.HasValue || key.ExpiresAt > now);
+
+    private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval,
+        Guid? workflowId, string imageProvider)
     {
         JsonObject root;
         try { root = JsonNode.Parse(config)?.AsObject() ?? new JsonObject(); }
@@ -833,6 +1113,7 @@ public sealed class DesignGenerationService(
 
         root[GenerationConfigKeys.VariationCount] = variationCount;
         root[GenerationConfigKeys.AspectRatio] = aspectRatio;
+        root[GenerationConfigKeys.ImageProvider] = imageProvider;
         if (string.IsNullOrWhiteSpace(instructions)) root.Remove(GenerationConfigKeys.Instructions);
         else root[GenerationConfigKeys.Instructions] = instructions.Trim();
         if (requireApproval is null) root.Remove(GenerationConfigKeys.RequireApproval);
@@ -1080,6 +1361,34 @@ public sealed class DesignGenerationService(
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
         {
             return null;
+        }
+    }
+
+    /// <summary>The job-level wording for products that have none of their own: null when the job has none.</summary>
+    private static string? ReadInstructions(string config)
+    {
+        try
+        {
+            return (string?)JsonNode.Parse(config)?[GenerationConfigKeys.Instructions];
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The provider the job's images are made with: Gemini for jobs started before there was a choice.</summary>
+    private static string ReadImageProvider(string config)
+    {
+        try
+        {
+            return (string?)JsonNode.Parse(config)?[GenerationConfigKeys.ImageProvider] is { Length: > 0 } provider
+                ? provider
+                : ImageGenerationProviders.Default;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+        {
+            return ImageGenerationProviders.Default;
         }
     }
 

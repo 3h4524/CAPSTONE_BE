@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.DesignTemplates.Common;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -18,6 +19,9 @@ public static class PromptDefaultsResolver
         IRepository<StyleArtPreset> styles,
         CancellationToken cancellationToken)
     {
+        if (product?.CustomPrompt?.Trim() is { Length: > 0 } customPrompt)
+            return CustomPromptComponents(product, customPrompt);
+
         var template = product?.DesignTemplateId.HasValue == true
             ? await templates.Query()
                 .Where(item => item.Id == product!.DesignTemplateId!.Value)
@@ -31,22 +35,62 @@ public static class PromptDefaultsResolver
                 .Where(item => item.IsActive && item.Name.ToLower() == styleName.ToLowerInvariant())
                 .SingleOrDefaultAsync(cancellationToken);
 
+        var keywords = ArtworkPromptRules.SplitKeywords(product?.MainKeywords);
         return new PromptComponents(
-            CleanSubject(product),
-            styleName,
-            string.Empty,
+            Subject(product, template),
+            // Without a style preset the template's own art style fills {style}, rather than leaving a gap in the sentence.
+            styleName.Length > 0 ? styleName : TemplateStyle(template),
+            // Keywords about the feel ("funny", "vintage") become the default mood, which the Seller sees and can change.
+            keywords.Mood,
             string.Empty,
             string.Empty,
             template?.BasePrompt ?? string.Empty,
             product?.NicheCategory?.Trim() is { Length: > 0 } niche
                 ? niche
-                : product?.MainKeywords?.Trim() is { Length: > 0 } keywords
-                    ? keywords
+                : keywords.Motifs.Length > 0
+                    ? keywords.Motifs
                     : PromptRules.FallbackNiche,
             style?.StyleModifiers ?? string.Empty,
-            product?.MainKeywords?.Trim() ?? string.Empty,
+            keywords.Motifs,
             UserDescription(product));
     }
+
+    /// <summary>The sentence that makes a custom prompt print the design text, as a lettering template's quoted subject does.</summary>
+    public const string CustomPhraseSentence = "The design prints the exact phrase \"{subject}\".";
+
+    // The Seller's own prompt replaces the template, and with it the keywords and description it would have drawn from.
+    // It sets the look too, so no style preset is added: one a job applies to every product ("Minimalist: soft neutral
+    // tones") would wash out a prompt that asks for a stormy sky.
+    // The design text is the only lettering: the prompt gets the quoted phrase a lettering template carries, so every
+    // lettering rule applies to it; without design text the design prints no words, not the product name.
+    private static PromptComponents CustomPromptComponents(Product product, string customPrompt)
+    {
+        var designText = product.DesiredDesignText?.Trim() ?? string.Empty;
+        // Words the Seller quoted in the prompt are printed only when they are the design text.
+        customPrompt = ArtworkPromptRules.WithoutOtherQuotedText(customPrompt, designText);
+        var basePrompt = designText.Length > 0 ? $"{customPrompt.TrimEnd()} {CustomPhraseSentence}" : customPrompt;
+        return new PromptComponents(
+            designText,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            basePrompt,
+            product.NicheCategory?.Trim() ?? string.Empty,
+            OwnPrompt: true);
+    }
+
+    // A template that prints the subject as an exact phrase prints the Seller's design text when there is one:
+    // the product name is a listing title ("Minimalist Mountain Sunrise"), not necessarily the words to print.
+    private static string Subject(Product? product, DesignTemplate? template) =>
+        ArtworkPromptRules.PrintsExactPhrase(template?.BasePrompt) && product?.DesiredDesignText?.Trim() is { Length: > 0 } designText
+            ? designText
+            : CleanSubject(product);
+
+    private static string TemplateStyle(DesignTemplate? template) =>
+        template?.ArtStyle is { } artStyle && DesignTemplateArtStyles.Labels.TryGetValue(artStyle, out var label)
+            ? label.ToLowerInvariant()
+            : string.Empty;
 
     private static readonly string[] ProductTypeWords =
         ["t-shirt", "t shirt", "tshirt", "hoodie", "mug", "poster", "tote bag", "tote_bag", "phone case", "phone_case"];
