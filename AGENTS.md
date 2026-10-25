@@ -46,8 +46,9 @@ when the API runs next to the frontend.
 - The local `.env` points at the **shared Neon database**, not at a local Postgres: the rows of
   every run and every account land there. `scripts/e2e/` starts a database of its own with Docker.
 - The reports of the end-to-end suite live in the `test_report_runs` table, so a run outlives the
-  machine that made it. The table was created in the database first; `scripts/sql/test-report-runs.sql`
-  is the record of it.
+  machine that made it. Integration fixtures build the schema with `EnsureCreated`, so the table
+  exists wherever tests run; against a pre-provisioned database, `APCS_TEST_CONNECTION_STRING`
+  points at a database prepared by the fixture or `scripts/e2e/bootstrap-test-db.sh`.
 
 ## Before changing files
 

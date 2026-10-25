@@ -80,7 +80,6 @@ public static class DependencyInjection
         // The test reports are files on the machine that ran the suite, so the service keeps
         // them for as long as the API lives.
         services.AddSingleton<ITestReportService, TestReportService>();
-        services.AddScoped<ITestSellerProvisioner, TestSellerProvisioner>();
         services.AddScoped<ICommerceConnectorFactory, CommerceConnectorFactory>();
         services.AddScoped<ICommerceMarketDataConnectorFactory, CommerceMarketDataConnectorFactory>();
         services.AddScoped<IMarketResearchService, MarketResearchService>();

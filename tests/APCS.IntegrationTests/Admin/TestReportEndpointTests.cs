@@ -95,7 +95,6 @@ public sealed class TestReportEndpointTests
     {
         _host.EnsureAvailable();
         await _host.ResetDatabaseAsync();
-        await EnsureTableAsync();
     }
 
     [TestMethod]
@@ -185,20 +184,6 @@ public sealed class TestReportEndpointTests
             },
             ReportJson,
             CancellationToken.None);
-    }
-
-    private static async Task EnsureTableAsync()
-    {
-        var connectionString = _host.Factory.Services
-            .GetRequiredService<IConfiguration>()["ConnectionStrings:DefaultConnection"];
-
-        var script = await File.ReadAllTextAsync(
-            Path.Combine(AppContext.BaseDirectory, "scripts", "sql", "test-report-runs.sql"));
-
-        await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync();
-        await using var command = new NpgsqlCommand(script, connection);
-        await command.ExecuteNonQueryAsync();
     }
 
     private static async Task<HttpClient> AdminClientAsync()
