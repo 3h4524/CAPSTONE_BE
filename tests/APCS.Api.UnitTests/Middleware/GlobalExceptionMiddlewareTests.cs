@@ -52,6 +52,28 @@ public sealed class GlobalExceptionMiddlewareTests
     }
 
     [TestMethod]
+    public async Task InvokeAsync_WhenExternalServiceCannotBeReached_ReturnsServiceUnavailableProblemDetails()
+    {
+        var middleware = new GlobalExceptionMiddleware(
+            _ => throw new HttpRequestException("No such host is known. (api.etsy.com:443)"),
+            new TestLogger<GlobalExceptionMiddleware>());
+        var context = CreateContext();
+        context.TraceIdentifier = "trace-external-123";
+
+        await middleware.InvokeAsync(context);
+
+        context.Response.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
+        context.Response.ContentType.Should().Be("application/problem+json");
+        context.Response.Body.Position = 0;
+        using var document = await JsonDocument.ParseAsync(context.Response.Body);
+        var root = document.RootElement;
+        root.GetProperty("code").GetString().Should().Be(ErrorCodes.ExternalServiceUnavailable);
+        root.GetProperty("detail").GetString().Should().Contain("external data provider");
+        root.GetProperty("traceId").GetString().Should().Be("trace-external-123");
+        root.GetRawText().Should().NotContain("api.etsy.com");
+    }
+
+    [TestMethod]
     public async Task InvokeAsync_WhenClientCancels_LogsAndDoesNotWriteError()
     {
         using var source = new CancellationTokenSource();

@@ -8,7 +8,9 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Abstractions.Commerce;
 using APCS.Application.Features.DesignGeneration.Common;
+using APCS.Application.Features.Commerce;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Common.Constants;
@@ -122,6 +124,23 @@ public static class DependencyInjection
             if (string.IsNullOrWhiteSpace(options.ApiKey))
                 options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
         });
+        services.AddOptions<EtsyOptions>()
+            .Bind(configuration.GetSection(EtsyOptions.SectionName));
+        services.AddOptions<MarketResearchOptions>()
+            .Bind(configuration.GetSection(MarketResearchOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddHttpClient(EtsyMarketDataConnector.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+            if (!string.IsNullOrWhiteSpace(options.ApiKeyHeader))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKeyHeader);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-MarketResearch/1.0");
+        });
+        services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
+        services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
@@ -135,6 +154,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
 
         return services;
     }

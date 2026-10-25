@@ -73,6 +73,10 @@ public partial class User
 
     public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
 
+    public virtual ICollection<SellerOpportunity> SellerOpportunities { get; set; } = new List<SellerOpportunity>();
+
+    public virtual SellerResearchProfile? SellerResearchProfile { get; set; }
+
     public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
