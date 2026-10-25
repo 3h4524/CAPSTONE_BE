@@ -120,6 +120,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.ISupportTicketNotifier, APCS.Api.Hubs.SupportTicketNotifier>();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.INotificationHubClient, APCS.Api.Hubs.NotificationHubClient>();
+builder.Services.AddSingleton<APCS.Application.Features.TestReports.ITestReportRunBroadcaster, APCS.Api.Hubs.TestReportRunBroadcaster>();
 builder.Services.AddHealthChecks();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);

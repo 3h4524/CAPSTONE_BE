@@ -16,6 +16,7 @@ public sealed class ApiKeyRepositoryTests
     {
         var connection = Environment.GetEnvironmentVariable("APCS_TEST_CONNECTION_STRING");
         if (string.IsNullOrWhiteSpace(connection)) { Assert.Inconclusive("Set APCS_TEST_CONNECTION_STRING to run PostgreSQL tests."); return; }
+        await TestSchema.EnsureReadyAsync(connection);
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connection, o => o.UseVector()).Options;
         await using var db = new AppDbContext(options);
         await db.Database.OpenConnectionAsync();
@@ -56,6 +57,8 @@ public sealed class ApiKeyRepositoryTests
             Assert.Inconclusive("Set APCS_TEST_CONNECTION_STRING to run the opt-in PostgreSQL test.");
             return;
         }
+
+        await TestSchema.EnsureReadyAsync(connectionString);
 
         var audit = new QueryAudit();
         var options = new DbContextOptionsBuilder<AppDbContext>()

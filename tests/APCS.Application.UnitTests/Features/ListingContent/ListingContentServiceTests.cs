@@ -98,7 +98,7 @@ public sealed class ListingContentServiceTests
         var policy = new Mock<IPolicyContextRetriever>();
         policy.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
         var listing = new Mock<IListingContextRetriever>();
-        listing.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        listing.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<string?>())).ReturnsAsync([]);
         return new(user.Object, products.Object, Mock.Of<IRepository<ListingContentEntity>>(), Mock.Of<IRepository<ListingTitle>>(),
             Mock.Of<IRepository<ListingDescription>>(), Mock.Of<IRepository<ListingTag>>(), Mock.Of<IRepository<ListingTagItem>>(),
             Mock.Of<IRepository<ListingGenerationHistory>>(), Mock.Of<IRepository<SeoScore>>(), Mock.Of<IRepository<ApiUsageRecord>>(),

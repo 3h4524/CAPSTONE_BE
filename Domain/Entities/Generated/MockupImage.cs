@@ -39,8 +39,6 @@ public partial class MockupImage
 
     public string? GarmentColor { get; set; }
 
-    public string? BackgroundColor { get; set; }
-
     public string SourceType { get; set; } = null!;
 
     public string? ContentHash { get; set; }
@@ -62,6 +60,8 @@ public partial class MockupImage
     public Guid? ApprovedBy { get; set; }
 
     public DateTime? ApprovedAt { get; set; }
+
+    public string? BackgroundColor { get; set; }
 
     public virtual ApiUsageRecord? ApiUsageRecord { get; set; }
 

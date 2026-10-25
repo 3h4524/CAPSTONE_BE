@@ -6,8 +6,8 @@ namespace APCS.Infrastructure.Services;
 
 public sealed class ListingContextRetriever(IRagService ragService) : IListingContextRetriever
 {
-    public Task<IReadOnlyList<RagSearchResultDto>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default) =>
-        ragService.SearchAsync(new RagSearchRequest(query, topK, ContentType: RagContentTypes.Listing), cancellationToken);
+    public Task<IReadOnlyList<RagSearchResultDto>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default, string? niche = null) =>
+        ragService.SearchAsync(new RagSearchRequest(query, topK, ContentType: RagContentTypes.Listing, Niche: niche), cancellationToken);
 }
 
 public sealed class ImageContextRetriever(IRagService ragService) : IImageContextRetriever
