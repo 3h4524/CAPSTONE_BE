@@ -61,4 +61,7 @@ public static class ConfigurationSections
 
     /// <summary>The mock-up image processing options section.</summary>
     public const string Mockups = "Mockups";
+
+    /// <summary>Public Etsy market-research API settings.</summary>
+    public const string Etsy = "Etsy";
 }

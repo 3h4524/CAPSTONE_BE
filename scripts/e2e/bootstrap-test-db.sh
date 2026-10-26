@@ -10,13 +10,14 @@
 # Nó chỉ truncate khi tên khớp đúng tên database trong connection string, nên
 # không bao giờ xóa nhầm apcs_e2e.
 #
-# Script in ra các biến môi trường cần export; run-all.sh eval phần đó.
+# Schema của database test do chính APCS.IntegrationTests dựng từ entity model
+# (PostgresFixture chạy EnsureCreated), script này chỉ hạ tầng containers và tạo
+# database trống. Script in ra các biến môi trường cần export; CI eval phần đó.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/scripts/e2e/docker-compose.yml"
-BOOTSTRAP_SQL="${REPO_ROOT}/scripts/sql/000-bootstrap-schema.sql"
 # Khi CI cấp sẵn connection string thì lấy tên database từ đó, nếu không sẽ tạo
 # nhầm một database khác với cái test dùng.
 TEST_DB="${TEST_DB:-apcs_test}"
@@ -74,40 +75,6 @@ if [ "$(sql postgres "SELECT 1 FROM pg_database WHERE datname='${TEST_DB}'")" !=
   sql postgres "CREATE DATABASE ${TEST_DB}" >/dev/null
 else
   say "database ${TEST_DB} đã có"
-fi
-
-TABLES="$(sql "${TEST_DB}" "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" || echo 0)"
-
-if [ "${TABLES:-0}" -lt 40 ]; then
-  say "nạp schema (${TABLES:-0}/52 bảng hiện tại)"
-  # pg_dump sinh \restrict / \unrestrict, chỉ có từ psql 17; client cũ từ chối.
-  # Không nuốt stderr: exit code của psql là thứ duy nhất chỉ ra lỗi thật.
-  sed '/^\\restrict /d; /^\\unrestrict /d' "${BOOTSTRAP_SQL}" \
-    | { if [ "${USE_HOST_PSQL}" = "yes" ]; then
-          PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
-            -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "${TEST_DB}"
-        else
-          compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-            psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}"
-        fi; }
-else
-  say "schema đã đủ ${TABLES} bảng"
-fi
-
-# Bootstrap dump cũ hơn code: các bảng workflow/media_jobs nằm ở patch riêng.
-# Patch toàn IF NOT EXISTS / ON CONFLICT nên chạy lại nhiều lần vẫn an toàn.
-PATCH_SQL="${REPO_ROOT}/scripts/sql/video-workflows.sql"
-if [ -f "${PATCH_SQL}" ]; then
-  say "apply video-workflows.sql (workflows, workflow_runs, media_jobs)"
-  if [ "${USE_HOST_PSQL}" = "yes" ]; then
-    PGPASSWORD="${TEST_DB_PASSWORD}" psql -v ON_ERROR_STOP=1 -q \
-      -h 127.0.0.1 -p "${TEST_PG_PORT}" -U "${TEST_DB_USER}" -d "${TEST_DB}" \
-      -f "${PATCH_SQL}" >/dev/null
-  else
-    sed '/^\\restrict /d; /^\\unrestrict /d' "${PATCH_SQL}" \
-      | compose exec -T postgres env PGPASSWORD="${TEST_DB_PASSWORD}" \
-        psql -v ON_ERROR_STOP=1 -q -U "${TEST_DB_USER}" -d "${TEST_DB}" >/dev/null
-  fi
 fi
 
 cat <<EOF

@@ -62,7 +62,7 @@ public sealed class ListingContentService(
         var policyContext = await SearchContextSafelyAsync(
             () => policyContextRetriever.SearchAsync(query, 5, cancellationToken), "policy", productId, cancellationToken);
         var listingContext = await SearchContextSafelyAsync(
-            () => listingContextRetriever.SearchAsync(query, 3, cancellationToken), "listing", productId, cancellationToken);
+            () => listingContextRetriever.SearchAsync(query, 3, cancellationToken, input.Niche), "listing", productId, cancellationToken);
         var prompt = ListingPromptBuilder.Build(input, policyContext, listingContext);
         if (seoFeedback is not null)
             prompt = $"{prompt}\n\n{BuildSeoRegenerationInstructions(seoFeedback)}";

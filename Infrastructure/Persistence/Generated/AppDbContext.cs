@@ -56,6 +56,12 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<ListingTitle> ListingTitles { get; set; }
 
+    public virtual DbSet<MarketListingSnapshot> MarketListingSnapshots { get; set; }
+
+    public virtual DbSet<MarketOpportunity> MarketOpportunities { get; set; }
+
+    public virtual DbSet<MarketOpportunityEvidence> MarketOpportunityEvidences { get; set; }
+
     public virtual DbSet<MediaJob> MediaJobs { get; set; }
 
     public virtual DbSet<MockupImage> MockupImages { get; set; }
@@ -67,6 +73,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<NotificationAlert> NotificationAlerts { get; set; }
 
     public virtual DbSet<NotificationDelivery> NotificationDeliveries { get; set; }
+
+    public virtual DbSet<OpportunityAnalysisRun> OpportunityAnalysisRuns { get; set; }
 
     public virtual DbSet<PaymentMethod> PaymentMethods { get; set; }
 
@@ -86,9 +94,19 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<PromoVideoScene> PromoVideoScenes { get; set; }
 
+    public virtual DbSet<RagChunk> RagChunks { get; set; }
+
+    public virtual DbSet<RagDocument> RagDocuments { get; set; }
+
+    public virtual DbSet<RagEmbedding> RagEmbeddings { get; set; }
+
     public virtual DbSet<Role> Roles { get; set; }
 
     public virtual DbSet<RolePermission> RolePermissions { get; set; }
+
+    public virtual DbSet<SellerOpportunity> SellerOpportunities { get; set; }
+
+    public virtual DbSet<SellerResearchProfile> SellerResearchProfiles { get; set; }
 
     public virtual DbSet<SeoScore> SeoScores { get; set; }
 
@@ -128,7 +146,9 @@ public partial class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.HasPostgresExtension("uuid-ossp");
+        modelBuilder
+            .HasPostgresExtension("uuid-ossp")
+            .HasPostgresExtension("vector");
 
         modelBuilder.Entity<AiPrompt>(entity =>
         {
@@ -1369,6 +1389,167 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("listing_titles_listing_content_id_fkey");
         });
 
+        modelBuilder.Entity<MarketListingSnapshot>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("market_listing_snapshots_pkey");
+
+            entity.ToTable("market_listing_snapshots");
+
+            entity.HasIndex(e => new { e.Platform, e.ObservedAt, e.ExternalListingId }, "idx_market_listing_snapshot_lookup").IsDescending(false, true, false);
+
+            entity.HasIndex(e => new { e.MatchedQuery, e.ObservedAt }, "idx_market_listing_snapshot_query")
+                .IsDescending(false, true)
+                .HasFilter("(matched_query IS NOT NULL)");
+
+            entity.HasIndex(e => new { e.Platform, e.ExternalListingId, e.ObservedAt }, "ux_market_listing_snapshot_identity").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CollectedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("collected_at");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(12)
+                .HasColumnName("currency");
+            entity.Property(e => e.Description).HasColumnName("description");
+            entity.Property(e => e.ExternalListingId)
+                .HasMaxLength(200)
+                .HasColumnName("external_listing_id");
+            entity.Property(e => e.ExternalSellerId)
+                .HasMaxLength(200)
+                .HasColumnName("external_seller_id");
+            entity.Property(e => e.Favorites).HasColumnName("favorites");
+            entity.Property(e => e.MatchedQuery)
+                .HasMaxLength(300)
+                .HasColumnName("matched_query");
+            entity.Property(e => e.ObservedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("observed_at");
+            entity.Property(e => e.Platform)
+                .HasMaxLength(40)
+                .HasColumnName("platform");
+            entity.Property(e => e.Price)
+                .HasPrecision(14, 2)
+                .HasColumnName("price");
+            entity.Property(e => e.Quantity).HasColumnName("quantity");
+            entity.Property(e => e.RagDocumentId).HasColumnName("rag_document_id");
+            entity.Property(e => e.RawPayload)
+                .HasColumnType("jsonb")
+                .HasColumnName("raw_payload");
+            entity.Property(e => e.SourceUrl).HasColumnName("source_url");
+            entity.Property(e => e.Tags)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("tags");
+            entity.Property(e => e.Title)
+                .HasMaxLength(500)
+                .HasColumnName("title");
+            entity.Property(e => e.Views).HasColumnName("views");
+
+            entity.HasOne(d => d.RagDocument).WithMany(p => p.MarketListingSnapshots)
+                .HasForeignKey(d => d.RagDocumentId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("market_listing_snapshots_rag_document_id_fkey");
+        });
+
+        modelBuilder.Entity<MarketOpportunity>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("market_opportunities_pkey");
+
+            entity.ToTable("market_opportunities");
+
+            entity.HasIndex(e => new { e.MarketOpportunityScore, e.Confidence }, "idx_market_opportunity_rank")
+                .IsDescending()
+                .HasFilter("((status)::text = 'active'::text)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Category)
+                .HasMaxLength(160)
+                .HasColumnName("category");
+            entity.Property(e => e.Confidence)
+                .HasPrecision(5, 4)
+                .HasColumnName("confidence");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("created_at");
+            entity.Property(e => e.FirstObservedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("first_observed_at");
+            entity.Property(e => e.FormulaVersion)
+                .HasMaxLength(80)
+                .HasColumnName("formula_version");
+            entity.Property(e => e.LastObservedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("last_observed_at");
+            entity.Property(e => e.MarketOpportunityScore)
+                .HasPrecision(6, 2)
+                .HasColumnName("market_opportunity_score");
+            entity.Property(e => e.Niche)
+                .HasMaxLength(200)
+                .HasColumnName("niche");
+            entity.Property(e => e.Platform)
+                .HasMaxLength(40)
+                .HasColumnName("platform");
+            entity.Property(e => e.ScoreBreakdown)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("score_breakdown");
+            entity.Property(e => e.Status)
+                .HasMaxLength(24)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.Summary).HasColumnName("summary");
+            entity.Property(e => e.Title)
+                .HasMaxLength(300)
+                .HasColumnName("title");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<MarketOpportunityEvidence>(entity =>
+        {
+            entity.HasKey(e => new { e.OpportunityId, e.SnapshotId }).HasName("market_opportunity_evidence_pkey");
+
+            entity.ToTable("market_opportunity_evidence");
+
+            entity.HasIndex(e => e.SnapshotId, "idx_market_opportunity_evidence_snapshot");
+
+            entity.Property(e => e.OpportunityId).HasColumnName("opportunity_id");
+            entity.Property(e => e.SnapshotId).HasColumnName("snapshot_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("created_at");
+            entity.Property(e => e.EvidenceRank)
+                .HasDefaultValue(1)
+                .HasColumnName("evidence_rank");
+            entity.Property(e => e.EvidenceRole)
+                .HasMaxLength(24)
+                .HasDefaultValueSql("'supporting'::character varying")
+                .HasColumnName("evidence_role");
+            entity.Property(e => e.RagDocumentId).HasColumnName("rag_document_id");
+
+            entity.HasOne(d => d.Opportunity).WithMany(p => p.MarketOpportunityEvidences)
+                .HasForeignKey(d => d.OpportunityId)
+                .HasConstraintName("market_opportunity_evidence_opportunity_id_fkey");
+
+            entity.HasOne(d => d.RagDocument).WithMany(p => p.MarketOpportunityEvidences)
+                .HasForeignKey(d => d.RagDocumentId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("market_opportunity_evidence_rag_document_id_fkey");
+
+            entity.HasOne(d => d.Snapshot).WithMany(p => p.MarketOpportunityEvidences)
+                .HasForeignKey(d => d.SnapshotId)
+                .HasConstraintName("market_opportunity_evidence_snapshot_id_fkey");
+        });
+
         modelBuilder.Entity<MediaJob>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("media_jobs_pkey");
@@ -1562,6 +1743,8 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.ProductType, "idx_mockup_templates_product_type");
 
+            entity.HasIndex(e => e.UserId, "idx_mockup_templates_user_id");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -1612,6 +1795,7 @@ public partial class AppDbContext : DbContext
 
             entity.HasOne(d => d.User).WithMany(p => p.MockupTemplates)
                 .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
@@ -1746,6 +1930,59 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.NotificationAlert).WithMany(p => p.NotificationDeliveries)
                 .HasForeignKey(d => d.NotificationAlertId)
                 .HasConstraintName("notification_deliveries_notification_alert_id_fkey");
+        });
+
+        modelBuilder.Entity<OpportunityAnalysisRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("opportunity_analysis_runs_pkey");
+
+            entity.ToTable("opportunity_analysis_runs");
+
+            entity.HasIndex(e => new { e.SellerOpportunityId, e.RequestedAt }, "idx_opportunity_analysis_runs_seller_opportunity").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.Status, e.RequestedAt }, "idx_opportunity_analysis_runs_status");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CompletedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("completed_at");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.InputSnapshot)
+                .HasColumnType("jsonb")
+                .HasColumnName("input_snapshot");
+            entity.Property(e => e.Model)
+                .HasMaxLength(160)
+                .HasColumnName("model");
+            entity.Property(e => e.OutputSnapshot)
+                .HasColumnType("jsonb")
+                .HasColumnName("output_snapshot");
+            entity.Property(e => e.PromptVersion)
+                .HasMaxLength(80)
+                .HasColumnName("prompt_version");
+            entity.Property(e => e.Provider)
+                .HasMaxLength(80)
+                .HasColumnName("provider");
+            entity.Property(e => e.RequestedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("requested_at");
+            entity.Property(e => e.SchemaVersion)
+                .HasMaxLength(80)
+                .HasColumnName("schema_version");
+            entity.Property(e => e.SellerOpportunityId).HasColumnName("seller_opportunity_id");
+            entity.Property(e => e.StartedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("started_at");
+            entity.Property(e => e.Status)
+                .HasMaxLength(24)
+                .HasDefaultValueSql("'queued'::character varying")
+                .HasColumnName("status");
+
+            entity.HasOne(d => d.SellerOpportunity).WithMany(p => p.OpportunityAnalysisRuns)
+                .HasForeignKey(d => d.SellerOpportunityId)
+                .HasConstraintName("opportunity_analysis_runs_seller_opportunity_id_fkey");
         });
 
         modelBuilder.Entity<PaymentMethod>(entity =>
@@ -1977,10 +2214,10 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
+            entity.Property(e => e.CustomPrompt).HasColumnName("custom_prompt");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
             entity.Property(e => e.DesignTemplateId).HasColumnName("design_template_id");
             entity.Property(e => e.DesiredDesignText).HasColumnName("desired_design_text");
-            entity.Property(e => e.CustomPrompt).HasColumnName("custom_prompt");
             entity.Property(e => e.InputDescription).HasColumnName("input_description");
             entity.Property(e => e.MainKeywords)
                 .HasMaxLength(500)
@@ -2283,6 +2520,121 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("promo_video_scenes_promo_video_id_fkey");
         });
 
+        modelBuilder.Entity<RagChunk>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("rag_chunks_pkey");
+
+            entity.ToTable("rag_chunks");
+
+            entity.HasIndex(e => new { e.DocumentId, e.ChunkIndex }, "uq_rag_chunks_document_index").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ChunkIndex).HasColumnName("chunk_index");
+            entity.Property(e => e.Content).HasColumnName("content");
+            entity.Property(e => e.DocumentId).HasColumnName("document_id");
+            entity.Property(e => e.Metadata)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("metadata");
+            entity.Property(e => e.TokenCount).HasColumnName("token_count");
+
+            entity.HasOne(d => d.Document).WithMany(p => p.RagChunks)
+                .HasForeignKey(d => d.DocumentId)
+                .HasConstraintName("rag_chunks_document_id_fkey");
+        });
+
+        modelBuilder.Entity<RagDocument>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("rag_documents_pkey");
+
+            entity.ToTable("rag_documents");
+
+            entity.HasIndex(e => e.ContentType, "idx_rag_documents_content_type");
+
+            entity.HasIndex(e => new { e.SourceId, e.ContentHash }, "idx_rag_documents_source_hash");
+
+            entity.HasIndex(e => new { e.SourceId, e.Status }, "idx_rag_documents_source_status");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ContentHash)
+                .HasMaxLength(128)
+                .HasColumnName("content_hash");
+            entity.Property(e => e.ContentType)
+                .HasMaxLength(50)
+                .HasDefaultValueSql("'listing'::character varying")
+                .HasColumnName("content_type");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.IngestionContent)
+                .HasDefaultValueSql("''::text")
+                .HasColumnName("ingestion_content");
+            entity.Property(e => e.IngestionError).HasColumnName("ingestion_error");
+            entity.Property(e => e.IngestionMetadata)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("ingestion_metadata");
+            entity.Property(e => e.Language)
+                .HasMaxLength(20)
+                .HasColumnName("language");
+            entity.Property(e => e.SourceId)
+                .HasMaxLength(200)
+                .HasDefaultValueSql("''::character varying")
+                .HasColumnName("source_id");
+            entity.Property(e => e.SourceType)
+                .HasMaxLength(100)
+                .HasColumnName("source_type");
+            entity.Property(e => e.SourceUrl).HasColumnName("source_url");
+            entity.Property(e => e.Status)
+                .HasMaxLength(30)
+                .HasDefaultValueSql("'ready'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.Title)
+                .HasMaxLength(500)
+                .HasColumnName("title");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.Version)
+                .HasMaxLength(100)
+                .HasColumnName("version");
+        });
+
+        modelBuilder.Entity<RagEmbedding>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("rag_embeddings_pkey");
+
+            entity.ToTable("rag_embeddings");
+
+            entity.HasIndex(e => e.Embedding, "idx_rag_embeddings_embedding_cosine")
+                .HasMethod("hnsw")
+                .HasOperators(new[] { "vector_cosine_ops" });
+
+            entity.HasIndex(e => new { e.ChunkId, e.EmbeddingModel }, "uq_rag_embeddings_chunk_model").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ChunkId).HasColumnName("chunk_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Embedding)
+                .HasMaxLength(1536)
+                .HasColumnName("embedding");
+            entity.Property(e => e.EmbeddingModel)
+                .HasMaxLength(200)
+                .HasColumnName("embedding_model");
+
+            entity.HasOne(d => d.Chunk).WithMany(p => p.RagEmbeddings)
+                .HasForeignKey(d => d.ChunkId)
+                .HasConstraintName("rag_embeddings_chunk_id_fkey");
+        });
+
         modelBuilder.Entity<Role>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("roles_pkey");
@@ -2332,6 +2684,105 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Role).WithMany(p => p.RolePermissions)
                 .HasForeignKey(d => d.RoleId)
                 .HasConstraintName("role_permissions_role_id_fkey");
+        });
+
+        modelBuilder.Entity<SellerOpportunity>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("seller_opportunities_pkey");
+
+            entity.ToTable("seller_opportunities");
+
+            entity.HasIndex(e => new { e.UserId, e.FinalScore, e.LastEvaluatedAt }, "idx_seller_opportunity_rank").IsDescending(false, true, true);
+
+            entity.HasIndex(e => new { e.UserId, e.State }, "idx_seller_opportunity_state");
+
+            entity.HasIndex(e => new { e.UserId, e.OpportunityId }, "seller_opportunities_user_id_opportunity_id_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ActedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("acted_at");
+            entity.Property(e => e.FinalScore)
+                .HasPrecision(6, 2)
+                .HasColumnName("final_score");
+            entity.Property(e => e.FirstSeenAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("first_seen_at");
+            entity.Property(e => e.FitBreakdown)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("fit_breakdown");
+            entity.Property(e => e.FitExplanation).HasColumnName("fit_explanation");
+            entity.Property(e => e.LastEvaluatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("last_evaluated_at");
+            entity.Property(e => e.OpportunityId).HasColumnName("opportunity_id");
+            entity.Property(e => e.Rank).HasColumnName("rank");
+            entity.Property(e => e.SellerFitScore)
+                .HasPrecision(6, 2)
+                .HasColumnName("seller_fit_score");
+            entity.Property(e => e.State)
+                .HasMaxLength(24)
+                .HasDefaultValueSql("'new'::character varying")
+                .HasColumnName("state");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.Opportunity).WithMany(p => p.SellerOpportunities)
+                .HasForeignKey(d => d.OpportunityId)
+                .HasConstraintName("seller_opportunities_opportunity_id_fkey");
+
+            entity.HasOne(d => d.User).WithMany(p => p.SellerOpportunities)
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("seller_opportunities_user_id_fkey");
+        });
+
+        modelBuilder.Entity<SellerResearchProfile>(entity =>
+        {
+            entity.HasKey(e => e.UserId).HasName("seller_research_profiles_pkey");
+
+            entity.ToTable("seller_research_profiles");
+
+            entity.Property(e => e.UserId)
+                .ValueGeneratedNever()
+                .HasColumnName("user_id");
+            entity.Property(e => e.ExcludedCategories)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("excluded_categories");
+            entity.Property(e => e.MaximumPrice)
+                .HasPrecision(14, 2)
+                .HasColumnName("maximum_price");
+            entity.Property(e => e.MinimumPrice)
+                .HasPrecision(14, 2)
+                .HasColumnName("minimum_price");
+            entity.Property(e => e.PreferredCategories)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("preferred_categories");
+            entity.Property(e => e.PreferredKeywords)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("preferred_keywords");
+            entity.Property(e => e.ProfileVersion)
+                .HasDefaultValue(1)
+                .HasColumnName("profile_version");
+            entity.Property(e => e.ShopGoal).HasColumnName("shop_goal");
+            entity.Property(e => e.TargetAudiences)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("target_audiences");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.User).WithOne(p => p.SellerResearchProfile)
+                .HasForeignKey<SellerResearchProfile>(d => d.UserId)
+                .HasConstraintName("seller_research_profiles_user_id_fkey");
         });
 
         modelBuilder.Entity<SeoScore>(entity =>

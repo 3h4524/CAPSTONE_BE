@@ -4,15 +4,15 @@
 # volume giữ dữ liệu Redis. File này cho test — không volume, dữ liệu bị xoá mỗi
 # lần recreate, và dùng port chuẩn 5432/6379.
 #
-# Postgres phải là 18: scripts/sql/000-bootstrap-schema.sql có
-# "SET transaction_timeout" — Postgres 17+.
+# Postgres 18 với pgvector: entity model tạo các cột kiểu vector, server phải có
+# extension này, và pgvector/pgvector:pg18 kèm sẵn.
 #
 # Chạy:  docker compose -f scripts/e2e/docker-compose.yml up -d
 # Dừng:   docker compose -f scripts/e2e/docker-compose.yml down -v
 
 services:
   postgres:
-    image: postgres:18-alpine
+    image: pgvector/pgvector:pg18
     container_name: apcs-e2e-postgres
     ports:
       - "${TEST_PG_PORT:-55432}:5432"

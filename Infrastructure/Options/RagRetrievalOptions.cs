@@ -17,4 +17,13 @@ public sealed class RagRetrievalOptions
 
     [Range(0, 1)]
     public double LexicalWeight { get; set; } = 0.25;
+
+    [Range(0, 1)]
+    public double ViralWeight { get; set; } = 0.15;
+
+    [Range(0, 1)]
+    public double FreshnessWeight { get; set; } = 0.15;
+
+    [Range(1, 3650)]
+    public int FreshnessHalfLifeDays { get; set; } = 30;
 }

@@ -1,9 +1,6 @@
-<Project Sdk="MSTest.Sdk">
+<Project Sdk="MSTest.Sdk/4.3.3">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <OutputType>Exe</OutputType>
-    <IsPackable>false</IsPackable>
     <AssemblyName>APCS.IntegrationTests</AssemblyName>
     <RootNamespace>APCS.IntegrationTests</RootNamespace>
   </PropertyGroup>
@@ -18,15 +15,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\API\API.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="..\..\scripts\sql\000-bootstrap-schema.sql"
-             Link="scripts\sql\000-bootstrap-schema.sql"
-             CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\scripts\sql\test-report-runs.sql"
-             Link="scripts\sql\test-report-runs.sql"
-             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

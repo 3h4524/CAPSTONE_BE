@@ -11,11 +11,6 @@ public sealed class TestReportOptions
     public const string SectionName = "TestReports";
 
     /// <summary>
-    /// Gets or sets the folder the runs are kept in. Empty means a folder beside the repository.
-    /// </summary>
-    public string Directory { get; set; } = string.Empty;
-
-    /// <summary>
     /// Gets or sets the folder the test command runs in. Empty means the repository root.
     /// </summary>
     public string WorkingDirectory { get; set; } = string.Empty;
@@ -23,7 +18,7 @@ public sealed class TestReportOptions
     /// <summary>
     /// Gets or sets the command that runs the test suite.
     /// </summary>
-    public string RunnerCommand { get; set; } = "bash scripts/e2e/run-all.sh e2e";
+    public string RunnerCommand { get; set; } = "dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj --nologo";
 
     /// <summary>
     /// Gets or sets the frontend folder, relative to the working directory.

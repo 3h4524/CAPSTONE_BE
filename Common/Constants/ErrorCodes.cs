@@ -7,6 +7,7 @@ public static class ErrorCodes
 {
     public const string Validation = "validation.failed";
     public const string Unexpected = "system.unexpected";
+    public const string ExternalServiceUnavailable = "system.external_service_unavailable";
     public const string Unauthorized = "auth.unauthorized";
     public const string Forbidden = "auth.forbidden";
     public const string EmailAlreadyExists = "auth.email_already_exists";

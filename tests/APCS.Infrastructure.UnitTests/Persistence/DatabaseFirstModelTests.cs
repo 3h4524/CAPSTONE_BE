@@ -21,22 +21,23 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(60);
+        mappedTables.Should().HaveCount(66);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
             "batch_jobs", "batch_job_logs", "batch_job_products", "design_images", "design_templates",
             "etsy_integrations", "etsy_upload_logs", "export_packages", "export_package_items", "invoices",
             "listing_contents", "listing_descriptions", "listing_generation_history", "listing_tags",
-            "listing_tag_items", "listing_titles", "media_jobs", "mockup_images", "mockup_templates",
+            "listing_tag_items", "listing_titles", "market_listing_snapshots", "market_opportunities",
+            "market_opportunity_evidence", "media_jobs", "mockup_images", "mockup_templates",
             "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
             "plan_features", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
             "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
             "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
-            "rag_documents", "rag_chunks", "rag_embeddings",
-            "test_report_runs"
+            "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
+            "rag_documents", "rag_chunks", "rag_embeddings"
         });
     }
 

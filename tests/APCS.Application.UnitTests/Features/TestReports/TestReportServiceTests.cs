@@ -66,26 +66,19 @@ public sealed class TestReportServiceTests
 
     private readonly Mock<ITestReportStore> _store = new();
     private readonly Mock<ITestReportRunner> _runner = new();
-    private readonly Mock<ITestSellerProvisioner> _seller = new();
+    private readonly Mock<IServiceProvider> _provider = new();
     private readonly FakeTimeProvider _timeProvider = new(new DateTimeOffset(2026, 10, 22, 9, 0, 0, TimeSpan.Zero));
     private readonly TestReportService _sut;
 
     public TestReportServiceTests()
     {
-        var provider = new Mock<IServiceProvider>();
-        provider.Setup(p => p.GetService(typeof(ITestSellerProvisioner))).Returns(_seller.Object);
-        provider.Setup(p => p.GetService(typeof(ITestReportStore))).Returns(_store.Object);
+        _provider.Setup(p => p.GetService(typeof(ITestReportStore))).Returns(_store.Object);
 
         var scope = new Mock<IServiceScope>();
-        scope.Setup(s => s.ServiceProvider).Returns(provider.Object);
+        scope.Setup(s => s.ServiceProvider).Returns(_provider.Object);
 
         var scopeFactory = new Mock<IServiceScopeFactory>();
         scopeFactory.Setup(f => f.CreateScope()).Returns(scope.Object);
-
-        _seller.Setup(s => s.EnsureAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new TestSellerCredentials("e2e.seller@apcs.test", "E2e!secret"));
-        _seller.Setup(s => s.RemoveAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Success());
 
         _sut = new TestReportService(
             _runner.Object,
@@ -208,10 +201,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunWhileItGoesAndCountsWhatItFound()
     {
-        _runner.Setup(runner => runner.RunAsync(
-            It.IsAny<string>(),
-            It.IsAny<IReadOnlyDictionary<string, string>>(),
-            It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", ReportJson, "feat/fe-test-reports", "abc1234"));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -235,10 +225,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunAsBrokenWhenTheSuiteWroteNoReport()
     {
-        _runner.Setup(runner => runner.RunAsync(
-            It.IsAny<string>(),
-            It.IsAny<IReadOnlyDictionary<string, string>>(),
-            It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", null, null, null));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -257,10 +244,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_RefusesToStartASecondRunWhileOneGoes()
     {
-        _runner.Setup(runner => runner.RunAsync(
-            It.IsAny<string>(),
-            It.IsAny<IReadOnlyDictionary<string, string>>(),
-            It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(async () =>
             {
                 await Task.Delay(50);
@@ -279,12 +263,9 @@ public sealed class TestReportServiceTests
     }
 
     [TestMethod]
-    public async Task StartRunAsync_HandsTheSellerCredentialsToTheSuiteAndRemovesTheSellerAfterwards()
+    public async Task StartRunAsync_StartsTheSuiteWithoutHandingOverSellerCredentials()
     {
-        _runner.Setup(runner => runner.RunAsync(
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(0, string.Empty, ReportJson, null, null));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -293,14 +274,8 @@ public sealed class TestReportServiceTests
         await WaitForTheRunToFinish();
 
         _runner.Verify(
-            runner => runner.RunAsync(
-                It.IsAny<string>(),
-                It.Is<IReadOnlyDictionary<string, string>>(environment =>
-                    environment["E2E_SELLER_EMAIL"] == "e2e.seller@apcs.test" &&
-                    environment["E2E_SELLER_PASSWORD"] == "E2e!secret"),
-                It.IsAny<CancellationToken>()),
+            runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
-        _seller.Verify(seller => seller.RemoveAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
