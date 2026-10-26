@@ -21,6 +21,7 @@ public sealed class ProcessTestReportRunnerTests
     {
         _root = Path.Combine(Path.GetTempPath(), "apcs-test-report-runner", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(_root, "frontend"));
+        File.WriteAllText(Path.Combine(_root, "report-source.json"), "{\"stats\":{}}");
     }
 
     [TestCleanup]
@@ -49,7 +50,9 @@ public sealed class ProcessTestReportRunnerTests
     [TestMethod]
     public async Task RunAsync_BringsBackTheReportTheCommandWrote()
     {
-        var runner = CreateRunner("mkdir -p frontend && printf '{\"stats\":{}}' > frontend/report.json");
+        var runner = CreateRunner(ShellCommand(
+            "copy /y report-source.json frontend\\report.json > nul",
+            "cp report-source.json frontend/report.json"));
 
         var result = await runner.RunAsync("run-1", CancellationToken.None);
 
@@ -60,7 +63,7 @@ public sealed class ProcessTestReportRunnerTests
     [TestMethod]
     public async Task RunAsync_BringsBackNothingWhenTheCommandWroteNoReport()
     {
-        var runner = CreateRunner("true");
+        var runner = CreateRunner(NoOpCommand());
 
         var result = await runner.RunAsync("run-1", CancellationToken.None);
 
@@ -81,7 +84,7 @@ public sealed class ProcessTestReportRunnerTests
     [TestMethod]
     public async Task RunAsync_DoesNotTakeTheReportOfAnEarlierRun()
     {
-        var runner = CreateRunner("true");
+        var runner = CreateRunner(NoOpCommand());
         await File.WriteAllTextAsync(Path.Combine(_root, "frontend", "report.json"), "{\"stats\":{}}");
 
         var result = await runner.RunAsync("run-1", CancellationToken.None);
@@ -92,10 +95,15 @@ public sealed class ProcessTestReportRunnerTests
     [TestMethod]
     public async Task RunAsync_ReportsTheExitCodeOfAFailedCommand()
     {
-        var runner = CreateRunner("exit 3");
+        var runner = CreateRunner(ShellCommand("exit /b 3", "exit 3"));
 
         var result = await runner.RunAsync("run-1", CancellationToken.None);
 
         result.ExitCode.Should().Be(3);
     }
+
+    private static string NoOpCommand() => ShellCommand("ver > nul", "true");
+
+    private static string ShellCommand(string windows, string unix) =>
+        OperatingSystem.IsWindows() ? windows : unix;
 }

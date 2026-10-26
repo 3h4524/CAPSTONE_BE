@@ -14,6 +14,46 @@ test("shared composition interpolates the same crop at first middle and final fr
   assert.equal(getSceneFrame(scene, 44.5).crop.width, .9);
 });
 
+test("custom first and last keyframes interpolate framing on one source image", () => {
+  const startCrop = { x: .08, y: .12, width: .82, height: .76 };
+  const endCrop = { x: .2, y: .15, width: .62, height: .68 };
+  const custom = { ...scene, mockupId: "approved-keyframe", crop: startCrop, endCrop };
+
+  assert.equal(custom.mockupId, "approved-keyframe");
+  assert.deepEqual(getSceneFrame(custom, 0).crop, startCrop);
+  assert.deepEqual(getSceneFrame(custom, 89).crop, endCrop);
+  assert.deepEqual(getSceneFrame(custom, 44.5).crop, {
+    x: .14, y: .135, width: .72, height: .72,
+  });
+  const firstGeometry = getShotImageGeometry(custom, { url: "same-image", width: 1200, height: 1600 }, 0);
+  const lastGeometry = getShotImageGeometry(custom, { url: "same-image", width: 1200, height: 1600 }, 89);
+  assert.equal(firstGeometry.mode, "crop");
+  assert.equal(lastGeometry.mode, "crop");
+  assert.notDeepEqual(firstGeometry, lastGeometry);
+});
+
+test("crop geometry maps the editor viewport exactly to the output canvas", () => {
+  const custom = {
+    ...scene,
+    crop: { x: .2, y: .1, width: .6, height: .75 },
+    endCrop: { x: .2, y: .1, width: .6, height: .75 },
+  };
+  const geometry = getShotImageGeometry(
+    custom,
+    { url: "portrait-keyframe", width: 768, height: 1376 },
+    0,
+    { width: 1080, height: 1920 }
+  );
+
+  assert.deepEqual(geometry, {
+    mode: "crop",
+    width: 1800,
+    height: 2560,
+    left: -360,
+    top: -256,
+  });
+});
+
 test("contain_gentle keeps contain layout while applying a bounded scale", () => {
   const contained = { ...scene, motion: "contain_gentle" };
   assert.equal(getShotImageGeometry(contained, { url: "asset", width: 1200, height: 800 }, 0).mode, "contain");

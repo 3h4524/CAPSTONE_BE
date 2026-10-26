@@ -59,10 +59,17 @@ public sealed class BatchProductPromptService(
         if (!loaded.CanEdit)
             return Result.Failure<BatchProductPromptResponseDto>(BatchProductPromptErrors.NotPending());
 
+        // The product's own image prompt is set first: it decides what the prompt is made from.
+        var customPromptChanged = request.CustomPrompt is not null && loaded.Product is not null
+            && loaded.Product.CustomPrompt != PromptComposer.NullIfEmpty(request.CustomPrompt);
+        if (customPromptChanged)
+            loaded.Product!.CustomPrompt = PromptComposer.NullIfEmpty(request.CustomPrompt);
+
         var defaults = await DefaultComponentsAsync(loaded, cancellationToken);
         var components = new PromptComponents(
             request.Subject.Trim(),
-            request.ArtStyle.Trim(),
+            // The product's own image prompt sets the look, so no art style is kept for it.
+            defaults.OwnPrompt ? string.Empty : request.ArtStyle.Trim(),
             request.MoodTone.Trim(),
             PromptComposer.Normalize(request.NegativeTerms),
             PromptComposer.Normalize(request.Instructions));
@@ -77,6 +84,11 @@ public sealed class BatchProductPromptService(
         loaded.Row.CustomNegativeTerms = PromptComposer.NullIfEmpty(components.NegativeTerms);
         loaded.Row.CustomInstructions = PromptComposer.NullIfEmpty(components.Instructions);
         loaded.Row.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+        if (customPromptChanged)
+        {
+            loaded.Product!.UpdatedAt = loaded.Row.UpdatedAt;
+            await products.UpdateAsync(loaded.Product, cancellationToken: cancellationToken);
+        }
         await rows.UpdateAsync(loaded.Row, saveChange: true, cancellationToken);
 
         return Result.Success(Respond(loaded, defaults, components));
@@ -143,14 +155,17 @@ public sealed class BatchProductPromptService(
         defaults with
         {
             Subject = row.CustomSubject ?? defaults.Subject,
-            ArtStyle = row.CustomArtStyle ?? defaults.ArtStyle,
+            ArtStyle = defaults.OwnPrompt ? string.Empty : row.CustomArtStyle ?? defaults.ArtStyle,
             MoodTone = row.CustomMoodTone ?? defaults.MoodTone,
             NegativeTerms = row.CustomNegativeTerms ?? string.Empty,
             Instructions = row.CustomInstructions ?? string.Empty
         };
 
-    private static string Compose(PromptComponents defaults, PromptComponents components) =>
-        PromptComposer.Compose(
+    private static string Compose(PromptComponents defaults, PromptComponents components)
+    {
+        // Fitted to the phrase the Seller may have changed, as the prompt synthesized for the job is.
+        var fitted = ArtworkPromptRules.Fit(defaults with { Subject = components.Subject });
+        return PromptComposer.Compose(
             defaults.BasePrompt,
             components.Subject,
             components.ArtStyle,
@@ -159,8 +174,9 @@ public sealed class BatchProductPromptService(
             components.Instructions,
             defaults.Niche,
             defaults.StyleModifiers,
-            defaults.Keywords,
-            defaults.Description);
+            fitted.Keywords,
+            fitted.Description);
+    }
 
     private static BatchProductPromptResponseDto Respond(LoadedRow loaded, PromptComponents defaults, PromptComponents effective)
     {
@@ -186,7 +202,8 @@ public sealed class BatchProductPromptService(
             effectivePrompt,
             effectivePrompt.Length,
             customized,
-            loaded.CanEdit);
+            loaded.CanEdit,
+            loaded.Product?.CustomPrompt);
     }
 
     private sealed record LoadedRow(BatchJobProduct Row, BatchJob Batch, Product? Product, bool CanEdit);

@@ -17,10 +17,13 @@ public interface IAiStudioFrameService
 
 /// <summary>Prepares, prices and reuses reviewed product studio keyframes for showcase scenes.</summary>
 public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
-    IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IImageGenerationProvider images,
+    IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IEnumerable<IImageGenerationProvider> imageProviders,
     IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
     ILogger<AiStudioFrameService> logger) : IAiStudioFrameService
 {
+    // Gemini is the provider that can make a frame from the product source and its reference images.
+    private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Gemini);
+
     public const int MaximumSourceBytes = 20 * 1024 * 1024;
     public const int MaximumReferenceCount = 3;
     public const int MaximumCombinedSourceBytes = 40 * 1024 * 1024;

@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.AI;
 using APCS.Application.Features.BatchProductPrompts.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using FluentValidation;
@@ -16,5 +17,7 @@ public sealed class StartGenerationValidator : AbstractValidator<StartGeneration
             .WithMessage($"Aspect ratio must be one of: {string.Join(", ", AllowedAspectRatios)}.");
         RuleFor(x => x.Instructions).MaximumLength(PromptRules.MaximumInstructionsLength)
             .WithMessage($"Instructions cannot exceed {PromptRules.MaximumInstructionsLength} characters.");
+        RuleFor(x => x.ImageProvider).Must(x => x is null || ImageGenerationProviders.All.Contains(x))
+            .WithMessage($"Image provider must be one of: {string.Join(", ", ImageGenerationProviders.All)}.");
     }
 }

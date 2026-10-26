@@ -1,7 +1,9 @@
 using System.Globalization;
 using APCS.Api.Extensions;
+using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
 using APCS.Common.Constants;
+using APCS.Domain.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,12 +13,21 @@ namespace APCS.Api.Controllers;
 [Authorize(Roles = AuthConstants.UserRole)]
 [Route("api")]
 public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning,
-    ILifestyleMockupService lifestyle, IAiStudioFrameService studioFrames) : ControllerBase
+    ILifestyleMockupService lifestyle, IAiStudioFrameService studioFrames, IRepository<MusicTrack>? musicTracks = null) : ControllerBase
 {
     [HttpGet("workflows/video-templates")]
     public async Task<IActionResult> Templates(CancellationToken ct) => (await planning.ListTemplatesAsync(ct)).ToActionResult(this);
     [HttpGet("workflows/ai-video-templates")]
     public async Task<IActionResult> AiTemplates(CancellationToken ct) => (await planning.ListAiTemplatesAsync(ct)).ToActionResult(this);
+    [HttpGet("music-tracks")]
+    public async Task<IActionResult> Music(CancellationToken ct)
+    {
+        if (musicTracks is null) return Ok(Array.Empty<object>());
+        var tracks = await musicTracks.FindAsync(track => track.DeletedAt == null && track.IsAvailable == true && track.RoyaltyFree &&
+            track.LicenseType != null && track.LicenseType != "" && track.AudioUrl != null && track.AudioUrl != "", ct);
+        return Ok(tracks.OrderBy(track => track.Name).Select(track => new { track.Id, track.Name, track.ArtistName, track.DurationSeconds, track.Genre, track.Mood,
+            License = track.LicenseType, PreviewUrl = track.PreviewUrl ?? track.AudioUrl }));
+    }
 
     [HttpPost("products/{productId:guid}/video-storyboard")]
     public async Task<IActionResult> Storyboard(Guid productId, PreviewStoryboardRequest request, CancellationToken ct) => (await planning.PreviewAsync(productId, request, ct)).ToActionResult(this);

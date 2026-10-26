@@ -35,6 +35,17 @@ public interface IDesignGenerationService
     Task<Result<StartGenerationResponseDto>> RetryFailedAsync(Guid batchJobId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Generates one product of a finished job again, after saving the Seller's changes to its own image prompt and
+    /// design text: its prompt is made again and the job runs for that product alone. The earlier designs are kept and
+    /// the new ones are added after them. Consumes image-generation quota like any generation.
+    /// </summary>
+    Task<Result<StartGenerationResponseDto>> RegenerateProductAsync(
+        Guid batchJobId,
+        Guid batchJobProductId,
+        RegenerateProductRequestDto request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Asks a queued or running job to stop. The product being generated finishes; the ones after it are
     /// failed as cancelled and can be generated again with "Retry failed products".
     /// </summary>
