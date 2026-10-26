@@ -12,6 +12,8 @@ public sealed record GeneratedImageDto(
 /// <summary>Per-product state and result inside a batch job (SRS 3.4.10 table, 3.5.12 grid).</summary>
 /// <param name="DesignText">The words the product's designs print, as the product has them now.</param>
 /// <param name="CustomPrompt">The product's own image prompt, as it has it now; null when its designs come from the template.</param>
+/// <param name="DesignTemplateId">The template the product's designs are made from now.</param>
+/// <param name="Instructions">The instructions set for this product in the job; null uses the job's.</param>
 public sealed record BatchJobProductResultDto(
     Guid Id,
     Guid? ProductId,
@@ -22,7 +24,9 @@ public sealed record BatchJobProductResultDto(
     string? ErrorMessage,
     IReadOnlyList<GeneratedImageDto> Images,
     string? DesignText = null,
-    string? CustomPrompt = null);
+    string? CustomPrompt = null,
+    Guid? DesignTemplateId = null,
+    string? Instructions = null);
 
 /// <summary>SRS BR45 counters: Pending, Processing, Completed, Failed.</summary>
 public sealed record BatchJobCountersDto(int Pending, int Processing, int Completed, int Failed);

@@ -183,13 +183,17 @@ public static partial class ArtworkPromptRules
             && components.Instructions.Trim().Length == 0;
     }
 
-    // With a phrase template, the keywords and description less what repeats the phrase.
+    // With a phrase template, the keywords and description less what repeats the phrase. Words quoted in the description
+    // are left out unless they are the phrase: only the phrase is printed, and a model asked for quoted words draws them.
     private static (string Keywords, string Description) PhraseFitted(PromptComponents components)
     {
         var phrase = components.Subject.Trim();
-        return PrintsExactPhrase(components.BasePrompt) && phrase.Length > 0
-            ? (WithoutPhraseWords(components.Keywords, phrase), WithoutPhrase(components.Description, phrase))
-            : (components.Keywords, components.Description);
+        var printsPhrase = PrintsExactPhrase(components.BasePrompt) && phrase.Length > 0;
+        var description = WithoutOtherQuotedText(components.Description, printsPhrase ? phrase : null);
+        if (!description.Any(char.IsLetterOrDigit)) description = string.Empty;
+        return printsPhrase
+            ? (WithoutPhraseWords(components.Keywords, phrase), WithoutPhrase(description, phrase))
+            : (components.Keywords, description);
     }
 
     /// <summary>True when the template prints the subject as an exact quoted phrase, as typography templates do.</summary>
@@ -310,8 +314,9 @@ public static partial class ArtworkPromptRules
     private static partial Regex Word();
 
     // Quoted words, straight or curly, with what leads up to them ("and", "with the words", "reading" ...) and what says
-    // where or how they are lettered ("underneath" ending a clause, "in bold letters").
-    [GeneratedRegex(@"(?:(?:\s*,\s*|\s+)(?:and|with|reading|saying|plus)\b)?(?:(?:^|\s+)the\b)?(?:(?:^|\s+)(?:text|words?|phrase|slogan|quote|saying|lettering|title|caption)\b)?\s*:?\s*[""“](?<text>[^""“”]*)[""”]" +
+    // where or how they are lettered ("underneath" ending a clause, "in bold letters"). A quote mark glued to a number or
+    // word, or one followed by a space, is not an opening quote: 12" x 18" is a size.
+    [GeneratedRegex(@"(?:(?:\s*,\s*|\s+)(?:and|with|reading|saying|plus)\b)?(?:(?:^|\s+)the\b)?(?:(?:^|\s+)(?:text|words?|phrase|slogan|quote|saying|lettering|title|caption)\b)?\s*:?\s*(?<![\p{L}\p{N}])[""“](?<text>[^""“”\s][^""“”]*)[""”]" +
         @"(?:\s+(?:(?:underneath|beneath|below|above|on top|at the (?:top|bottom)|(?:under|below|above) it)(?=\s*(?:[,.;!?]|$))|in (?:[\p{L}-]+\s+){0,3}(?:letters|lettering|font|type|typeface|script|typography)\b))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex QuotedTextWithLeadIn();
