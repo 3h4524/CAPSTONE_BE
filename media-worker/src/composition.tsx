@@ -1,5 +1,5 @@
 import { getSceneFrame, getShotImageGeometry, getTransitionFrameStyle, type StandardVideoScene, type StandardVideoSource, type VideoTransition } from "@apcs/video-composition";
-import { AbsoluteFill, Audio, Composition, Img, OffthreadVideo, Sequence, interpolate, registerRoot, useCurrentFrame } from "remotion";
+import { AbsoluteFill, Audio, Composition, Freeze, Img, OffthreadVideo, Sequence, interpolate, registerRoot, useCurrentFrame } from "remotion";
 import type { RenderProps } from "./contracts";
 
 function Shot({ scene, source, width, height }: { scene: StandardVideoScene; source: StandardVideoSource; width: number; height: number }) {
@@ -39,19 +39,21 @@ function Music({ storyboard, src }: { storyboard: RenderProps["storyboard"]; src
 
 function Showcase({ storyboard, sources, clips = {}, music }: RenderProps) {
   let offset = 0;
+  const legacy = storyboard.outputDurationFrames == null;
   return <AbsoluteFill style={{ backgroundColor: "#111827" }}>{storyboard.scenes.map((scene, index) => {
     const overlapFrames = scene.transitionFrames || (storyboard.outputDurationFrames == null ? storyboard.transitionOverlapFrames : 0);
-    const from = Math.max(0, offset - overlapFrames);
-    offset = from + scene.durationFrames;
+    const from = legacy ? Math.max(0, offset - overlapFrames) : offset;
+    offset = legacy ? from + scene.durationFrames : offset + scene.durationFrames;
     const source = sources[scene.mockupId];
     if (!source) throw new Error("Missing immutable scene source");
     const next = storyboard.scenes[index + 1];
     const nextTransition = next?.transition ?? "none";
     const nextOverlapFrames = next?.transitionFrames || (storyboard.outputDurationFrames == null ? storyboard.transitionOverlapFrames : 0);
-    return <Sequence key={`${scene.sceneOrder}-${scene.mockupId}`} from={from} durationInFrames={scene.durationFrames}>
+    const renderDuration = legacy ? scene.durationFrames : scene.durationFrames + nextOverlapFrames;
+    return <Sequence key={`${scene.sceneOrder}-${scene.mockupId}`} from={from} durationInFrames={renderDuration}>
       <TransitionLayer transitionIn={scene.transition} transitionOut={nextTransition} overlapFrames={overlapFrames} nextOverlapFrames={nextOverlapFrames}
         sceneIndex={index} durationFrames={scene.durationFrames} generationStrategy={scene.generationStrategy}
-        legacy={storyboard.outputDurationFrames == null}>
+        legacy={legacy}>
         {scene.generationStrategy === "ai_shot"
           ? <AiClip src={clips[scene.sceneOrder]} width={storyboard.width} height={storyboard.height} text={scene.text} trimStartFrames={scene.trimStartFrames} />
           : <Shot scene={scene} source={source} width={storyboard.width} height={storyboard.height} />}
@@ -74,12 +76,14 @@ function TransitionLayer({ children, transitionIn, transitionOut, overlapFrames,
       style = { ...style, opacity: interpolate(frame, [0, overlapFrames], [0, 1], { extrapolateRight: "clamp" }) };
   } else if (sceneIndex > 0 && frame < overlapFrames) {
     style = getTransitionFrameStyle(transitionIn, frame, overlapFrames, "incoming");
-  } else if (transitionOut !== "none" && transitionOut !== "cut" && nextOverlapFrames > 0 && frame >= durationFrames - nextOverlapFrames) {
-    const outgoing = getTransitionFrameStyle(transitionOut, frame - (durationFrames - nextOverlapFrames), nextOverlapFrames, "outgoing");
+  } else if (transitionOut !== "none" && transitionOut !== "cut" && nextOverlapFrames > 0 && frame >= durationFrames) {
+    const outgoing = getTransitionFrameStyle(transitionOut, frame - durationFrames, nextOverlapFrames, "outgoing");
     style = { ...outgoing, flashOpacity: 0 };
   }
   return <AbsoluteFill style={{ opacity: style.opacity, transform: style.transform, clipPath: style.clipPath as React.CSSProperties["clipPath"], filter: style.filter }}>
-    {children}
+    {!legacy && frame >= durationFrames
+      ? <Freeze frame={Math.max(0, durationFrames - 1)}>{children}</Freeze>
+      : children}
     {style.flashOpacity > 0 && <AbsoluteFill style={{ backgroundColor: "white", opacity: style.flashOpacity }} />}
   </AbsoluteFill>;
 }

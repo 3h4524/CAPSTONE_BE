@@ -93,7 +93,9 @@ public sealed class VideoStoryboardPlanner
         var outputFrames = config.DurationSeconds * 30;
         var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
         var overlapFrames = transition == "none" ? 0 : TransitionFrames;
-        var totalFrames = outputFrames + overlapFrames * (ordered.Count - 1);
+        // A transition is composited over the boundary between two scene slots. It must not add
+        // frames to either slot or shorten the exported video.
+        var totalFrames = outputFrames;
         var scenes = ordered.Select((asset, index) => CreateScene(asset, product.ProductType, config, index,
             totalFrames / ordered.Count + (index < totalFrames % ordered.Count ? 1 : 0),
             config.Mode == "standard" ? config.StandardScenes?.SingleOrDefault(scene => scene.MockupId == asset.Id) : null) with
@@ -293,7 +295,7 @@ public sealed class VideoStoryboardPlanner
                 prompt, requested.DurationSeconds, fingerprint, AiVideoModel.ProviderKey, AiVideoModel.ModelKey, definition.PromptVersion, sourceCrop));
         }
 
-        var outputFrames = plannedScenes.Sum(scene => scene.DurationFrames) - plannedScenes.Sum(scene => scene.TransitionFrames);
+        var outputFrames = plannedScenes.Sum(scene => scene.DurationFrames);
         var duration = Math.Max(1, (int)Math.Ceiling(outputFrames / 30d));
         var overlapFrames = plannedScenes.Select(scene => scene.TransitionFrames).DefaultIfEmpty().Max();
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
@@ -396,7 +398,7 @@ public sealed class VideoStoryboardPlanner
             var singleSceneTransition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
             var singleSceneOverlapFrames = standard.Scenes.Count > 1 && singleSceneTransition != "none" ? TransitionFrames : 0;
             var singleSceneOutputFrames = standard.DurationSeconds * 30;
-            var remaining = singleSceneOutputFrames + singleSceneOverlapFrames * (standard.Scenes.Count - 1) - 180;
+            var remaining = singleSceneOutputFrames - 180;
             var stillPosition = 0;
             var scenes = standard.Scenes.Select((scene, index) => index == options.SceneIndex
                 ? CreateScene(source, standard.ProductType, config, index, 180) with { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : singleSceneTransition }
@@ -421,7 +423,7 @@ public sealed class VideoStoryboardPlanner
         }
         var transition = NormalizeTransition(config.StandardOptions?.Transition ?? "none");
         var overlapFrames = count > 1 && transition != "none" ? TransitionFrames : 0;
-        var outputFrames = count * 240 - overlapFrames * (count - 1);
+        var outputFrames = count * 240;
         var fullScenes = allSources.Select((asset, index) => CreateScene(asset, standard.ProductType, config, index, 240) with
         { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : transition,
             TransitionFrames = index == 0 || transition == "none" ? 0 : TransitionFrames }).ToArray();
