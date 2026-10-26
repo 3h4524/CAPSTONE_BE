@@ -23,9 +23,6 @@ public partial class Product
 
     public string? DesiredDesignText { get; set; }
 
-    /// <summary>The Seller's own image prompt, which replaces the design template for this product.</summary>
-    public string? CustomPrompt { get; set; }
-
     public string? StylePreset { get; set; }
 
     public string? MainKeywords { get; set; }

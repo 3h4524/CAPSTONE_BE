@@ -13,7 +13,7 @@ for (const [index, type] of types.entries()) {
   const directory = resolve("artifacts", type); await mkdir(directory, { recursive: true });
   const image = fixtureImage(index); const base = fixtureBoard(type, image);
   const overlapFrames = 12;
-  const sceneFrames = (base.durationSeconds * 30 + overlapFrames) / 2;
+  const sceneFrames = (base.durationSeconds * 30) / 2;
   const board = { ...base, outputDurationFrames: base.durationSeconds * 30, transitionOverlapFrames: overlapFrames,
     scenes: base.scenes.map((scene, sceneIndex) => ({ ...scene, durationFrames: sceneFrames, transition: sceneIndex === 0 ? "none" as const : "fade" as const })) };
   await writeFile(join(directory, "source.png"), image);

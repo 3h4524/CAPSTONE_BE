@@ -90,7 +90,7 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized, normalized);
         result.Value.TransitionOverlapFrames.Should().Be(overlap);
         result.Value.OutputDurationFrames.Should().Be(360);
-        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360 + overlap * 3);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360);
     }
 
     [TestMethod]
@@ -497,7 +497,7 @@ public sealed class VideoStoryboardPlannerTests
         var board = result.Value;
         board.Mode.Should().Be("ai_shot");
         board.Scenes.Select(x => x.GenerationStrategy).Should().Equal("standard", "ai_shot", "standard");
-        board.Scenes.Select(x => x.DurationFrames).Should().Equal(117, 180, 117);
+        board.Scenes.Select(x => x.DurationFrames).Should().Equal(105, 180, 105);
         board.OutputDurationFrames.Should().Be(390);
         board.TransitionOverlapFrames.Should().Be(12);
         board.Scenes.Select(x => x.Transition).Should().Equal("none", "fade", "fade");
@@ -510,7 +510,7 @@ public sealed class VideoStoryboardPlannerTests
 
     [TestMethod]
     [DataRow(8, 1, "fade", 0, 240)]
-    [DataRow(15, 2, "fade", 12, 468)]
+    [DataRow(15, 2, "fade", 12, 480)]
     [DataRow(15, 2, "none", 0, 480)]
     [DataRow(15, 2, "cut", 0, 480)]
     public void Plan_FullAiVideo_UsesSelectedTransitionAndActualOutputFrames(int duration, int clipCount, string transition, int overlap, int outputFrames)
@@ -531,7 +531,7 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.AiShots.Should().HaveCount(clipCount).And.OnlyContain(x => x.DurationSeconds == 8);
         result.Value.TransitionOverlapFrames.Should().Be(overlap);
         result.Value.OutputDurationFrames.Should().Be(outputFrames);
-        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap * (clipCount - 1)).Should().Be(outputFrames);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(outputFrames);
         if (clipCount == 1) result.Value.Scenes.Select(x => x.Transition).Should().Equal("none");
         else result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", transition == "cut" ? "none" : transition);
         if (clipCount == 2) result.Value.Scenes.Select(x => x.MockupId).Should().Equal(hero.Id, angle.Id);
@@ -560,8 +560,8 @@ public sealed class VideoStoryboardPlannerTests
         var normalized = transition == "cut" ? "none" : transition;
         result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized);
         result.Value.TransitionOverlapFrames.Should().Be(overlap);
-        result.Value.OutputDurationFrames.Should().Be(360 - overlap * 2);
-        (result.Value.Scenes.Sum(x => x.DurationFrames) - overlap * 2).Should().Be(result.Value.OutputDurationFrames);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(result.Value.OutputDurationFrames);
     }
 
     [TestMethod]
@@ -578,7 +578,7 @@ public sealed class VideoStoryboardPlannerTests
 
         withFade.Fingerprint.Should().NotBe(withNone.Fingerprint);
         withFade.AiShots!.Select(shot => shot.Fingerprint).Should().Equal(withNone.AiShots!.Select(shot => shot.Fingerprint));
-        withFade.OutputDurationFrames.Should().Be(228);
+        withFade.OutputDurationFrames.Should().Be(240);
         withNone.OutputDurationFrames.Should().Be(240);
     }
 

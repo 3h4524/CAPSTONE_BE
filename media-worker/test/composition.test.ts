@@ -32,6 +32,28 @@ test("custom first and last keyframes interpolate framing on one source image", 
   assert.notDeepEqual(firstGeometry, lastGeometry);
 });
 
+test("crop geometry maps the editor viewport exactly to the output canvas", () => {
+  const custom = {
+    ...scene,
+    crop: { x: .2, y: .1, width: .6, height: .75 },
+    endCrop: { x: .2, y: .1, width: .6, height: .75 },
+  };
+  const geometry = getShotImageGeometry(
+    custom,
+    { url: "portrait-keyframe", width: 768, height: 1376 },
+    0,
+    { width: 1080, height: 1920 }
+  );
+
+  assert.deepEqual(geometry, {
+    mode: "crop",
+    width: 1800,
+    height: 2560,
+    left: -360,
+    top: -256,
+  });
+});
+
 test("contain_gentle keeps contain layout while applying a bounded scale", () => {
   const contained = { ...scene, motion: "contain_gentle" };
   assert.equal(getShotImageGeometry(contained, { url: "asset", width: 1200, height: 800 }, 0).mode, "contain");
