@@ -73,6 +73,29 @@ public sealed class ArtworkPromptRulesTests
     }
 
     [TestMethod]
+    [DataRow("A mug with the words \"Best Dad\" and a coffee cup.", "A mug and a coffee cup.")]
+    [DataRow("A mug with \"Coffee Then Code\" and \"EST 2020\" under it.", "A mug.")]
+    [DataRow("Sized for a 12\" x 18\" frame.", "Sized for a 12\" x 18\" frame.")]
+    public void Fit_PhraseTemplate_LeavesOutQuotedWordsThatAreNotThePhrase(string description, string expected)
+    {
+        ArtworkPromptRules.Fit(Components("Coffee Then Code", "laptop", description)).Description.Should().Be(expected);
+    }
+
+    [TestMethod]
+    public void Fit_PictureTemplate_LeavesOutQuotedWords_ItPrintsNoWords()
+    {
+        var fitted = ArtworkPromptRules.Fit(Components("Fox", "", "A fox under a pine with \"Stay Wild\".", "A watercolor of {subject}."));
+
+        fitted.Description.Should().Be("A fox under a pine.");
+    }
+
+    [TestMethod]
+    public void Fit_DescriptionThatIsOnlyQuotedWords_IsDropped()
+    {
+        ArtworkPromptRules.Fit(Components("Coffee Then Code", "laptop", "\"Best Dad\"")).Description.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public void Fit_PhraseTemplate_NoMotifLeft_UsesTheStandIn()
     {
         ArtworkPromptRules.Fit(Components("Coffee Then Code", "coffee")).Keywords.Should().Be(ArtworkPromptRules.FallbackMotifs);
