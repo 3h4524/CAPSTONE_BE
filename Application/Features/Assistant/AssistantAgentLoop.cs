@@ -5,6 +5,7 @@ using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Tools;
+using APCS.Application.Features.Rag.Dtos;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -14,12 +15,18 @@ public sealed class AssistantAgentLoop(
     IAssistantChatModel chatModel,
     AssistantPromptBuilder promptBuilder,
     AssistantToolRegistry registry,
+    AssistantKnowledgeBase knowledgeBase,
     IRepository<AssistantConversation> conversations,
     IRepository<AssistantMessage> messages,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     ILogger<AssistantAgentLoop> logger)
 {
+    private const string KnowledgeToolName = "search_faq";
+    private const string PrefetchCallId = "prefetch";
+    private const string CachedModelName = "cache";
+    private const int ReplayChunkChars = 48;
+
     public async IAsyncEnumerable<AssistantStreamEvent> RunAsync(
         AssistantChatSession session,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -27,17 +34,39 @@ public sealed class AssistantAgentLoop(
         yield return AssistantStreamEvent.Conversation(session.ConversationId, session.UserMessageId);
 
         var toolContext = new AssistantToolContext(session.ConversationId, session.UserId, session.Caller, session.Context);
+        var state = new AssistantTurnState();
+
+        var cachedAnswer = await knowledgeBase.GetAnswerAsync(session, cancellationToken);
+        if (cachedAnswer is not null)
+        {
+            foreach (var cachedEvent in ReplayCachedAnswer(cachedAnswer, state))
+                yield return cachedEvent;
+            state.AssistantMessageId = await SaveAssistantMessageAsync(session, state);
+            yield return AssistantStreamEvent.Done(state.AssistantMessageId, CachedModelName, 0, 0);
+            yield break;
+        }
+
+        IReadOnlyList<RagSearchResultDto> articles = [];
+        if (AssistantKnowledgeBase.ShouldPrefetch(session))
+        {
+            yield return AssistantStreamEvent.ToolStarted(PrefetchCallId, KnowledgeToolName);
+            articles = await knowledgeBase.PrefetchAsync(session, cancellationToken);
+            state.ToolCalls.Add(new AssistantToolCallData(KnowledgeToolName, true));
+            yield return AssistantStreamEvent.ToolFinished(PrefetchCallId, KnowledgeToolName, true);
+        }
+
         var tools = registry.Resolve(toolContext);
         var declarations = tools.Select(tool => tool.Declaration).ToArray();
-        var conversation = promptBuilder.Build(session).ToList();
-        var state = new AssistantTurnState();
+        var conversation = promptBuilder.Build(session, articles).ToList();
         var endTurn = false;
+        var skipFinalPass = false;
 
         try
         {
             for (var iteration = 1; iteration <= AssistantLimits.MaxToolIterations + 1; iteration++)
             {
                 AssistantModelUpdate? completed = null;
+                var textBefore = state.Text.Length;
                 await foreach (var update in chatModel.StreamAsync(new(conversation, declarations, !endTurn), cancellationToken))
                 {
                     if (update.Kind == AssistantModelUpdateKind.Text && update.Text is { } text)
@@ -77,10 +106,31 @@ public sealed class AssistantAgentLoop(
                     state.ToolCalls.Add(new AssistantToolCallData(call.Name, outcome.Succeeded));
                     yield return AssistantStreamEvent.ToolFinished(call.CallId, call.Name, outcome.Succeeded);
                     endTurn |= outcome.EndsTurn;
+                    if (outcome.EndsTurn && outcome.FinalText is { Length: > 0 } finalText && state.Text.Length == textBefore)
+                    {
+                        state.AppendText(finalText);
+                        yield return AssistantStreamEvent.Delta(finalText);
+                    }
+
+                    skipFinalPass |= outcome.EndsTurn && (outcome.FinalText is not null || state.Text.Length > textBefore);
                 }
+
+                if (skipFinalPass)
+                    break;
 
                 if (iteration >= AssistantLimits.MaxToolIterations)
                     endTurn = true;
+            }
+
+            if (state.UsedOnlyKnowledgeTools && articles.Count > 0)
+            {
+                var citations = articles
+                    .GroupBy(article => article.DocumentId)
+                    .Select(group => new AssistantCitationData(group.Key, group.First().Title, group.First().SourceUrl))
+                    .ToArray();
+                var citationsEvent = AssistantStreamEvent.Citations(citations);
+                state.Record(citationsEvent);
+                yield return citationsEvent;
             }
         }
         finally
@@ -88,7 +138,30 @@ public sealed class AssistantAgentLoop(
             state.AssistantMessageId = await SaveAssistantMessageAsync(session, state);
         }
 
+        if (state.UsedOnlyKnowledgeTools && state.Error is null)
+            await knowledgeBase.SaveAnswerAsync(session, new AssistantCachedAnswer(state.Text, state.Citations), CancellationToken.None);
+
         yield return AssistantStreamEvent.Done(state.AssistantMessageId, state.Model ?? chatModel.ModelName, state.InputTokens, state.OutputTokens);
+    }
+
+    private static IEnumerable<AssistantStreamEvent> ReplayCachedAnswer(AssistantCachedAnswer answer, AssistantTurnState state)
+    {
+        yield return AssistantStreamEvent.ToolStarted(PrefetchCallId, KnowledgeToolName);
+        state.ToolCalls.Add(new AssistantToolCallData(KnowledgeToolName, true));
+        yield return AssistantStreamEvent.ToolFinished(PrefetchCallId, KnowledgeToolName, true);
+        if (answer.Citations.Count > 0)
+        {
+            var citationsEvent = AssistantStreamEvent.Citations(answer.Citations);
+            state.Record(citationsEvent);
+            yield return citationsEvent;
+        }
+
+        for (var offset = 0; offset < answer.Text.Length; offset += ReplayChunkChars)
+        {
+            var chunk = answer.Text.Substring(offset, Math.Min(ReplayChunkChars, answer.Text.Length - offset));
+            state.AppendText(chunk);
+            yield return AssistantStreamEvent.Delta(chunk);
+        }
     }
 
     private async Task<AssistantToolOutcome> ExecuteToolSafelyAsync(
@@ -166,6 +239,10 @@ public sealed class AssistantAgentLoop(
         public Guid AssistantMessageId { get; set; }
 
         public string Text => text.ToString();
+
+        public IReadOnlyList<AssistantCitationData> Citations => citations;
+
+        public bool UsedOnlyKnowledgeTools => ToolCalls.All(call => call.Name == KnowledgeToolName) && clientActions.Count == 0 && pendingActionIds.Count == 0 && choices is null;
 
         public bool HasContent => text.Length > 0 || Error is not null || ToolCalls.Count > 0;
 

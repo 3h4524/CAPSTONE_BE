@@ -6,7 +6,7 @@ using APCS.Common.Models;
 
 namespace APCS.Application.Features.Assistant.Tools.Confirmations;
 
-public sealed record WorkflowRunActionArgs(string? RunId, string? Action, string? VideoId);
+public sealed record WorkflowRunActionArgs(string? RunId, string? Action, string? VideoId, string? Reply);
 
 public sealed record WorkflowRunActionStoredArgs(
     Guid RunId,
@@ -41,10 +41,12 @@ public sealed class WorkflowRunActionTool(
         "Prepare an action on a workflow run (cancel, continue after mockup approval, retry, retry listing, approve or reject the video). The user must confirm.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"runId":{"type":"string","description":"Run id (GUID). Optional when the run in app_context is meant."},"action":{"type":"string","enum":["cancel","resume_mockups","retry","retry_listing","approve_video","reject_video"]},"videoId":{"type":"string","description":"Video id (GUID) for approve_video or reject_video. Defaults to the newest version."}},"required":["action"]}
+        {"type":"object","properties":{"runId":{"type":"string","description":"Run id (GUID). Optional when the run in app_context is meant."},"action":{"type":"string","enum":["cancel","resume_mockups","retry","retry_listing","approve_video","reject_video"]},"videoId":{"type":"string","description":"Video id (GUID) for approve_video or reject_video. Defaults to the newest version."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the action is ready and they must press Confirm."}},"required":["action","reply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => context.Caller.IsSeller;
+
+    protected override string? ReplyOf(WorkflowRunActionArgs arguments) => arguments.Reply;
 
     protected override async Task<Result<AssistantPendingActionDraft>> PreflightAsync(
         AssistantToolContext context,

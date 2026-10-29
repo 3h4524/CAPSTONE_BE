@@ -16,6 +16,8 @@ public sealed class AssistantOptions
     [Range(256, 8192)]
     public int MaxOutputTokens { get; set; } = 2048;
 
+    public string ThinkingLevel { get; set; } = "Low";
+
     [Range(0, 5)]
     public int RateLimitRetries { get; set; } = 2;
 

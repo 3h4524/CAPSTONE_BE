@@ -20,7 +20,7 @@ public sealed class NavigateAndChoicesToolTests
         var outcome = await new NavigateTool().ExecuteAsync(Context(AssistantTestSupport.Seller), AssistantTestSupport.Json($$"""{"path":"{{path}}","label":"Open"}"""), default);
 
         outcome.Succeeded.Should().BeTrue();
-        outcome.EndsTurn.Should().BeFalse();
+        outcome.EndsTurn.Should().BeTrue();
         outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Which.Kind.Should().Be("navigate");
     }
 
@@ -89,5 +89,39 @@ public sealed class NavigateAndChoicesToolTests
         var outcome = await new OfferChoicesTool().ExecuteAsync(Context(AssistantTestSupport.Seller), AssistantTestSupport.Json(args), default);
 
         outcome.Succeeded.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task Navigate_WithReply_UsesItAsTheFinalText()
+    {
+        var outcome = await new NavigateTool().ExecuteAsync(Context(AssistantTestSupport.Seller), AssistantTestSupport.Json("""{"path":"/usage","label":"Open","reply":"Here is your usage page."}"""), default);
+
+        outcome.FinalText.Should().Be("Here is your usage page.");
+    }
+
+    [TestMethod]
+    public async Task Navigate_WithoutReply_LeavesTheFinalAnswerToTheModel()
+    {
+        var outcome = await new NavigateTool().ExecuteAsync(Context(AssistantTestSupport.Seller), AssistantTestSupport.Json("""{"path":"/usage","label":"Open"}"""), default);
+
+        outcome.FinalText.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task OfferChoices_WithQuestion_NeedsNoExtraText()
+    {
+        var outcome = await new OfferChoicesTool().ExecuteAsync(Context(AssistantTestSupport.Seller),
+            AssistantTestSupport.Json("""{"question":"Which?","options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}"""), default);
+
+        outcome.FinalText.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task OfferChoices_WithoutQuestion_LeavesTheTextToTheModel()
+    {
+        var outcome = await new OfferChoicesTool().ExecuteAsync(Context(AssistantTestSupport.Seller),
+            AssistantTestSupport.Json("""{"options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}"""), default);
+
+        outcome.FinalText.Should().BeNull();
     }
 }

@@ -22,7 +22,7 @@ public sealed class OfferChoicesTool : AssistantTool<OfferChoicesArgs>
         "Show 2 to 5 short reply options as clickable chips when you need the user to choose or clarify. Do not use it to confirm write actions.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"question":{"type":"string","description":"Optional question shown above the options."},"options":{"type":"array","description":"2 to 5 options.","items":{"type":"object","properties":{"label":{"type":"string","description":"Chip text, at most 40 characters."},"value":{"type":"string","description":"Message sent when the chip is clicked."}},"required":["label","value"]}},"allowFreeText":{"type":"boolean"}},"required":["options"]}
+        {"type":"object","properties":{"question":{"type":"string","description":"Optional question shown above the options."},"options":{"type":"array","description":"2 to 5 options.","items":{"type":"object","properties":{"label":{"type":"string","description":"Chip text, at most 40 characters."},"value":{"type":"string","description":"Message sent when the chip is clicked."}},"required":["label","value"]}},"allowFreeText":{"type":"boolean"}},"required":["question","options"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => true;
@@ -41,6 +41,6 @@ public sealed class OfferChoicesTool : AssistantTool<OfferChoicesArgs>
             arguments.Question,
             options.Select(option => new AssistantChoiceOptionData(option.Label!, option.Value!)).ToArray(),
             arguments.AllowFreeText ?? true);
-        return Task.FromResult(AssistantToolOutcome.Ok(new { status = "shown" }, true, AssistantStreamEvent.Choices(choices)));
+        return Task.FromResult(AssistantToolOutcome.Ok(new { status = "shown" }, true, AssistantStreamEvent.Choices(choices)).WithFinalText(string.IsNullOrWhiteSpace(arguments.Question) ? null : string.Empty));
     }
 }

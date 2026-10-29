@@ -52,6 +52,7 @@ public sealed class AssistantServiceTests
         var model = new FakeChatModel();
         var loop = new AssistantAgentLoop(
             model, new AssistantPromptBuilder(time), new AssistantToolRegistry([]),
+            new AssistantKnowledgeBase(new Mock<APCS.Application.Abstractions.Rag.IRagService>().Object, new Mock<APCS.Application.Abstractions.Caching.ICacheService>().Object, NullLogger<AssistantKnowledgeBase>.Instance),
             conversations.Object, messages.Object, unitOfWork.Object, time, NullLogger<AssistantAgentLoop>.Instance);
         return new AssistantService(
             currentUser.Object, conversations.Object, messages.Object, pendingActions.Object, conversationStore.Object, purgeQueue.Object, unitOfWork.Object,

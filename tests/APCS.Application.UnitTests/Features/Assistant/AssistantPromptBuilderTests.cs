@@ -71,4 +71,39 @@ public sealed class AssistantPromptBuilderTests
         text.Should().Contain("secretB").And.NotContain("secretA");
         text.Should().Contain("product-input");
     }
+
+    [TestMethod]
+    public void Build_WithCanvas_AddsTheNodeCatalogToTheSystemPrompt()
+    {
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, [], []);
+        var context = new AssistantClientContextDto("/workflows", null, null, null, canvas);
+
+        var system = builder.Build(AssistantTestSupport.Session("hi", context))[0].Text!;
+
+        system.Should().Contain("<node_catalog>").And.Contain("generate-listing").And.Contain("connectionRules");
+    }
+
+    [TestMethod]
+    public void Build_WithoutCanvasOrForAdmin_DoesNotAddTheNodeCatalog()
+    {
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, [], []);
+        var context = new AssistantClientContextDto("/workflows", null, null, null, canvas);
+
+        builder.Build(AssistantTestSupport.Session("hi"))[0].Text.Should().NotContain("\"connectionRules\"");
+        builder.Build(AssistantTestSupport.Session("hi", context, AssistantTestSupport.Admin))[0].Text.Should().NotContain("\"connectionRules\"");
+    }
+
+    [TestMethod]
+    public void Build_WithArticles_AppendsThemToTheLatestUserMessageAndClipsLongContent()
+    {
+        var article = new APCS.Application.Features.Rag.Dtos.RagSearchResultDto(Guid.NewGuid(), Guid.NewGuid(), "Mockups", "faq", new string('c', 3000), null, .9, new Dictionary<string, object?>());
+
+        var text = builder.Build(AssistantTestSupport.Session("how many"), [article])[^1].Text!;
+
+        text.Should().Contain("<help_articles>").And.Contain("Mockups").And.NotContain(new string('c', 1300));
+    }
+
+    [TestMethod]
+    public void Build_WithoutArticles_OmitsTheBlock() =>
+        builder.Build(AssistantTestSupport.Session("hi"), [])[^1].Text.Should().Be("hi");
 }

@@ -156,4 +156,15 @@ public sealed class StartWorkflowRunToolTests
         result.IsFailure.Should().BeTrue();
         result.Error.Code.Should().Be("StaleWorkflow");
     }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WithReply_CarriesItAsTheFinalText()
+    {
+        var id = Guid.NewGuid();
+        workflows.Setup(w => w.GetAsync(id, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(Workflow(id)));
+
+        var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json($$"""{"workflowId":"{{id}}","reply":"Press Confirm to start."}"""), default);
+
+        outcome.FinalText.Should().Be("Press Confirm to start.");
+    }
 }

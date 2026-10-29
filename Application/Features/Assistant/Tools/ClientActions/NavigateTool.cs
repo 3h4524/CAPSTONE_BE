@@ -2,7 +2,7 @@ using APCS.Application.Features.Assistant.Common;
 
 namespace APCS.Application.Features.Assistant.Tools.ClientActions;
 
-public sealed record NavigateArgs(string? Path, string? Label);
+public sealed record NavigateArgs(string? Path, string? Label, string? Reply);
 
 public sealed class NavigateTool : AssistantTool<NavigateArgs>
 {
@@ -16,7 +16,7 @@ public sealed class NavigateTool : AssistantTool<NavigateArgs>
         "Offer the user a button that opens a page of the app. Only app pages are allowed. The user decides whether to click it.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"path":{"type":"string","description":"App path such as /usage, /batches or /workflows?id=<workflowId>."},"label":{"type":"string","description":"Short button text, at most 40 characters."}},"required":["path","label"]}
+        {"type":"object","properties":{"path":{"type":"string","description":"App path such as /usage, /batches or /workflows?id=<workflowId>."},"label":{"type":"string","description":"Short button text, at most 40 characters."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, telling them the button is ready."}},"required":["path","label","reply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => true;
@@ -32,6 +32,6 @@ public sealed class NavigateTool : AssistantTool<NavigateArgs>
             Guid.NewGuid(),
             "navigate",
             AssistantJson.SerializeToElement(new { path = arguments.Path, label = arguments.Label }));
-        return Task.FromResult(AssistantToolOutcome.Ok(new { status = "offered" }, false, AssistantStreamEvent.ClientAction(action)));
+        return Task.FromResult(AssistantToolOutcome.Ok(new { status = "offered" }, true, AssistantStreamEvent.ClientAction(action)).WithFinalText(arguments.Reply));
     }
 }

@@ -102,6 +102,32 @@ public static class WorkflowNodeCatalog
         new("export-zip", "Export ZIP", "Packages the final assets into a ZIP file.", Order("export-zip"), [])
     ];
 
+    public static readonly Lazy<string> CompactJson = new(() => JsonSerializer.Serialize(
+        new
+        {
+            runOrder = RunOrder,
+            connectionRules = ConnectionRules,
+            nodes = Nodes.Select(node => new
+            {
+                type = node.Type,
+                label = node.Label,
+                runOrder = node.RunOrder,
+                note = node.Note,
+                settings = node.Fields.Select(field => new
+                {
+                    name = field.Name,
+                    kind = field.Kind,
+                    options = field.Options?.Select(option => option.Value).ToArray(),
+                    min = field.Min,
+                    max = field.Max,
+                    maxLength = field.MaxLength,
+                    optional = field.Optional ? true : (bool?)null,
+                    ids = field.Source
+                })
+            })
+        },
+        new JsonSerializerOptions(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }));
+
     public static NodeSpec? Find(string type) => Nodes.FirstOrDefault(node => node.Type == type);
 
     public static int OrderOf(string type) => RunOrder.ToList().IndexOf(type);

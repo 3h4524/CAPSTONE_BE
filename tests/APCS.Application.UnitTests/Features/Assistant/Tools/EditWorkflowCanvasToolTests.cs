@@ -74,4 +74,24 @@ public sealed class EditWorkflowCanvasToolTests
         outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>()
             .Which.Payload.GetProperty("warnings").GetArrayLength().Should().BeGreaterThan(0);
     }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WithReply_CarriesItAsTheFinalText()
+    {
+        var args = """{"operations":[{"op":"rename_node","nodeId":"a","label":"Start"}],"reply":"Review and apply the change."}""";
+
+        var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
+
+        outcome.FinalText.Should().Be("Review and apply the change.");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WithoutReply_LeavesTheFinalAnswerToTheModel()
+    {
+        var args = """{"operations":[{"op":"rename_node","nodeId":"a","label":"Start"}]}""";
+
+        var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
+
+        outcome.FinalText.Should().BeNull();
+    }
 }

@@ -8,7 +8,7 @@ namespace APCS.Infrastructure.Services;
 
 public static partial class RagCacheKeys
 {
-    public const string GenerationKey = "rag:search:generation";
+    public const string GenerationKey = APCS.Application.Features.Rag.Common.RagCacheConstants.SearchGenerationKey;
 
     public static string NormalizeText(string text) => WhiteSpace().Replace(text.Trim(), " ").ToLowerInvariant();
 

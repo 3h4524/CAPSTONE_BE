@@ -14,6 +14,8 @@ public abstract class ConfirmableAssistantTool<TArgs>(
 {
     public sealed override AssistantToolKind Kind => AssistantToolKind.Confirmation;
 
+    protected virtual string? ReplyOf(TArgs arguments) => null;
+
     protected abstract Task<Result<AssistantPendingActionDraft>> PreflightAsync(
         AssistantToolContext context,
         TArgs arguments,
@@ -53,7 +55,7 @@ public abstract class ConfirmableAssistantTool<TArgs>(
         return AssistantToolOutcome.Ok(
             new { status = "awaiting_confirmation", title = action.Title },
             true,
-            AssistantStreamEvent.PendingAction(data));
+            AssistantStreamEvent.PendingAction(data)).WithFinalText(ReplyOf(arguments));
     }
 
     protected static string ValidationCode(Error error) => string.IsNullOrWhiteSpace(error.Code) ? "failed" : error.Code;

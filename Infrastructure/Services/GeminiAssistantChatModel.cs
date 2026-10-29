@@ -3,6 +3,7 @@ using System.Text.Json;
 using APCS.Application.Abstractions.Ai;
 using APCS.Infrastructure.Options;
 using Google.GenAI;
+using Google.GenAI.Types;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -37,7 +38,8 @@ public sealed class GeminiAssistantChatModel(
             Temperature = settings.Temperature,
             MaxOutputTokens = settings.MaxOutputTokens,
             Tools = allowTools ? request.Tools.Select(ToDeclaration).ToList() : null,
-            ToolMode = allowTools ? ChatToolMode.Auto : ChatToolMode.None
+            ToolMode = allowTools ? ChatToolMode.Auto : ChatToolMode.None,
+            RawRepresentationFactory = _ => new GenerateContentConfig { ThinkingConfig = new ThinkingConfig { ThinkingLevel = ResolveThinkingLevel() } }
         };
 
         var updates = new List<ChatResponseUpdate>();
@@ -109,6 +111,14 @@ public sealed class GeminiAssistantChatModel(
             (int?)response.Usage?.OutputTokenCount,
             response.ModelId ?? settings.Model);
     }
+
+    private ThinkingLevel ResolveThinkingLevel() => settings.ThinkingLevel.Trim().ToLowerInvariant() switch
+    {
+        "minimal" => ThinkingLevel.Minimal,
+        "medium" => ThinkingLevel.Medium,
+        "high" => ThinkingLevel.High,
+        _ => ThinkingLevel.Low
+    };
 
     internal static bool IsRateLimited(Exception exception) =>
         exception.Message.Contains("quota", StringComparison.OrdinalIgnoreCase)

@@ -3,7 +3,7 @@ using APCS.Application.Features.Workflows;
 
 namespace APCS.Application.Features.Assistant.Tools.ClientActions;
 
-public sealed record EditWorkflowCanvasArgs(IReadOnlyList<CanvasOperationArgs>? Operations);
+public sealed record EditWorkflowCanvasArgs(IReadOnlyList<CanvasOperationArgs>? Operations, string? Reply);
 
 public sealed class EditWorkflowCanvasTool(
     WorkflowCanvasPatchSimulator simulator,
@@ -30,7 +30,7 @@ public sealed class EditWorkflowCanvasTool(
         "source":{"type":"string"},
         "target":{"type":"string"},
         "configJson":{"type":"string","description":"JSON object text with the config keys to set."}},
-        "required":["op"]}}},"required":["operations"]}
+        "required":["op"]}},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying what you propose and that they can review and apply it."}},"required":["operations","reply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) =>
@@ -62,6 +62,6 @@ public sealed class EditWorkflowCanvasTool(
                 note = "Tell the user to review and click Apply to canvas, then Save."
             },
             true,
-            AssistantStreamEvent.ClientAction(action)));
+            AssistantStreamEvent.ClientAction(action)).WithFinalText(arguments.Reply));
     }
 }

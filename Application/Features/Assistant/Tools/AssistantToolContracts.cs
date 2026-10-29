@@ -16,10 +16,13 @@ public enum AssistantToolKind
 
 public sealed record AssistantToolContext(Guid ConversationId, Guid UserId, AssistantCaller Caller, AssistantClientContextDto? Client);
 
-public sealed record AssistantToolOutcome(string ModelResultJson, bool Succeeded, bool EndsTurn, IReadOnlyList<AssistantStreamEvent> Events)
+public sealed record AssistantToolOutcome(string ModelResultJson, bool Succeeded, bool EndsTurn, IReadOnlyList<AssistantStreamEvent> Events, string? FinalText = null)
 {
     public static AssistantToolOutcome Ok(object result, bool endsTurn = false, params AssistantStreamEvent[] events) =>
         new(AssistantJson.Truncate(AssistantJson.Serialize(result), AssistantLimits.MaxToolResultChars), true, endsTurn, events);
+
+    public AssistantToolOutcome WithFinalText(string? finalText) =>
+        string.IsNullOrWhiteSpace(finalText) && finalText != string.Empty ? this : this with { FinalText = finalText!.Trim() };
 
     public static AssistantToolOutcome Error(string code, string message) =>
         new(AssistantJson.Serialize(new { error = code, message }), false, false, []);

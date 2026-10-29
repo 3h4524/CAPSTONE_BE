@@ -6,7 +6,7 @@ using APCS.Common.Models;
 
 namespace APCS.Application.Features.Assistant.Tools.Confirmations;
 
-public sealed record StartWorkflowRunArgs(string? WorkflowId);
+public sealed record StartWorkflowRunArgs(string? WorkflowId, string? Reply);
 
 public sealed record StartWorkflowRunStoredArgs(Guid WorkflowId, long ExpectedWorkflowRevision);
 
@@ -23,10 +23,12 @@ public sealed class StartWorkflowRunTool(
         "Prepare to start a run of a saved workflow. The user must confirm. Never say the run started until the user confirms.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"workflowId":{"type":"string","description":"Saved workflow id (GUID). Optional when the open workflow in app_context is meant."}}}
+        {"type":"object","properties":{"workflowId":{"type":"string","description":"Saved workflow id (GUID). Optional when the open workflow in app_context is meant."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the run is ready and they must press Confirm."}},"required":["reply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => context.Caller.IsSeller;
+
+    protected override string? ReplyOf(StartWorkflowRunArgs arguments) => arguments.Reply;
 
     protected override async Task<Result<AssistantPendingActionDraft>> PreflightAsync(
         AssistantToolContext context,

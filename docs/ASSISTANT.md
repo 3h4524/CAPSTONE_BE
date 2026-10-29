@@ -28,7 +28,7 @@ Each tool is a class implementing `IAssistantTool` (usually through `AssistantTo
 | Kind | Behaviour | Tools |
 |---|---|---|
 | Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog`, `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
-| ClientAction | Sends an action to the browser; the turn ends | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`), `navigate` (whitelisted routes only) |
+| ClientAction | Sends an action to the browser; the turn ends | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
 | Confirmation | Stores an `assistant_pending_actions` row; runs only when the user confirms | `start_workflow_run`, `workflow_run_action` |
 | Interaction | Shows reply chips | `offer_choices` |
 
@@ -50,6 +50,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:Model` | `gemini-3.5-flash` | |
 | `Assistant:Temperature` | `0.3` | |
 | `Assistant:MaxOutputTokens` | `2048` | |
+| `Assistant:ThinkingLevel` | `Low` | `Minimal`, `Low`, `Medium` or `High`. |
 | `Assistant:RateLimitRetries` | `2` | Retries after a quota or 429 error, only before any text was streamed. |
 | `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |
@@ -72,3 +73,13 @@ The catalog and the connection rule mirror the frontend (`src/constants/workflow
 ## Deleting conversations
 
 Deleting sets `deleted_at` immediately and signals `AssistantConversationPurgeWorker` (an in-memory coalescing queue) to remove the rows. The worker also sweeps at startup, so a restart never leaves soft-deleted data behind.
+
+## Latency
+
+Each model call costs several seconds, so the design minimises calls:
+
+- **Help articles are retrieved before the model runs** (`AssistantKnowledgeBase.PrefetchAsync`, `faq` content type, the user's own message as the query, 2.5 s timeout, skipped when a workflow canvas is open). The articles go into the prompt as `<help_articles>`, so a help question needs one model call instead of two, and the repeated query hits the RAG caches.
+- **Pure help answers are cached** for 30 minutes (first message of a chat, no canvas, no tool other than `search_faq`), keyed by the normalised message and role and by the RAG generation token, so re-indexing invalidates them. A cache hit replays the answer without calling the model (`model: "cache"`).
+- **Tools that end the turn carry the user-facing sentence in a `reply` argument** (`edit_workflow_canvas`, `arrange_workflow_canvas`, `navigate`, `start_workflow_run`, `workflow_run_action`; `offer_choices` uses `question`). The loop streams it and skips the closing model call. Without a reply the model writes the closing sentence as before.
+- The node catalog is added to the system prompt when a canvas is open, so the model does not call `get_node_catalog` first.
+- Thinking is set to `Assistant:ThinkingLevel` (default `Low`).
