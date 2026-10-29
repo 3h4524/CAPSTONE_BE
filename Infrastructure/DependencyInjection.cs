@@ -202,6 +202,7 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 

@@ -76,6 +76,10 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();
         services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
+        services.AddScoped<Features.Assistant.IAssistantService, Features.Assistant.AssistantService>();
+        services.AddScoped<Features.Assistant.AssistantAgentLoop>();
+        services.AddScoped<Features.Assistant.AssistantPromptBuilder>();
+        services.AddScoped<Features.Assistant.AssistantToolRegistry>();
         services.AddScoped<IListingContentService, ListingContentService>();
         // The test reports are files on the machine that ran the suite, so the service keeps
         // them for as long as the API lives.
