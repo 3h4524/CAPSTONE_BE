@@ -41,41 +41,52 @@ public sealed class GeminiAssistantChatModel(
         };
 
         var updates = new List<ChatResponseUpdate>();
-        await using var enumerator = chatClient.Value
-            .GetStreamingResponseAsync(messages, chatOptions, cancellationToken)
-            .GetAsyncEnumerator(cancellationToken);
-        while (true)
+        for (var attempt = 0; ; attempt++)
         {
-            bool hasNext;
-            var failed = false;
-            try
+            Exception? failure = null;
+            await using (var enumerator = chatClient.Value
+                .GetStreamingResponseAsync(messages, chatOptions, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken))
             {
-                hasNext = await enumerator.MoveNextAsync();
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning("Assistant model stream failed with {ExceptionType}", exception.GetType().Name);
-                hasNext = false;
-                failed = true;
+                while (true)
+                {
+                    bool hasNext;
+                    try
+                    {
+                        hasNext = await enumerator.MoveNextAsync();
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        failure = exception;
+                        break;
+                    }
+
+                    if (!hasNext)
+                        break;
+
+                    var update = enumerator.Current;
+                    updates.Add(update);
+                    if (!string.IsNullOrEmpty(update.Text))
+                        yield return AssistantModelUpdate.TextDelta(update.Text);
+                }
             }
 
-            if (failed)
-            {
-                yield return AssistantModelUpdate.Failed("model_unavailable");
-                yield break;
-            }
-
-            if (!hasNext)
+            if (failure is null)
                 break;
 
-            var update = enumerator.Current;
-            updates.Add(update);
-            if (!string.IsNullOrEmpty(update.Text))
-                yield return AssistantModelUpdate.TextDelta(update.Text);
+            logger.LogWarning("Assistant model stream failed with {ExceptionType} on attempt {Attempt}", failure.GetType().Name, attempt + 1);
+            if (updates.Count == 0 && attempt < settings.RateLimitRetries && IsRateLimited(failure))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(settings.RateLimitRetryDelaySeconds), cancellationToken);
+                continue;
+            }
+
+            yield return AssistantModelUpdate.Failed("model_unavailable");
+            yield break;
         }
 
         var response = updates.ToChatResponse();
@@ -98,6 +109,11 @@ public sealed class GeminiAssistantChatModel(
             (int?)response.Usage?.OutputTokenCount,
             response.ModelId ?? settings.Model);
     }
+
+    internal static bool IsRateLimited(Exception exception) =>
+        exception.Message.Contains("quota", StringComparison.OrdinalIgnoreCase)
+        || exception.Message.Contains("429", StringComparison.Ordinal)
+        || exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
 
     private static AITool ToDeclaration(AssistantToolDeclaration tool) =>
         AIFunctionFactory.CreateDeclaration(tool.Name, tool.Description, tool.ParametersSchema);

@@ -47,6 +47,8 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:Model` | `gemini-3.5-flash` | |
 | `Assistant:Temperature` | `0.3` | |
 | `Assistant:MaxOutputTokens` | `2048` | |
+| `Assistant:RateLimitRetries` | `2` | Retries after a quota or 429 error, only before any text was streamed. |
+| `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |
 | `Rag:Cache:*` | enabled | See [ADR 0001](adr/0001-rag-query-caching.md). |
 

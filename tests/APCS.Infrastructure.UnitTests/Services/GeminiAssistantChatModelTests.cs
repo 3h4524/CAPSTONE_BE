@@ -32,4 +32,22 @@ public sealed class GeminiAssistantChatModelTests
 
         model.ModelName.Should().Be("gemini-x");
     }
+
+    [TestMethod]
+    [DataRow("You exceeded your current quota, please check your plan", true)]
+    [DataRow("HTTP 429 Too Many Requests", true)]
+    [DataRow("RESOURCE_EXHAUSTED", true)]
+    [DataRow("API key not valid", false)]
+    [DataRow("Invalid argument", false)]
+    public void IsRateLimited_RecognisesQuotaFailuresOnly(string message, bool expected) =>
+        GeminiAssistantChatModel.IsRateLimited(new InvalidOperationException(message)).Should().Be(expected);
+
+    [TestMethod]
+    public void AssistantOptions_DefaultToTwoRetriesWithAnEightSecondPause()
+    {
+        var options = new AssistantOptions();
+
+        options.RateLimitRetries.Should().Be(2);
+        options.RateLimitRetryDelaySeconds.Should().Be(8);
+    }
 }

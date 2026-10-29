@@ -16,5 +16,11 @@ public sealed class AssistantOptions
     [Range(256, 8192)]
     public int MaxOutputTokens { get; set; } = 2048;
 
+    [Range(0, 5)]
+    public int RateLimitRetries { get; set; } = 2;
+
+    [Range(0, 60)]
+    public int RateLimitRetryDelaySeconds { get; set; } = 8;
+
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
 }
