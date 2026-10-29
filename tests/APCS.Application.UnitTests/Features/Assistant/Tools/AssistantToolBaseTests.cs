@@ -1,0 +1,71 @@
+using APCS.Application.Features.Assistant.Tools;
+using FluentAssertions;
+
+namespace APCS.Application.UnitTests.Features.Assistant.Tools;
+
+[TestClass]
+public sealed class AssistantToolBaseTests
+{
+    private sealed record Args(string? Name, int? Count);
+
+    private sealed class EchoTool : AssistantTool<Args>
+    {
+        public override string Name => "echo";
+
+        public override AssistantToolKind Kind => AssistantToolKind.Query;
+
+        protected override string Description => "echo";
+
+        protected override string ParametersSchemaJson => """{"type":"object","properties":{}}""";
+
+        public override bool IsAvailable(AssistantToolContext context) => true;
+
+        protected override Task<AssistantToolOutcome> ExecuteCoreAsync(AssistantToolContext context, Args arguments, CancellationToken cancellationToken) =>
+            Task.FromResult(AssistantToolOutcome.Ok(new { arguments.Name, arguments.Count }));
+    }
+
+    private static AssistantToolContext Context() => new(Guid.NewGuid(), AssistantTestSupport.UserId, AssistantTestSupport.Seller, null);
+
+    [TestMethod]
+    public async Task ExecuteAsync_InvalidArguments_ReturnsInvalidArgumentsError()
+    {
+        var outcome = await new EchoTool().ExecuteAsync(Context(), AssistantTestSupport.Json("""{"count":"abc"}"""), default);
+
+        outcome.Succeeded.Should().BeFalse();
+        outcome.ModelResultJson.Should().Contain("invalid_arguments");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_UndefinedArguments_TreatedAsEmptyObject()
+    {
+        var outcome = await new EchoTool().ExecuteAsync(Context(), default, default);
+
+        outcome.Succeeded.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_ValidArguments_PassesParsedValues()
+    {
+        var outcome = await new EchoTool().ExecuteAsync(Context(), AssistantTestSupport.Json("""{"name":"x","count":2}"""), default);
+
+        outcome.ModelResultJson.Should().Contain("\"x\"").And.Contain("2");
+    }
+
+    [TestMethod]
+    public void Declaration_ParsesSchemaAndExposesName()
+    {
+        var declaration = new EchoTool().Declaration;
+
+        declaration.Name.Should().Be("echo");
+        declaration.ParametersSchema.GetProperty("type").GetString().Should().Be("object");
+    }
+
+    [TestMethod]
+    public void Ok_TruncatesOversizedResults()
+    {
+        var outcome = AssistantToolOutcome.Ok(new { text = new string('a', 20000) });
+
+        outcome.ModelResultJson.Length.Should().BeLessThan(13000);
+        outcome.ModelResultJson.Should().Contain("truncated");
+    }
+}

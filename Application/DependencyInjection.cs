@@ -80,6 +80,15 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.AssistantAgentLoop>();
         services.AddScoped<Features.Assistant.AssistantPromptBuilder>();
         services.AddScoped<Features.Assistant.AssistantToolRegistry>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.SearchFaqTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListWorkflowsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetWorkflowTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetWorkflowRunTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetWorkflowCapabilitiesTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListBatchesTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListBatchProductsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetUsageOverviewTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetSubscriptionOverviewTool>();
         services.AddScoped<IListingContentService, ListingContentService>();
         // The test reports are files on the machine that ran the suite, so the service keeps
         // them for as long as the API lives.
