@@ -27,6 +27,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pgvector.EntityFrameworkCore;
 
@@ -257,9 +258,22 @@ public static class DependencyInjection
             // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
             client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
         });
-        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddOptions<RagCacheOptions>()
+            .Bind(configuration.GetSection(RagCacheOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IRagEmbeddingProvider>(provider => new MemoizedEmbeddingProvider(
+            provider.GetRequiredService<GeminiEmbeddingProvider>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<MemoizedEmbeddingProvider>>()));
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
-        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<RagService>();
+        services.AddScoped<IRagService>(provider => new CachedRagSearchService(
+            provider.GetRequiredService<RagService>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<CachedRagSearchService>>()));
         services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
         services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
         services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();

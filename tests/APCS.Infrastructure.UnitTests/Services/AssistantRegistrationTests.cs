@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Ai;
+using APCS.Application.Abstractions.Rag;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
@@ -17,6 +18,26 @@ public sealed class AssistantRegistrationTests
         using var provider = BuildProvider([]);
 
         provider.GetRequiredService<IAssistantChatModel>().Should().BeOfType<GeminiAssistantChatModel>();
+    }
+
+    [TestMethod]
+    public void AddInfrastructure_DecoratesRagServiceAndEmbeddingProviderWithCaches()
+    {
+        using var provider = BuildProvider([]);
+        using var scope = provider.CreateScope();
+
+        scope.ServiceProvider.GetRequiredService<IRagService>().Should().BeOfType<CachedRagSearchService>();
+        scope.ServiceProvider.GetRequiredService<IRagEmbeddingProvider>().Should().BeOfType<MemoizedEmbeddingProvider>();
+    }
+
+    [TestMethod]
+    public void RagCacheOptions_HaveDocumentedDefaults()
+    {
+        using var provider = BuildProvider([]);
+
+        var options = provider.GetRequiredService<IOptions<RagCacheOptions>>().Value;
+
+        options.Should().Match<RagCacheOptions>(o => o.Enabled && o.EmbeddingTtlHours == 24 && o.SearchTtlMinutes == 10);
     }
 
     [TestMethod]
