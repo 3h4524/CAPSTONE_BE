@@ -50,7 +50,7 @@ public sealed class EditWorkflowCanvasToolTests
     [TestMethod]
     public async Task ExecuteAsync_WithValidOperations_EmitsClientActionWithParsedConfigAndEndsTurn()
     {
-        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing","label":"Listing","after":"a"},{"op":"connect","source":"a","target":"n1"},{"op":"update_config","nodeId":"n1","configJson":"{\"tone\":\"warm\"}"}]}""";
+        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing","label":"Listing","after":"a"},{"op":"connect","source":"a","target":"n1"},{"op":"update_config","nodeId":"n1","configJson":"{\"tone\":\"playful\"}"}]}""";
 
         var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
 
@@ -59,7 +59,7 @@ public sealed class EditWorkflowCanvasToolTests
         var action = outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject;
         action.Kind.Should().Be("edit_workflow_canvas");
         var raw = action.Payload.GetRawText();
-        raw.Should().Contain("\"config\"").And.Contain("warm").And.NotContain("configJson");
+        raw.Should().Contain("\"config\"").And.Contain("playful").And.NotContain("configJson");
         action.Payload.GetProperty("operations").GetArrayLength().Should().Be(3);
     }
 

@@ -89,6 +89,11 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListBatchProductsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetUsageOverviewTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetSubscriptionOverviewTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetNodeCatalogTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListDesignTemplatesTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListStylePresetsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListMockupTemplatesTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListVideoTemplatesTool>();
         services.AddSingleton<Features.Assistant.Tools.ClientActions.WorkflowCanvasPatchSimulator>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.EditWorkflowCanvasTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.NavigateTool>();

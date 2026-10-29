@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using APCS.Application.Features.Assistant.Catalog;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
 using APCS.Application.Features.Workflows;
@@ -98,6 +99,9 @@ public sealed class WorkflowCanvasPatchSimulator
                     return "connect: a node cannot connect to itself.";
                 if (edges.Contains((operation.Source, operation.Target)))
                     return $"connect: '{operation.Source}' is already connected to '{operation.Target}'.";
+                var issue = ConnectionIssue(operation.Source, operation.Target, nodes, edges);
+                if (issue is not null)
+                    return $"connect: {issue}";
                 edges.Add((operation.Source, operation.Target));
                 applied = Normalize(operation, null);
                 return null;
@@ -167,10 +171,62 @@ public sealed class WorkflowCanvasPatchSimulator
 
         if (patch is null)
             return "update_config: configJson must be a JSON object.";
-        foreach (var (key, value) in patch)
-            node.Config[key] = value?.DeepClone();
+        patch = WorkflowNodeCatalog.ExpandDottedKeys(patch);
+        var invalid = WorkflowNodeCatalog.ValidateConfig(node.Type, patch);
+        if (invalid is not null)
+            return $"update_config: {invalid}";
+        WorkflowNodeCatalog.DeepMerge(node.Config, patch);
         applied = Normalize(operation, JsonSerializer.SerializeToElement(patch));
         return null;
+    }
+
+    private static string? ConnectionIssue(
+        string source,
+        string target,
+        Dictionary<string, SimNode> nodes,
+        List<(string Source, string Target)> edges)
+    {
+        var from = nodes[source];
+        var to = nodes[target];
+        var fromOrder = WorkflowNodeCatalog.OrderOf(from.Type);
+        var toOrder = WorkflowNodeCatalog.OrderOf(to.Type);
+        if (fromOrder >= 0 && toOrder >= 0)
+        {
+            var next = nodes.Values
+                .Select(node => WorkflowNodeCatalog.OrderOf(node.Type))
+                .Where(order => order > fromOrder)
+                .OrderBy(order => order)
+                .Cast<int?>()
+                .FirstOrDefault();
+            if (next != toOrder)
+            {
+                if (next is null)
+                    return $"{from.Label} is the last step in the workflow, so it has no next node.";
+                return $"Steps run in order. Connect {from.Label} to {WorkflowNodeCatalog.LabelOf(WorkflowNodeCatalog.RunOrder[next.Value])} next.";
+            }
+        }
+
+        return ReachesSource(target, source, edges)
+            ? "That connection would create a loop. Workflows run in one direction."
+            : null;
+    }
+
+    private static bool ReachesSource(string start, string goal, List<(string Source, string Target)> edges)
+    {
+        var visited = new HashSet<string>();
+        var stack = new Stack<string>([start]);
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            if (current == goal)
+                return true;
+            if (!visited.Add(current))
+                continue;
+            foreach (var edge in edges.Where(item => item.Source == current))
+                stack.Push(edge.Target);
+        }
+
+        return false;
     }
 
     private static NormalizedCanvasOperation Normalize(CanvasOperationArgs operation, JsonElement? config) =>

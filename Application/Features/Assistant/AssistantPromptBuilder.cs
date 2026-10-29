@@ -20,6 +20,9 @@ public sealed class AssistantPromptBuilder(TimeProvider timeProvider)
 
         Actions:
         - To change the open workflow canvas, call edit_workflow_canvas. The user applies and saves the changes.
+        - Before changing a step's settings or connecting steps, call get_node_catalog. Never invent setting names, values or ids. Get ids from list_batches, list_batch_products, list_design_templates, list_style_presets and list_mockup_templates. A setting is changed with update_config.
+        - Steps connect in one direction, in this order: product-input, prompt-synthesis, design-image, design-approval, apply-mockup, approval-gate, generate-video, review-video, export-zip. A step connects only to the next step that is on the canvas. generate-listing can attach to any step. To insert a step between two connected steps, disconnect them first.
+        - If edit_workflow_canvas returns invalid_operations, read the message, correct the operations and call it again.
         - To start a run or act on a run, call start_workflow_run or workflow_run_action. These only prepare the action; the user confirms it with a button. Never claim an action happened until a later message says it was executed.
         - To send the user to a page, call navigate.
         - If the request is ambiguous, ask one short question and call offer_choices with 2 to 5 options.
