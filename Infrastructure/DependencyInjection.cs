@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
@@ -140,6 +141,17 @@ public static class DependencyInjection
             if (string.IsNullOrWhiteSpace(options.ApiKey))
                 options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
         });
+        services.AddOptions<AssistantOptions>()
+            .Bind(configuration.GetSection(AssistantOptions.SectionName))
+            .ValidateDataAnnotations();
+        services.PostConfigure<AssistantOptions>(options =>
+        {
+            if (string.IsNullOrWhiteSpace(options.ApiKey))
+                options.ApiKey = FirstConfigured(
+                    configuration[$"{GeminiTextGenerationOptions.SectionName}:ApiKey"],
+                    configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
+        });
+        services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
@@ -277,4 +289,7 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static string FirstConfigured(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 }
