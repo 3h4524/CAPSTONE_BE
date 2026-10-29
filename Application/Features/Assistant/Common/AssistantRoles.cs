@@ -23,3 +23,11 @@ public static class AssistantPendingActionStatuses
     public const string Expired = "expired";
     public const string Failed = "failed";
 }
+
+public static class AssistantClientActionStates
+{
+    public const string Applied = "applied";
+    public const string Dismissed = "dismissed";
+
+    public static bool IsValid(string? value) => value is Applied or Dismissed;
+}

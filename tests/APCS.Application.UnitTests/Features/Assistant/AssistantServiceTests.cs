@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Assistant;
 using APCS.Application.Features.Assistant.Common;
@@ -25,6 +26,8 @@ public sealed class AssistantServiceTests
     private readonly Mock<IRepository<AssistantConversation>> conversations = new();
     private readonly Mock<IRepository<AssistantMessage>> messages = new();
     private readonly Mock<IAssistantPendingActionRepository> pendingActions = new();
+    private readonly Mock<IAssistantConversationRepository> conversationStore = new();
+    private readonly Mock<IAssistantConversationPurgeQueue> purgeQueue = new();
     private readonly Mock<IUnitOfWork> unitOfWork = new();
     private readonly FakeTimeProvider time = new(Now);
     private readonly List<AssistantMessage> addedMessages = [];
@@ -51,7 +54,7 @@ public sealed class AssistantServiceTests
             model, new AssistantPromptBuilder(time), new AssistantToolRegistry([]),
             conversations.Object, messages.Object, unitOfWork.Object, time, NullLogger<AssistantAgentLoop>.Instance);
         return new AssistantService(
-            currentUser.Object, conversations.Object, messages.Object, pendingActions.Object, unitOfWork.Object,
+            currentUser.Object, conversations.Object, messages.Object, pendingActions.Object, conversationStore.Object, purgeQueue.Object, unitOfWork.Object,
             new SendAssistantMessageValidator(), loop, new AssistantToolRegistry([confirmTool.Object]), time);
     }
 
@@ -329,5 +332,152 @@ public sealed class AssistantServiceTests
         var result = await Service().RejectActionAsync(Guid.NewGuid());
 
         result.Error.Code.Should().Be("assistant.action_not_pending");
+    }
+
+    [TestMethod]
+    public async Task DeleteConversationAsync_WhenOwned_SoftDeletesAndRequestsPurge()
+    {
+        var id = Guid.NewGuid();
+        using var cancellation = new CancellationTokenSource();
+        conversationStore.Setup(r => r.SoftDeleteAsync(AssistantTestSupport.UserId, id, null, Now.UtcDateTime, cancellation.Token)).ReturnsAsync(1);
+
+        var result = await Service().DeleteConversationAsync(id, cancellation.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        purgeQueue.Verify(q => q.RequestPurge(), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task DeleteConversationAsync_WhenNotOwnedOrMissing_ReturnsNotFoundWithoutPurge()
+    {
+        conversationStore.Setup(r => r.SoftDeleteAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<Guid?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>())).ReturnsAsync(0);
+
+        var result = await Service().DeleteConversationAsync(Guid.NewGuid());
+
+        result.Error.Code.Should().Be("assistant.conversation_not_found");
+        purgeQueue.Verify(q => q.RequestPurge(), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task DeleteConversationAsync_WhenUnauthenticated_ReturnsUnauthorized()
+    {
+        currentUser.SetupGet(u => u.UserId).Returns((Guid?)null);
+
+        var result = await Service().DeleteConversationAsync(Guid.NewGuid());
+
+        result.Error.Code.Should().Be("assistant.unauthorized");
+        conversationStore.Verify(r => r.SoftDeleteAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<Guid?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task DeleteConversationsAsync_KeepsTheGivenConversationAndRequestsPurge()
+    {
+        var keep = Guid.NewGuid();
+        conversationStore.Setup(r => r.SoftDeleteAsync(AssistantTestSupport.UserId, null, keep, Now.UtcDateTime, It.IsAny<CancellationToken>())).ReturnsAsync(4);
+
+        var result = await Service().DeleteConversationsAsync(keep);
+
+        result.IsSuccess.Should().BeTrue();
+        purgeQueue.Verify(q => q.RequestPurge(), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task DeleteConversationsAsync_WhenNothingToDelete_SucceedsWithoutPurge()
+    {
+        conversationStore.Setup(r => r.SoftDeleteAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<Guid?>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>())).ReturnsAsync(0);
+
+        var result = await Service().DeleteConversationsAsync(null);
+
+        result.IsSuccess.Should().BeTrue();
+        purgeQueue.Verify(q => q.RequestPurge(), Times.Never);
+    }
+
+    private AssistantMessage MessageWithAction(Guid actionId, out AssistantConversation conversation, Guid? ownerId = null)
+    {
+        conversation = Conversation(ownerId);
+        var message = new AssistantMessage
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversation.Id,
+            Role = "assistant",
+            Content = "x",
+            Metadata = $$$"""{"clientActions":[{"id":"{{{actionId}}}","kind":"edit_workflow_canvas","payload":{}}],"kind":"chat"}"""
+        };
+        messages.Setup(r => r.GetByIdAsync(message.Id, It.IsAny<CancellationToken>())).ReturnsAsync(message);
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        return message;
+    }
+
+    [TestMethod]
+    [DataRow("applied")]
+    [DataRow("dismissed")]
+    public async Task SetClientActionStateAsync_StoresTheStateInTheMessageMetadata(string state)
+    {
+        var actionId = Guid.NewGuid();
+        var message = MessageWithAction(actionId, out _);
+
+        var result = await Service().SetClientActionStateAsync(message.Id, actionId, new(state));
+
+        result.IsSuccess.Should().BeTrue();
+        message.Metadata.Should().Contain("clientActionStates").And.Contain(actionId.ToString()).And.Contain(state).And.Contain("\"kind\":\"chat\"");
+        messages.Verify(r => r.UpdateAsync(message, It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task SetClientActionStateAsync_WithUnknownState_ReturnsValidationError()
+    {
+        var actionId = Guid.NewGuid();
+        var message = MessageWithAction(actionId, out _);
+
+        var result = await Service().SetClientActionStateAsync(message.Id, actionId, new("exploded"));
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+        messages.Verify(r => r.UpdateAsync(It.IsAny<AssistantMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SetClientActionStateAsync_ForAnotherUsersMessage_ReturnsNotFound()
+    {
+        var actionId = Guid.NewGuid();
+        var message = MessageWithAction(actionId, out _, Guid.NewGuid());
+
+        var result = await Service().SetClientActionStateAsync(message.Id, actionId, new("applied"));
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+    }
+
+    [TestMethod]
+    public async Task SetClientActionStateAsync_ForAnActionTheMessageDoesNotHave_ReturnsNotFound()
+    {
+        var message = MessageWithAction(Guid.NewGuid(), out _);
+
+        var result = await Service().SetClientActionStateAsync(message.Id, Guid.NewGuid(), new("applied"));
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+    }
+
+    [TestMethod]
+    public async Task SetClientActionStateAsync_ForAMissingMessage_ReturnsNotFound()
+    {
+        messages.Setup(r => r.GetByIdAsync(It.IsAny<object>(), It.IsAny<CancellationToken>())).ReturnsAsync((AssistantMessage?)null);
+
+        var result = await Service().SetClientActionStateAsync(Guid.NewGuid(), Guid.NewGuid(), new("applied"));
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+    }
+
+    [TestMethod]
+    public async Task GetConversationAsync_ReturnsPersistedClientActionStatesInMetadata()
+    {
+        var actionId = Guid.NewGuid();
+        var conversation = Conversation();
+        var message = new AssistantMessage { Id = Guid.NewGuid(), ConversationId = conversation.Id, Role = "assistant", Content = "x", Metadata = $$$"""{"clientActionStates":{"{{{actionId}}}":"applied"}}""", CreatedAt = Now.UtcDateTime };
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        messages.Setup(r => r.Query()).Returns(new List<AssistantMessage> { message }.AsQueryable().BuildMock());
+
+        var result = await Service().GetConversationAsync(conversation.Id);
+
+        result.Value.Messages.Single().Metadata.GetRawText().Should().Contain("applied");
     }
 }

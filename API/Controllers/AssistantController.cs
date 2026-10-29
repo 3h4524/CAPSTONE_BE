@@ -44,6 +44,34 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
     public async Task<IActionResult> GetConversation(Guid id, CancellationToken cancellationToken) =>
         (await assistant.GetConversationAsync(id, cancellationToken)).ToActionResult(this);
 
+    [HttpDelete("conversations/{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeleteConversation(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await assistant.DeleteConversationAsync(id, cancellationToken);
+        return result.IsSuccess ? Accepted() : result.ToActionResult(this);
+    }
+
+    [HttpDelete("conversations")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public async Task<IActionResult> DeleteConversations([FromQuery] Guid? except, CancellationToken cancellationToken)
+    {
+        var result = await assistant.DeleteConversationsAsync(except, cancellationToken);
+        return result.IsSuccess ? Accepted() : result.ToActionResult(this);
+    }
+
+    [HttpPut("messages/{messageId:guid}/client-actions/{actionId:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetClientActionState(
+        Guid messageId,
+        Guid actionId,
+        SetClientActionStateRequestDto request,
+        CancellationToken cancellationToken) =>
+        (await assistant.SetClientActionStateAsync(messageId, actionId, request, cancellationToken)).ToActionResult(this);
+
     [HttpPost("actions/{id:guid}/confirm")]
     [ProducesResponseType(typeof(AssistantActionResultResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]

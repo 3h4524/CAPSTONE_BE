@@ -122,4 +122,63 @@ public sealed class AssistantControllerTests
 
         authorize.Roles.Should().Contain(AuthConstants.UserRole).And.Contain(AuthConstants.AdminRole);
     }
+
+    [TestMethod]
+    public async Task DeleteConversation_ReturnsAcceptedAndForwardsIdAndToken()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var id = Guid.NewGuid();
+        service.Setup(s => s.DeleteConversationAsync(id, cancellation.Token)).ReturnsAsync(Result.Success());
+
+        var result = await Controller(AuthConstants.UserRole).DeleteConversation(id, cancellation.Token);
+
+        result.Should().BeOfType<AcceptedResult>();
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task DeleteConversation_WhenNotFound_ReturnsProblem404()
+    {
+        service.Setup(s => s.DeleteConversationAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Failure(AssistantErrors.ConversationNotFound()));
+
+        var result = await Controller(AuthConstants.UserRole).DeleteConversation(Guid.NewGuid(), default);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [TestMethod]
+    public async Task DeleteConversations_PassesTheConversationToKeep()
+    {
+        var keep = Guid.NewGuid();
+        service.Setup(s => s.DeleteConversationsAsync(keep, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+
+        var result = await Controller(AuthConstants.UserRole).DeleteConversations(keep, default);
+
+        result.Should().BeOfType<AcceptedResult>();
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task SetClientActionState_ReturnsNoContent()
+    {
+        var messageId = Guid.NewGuid();
+        var actionId = Guid.NewGuid();
+        var request = new SetClientActionStateRequestDto("applied");
+        service.Setup(s => s.SetClientActionStateAsync(messageId, actionId, request, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+
+        var result = await Controller(AuthConstants.UserRole).SetClientActionState(messageId, actionId, request, default);
+
+        result.Should().BeOfType<NoContentResult>();
+    }
+
+    [TestMethod]
+    public async Task SetClientActionState_WhenInvalid_ReturnsProblem400()
+    {
+        service.Setup(s => s.SetClientActionStateAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<SetClientActionStateRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(AssistantErrors.InvalidActionState()));
+
+        var result = await Controller(AuthConstants.UserRole).SetClientActionState(Guid.NewGuid(), Guid.NewGuid(), new("x"), default);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+    }
 }

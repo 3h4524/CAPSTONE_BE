@@ -13,6 +13,12 @@ public static class AssistantErrors
     public static Error ConversationNotFound() =>
         Error.NotFound("assistant.conversation_not_found", "The conversation was not found.");
 
+    public static Error MessageNotFound() =>
+        Error.NotFound("assistant.message_not_found", "The message or its action was not found.");
+
+    public static Error InvalidActionState() =>
+        Error.Validation("The state must be 'applied' or 'dismissed'.");
+
     public static Error ActionNotFound() =>
         Error.NotFound("assistant.action_not_found", "The requested action was not found.");
 

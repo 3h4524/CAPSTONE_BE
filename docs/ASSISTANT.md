@@ -9,6 +9,9 @@ The assistant answers help questions from the RAG knowledge base and operates on
 | POST | `/api/assistant/chat` | Streams the answer as Server-Sent Events. Rate limited to 20 requests per minute per user (HTTP 429). |
 | GET | `/api/assistant/conversations` | The 20 most recent conversations. |
 | GET | `/api/assistant/conversations/{id}` | Messages and pending actions of one conversation. |
+| DELETE | `/api/assistant/conversations/{id}` | Soft-deletes one conversation and returns 202; the rows are purged by a background worker. |
+| DELETE | `/api/assistant/conversations?except={id}` | Same for all of the user's conversations except the given one. |
+| PUT | `/api/assistant/messages/{messageId}/client-actions/{actionId}` | Stores `applied` or `dismissed` for a client action chip so it survives reloads. |
 | POST | `/api/assistant/actions/{id}/confirm` | Runs a prepared action. |
 | POST | `/api/assistant/actions/{id}/reject` | Cancels a prepared action. |
 
@@ -24,7 +27,7 @@ Each tool is a class implementing `IAssistantTool` (usually through `AssistantTo
 
 | Kind | Behaviour | Tools |
 |---|---|---|
-| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview` |
+| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog`, `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
 | ClientAction | Sends an action to the browser; the turn ends | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`), `navigate` (whitelisted routes only) |
 | Confirmation | Stores an `assistant_pending_actions` row; runs only when the user confirms | `start_workflow_run`, `workflow_run_action` |
 | Interaction | Shows reply chips | `offer_choices` |
@@ -59,3 +62,13 @@ FAQ articles are RAG documents with `contentType = faq`. Ingest them from Admin,
 ## Schema
 
 `scripts/sql/assistant-chatbot.sql` creates `assistant_conversations`, `assistant_messages` and `assistant_pending_actions`. Apply it to Neon first, then re-scaffold as described in `CONTRIBUTING.md`.
+
+## Node catalog and connection rules
+
+`Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
+
+The catalog and the connection rule mirror the frontend (`src/constants/workflow.ts`, `src/helpers/workflow-graph.ts`). Update both sides together; unit tests compare the run order with `WorkflowCapabilityRegistry`.
+
+## Deleting conversations
+
+Deleting sets `deleted_at` immediately and signals `AssistantConversationPurgeWorker` (an in-memory coalescing queue) to remove the rows. The worker also sweeps at startup, so a restart never leaves soft-deleted data behind.

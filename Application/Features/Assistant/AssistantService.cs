@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.Assistant.Common;
@@ -17,6 +19,8 @@ public sealed class AssistantService(
     IRepository<AssistantConversation> conversations,
     IRepository<AssistantMessage> messages,
     IAssistantPendingActionRepository pendingActions,
+    IAssistantConversationRepository conversationStore,
+    IAssistantConversationPurgeQueue purgeQueue,
     IUnitOfWork unitOfWork,
     IValidator<SendAssistantMessageRequestDto> sendValidator,
     AssistantAgentLoop agentLoop,
@@ -223,6 +227,64 @@ public sealed class AssistantService(
         action.Status = AssistantPendingActionStatuses.Rejected;
         action.ResolvedAt = now;
         return await ResolveAsync(action, $"Cancelled: {action.Title}.", now, cancellationToken, persistAction: false);
+    }
+
+    public async Task<Result> DeleteConversationAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.UserId is not { } userId)
+            return Result.Failure(AssistantErrors.Unauthenticated());
+
+        var deleted = await conversationStore.SoftDeleteAsync(userId, id, null, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+        if (deleted == 0)
+            return Result.Failure(AssistantErrors.ConversationNotFound());
+
+        purgeQueue.RequestPurge();
+        return Result.Success();
+    }
+
+    public async Task<Result> DeleteConversationsAsync(Guid? exceptConversationId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.UserId is not { } userId)
+            return Result.Failure(AssistantErrors.Unauthenticated());
+
+        var deleted = await conversationStore.SoftDeleteAsync(userId, null, exceptConversationId, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+        if (deleted > 0)
+            purgeQueue.RequestPurge();
+        return Result.Success();
+    }
+
+    public async Task<Result> SetClientActionStateAsync(
+        Guid messageId,
+        Guid actionId,
+        SetClientActionStateRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        if (currentUser.UserId is not { } userId)
+            return Result.Failure(AssistantErrors.Unauthenticated());
+        if (!AssistantClientActionStates.IsValid(request.State))
+            return Result.Failure(AssistantErrors.InvalidActionState());
+
+        var message = await messages.GetByIdAsync(messageId, cancellationToken);
+        if (message is null)
+            return Result.Failure(AssistantErrors.MessageNotFound());
+        var ownsConversation = await conversations.Query()
+            .AnyAsync(item => item.Id == message.ConversationId && item.UserId == userId && item.DeletedAt == null, cancellationToken);
+        if (!ownsConversation)
+            return Result.Failure(AssistantErrors.MessageNotFound());
+
+        var metadata = JsonNode.Parse(message.Metadata) as JsonObject ?? new JsonObject();
+        var knowsAction = metadata["clientActions"] is JsonArray actions
+            && actions.OfType<JsonObject>().Any(action => string.Equals(action["id"]?.GetValue<string>(), actionId.ToString(), StringComparison.OrdinalIgnoreCase));
+        if (!knowsAction)
+            return Result.Failure(AssistantErrors.MessageNotFound());
+
+        var states = metadata["clientActionStates"] as JsonObject ?? new JsonObject();
+        states[actionId.ToString()] = request.State;
+        metadata["clientActionStates"] = states;
+        message.Metadata = metadata.ToJsonString();
+        await messages.UpdateAsync(message, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+        return Result.Success();
     }
 
     private async Task<AssistantPendingAction?> FindOwnedActionAsync(Guid id, Guid userId, CancellationToken cancellationToken) =>

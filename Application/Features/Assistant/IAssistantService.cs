@@ -30,4 +30,18 @@ public interface IAssistantService
     Task<Result<AssistantActionResultResponseDto>> RejectActionAsync(
         Guid id,
         CancellationToken cancellationToken = default);
+
+    Task<Result> DeleteConversationAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> DeleteConversationsAsync(
+        Guid? exceptConversationId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> SetClientActionStateAsync(
+        Guid messageId,
+        Guid actionId,
+        SetClientActionStateRequestDto request,
+        CancellationToken cancellationToken = default);
 }

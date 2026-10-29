@@ -8,7 +8,8 @@ public sealed record AssistantMessageMetadata(
     AssistantChoicesData? Choices = null,
     AssistantErrorData? Error = null,
     string? Kind = null,
-    string? Route = null)
+    string? Route = null,
+    IReadOnlyDictionary<string, string>? ClientActionStates = null)
 {
     public string ToJson() => AssistantJson.Serialize(this);
 }
