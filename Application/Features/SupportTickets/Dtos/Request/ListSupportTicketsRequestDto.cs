@@ -4,6 +4,7 @@ namespace APCS.Application.Features.SupportTickets.Dtos.Request;
 public sealed record ListSupportTicketsRequestDto(
     int PageNumber = 1,
     int PageSize = 20,
+    string? SearchTerm = null,
     string? Status = null,
     string? Category = null,
     string? Priority = null);

@@ -156,7 +156,7 @@ public sealed class LoginTests
         repository.Verify(candidate => candidate.AddAsync(
             It.IsAny<RefreshTokenEntity>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
         unitOfWork.Verify(context => context.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
-        
+
         emailService.Verify(service => service.SendAsync(
             AuthTestData.ActiveUser.Email,
             It.IsAny<string>(),

@@ -31,7 +31,23 @@ public partial class MockupTemplate
 
     public DateTime? UpdatedAt { get; set; }
 
+    public Guid? UserId { get; set; }
+
+    public string? PrintMapsSourceUrl { get; set; }
+
+    public bool AllowRecolor { get; set; }
+
+    public string? GarmentColor { get; set; }
+
+    public long? PrintMapsVersion { get; set; }
+
+    public bool GarmentIsLight { get; set; }
+
+    public bool BackgroundRemoved { get; set; }
+
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 
     public virtual ICollection<ProductMockupTemplate> ProductMockupTemplates { get; set; } = new List<ProductMockupTemplate>();
+
+    public virtual User? User { get; set; }
 }

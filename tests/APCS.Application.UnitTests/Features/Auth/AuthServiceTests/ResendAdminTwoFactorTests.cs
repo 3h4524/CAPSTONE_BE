@@ -93,11 +93,11 @@ public sealed class ResendAdminTwoFactorTests
             .ReturnsAsync(AuthTestData.ActiveUser);
         account.Setup(a => a.GetRolesAsync(challenge.UserId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { AuthConstants.AdminRole });
-            
+
         var emailService = new Mock<IEmailService>();
 
         var result = await AuthTestData.CreateService(
-                cacheService: cache, 
+                cacheService: cache,
                 accountService: account,
                 emailService: emailService)
             .ResendAdminTwoFactorAsync(new AdminResendTwoFactorRequestDto(ValidTempToken), CancellationToken.None);
@@ -107,11 +107,11 @@ public sealed class ResendAdminTwoFactorTests
         result.Value.ExpiresAtUtc.Should().NotBe(challenge.ExpiresAtUtc); // Should be a new expiration
 
         cache.Verify(c => c.SetAsync(
-            It.IsAny<string>(), 
-            It.IsAny<AdminTwoFactorChallenge>(), 
-            It.IsAny<TimeSpan?>(), 
+            It.IsAny<string>(),
+            It.IsAny<AdminTwoFactorChallenge>(),
+            It.IsAny<TimeSpan?>(),
             It.IsAny<CancellationToken>()), Times.Once);
-            
+
         emailService.Verify(e => e.SendAsync(
             AuthTestData.ActiveUser.Email,
             It.IsAny<string>(),

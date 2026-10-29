@@ -21,4 +21,21 @@ public sealed class SubscriptionRepository(AppDbContext dbContext)
                 && subscription.DeletedAt == null)
             .OrderByDescending(subscription => subscription.CreatedAt)
             .FirstOrDefaultAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public Task<int> CountActiveByPlanIdAsync(Guid planId, CancellationToken cancellationToken = default) =>
+        dbContext.Subscriptions
+            .AsNoTracking()
+            .Where(subscription => subscription.PlanId == planId
+                && subscription.Status == "active"
+                && subscription.DeletedAt == null)
+            .CountAsync(cancellationToken);
+
+    /// <inheritdoc />
+    public Task<bool> HasAnySubscriptionReferenceAsync(Guid planId, CancellationToken cancellationToken = default) =>
+        dbContext.Subscriptions
+            .AsNoTracking()
+            .AnyAsync(
+                subscription => subscription.PlanId == planId || subscription.ScheduledPlanId == planId,
+                cancellationToken);
 }

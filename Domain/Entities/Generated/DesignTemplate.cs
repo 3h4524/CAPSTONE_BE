@@ -25,17 +25,19 @@ public partial class DesignTemplate
 
     public string? PreviewImageUrl { get; set; }
 
-    public bool? IsSystemTemplate { get; set; }
+    public bool IsSystemTemplate { get; set; }
 
-    public bool? IsActive { get; set; }
+    public bool IsActive { get; set; }
 
-    public int? UsageCount { get; set; }
+    public int UsageCount { get; set; }
 
     public DateTime? CreatedAt { get; set; }
 
     public DateTime? UpdatedAt { get; set; }
 
     public DateTime? DeletedAt { get; set; }
+
+    public string? NegativePrompt { get; set; }
 
     public virtual ICollection<AiPrompt> AiPrompts { get; set; } = new List<AiPrompt>();
 

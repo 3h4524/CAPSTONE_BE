@@ -7,6 +7,7 @@ public sealed record MonthlyRevenueDto(
 );
 
 public sealed record SupportTicketDto(
+    Guid Id,
     string UserName,
     string UserEmail,
     string Issue,

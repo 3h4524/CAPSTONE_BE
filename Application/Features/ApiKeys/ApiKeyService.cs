@@ -67,8 +67,11 @@ public sealed class ApiKeyService(
             return Result.Failure<IReadOnlyList<ApiKeyProviderResponseDto>>(error);
         return Result.Success<IReadOnlyList<ApiKeyProviderResponseDto>>(new ApiKeyProviderResponseDto[]
         {
-            new("openai", "OpenAI", true, ["Read models (connection check)", "Model inference for listing content", "No billing, admin or fine-tuning permissions needed"]),
+            // One entry per provider: the two Gemini rows were the same provider listed twice,
+            // which showed the user the same choice twice and stored the same id twice.
+            new("gemini", "Google Gemini", true, ["Read models (connection check)", "List models (connection check)", "Model inference for listing content", "Generate design images (Nano Banana)"]),
             new("replicate", "Replicate", true, ["Read account (connection check)", "Run predictions for image generation"]),
+            new("ideogram", "Ideogram", true, ["Price a request without generating (connection check)", "Generate design images (Ideogram 4.0)", "Needs a payment method and credits"]),
             new("printify", "Printify", true, ["Read shops (connection check)", "Manage and publish products", "No order or payment access needed"]),
             new("etsy", "Etsy", false, ["Etsy requires an OAuth account connection; API key entry is not supported."])
         });
@@ -119,8 +122,15 @@ public sealed class ApiKeyService(
             return Result.Failure(CheckFailed);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var added = key is null;
-        key ??= new ApiKey { Id = Guid.NewGuid(), UserId = userId, ServiceProvider = request.Provider,
-            AuthType = "api_key", CreatedAt = now, UsageCount = 0 };
+        key ??= new ApiKey
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            ServiceProvider = request.Provider,
+            AuthType = "api_key",
+            CreatedAt = now,
+            UsageCount = 0
+        };
         key.KeyIdentifier = string.IsNullOrWhiteSpace(request.Name) ? request.Provider : request.Name.Trim();
         key.Environment = request.Environment;
         if (request.ApiKey is not null)
@@ -189,8 +199,12 @@ public sealed class ApiKeyService(
     {
         var provider = key.Provider.Trim().ToLowerInvariant() switch
         {
-            "openai" => ("OpenAI", "Listing content"),
+            "gemini" => ("Google Gemini", "Listing content"),
+            // Keep existing OpenAI credentials readable for existing accounts. New listing
+            // generation code uses Gemini exclusively.
+            "openai" => ("OpenAI (legacy)", "Listing content"),
             "replicate" => ("Replicate", "Image generation"),
+            "ideogram" => ("Ideogram", "Image generation"),
             "printify" => ("Printify", "Product publishing"),
             "etsy" => ("Etsy", "Listing publishing"),
             _ => (key.Provider, "Other service")

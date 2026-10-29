@@ -33,6 +33,10 @@ public partial class User
 
     public DateTime? DeletedAt { get; set; }
 
+    public DateTime? Birthday { get; set; }
+
+    public DateTime? SuspendedUntil { get; set; }
+
     public virtual ICollection<ApiKey> ApiKeys { get; set; } = new List<ApiKey>();
 
     public virtual ICollection<ApiUsageRecord> ApiUsageRecords { get; set; } = new List<ApiUsageRecord>();
@@ -43,6 +47,8 @@ public partial class User
 
     public virtual ICollection<BatchJob> BatchJobs { get; set; } = new List<BatchJob>();
 
+    public virtual ICollection<Batch> Batches { get; set; } = new List<Batch>();
+
     public virtual ICollection<DesignTemplate> DesignTemplates { get; set; } = new List<DesignTemplate>();
 
     public virtual ICollection<EtsyIntegration> EtsyIntegrations { get; set; } = new List<EtsyIntegration>();
@@ -51,6 +57,12 @@ public partial class User
 
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
 
+    public virtual ICollection<MediaJob> MediaJobs { get; set; } = new List<MediaJob>();
+
+    public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
+
+    public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
+
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
 
     public virtual ICollection<PaymentMethod> PaymentMethods { get; set; } = new List<PaymentMethod>();
@@ -58,6 +70,14 @@ public partial class User
     public virtual ICollection<PrintifyIntegration> PrintifyIntegrations { get; set; } = new List<PrintifyIntegration>();
 
     public virtual ICollection<Product> Products { get; set; } = new List<Product>();
+
+    public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
+
+    public virtual ICollection<SellerOpportunity> SellerOpportunities { get; set; } = new List<SellerOpportunity>();
+
+    public virtual SellerResearchProfile? SellerResearchProfile { get; set; }
+
+    public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
 
@@ -76,4 +96,8 @@ public partial class User
     public virtual ICollection<UserRole> UserRoleGrantedByNavigations { get; set; } = new List<UserRole>();
 
     public virtual ICollection<UserRole> UserRoleUsers { get; set; } = new List<UserRole>();
+
+    public virtual ICollection<WorkflowRun> WorkflowRuns { get; set; } = new List<WorkflowRun>();
+
+    public virtual ICollection<Workflow> Workflows { get; set; } = new List<Workflow>();
 }

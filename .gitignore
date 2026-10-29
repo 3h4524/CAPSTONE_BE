@@ -482,3 +482,11 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Segmentation model for mock-up photos (too large for the repository; see scripts/Get-SegmentationModel.ps1)
+models/*.onnx
+media-worker/node_modules/
+media-worker/artifacts/
+
+# Test reports written by the admin test-run button
+/test-reports/

@@ -1,6 +1,5 @@
 using APCS.Api.Contracts.SupportTickets;
 using APCS.Api.Extensions;
-using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.SupportTickets;
 using APCS.Application.Features.SupportTickets.Dtos.Request;
 using APCS.Application.Features.SupportTickets.Dtos.Response;
@@ -48,16 +47,12 @@ public sealed class AdminSupportTicketsController(ISupportTicketService supportT
         [FromForm] CreateAdminTicketReplyForm form,
         CancellationToken cancellationToken)
     {
-        var uploads = form.Attachments.Select(file => new UploadFileDto(
-            Path.GetFileName(file.FileName.Replace('\\', '/')),
-            file.ContentType,
-            file.Length,
-            file.OpenReadStream())).ToArray();
+        var uploads = form.Attachments.ToUploadFileDtos();
         try
         {
             var result = await supportTicketService.ReplyAdminAsync(
                 id,
-                new CreateAdminTicketReplyRequestDto(form.ReplyText, form.IsInternalNote, uploads),
+                new CreateAdminTicketReplyRequestDto(form.ReplyText, uploads),
                 cancellationToken);
             return result.IsSuccess
                 ? CreatedAtAction(nameof(Get), new { id }, result.Value)
@@ -65,10 +60,7 @@ public sealed class AdminSupportTicketsController(ISupportTicketService supportT
         }
         finally
         {
-            foreach (var upload in uploads)
-            {
-                upload.Content.Dispose();
-            }
+            uploads.DisposeUploads();
         }
     }
 }

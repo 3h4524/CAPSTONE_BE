@@ -1,0 +1,487 @@
+using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchProductPrompts.Common;
+using APCS.Application.Features.DesignGeneration;
+using APCS.Application.Features.DesignGeneration.Common;
+using APCS.Application.Features.DesignGeneration.Dtos.Request;
+using APCS.Application.Features.DesignGeneration.Validators;
+using APCS.Common.Constants;
+using APCS.Common.Models;
+using APCS.Domain.Entities;
+using FluentAssertions;
+using Microsoft.Extensions.Time.Testing;
+using MockQueryable.Moq;
+using Moq;
+
+namespace APCS.Application.UnitTests.Features.DesignGeneration;
+
+[TestClass]
+public sealed class DesignGenerationServiceTests
+{
+    private static readonly Guid UserId = Guid.NewGuid();
+    private static readonly DateTimeOffset UtcNow = new(2026, 9, 24, 8, 0, 0, TimeSpan.Zero);
+
+    private static StartGenerationRequestDto ValidRequest() => new(null, null, 1, "1:1");
+
+    private sealed class Fixture
+    {
+        public required BatchJob Job { get; init; }
+        public required List<BatchJobProduct> Rows { get; init; }
+        public required List<AiPrompt> AddedPrompts { get; init; }
+        public required Mock<IDesignGenerationQueue> Queue { get; init; }
+        public required Mock<IUnitOfWork> UnitOfWork { get; init; }
+        public required DesignGenerationService Service { get; init; }
+        public required Guid OwnerId { get; init; }
+    }
+
+    private static Fixture CreateFixture(
+        string jobStatus = BatchJobStatuses.Draft,
+        string rowStatus = BatchJobProductStatuses.Pending,
+        bool hasGeminiKey = true,
+        string keyProvider = "gemini",
+        bool hasOtherActiveJob = false,
+        int imageGenerationQuota = 100,
+        int alreadyUsedImages = 0,
+        bool withImage = false,
+        int[]? existingPromptVersions = null,
+        DesignTemplate? template = null,
+        Action<Product>? editProduct = null)
+    {
+        var batchId = Guid.NewGuid();
+        var job = new BatchJob
+        {
+            Id = Guid.NewGuid(), UserId = UserId, BatchId = batchId, Name = "Cats - design generation",
+            SourceFileType = "manual", Status = jobStatus, JobType = "design_generation",
+            Config = "{}", Priority = "normal", TotalProducts = 1, CreatedAt = UtcNow.UtcDateTime
+        };
+        var product = new Product
+        {
+            Id = Guid.NewGuid(), UserId = UserId, BatchId = batchId, Name = "Grumpy Cat",
+            ProductType = "t-shirt", NicheCategory = "cats", ProcessingStatus = "pending", CreatedAt = UtcNow.UtcDateTime,
+            DesignTemplateId = template?.Id
+        };
+        editProduct?.Invoke(product);
+        var row = new BatchJobProduct
+        {
+            Id = Guid.NewGuid(), BatchJobId = job.Id, BatchId = batchId, ProductId = product.Id,
+            SequenceOrder = 1, Status = rowStatus, CreatedAt = UtcNow.UtcDateTime
+        };
+
+        var jobs = new List<BatchJob> { job };
+        if (hasOtherActiveJob)
+            jobs.Add(new BatchJob
+            {
+                Id = Guid.NewGuid(), UserId = UserId, BatchId = batchId, Name = "Other job",
+                SourceFileType = "manual", Status = BatchJobStatuses.Running, JobType = "design_generation",
+                Config = "{}", Priority = "normal", CreatedAt = UtcNow.UtcDateTime
+            });
+
+        var batchRepo = MockRepo(new[] { new Batch { Id = batchId, UserId = UserId, Name = "Cats", Status = "draft", CreatedAt = UtcNow.UtcDateTime } });
+        var jobRepo = MockRepo(jobs);
+        var rowRepo = MockRepo(new[] { row });
+        var productRepo = MockRepo(new[] { product });
+        var images = withImage
+            ? new[]
+            {
+                new DesignImage
+                {
+                    Id = Guid.NewGuid(), ProductId = product.Id, AiPromptId = Guid.NewGuid(), BatchJobId = job.Id,
+                    BatchJobProductId = row.Id, ImageUrl = "https://img/1.png", VariationIndex = 0, ImageWidthPx = 1024,
+                    ImageHeightPx = 1024, ApprovalStatus = "pending", ImageGeneratorModel = "m", StorageProvider = "cloudinary",
+                    StorageKey = "k", FileFormat = "png"
+                }
+            }
+            : Array.Empty<DesignImage>();
+        var imageRepo = MockRepo(images);
+        var templateRepo = MockRepo(template is null ? Array.Empty<DesignTemplate>() : new[] { template });
+        var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
+
+        var addedPrompts = new List<AiPrompt>();
+        // Prompts the product already has from an earlier job.
+        var existingPrompts = (existingPromptVersions ?? []).Select(version => new AiPrompt
+        {
+            Id = Guid.NewGuid(), ProductId = product.Id, VersionNumber = version, OriginalDescription = "d",
+            SystemPrompt = "s", GeneratedPrompt = $"old prompt {version}", CreatedAt = UtcNow.UtcDateTime
+        }).ToList();
+        var promptRepo = new Mock<IRepository<AiPrompt>>();
+        promptRepo.Setup(x => x.Query()).Returns(existingPrompts.AsQueryable().BuildMock());
+        promptRepo.Setup(x => x.AddAsync(It.IsAny<AiPrompt>(), false, It.IsAny<CancellationToken>()))
+            .Callback<AiPrompt, bool, CancellationToken>((p, _, _) => addedPrompts.Add(p)).Returns(Task.CompletedTask);
+
+        var currentUser = new Mock<ICurrentUser>();
+        currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
+        currentUser.SetupGet(x => x.UserId).Returns(UserId);
+
+        var apiKeys = new Mock<IApiKeyRepository>();
+        var keys = hasGeminiKey
+            ? new[]
+            {
+                new ApiKey
+                {
+                    Id = Guid.NewGuid(), UserId = UserId, ServiceProvider = keyProvider, KeyIdentifier = "Default",
+                    KeyValueEncrypted = "encrypted", AuthType = "api_key", IsActive = true, LastCheckSucceeded = true,
+                    CreatedAt = UtcNow.UtcDateTime
+                }
+            }
+            : [];
+        apiKeys.Setup(x => x.ListOwnedAsync(UserId, It.IsAny<CancellationToken>())).ReturnsAsync(keys);
+
+        var credentials = new Mock<IApiKeyCredentials>();
+        credentials.Setup(x => x.Unprotect(It.IsAny<string>())).Returns("plain-key");
+
+        var plan = new SubscriptionPlan
+        {
+            Id = Guid.NewGuid(), Name = "Starter", Tier = "starter", Description = "d",
+            MonthlyPriceUsd = 9, MaxBatchSize = 50, MaxProductsPerMonth = 200, MaxConcurrentJobs = 2,
+            ImageGenerationQuota = imageGenerationQuota, VideoGenerationQuota = 0, ApiCallQuota = 1000,
+            StorageQuotaGb = 5, IsActive = true, SortOrder = 0, PlanFeatures = []
+        };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(), UserId = UserId, PlanId = plan.Id, Plan = plan,
+            BillingCycle = "monthly", MonthlyPriceUsd = plan.MonthlyPriceUsd, Status = "active",
+            StartDate = DateOnly.FromDateTime(UtcNow.UtcDateTime),
+            RenewalDate = DateOnly.FromDateTime(UtcNow.UtcDateTime).AddMonths(1),
+            AutoRenew = true, CreatedAt = UtcNow.UtcDateTime
+        };
+        var subscriptions = new Mock<ISubscriptionRepository>();
+        subscriptions.Setup(x => x.GetActiveWithPlanAsync(UserId, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+
+        var usage = new UsageStatistic
+        {
+            Id = Guid.NewGuid(), UserId = UserId,
+            BillingPeriodStart = DateOnly.FromDateTime(UtcNow.UtcDateTime).AddMonths(-1),
+            BillingPeriodEnd = DateOnly.FromDateTime(UtcNow.UtcDateTime).AddMonths(1),
+            ImagesGenerated = alreadyUsedImages, CreatedAt = UtcNow.UtcDateTime
+        };
+        var usageStats = new Mock<IUsageStatisticRepository>();
+        usageStats.Setup(x => x.GetCurrentPeriodAsync(UserId, It.IsAny<DateOnly>(), It.IsAny<CancellationToken>())).ReturnsAsync(usage);
+
+        var queue = new Mock<IDesignGenerationQueue>();
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var service = new DesignGenerationService(
+            currentUser.Object, batchRepo.Object, jobRepo.Object, rowRepo.Object, productRepo.Object,
+            promptRepo.Object, imageRepo.Object, new Mock<IRepository<ApiUsageRecord>>().Object,
+            new Mock<IRepository<BatchJobLog>>().Object, templateRepo.Object, styleRepo.Object,
+            apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
+            [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
+            Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)));
+
+        return new Fixture
+        {
+            Job = job, Rows = [row], AddedPrompts = addedPrompts,
+            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId
+        };
+    }
+
+    private static Mock<IRepository<TEntity>> MockRepo<TEntity>(IEnumerable<TEntity> data) where TEntity : class
+    {
+        var query = data.AsQueryable().BuildMock();
+        var repo = new Mock<IRepository<TEntity>>();
+        repo.Setup(x => x.Query()).Returns(query);
+        repo.Setup(x => x.UpdateAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        repo.Setup(x => x.AddAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        return repo;
+    }
+
+    [TestMethod]
+    public async Task StartAsync_JobNotDraft_ReturnsConflict()
+    {
+        var fixture = CreateFixture(jobStatus: BatchJobStatuses.Queued);
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("DesignGeneration.NotDraft");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NoPendingRows_ReturnsConflict()
+    {
+        var fixture = CreateFixture(rowStatus: BatchJobProductStatuses.ImageReviewRequired);
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Batches.NoPendingProducts");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_MissingGeminiKey_ReturnsMsg35()
+    {
+        var fixture = CreateFixture(hasGeminiKey: false);
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG35");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_IdeogramChosenWithOnlyAGeminiKey_ReturnsMsg35NamingIdeogram()
+    {
+        var fixture = CreateFixture();
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG35");
+        result.Error.Message.Should().Contain("Ideogram");
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_IdeogramChosenWithAnIdeogramKey_RecordsTheProviderOnTheJob()
+    {
+        var fixture = CreateFixture(keyProvider: ImageGenerationProviders.Ideogram);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain("\"imageProvider\":\"ideogram\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NoProviderChosen_UsesGemini()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain("\"imageProvider\":\"gemini\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_UnknownImageProvider_IsRejected()
+    {
+        var fixture = CreateFixture();
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: "midjourney"));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(ErrorType.Validation);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AnotherActiveJobForSameBatch_ReturnsMsg36()
+    {
+        var fixture = CreateFixture(hasOtherActiveJob: true);
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG36");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NotEnoughQuotaForRequestedVariations_ReturnsMsg34()
+    {
+        // 1 pending row * 3 variations = 3 images needed, only 2 left in quota (5 - 3 already used).
+        var fixture = CreateFixture(imageGenerationQuota: 5, alreadyUsedImages: 3);
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, new StartGenerationRequestDto(null, null, 3, "1:1"));
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG34");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ValidDraftJob_SynthesizesPromptQueuesJobAndEnqueuesBackgroundWork()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.QueuedProductCount.Should().Be(1);
+        fixture.Job.Status.Should().Be(BatchJobStatuses.Queued);
+        fixture.Rows[0].Status.Should().Be(BatchJobProductStatuses.GeneratingImage);
+        fixture.AddedPrompts.Should().ContainSingle(p => p.BatchJobProductId == fixture.Rows[0].Id);
+        fixture.Queue.Verify(x => x.Enqueue(fixture.Job.Id), Times.Once);
+        fixture.UnitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ForAProductThatAlreadyHasPrompts_NumbersTheNewPromptAfterTheLatestOne()
+    {
+        // The unique (product, version) index rejected a second "version 1" for the same product.
+        var fixture = CreateFixture(existingPromptVersions: [1, 2]);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.AddedPrompts.Should().ContainSingle().Which.VersionNumber.Should().Be(3);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NoStyleChosen_RemovesTheStyleAnEarlierJobGaveTheProduct()
+    {
+        Product? started = null;
+        var fixture = CreateFixture(editProduct: product =>
+        {
+            product.StylePreset = "Minimalist";
+            started = product;
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        started!.StylePreset.Should().BeNull();
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().NotContain("Minimalist");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ForAProductWithoutPrompts_StartsAtVersionOne()
+    {
+        var fixture = CreateFixture();
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.AddedPrompts.Should().ContainSingle().Which.VersionNumber.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithJobInstructions_AddsThemToEveryPromptAndKeepsThemOnTheJob()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", "  Use a vintage poster look  "));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().Contain("Use a vintage poster look");
+        fixture.Job.Config.Should().Contain("\"instructions\":\"Use a vintage poster look\"");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PhraseTemplate_KeepsThePhraseOutOfTheMotifsAndDescription_AndMovesTheFeelToTheMood()
+    {
+        var template = new DesignTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Bold Rally", Type = "system", ArtStyle = "bold_typography", ExamplePrompts = "[]",
+            BasePrompt = "Create a {style} composition using the exact phrase \"{subject}\", use {keywords} as small supporting motifs."
+        };
+        var fixture = CreateFixture(template: template, editProduct: product =>
+        {
+            product.DesiredDesignText = "Coffee Then Code";
+            product.MainKeywords = "coffee, coding, funny";
+            product.InputDescription = "A steaming mug and the text Coffee Then Code.";
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        var prompt = fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt;
+        prompt.Should().Contain("use coding as small supporting motifs")
+            .And.Contain("playful feel")
+            .And.Contain("Additional guidance: A steaming mug.")
+            .And.NotContain("the text Coffee Then Code");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ProductWithItsOwnPrompt_UsesItInsteadOfTheTemplate()
+    {
+        var template = new DesignTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Bold Rally", Type = "system", ArtStyle = "bold_typography", ExamplePrompts = "[]",
+            BasePrompt = "Create a {style} composition using the exact phrase \"{subject}\", use {keywords} as small supporting motifs."
+        };
+        var fixture = CreateFixture(template: template, editProduct: product =>
+        {
+            product.CustomPrompt = "A grumpy cat lounging on a stack of books, retro sticker art.";
+            product.DesiredDesignText = "Not Today";
+            product.MainKeywords = "cat, books, funny";
+            product.InputDescription = "A sleepy cat.";
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        var prompt = fixture.AddedPrompts.Should().ContainSingle().Which;
+        prompt.GeneratedPrompt.Should().Be(
+            "A grumpy cat lounging on a stack of books, retro sticker art. The design prints the exact phrase \"Not Today\".");
+        prompt.SystemPrompt.Should().Be(
+            "A grumpy cat lounging on a stack of books, retro sticker art. " + PromptDefaultsResolver.CustomPhraseSentence);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_FromAWorkflow_RecordsItOnTheJobAndListsItWithTheJob()
+    {
+        var fixture = CreateFixture();
+        var workflowId = Guid.NewGuid();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", WorkflowId: workflowId));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Job.Config.Should().Contain($"\"workflowId\":\"{workflowId}\"");
+        (await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId)).Value.Single().WorkflowId.Should().Be(workflowId);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_OutsideAWorkflow_LeavesNoWorkflowOnTheJob()
+    {
+        var fixture = CreateFixture();
+        fixture.Job.Config = $"{{\"workflowId\":\"{Guid.NewGuid()}\"}}";
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.Job.Config.Should().NotContain("workflowId");
+        (await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId)).Value.Single().WorkflowId.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithoutJobInstructions_LeavesNoInstructionsOnTheJob()
+    {
+        var fixture = CreateFixture();
+        fixture.Job.Config = "{\"instructions\":\"left over\"}";
+
+        await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        fixture.Job.Config.Should().NotContain("instructions");
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().NotContain("left over");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithTooLongInstructions_ReturnsValidationError()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.StartAsync(
+            fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", new string('x', 1001)));
+
+        result.IsFailure.Should().BeTrue();
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_ReturnsCountersAndGeneratedImagesForOwner()
+    {
+        var fixture = CreateFixture(rowStatus: BatchJobProductStatuses.ImageReviewRequired, withImage: true);
+
+        var result = await fixture.Service.GetJobAsync(fixture.Job.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Counters.Completed.Should().Be(1);
+        result.Value.Counters.Pending.Should().Be(0);
+        result.Value.Products.Should().ContainSingle().Which.Images.Should().ContainSingle(i => i.ImageUrl == "https://img/1.png");
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_UnknownOrOtherOwnersJob_ReturnsNotFound()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.GetJobAsync(Guid.NewGuid());
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("DesignGeneration.JobNotFound");
+    }
+
+    [TestMethod]
+    public async Task ListJobsForBatchAsync_ReturnsJobsOfOwnedBatch()
+    {
+        var fixture = CreateFixture();
+
+        var result = await fixture.Service.ListJobsForBatchAsync(fixture.Job.BatchId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle(j => j.Id == fixture.Job.Id);
+    }
+}

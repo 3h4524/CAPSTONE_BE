@@ -12,5 +12,6 @@ public sealed record AdminDashboardMetricsDto(
     int PendingTickets,
     List<MonthlyRevenueDto> RevenueChart,
     List<SupportTicketDto> LatestTickets,
-    List<BatchJobDto> RecentBatchJobs
+    List<BatchJobDto> RecentBatchJobs,
+    int TotalBatchJobs = 0
 );

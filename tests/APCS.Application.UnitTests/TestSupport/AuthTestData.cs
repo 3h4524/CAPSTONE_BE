@@ -29,7 +29,9 @@ internal static class AuthTestData
         "user@example.com",
         "User Name",
         true,
-        true);
+        true,
+        "active",
+        null);
 
     /// <summary>
     /// An account whose email is not verified yet, so it cannot authenticate.

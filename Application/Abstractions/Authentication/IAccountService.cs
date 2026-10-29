@@ -10,6 +10,14 @@ public interface IAccountService
     Task<bool> EmailExistsAsync(string email, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Removes an account together with everything that belongs to it.
+    /// </summary>
+    /// <remarks>
+    /// The rows that hang off the account go with it through the cascade rules of the schema.
+    /// </remarks>
+    Task<bool> DeleteUserAsync(Guid userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Stages a new account and its default role on the current unit of work.
     /// </summary>
     /// <remarks>
@@ -106,5 +114,13 @@ public interface IAccountService
     Task<bool> VerifyPasswordAsync(
         Guid userId,
         string candidatePassword,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Checks if a suspended account's ban has expired and automatically unlocks it.
+    /// </summary>
+    Task<bool> TryAutoUnlockAsync(
+        Guid userId,
+        DateTimeOffset utcNow,
         CancellationToken cancellationToken = default);
 }

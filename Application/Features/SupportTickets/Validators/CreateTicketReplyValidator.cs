@@ -9,7 +9,9 @@ public sealed class CreateTicketReplyValidator : AbstractValidator<CreateTicketR
 {
     public CreateTicketReplyValidator()
     {
-        RuleFor(request => request.ReplyText).NotEmpty().MaximumLength(5_000);
+        RuleFor(request => request).Must(request => !string.IsNullOrWhiteSpace(request.ReplyText) || (request.Attachments != null && request.Attachments.Count > 0))
+            .WithMessage("You must provide either a message or an attachment.");
+        RuleFor(request => request.ReplyText).MaximumLength(5_000);
         RuleFor(request => request.Attachments)
             .NotNull()
             .Must(files => files.Count <= SupportTicketAttachmentRules.MaximumFileCount)
@@ -23,7 +25,9 @@ public sealed class CreateAdminTicketReplyValidator : AbstractValidator<CreateAd
 {
     public CreateAdminTicketReplyValidator()
     {
-        RuleFor(request => request.ReplyText).NotEmpty().MaximumLength(5_000);
+        RuleFor(request => request).Must(request => !string.IsNullOrWhiteSpace(request.ReplyText) || (request.Attachments != null && request.Attachments.Count > 0))
+            .WithMessage("You must provide either a message or an attachment.");
+        RuleFor(request => request.ReplyText).MaximumLength(5_000);
         RuleFor(request => request.Attachments)
             .NotNull()
             .Must(files => files.Count <= SupportTicketAttachmentRules.MaximumFileCount)

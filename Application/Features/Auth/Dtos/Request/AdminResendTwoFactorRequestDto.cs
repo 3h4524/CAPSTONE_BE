@@ -6,5 +6,5 @@ namespace APCS.Application.Features.Auth.Dtos.Request;
 /// Requests a replacement administrator email OTP.
 /// </summary>
 public sealed record AdminResendTwoFactorRequestDto(
-	string TempToken,
-	RequestContext? Context = null);
+    string TempToken,
+    RequestContext? Context = null);

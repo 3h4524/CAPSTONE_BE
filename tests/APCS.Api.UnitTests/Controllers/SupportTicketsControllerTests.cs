@@ -95,5 +95,8 @@ public sealed class SupportTicketsControllerTests
             "open",
             null,
             DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            null,
+            false,
+            null);
 }

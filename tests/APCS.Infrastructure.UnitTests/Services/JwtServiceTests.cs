@@ -22,7 +22,7 @@ public sealed class JwtServiceTests
     {
         var service = CreateService();
 
-        var result = service.GenerateAccessToken(UserId,"seller@example.com", ["user", "admin"]);
+        var result = service.GenerateAccessToken(UserId, "seller@example.com", ["user", "admin"]);
 
         result.JwtId.Should().NotBeNullOrWhiteSpace();
         result.ExpiresAtUtc.Should().Be(UtcNow.AddMinutes(15));
@@ -44,8 +44,8 @@ public sealed class JwtServiceTests
     {
         var service = CreateService();
 
-        var first = service.GenerateAccessToken(UserId,"seller@example.com", ["user"]);
-        var second = service.GenerateAccessToken(UserId,"seller@example.com", ["user"]);
+        var first = service.GenerateAccessToken(UserId, "seller@example.com", ["user"]);
+        var second = service.GenerateAccessToken(UserId, "seller@example.com", ["user"]);
 
         first.JwtId.Should().NotBe(second.JwtId);
         first.AccessToken.Should().NotBe(second.AccessToken);
@@ -78,7 +78,7 @@ public sealed class JwtServiceTests
     [TestMethod]
     public void GenerateAccessToken_WithBlankEmail_Throws()
     {
-        var act = () => CreateService().GenerateAccessToken(UserId," ", ["user"]);
+        var act = () => CreateService().GenerateAccessToken(UserId, " ", ["user"]);
 
         act.Should().Throw<ArgumentException>();
     }
@@ -86,7 +86,7 @@ public sealed class JwtServiceTests
     [TestMethod]
     public void GenerateAccessToken_WithNullRoles_Throws()
     {
-        var act = () => CreateService().GenerateAccessToken(UserId,"seller@example.com", null!);
+        var act = () => CreateService().GenerateAccessToken(UserId, "seller@example.com", null!);
 
         act.Should().Throw<ArgumentNullException>();
     }

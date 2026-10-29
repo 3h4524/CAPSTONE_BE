@@ -43,7 +43,11 @@ public sealed class ApiKeyCredentialsTests
     }
 
     [TestMethod]
-    [DataRow(401)] [DataRow(403)] [DataRow(429)] [DataRow(500)] [DataRow(302)]
+    [DataRow(401)]
+    [DataRow(403)]
+    [DataRow(429)]
+    [DataRow(500)]
+    [DataRow(302)]
     public async Task Validation_RejectsNonSuccessResponses(int status)
     {
         using var handler = new Handler(_ => new HttpResponseMessage((HttpStatusCode)status));

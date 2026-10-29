@@ -19,6 +19,11 @@ public partial class AppDbContext : IUnitOfWork
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // The production provider is PostgreSQL/pgvector. The existing unit-test
+        // contexts use EF Core InMemory, which cannot map Pgvector.Vector.
+        if (Database.ProviderName?.Contains("InMemory", StringComparison.OrdinalIgnoreCase) == true)
+            modelBuilder.Entity<RagEmbedding>().Ignore(x => x.Embedding);
+
         modelBuilder.Entity<AuthToken>()
             .Property<uint>("xmin")
             .IsRowVersion()

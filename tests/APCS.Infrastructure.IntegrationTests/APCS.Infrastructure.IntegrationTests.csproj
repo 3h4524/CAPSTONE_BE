@@ -1,9 +1,10 @@
-<Project Sdk="MSTest.Sdk">
+<Project Sdk="MSTest.Sdk/4.3.3">
   <PropertyGroup>
     <AssemblyName>APCS.Infrastructure.IntegrationTests</AssemblyName>
     <RootNamespace>APCS.Infrastructure.IntegrationTests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Pgvector.EntityFrameworkCore" />
     <ProjectReference Include="../../Infrastructure/Infrastructure.csproj" />
   </ItemGroup>
 </Project>

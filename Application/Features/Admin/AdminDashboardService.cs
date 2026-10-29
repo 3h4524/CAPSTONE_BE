@@ -65,9 +65,13 @@ public sealed class AdminDashboardService(
                 .Where(s => s.Status.ToLower() == "active")
                 .SumAsync(s => s.MonthlyPriceUsd, cancellationToken);
 
-            // 5. Active Batch Jobs (running or queued)
+            // 5. Total and Active Batch Jobs
+            var totalBatchJobs = await batchJobRepository.Query()
+                .Where(j => j.DeletedAt == null)
+                .CountAsync(cancellationToken);
+
             var activeBatchJobs = await batchJobRepository.Query()
-                .Where(j => j.Status.ToLower() == "running" || j.Status.ToLower() == "queued" || j.Status.ToLower() == "pending")
+                .Where(j => j.DeletedAt == null && (j.Status.ToLower() == "running" || j.Status.ToLower() == "queued" || j.Status.ToLower() == "pending" || j.Status.ToLower() == "paused"))
                 .CountAsync(cancellationToken);
 
             // 6. Pending Tickets (open or pending)
@@ -83,7 +87,7 @@ public sealed class AdminDashboardService(
                 var invoicesLast7Days = await invoiceRepository.Query()
                     .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= sevenDaysAgo && i.InvoiceDate <= referenceDate)
                     .ToListAsync(cancellationToken);
-                
+
                 for (int i = 6; i >= 0; i--)
                 {
                     var dayDate = referenceDate.AddDays(-i);
@@ -98,7 +102,7 @@ public sealed class AdminDashboardService(
                 var invoicesLast5Years = await invoiceRepository.Query()
                     .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= fiveYearsAgo && i.InvoiceDate <= endDate)
                     .ToListAsync(cancellationToken);
-                
+
                 for (int i = 4; i >= 0; i--)
                 {
                     var yearDate = referenceDate.Year - i;
@@ -119,7 +123,7 @@ public sealed class AdminDashboardService(
                     var monthDate = startDate.AddMonths(-i);
                     var monthStr = monthDate.ToString("MMM");
                     var monthInvoices = invoicesLast6Months.Where(inv => inv.InvoiceDate.Year == monthDate.Year && inv.InvoiceDate.Month == monthDate.Month).ToList();
-                    
+
                     revenueChart.Add(new MonthlyRevenueDto(monthStr, monthInvoices.Sum(inv => inv.TotalAmount), 0m));
                 }
             }
@@ -130,6 +134,7 @@ public sealed class AdminDashboardService(
                 .OrderByDescending(t => t.CreatedAt)
                 .Take(5)
                 .Select(t => new SupportTicketDto(
+                    t.Id,
                     t.User.FullName,
                     t.User.Email,
                     $"#{t.TicketNumber} · {t.Subject}",
@@ -149,8 +154,8 @@ public sealed class AdminDashboardService(
                     b.Status,
                     b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
                     b.User.FullName,
-                    b.Status.ToLower() == "completed" ? "emerald" : 
-                        b.Status.ToLower() == "running" ? "amber" : 
+                    b.Status.ToLower() == "completed" ? "emerald" :
+                        b.Status.ToLower() == "running" ? "amber" :
                         b.Status.ToLower() == "queued" ? "orange" : "rose"
                 ))
                 .ToListAsync(cancellationToken);
@@ -164,7 +169,8 @@ public sealed class AdminDashboardService(
                 pendingTickets,
                 revenueChart,
                 latestTickets,
-                recentBatchJobs
+                recentBatchJobs,
+                totalBatchJobs
             );
 
             return Result.Success(metrics);
@@ -196,10 +202,11 @@ public sealed class AdminDashboardService(
         sb.AppendLine($"Active Paid Users,{metrics.ActivePaidUsers}");
         sb.AppendLine($"Total Revenue,{metrics.TotalRevenue}");
         sb.AppendLine($"Recurring Revenue,{metrics.RecurringRevenue}");
+        sb.AppendLine($"Total Batch Jobs,{metrics.TotalBatchJobs}");
         sb.AppendLine($"Active Batch Jobs,{metrics.ActiveBatchJobs}");
         sb.AppendLine($"Pending Tickets,{metrics.PendingTickets}");
         sb.AppendLine();
-        
+
         sb.AppendLine("--- Latest Support Tickets ---");
         sb.AppendLine("User Name,User Email,Issue,Status,Priority");
         foreach (var t in metrics.LatestTickets)

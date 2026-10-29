@@ -26,9 +26,32 @@ public sealed class GlobalExceptionMiddleware(
         {
             logger.LogInformation("Request was cancelled by the client.");
         }
+        catch (HttpRequestException exception) when (!context.Response.HasStarted)
+        {
+            logger.LogError(exception, "External service request failed.");
+            System.IO.File.WriteAllText("exception_dump.log", exception.ToString());
+
+            context.Response.Clear();
+            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            context.Response.ContentType = "application/problem+json";
+
+            var problem = new ProblemDetails
+            {
+                Type = $"https://apcs/errors/{ErrorCodes.ExternalServiceUnavailable}",
+                Title = "External service unavailable.",
+                Detail = "The external data provider could not be reached. Please check the connection and try again.",
+                Status = StatusCodes.Status503ServiceUnavailable
+            };
+
+            problem.Extensions["code"] = ErrorCodes.ExternalServiceUnavailable;
+            problem.Extensions["traceId"] = context.TraceIdentifier;
+
+            await JsonSerializer.SerializeAsync(context.Response.Body, problem, JsonOptions, context.RequestAborted);
+        }
         catch (Exception exception)
         {
             logger.LogError(exception, "Unhandled API exception.");
+            System.IO.File.WriteAllText("exception_dump.log", exception.ToString());
 
             if (context.Response.HasStarted)
             {

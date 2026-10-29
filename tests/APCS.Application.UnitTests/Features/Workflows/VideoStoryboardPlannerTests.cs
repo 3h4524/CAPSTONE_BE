@@ -1,0 +1,792 @@
+using APCS.Application.Features.Workflows;
+using APCS.Application.Features.BatchMockups.Common;
+using APCS.Domain.Entities;
+using FluentAssertions;
+
+namespace APCS.Application.UnitTests.Features.Workflows;
+
+[TestClass]
+public sealed class VideoStoryboardPlannerTests
+{
+    private readonly VideoStoryboardPlanner _planner = new();
+
+    [TestMethod]
+    [DataRow("tshirt")]
+    [DataRow("hoodie")]
+    [DataRow("mug")]
+    [DataRow("poster")]
+    [DataRow("tote_bag")]
+    [DataRow("phone_case")]
+    public void Plan_SixProductProfiles_ProducesSmoothConstantScaleStandardScenes(string productType)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct(productType);
+        var asset = fixture.AddAsset(product);
+        var result = _planner.Plan(product, [asset], new(TextOverlay: "Original artwork"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Should().HaveCount(2);
+        // No transition is chosen, and the default is none, so the scenes fill the video without overlapping.
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", "none");
+        result.Value.Scenes.Select(x => x.SceneOrder).Should().Equal(0, 1);
+        foreach (var scene in result.Value.Scenes)
+        {
+            scene.GenerationStrategy.Should().Be("standard");
+            scene.SourceRevision.Should().Be(3);
+            scene.SourceHash.Should().Be(asset.ContentHash);
+            // The fixture's mock-up is 9:16 like the default output, so it fills the frame uncropped.
+            scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+            scene.EndCrop.Should().Be(scene.Crop);
+            scene.Text.Should().Be("Original artwork");
+            scene.Warnings.Should().BeEmpty();
+        }
+        result.Value.Scenes[0].StartScale.Should().Be(1);
+        result.Value.Scenes[0].EndScale.Should().Be(1.1);
+        result.Value.Scenes[1].StartScale.Should().Be(1);
+        result.Value.Scenes[1].EndScale.Should().Be(1.1);
+    }
+
+    [TestMethod]
+    [DataRow(3)]
+    [DataRow(13)]
+    [DataRow(15)]
+    public void Plan_FourScenes_DistributesAllFramesWithoutChangingDuration(int duration)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var assets = new[] { fixture.AddAsset(product, "Lifestyle"), fixture.AddAsset(product, "ArtworkDetail"), fixture.AddAsset(product, "Hero"), fixture.AddAsset(product, "AlternativeAngle") };
+        var result = _planner.Plan(product, assets, new(Template: "product_showcase", DurationSeconds: duration));
+        result.Value.Scenes.Select(x => x.Role).Should().Equal("Hero", "AlternativeAngle", "Lifestyle", "ArtworkDetail");
+        // The default transition is none: no overlap to add (Plan_StandardScenes_UsesSelectedTransitionAtEveryBoundary covers it).
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(duration * 30);
+        result.Value.OutputDurationFrames.Should().Be(duration * 30);
+        result.Value.TransitionOverlapFrames.Should().Be(0);
+        result.Value.Scenes.Max(x => x.DurationFrames).Should().BeLessThanOrEqualTo(result.Value.Scenes.Min(x => x.DurationFrames) + 1);
+    }
+
+    [TestMethod]
+    [DataRow("none", 0)]
+    [DataRow("fade", 12)]
+    [DataRow("swipe", 12)]
+    [DataRow("zoom", 12)]
+    [DataRow("flash", 12)]
+    [DataRow("whip_pan", 12)]
+    [DataRow("blur", 12)]
+    [DataRow("cut", 0)]
+    public void Plan_StandardScenes_UsesSelectedTransitionAtEveryBoundary(string transition, int overlap)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var assets = new[] { fixture.AddAsset(product), fixture.AddAsset(product, "AlternativeAngle"),
+            fixture.AddAsset(product, "Lifestyle"), fixture.AddAsset(product, "ArtworkDetail") };
+
+        var result = _planner.Plan(product, assets, new(Template: "product_showcase", DurationSeconds: 12,
+            StandardOptions: new(Transition: transition)));
+
+        result.IsSuccess.Should().BeTrue();
+        var normalized = transition == "cut" ? "none" : transition;
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized, normalized);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(360);
+    }
+
+    [TestMethod]
+    public void Plan_StandardAutoTemplate_UsesNeutralInternalTemplate()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var detail = fixture.AddAsset(product, "ArtworkDetail");
+        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("product_showcase");
+        hero.VariantKey = "red";
+        detail.VariantKey = "blue";
+        _planner.Plan(product, [hero, detail], new()).Value.Template.Should().Be("product_showcase");
+        _planner.Plan(product, [hero], new()).Value.Template.Should().Be("product_showcase");
+    }
+
+    [TestMethod]
+    public void Plan_StandardSceneTimeline_UsesTheSelectedImagesAndCameraMovements()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var first = fixture.AddAsset(product);
+        var second = fixture.AddAsset(product, "AlternativeAngle");
+        var config = new GenerateVideoConfig(Mode: "standard", DurationSeconds: 5,
+            AiScenes:
+            [
+                new(MockupId: second.Id, DurationSeconds: 3, Mode: "standard", StandardMotionPreset: "pan_left"),
+                new(MockupId: first.Id, DurationSeconds: 2, Mode: "standard", StandardMotionPreset: "zoom_out")
+            ]);
+
+        var result = _planner.Plan(product, [first, second], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("standard");
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Equal(second.Id, first.Id);
+        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("pan_left", "zoom_out");
+        result.Value.Scenes.Select(scene => scene.DurationFrames).Should().Equal(90, 60);
+    }
+
+    [TestMethod]
+    public void Plan_VersionTwoSingleUnmarkedAsset_PreservesTheSelectedCameraMotion()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        asset.Regions = "{}";
+
+        var result = _planner.Plan(product, [asset], new(TemplateVersion: 2));
+
+        result.Value.TemplateVersion.Should().Be(2);
+        result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene =>
+            scene.MockupId == asset.Id &&
+            scene.Crop == new Region(0, 0, 1, 1) && scene.EndCrop == new Region(0, 0, 1, 1));
+        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("zoom", "static");
+        result.Value.Scenes.Select(scene => scene.EndScale).Should().Equal(1.1, 1);
+    }
+
+    [TestMethod]
+    public void Plan_VersionTwoStandard_DoesNotPrioritizeDetailImages()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var markedDetail = fixture.AddAsset(product);
+        markedDetail.Regions = WorkflowJson.Write(new MockupRegions(Detail: new(.25, .25, .5, .5)));
+
+        var result = _planner.Plan(product, [hero, markedDetail], new(TemplateVersion: 2));
+
+        result.Value.Template.Should().Be("product_showcase");
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Contain(hero.Id).And.Contain(markedDetail.Id);
+    }
+
+    [TestMethod]
+    public void Plan_VersionTwoStandard_IgnoresLegacyVariantTemplate()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var redHero = fixture.AddAsset(product); redHero.VariantKey = "red";
+        var redAngle = fixture.AddAsset(product, "AlternativeAngle"); redAngle.VariantKey = "red";
+        var blue = fixture.AddAsset(product, "Variant"); blue.VariantKey = "blue";
+
+        var result = _planner.Plan(product, [redAngle, blue, redHero], new(Template: "variant_showcase", TemplateVersion: 2));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Template.Should().Be("product_showcase");
+    }
+
+    [TestMethod]
+    public void Plan_VersionTwoStandard_IgnoresLegacyTemplateRequirements()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+
+        _planner.Plan(product, [asset], new(Template: "design_detail", TemplateVersion: 2)).IsSuccess.Should().BeTrue();
+        _planner.Plan(product, [asset], new(Template: "variant_showcase", TemplateVersion: 2)).IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void CreateScene_VersionTwoUnsafePan_FallsBackWithoutClippingProtectedProduct()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(.02, .2, .96, .6)));
+
+        var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new("pan_left"), TemplateVersion: 2), 0, 180);
+
+        scene.Motion.Should().Be("contain_gentle");
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.Warnings.Should().Contain("Motion reduced to preserve product/artwork bounds.");
+    }
+
+    [TestMethod]
+    public void Plan_ManualSelectionAndOrder_ExcludesOtherAssetsAndHonorsExactOrder()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var angle = fixture.AddAsset(product, "AlternativeAngle");
+        var omitted = fixture.AddAsset(product, "Lifestyle");
+        var result = _planner.Plan(product, [hero, angle, omitted], new(AssetSelection: "manual", SelectedMockupIds: [hero.Id, angle.Id], SceneOrder: [angle.Id, hero.Id]));
+        result.Value.Scenes.Select(x => x.MockupId).Should().Equal(angle.Id, hero.Id);
+        result.Value.Scenes.Should().NotContain(x => x.MockupId == omitted.Id);
+    }
+
+    [TestMethod]
+    public void Plan_StandardSceneCustomFraming_UsesConfiguredEndpointsForEachApprovedSource()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var detail = fixture.AddAsset(product, "ArtworkDetail");
+        var heroStart = new Region(.1, .1, .8, .8);
+        var heroEnd = new Region(.15, .15, .7, .7);
+        var detailStart = new Region(.12, .1, .76, .8);
+        var detailEnd = new Region(.2, .15, .6, .7);
+        var config = new GenerateVideoConfig(Template: "product_showcase", TemplateVersion: 2,
+            AssetSelection: "manual", SelectedMockupIds: [hero.Id, detail.Id], SceneOrder: [detail.Id, hero.Id],
+            StandardScenes: [new(detail.Id, detailStart, detailEnd), new(hero.Id, heroStart, heroEnd)]);
+
+        var result = _planner.Plan(product, [hero, detail], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Should().HaveCount(2);
+        result.Value.Scenes.Select(scene => scene.MockupId).Should().Equal(detail.Id, hero.Id);
+        result.Value.Scenes[0].Crop.Should().Be(detailStart);
+        result.Value.Scenes[0].EndCrop.Should().Be(detailEnd);
+        result.Value.Scenes[1].Crop.Should().Be(heroStart);
+        result.Value.Scenes[1].EndCrop.Should().Be(heroEnd);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Plan_StandardSceneCustomFraming_PreservesExplicitEndpoints(bool clipsAtStart)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var fullImage = new Region(0, 0, 1, 1);
+        var clippedProduct = new Region(.1, .1, .3, .3);
+        var config = new GenerateVideoConfig(TemplateVersion: 2,
+            StandardScenes: [new(hero.Id,
+                clipsAtStart ? clippedProduct : fullImage,
+                clipsAtStart ? fullImage : clippedProduct)]);
+
+        var result = _planner.Plan(product, [hero], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var expectedStart = clipsAtStart ? clippedProduct : fullImage;
+        var expectedEnd = clipsAtStart ? fullImage : clippedProduct;
+        result.Value.Scenes[0].Crop.Should().Be(expectedStart);
+        result.Value.Scenes[0].EndCrop.Should().Be(expectedEnd);
+    }
+
+    [TestMethod]
+    public void Plan_StandardMode_IgnoresLegacyVariantShowcaseTemplate()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var red = fixture.AddAsset(product); red.VariantKey = "red";
+        var blue = fixture.AddAsset(product, "Variant"); blue.VariantKey = "blue";
+
+        var result = _planner.Plan(product, [red, blue], new(Template: "variant_showcase", TemplateVersion: 2));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Template.Should().Be("product_showcase");
+    }
+
+    [TestMethod]
+    public void Plan_ApprovedGeneratedVideoScene_IsEligibleOnlyAtCurrentApprovedRevision()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var frame = fixture.AddAsset(product, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.ApprovalStatus = "pending";
+        frame.ApprovedRevision = null;
+        var config = new GenerateVideoConfig(AssetSelection: "manual", SelectedMockupIds: [frame.Id], SceneOrder: [frame.Id]);
+
+        var pending = _planner.Plan(product, [frame], config);
+        pending.IsSuccess.Should().BeFalse();
+        pending.Error.Code.Should().Be("WaitingForInput");
+
+        frame.ApprovalStatus = "approved";
+        frame.ApprovedRevision = frame.MetadataRevision;
+        var approved = _planner.Plan(product, [frame], config);
+
+        approved.IsSuccess.Should().BeTrue();
+        approved.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id);
+    }
+
+    [TestMethod]
+    public void Plan_UnapprovedDeletedStaleAndForeignAssets_WaitsForValidInput()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var unapproved = fixture.AddAsset(product); unapproved.ApprovalStatus = "pending";
+        var deleted = fixture.AddAsset(product); deleted.DeletedAt = WorkflowTestData.Now.UtcDateTime;
+        var stale = fixture.AddAsset(product); stale.MetadataRevision++;
+        var foreign = WorkflowTestData.Asset(Guid.NewGuid());
+        var result = _planner.Plan(product, [unapproved, deleted, stale, foreign], new());
+        result.Error.Code.Should().Be("WaitingForInput");
+    }
+
+    [TestMethod]
+    public void Plan_DifferentArtworkGroups_RejectsMixedDesignVideo()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var other = fixture.AddAsset(product); other.ArtworkGroupKey = "other";
+        _planner.Plan(product, [hero, other], new()).Error.Message.Should().Contain("share an artwork group");
+    }
+
+    [TestMethod]
+    public void Plan_UnavailableSceneOrder_RejectsWithoutSubstitutingAsset()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        _planner.Plan(product, [asset], new(SceneOrder: [Guid.NewGuid()])).Error.Message.Should().Contain("unavailable mockup");
+    }
+
+    [TestMethod]
+    public void Plan_Fingerprint_IsDeterministicAndChangesWithRevisionOrConfiguration()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        var initial = _planner.Plan(product, [asset], new()).Value.Fingerprint;
+        _planner.Plan(product, [asset], new()).Value.Fingerprint.Should().Be(initial);
+        _planner.Plan(product, [asset], new(TextOverlay: "Changed")).Value.Fingerprint.Should().NotBe(initial);
+        asset.MetadataRevision++; asset.ApprovedRevision++;
+        _planner.Plan(product, [asset], new()).Value.Fingerprint.Should().NotBe(initial);
+    }
+
+    [TestMethod]
+    public void CreateScene_ProtectedProductOutsideVerticalCrop_UsesStaticContainWithWarning()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.MockupWidthPx = 2160; asset.MockupHeightPx = 2160;
+        asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(0, .2, 1, .6)));
+        var scene = _planner.CreateScene(asset, "tshirt", new(), 0, 180);
+        scene.Motion.Should().Be("static");
+        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.Warnings.Should().Contain(x => x.Contains("clip the protected region"));
+    }
+
+    [TestMethod]
+    public void CreateScene_MissingRegionsAndLowResolution_PreservesSelectedMotionAndReportsResolutionWarning()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.MockupWidthPx = 500; asset.MockupHeightPx = 900; asset.Regions = "{}";
+        var scene = _planner.CreateScene(asset, "mug", new(), 0, 180);
+        scene.Motion.Should().Be("zoom");
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.EndScale.Should().Be(1.1);
+        scene.Warnings.Should().Contain(x => x.Contains("Low-resolution"));
+    }
+
+    [TestMethod]
+    public void CreateScene_ZoomUsesConstantScaleWhenTheBaseFrameContainsTheProtectedRegion()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(0, 0, 1, 1)));
+        var scene = _planner.CreateScene(asset, "poster", new(), 0, 180);
+        scene.Motion.Should().Be("zoom");
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.StartScale.Should().Be(1);
+        scene.EndScale.Should().Be(1.1);
+        scene.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void CreateScene_StaticPreset_LeavesCameraPathUnchanged()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.MockupWidthPx = 2160; asset.MockupHeightPx = 2160;
+        asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(.4, .2, .2, .6)));
+        var scene = _planner.CreateScene(asset, "poster", new(StandardOptions: new("static")), 0, 180);
+        scene.Motion.Should().Be("static");
+        scene.EndCrop.Should().Be(scene.Crop);
+    }
+
+    [TestMethod]
+    [DataRow("zoom", true)]
+    [DataRow("zoom_out", false)]
+    public void CreateScene_ZoomPresets_ChangeScaleInRequestedDirection(string preset, bool zoomIn)
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new(preset)), 0, 180);
+
+        scene.Motion.Should().Be(preset);
+        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.StartScale.Should().Be(zoomIn ? 1 : 1.1);
+        scene.EndScale.Should().Be(zoomIn ? 1.1 : 1);
+        scene.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow("pan", 1, 0)]
+    [DataRow("pan_left", -1, 0)]
+    [DataRow("pan_up", 0, -1)]
+    [DataRow("pan_down", 0, 1)]
+    [DataRow("diagonal_up_right", 1, -1)]
+    [DataRow("diagonal_up_left", -1, -1)]
+    [DataRow("diagonal_down_right", 1, 1)]
+    [DataRow("diagonal_down_left", -1, 1)]
+    public void CreateScene_PanPresets_MoveCameraInRequestedDirection(string preset, int horizontal, int vertical)
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new(preset)), 0, 180);
+
+        scene.Motion.Should().Be(preset);
+        scene.Crop.Width.Should().BeApproximately(1d / 1.2d, 1e-9);
+        scene.EndCrop.Width.Should().BeApproximately(1d / 1.2d, 1e-9);
+        Math.Sign(scene.EndCrop.X - scene.Crop.X).Should().Be(horizontal);
+        Math.Sign(scene.EndCrop.Y - scene.Crop.Y).Should().Be(vertical);
+        scene.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void CreateScene_PanWouldClipProtectedProduct_UsesStaticContain()
+    {
+        var asset = WorkflowTestData.Asset(Guid.NewGuid());
+        asset.Regions = WorkflowJson.Write(new MockupRegions(Product: new(.02, .2, .96, .6)));
+
+        var scene = _planner.CreateScene(asset, "tshirt", new(StandardOptions: new("pan_left")), 0, 180);
+
+        scene.Motion.Should().Be("static");
+        scene.Crop.Should().Be(new Region(0, 0, 1, 1));
+        scene.EndCrop.Should().Be(scene.Crop);
+        scene.Warnings.Should().Contain("Motion reduced to preserve product/artwork bounds.");
+    }
+
+    [TestMethod]
+    public void Plan_VariedMotion_UsesDifferentPresetsAcrossFourScenes()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var assets = new[] { fixture.AddAsset(product, "Hero"), fixture.AddAsset(product, "AlternativeAngle"),
+            fixture.AddAsset(product, "Lifestyle"), fixture.AddAsset(product, "ArtworkDetail") };
+
+        var result = _planner.Plan(product, assets, new(StandardOptions: new("varied"), SceneOrder: assets.Select(x => x.Id).ToArray()));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Select(x => x.Motion).Should().Equal("zoom", "pan_left", "diagonal_up_right", "zoom_out");
+        result.Value.Scenes.Should().OnlyContain(x =>
+            (x.Crop != x.EndCrop || x.StartScale != x.EndScale) && x.Warnings.Count == 0);
+    }
+
+    [TestMethod]
+    public void Plan_PerSceneMotion_OverridesOnlySelectedPositions()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var assets = new[] { fixture.AddAsset(product, "Hero"), fixture.AddAsset(product, "AlternativeAngle"),
+            fixture.AddAsset(product, "Lifestyle") };
+
+        var result = _planner.Plan(product, assets, new(StandardOptions: new("varied"), SceneOrder: assets.Select(x => x.Id).ToArray(),
+            SceneMotionPresets: ["pan_down", null, "zoom_out"]));
+
+        result.Value.Scenes.Select(x => x.Motion).Should().Equal("pan_down", "pan_left", "zoom_out");
+        result.Value.Scenes.Select(x => x.MockupId).Should().Equal(assets.Select(x => x.Id));
+    }
+
+    [TestMethod]
+    public void Plan_SingleAiShot_ReplacesOnlyChosenSceneAndPreservesTotalFrames()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var angle = fixture.AddAsset(product, "AlternativeAngle");
+        var lifestyle = fixture.AddAsset(product, "Lifestyle");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 13,
+            SceneOrder: [hero.Id, angle.Id, lifestyle.Id], TextOverlay: "Keep standard text",
+            AiShotOptions: new(SceneIndex: 1, MockupId: angle.Id), StandardOptions: new(Transition: "fade"));
+
+        var result = _planner.Plan(product, [hero, angle, lifestyle], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var board = result.Value;
+        board.Mode.Should().Be("ai_shot");
+        board.Scenes.Select(x => x.GenerationStrategy).Should().Equal("standard", "ai_shot", "standard");
+        board.Scenes.Select(x => x.DurationFrames).Should().Equal(105, 180, 105);
+        board.OutputDurationFrames.Should().Be(390);
+        board.TransitionOverlapFrames.Should().Be(12);
+        board.Scenes.Select(x => x.Transition).Should().Equal("none", "fade", "fade");
+        board.Scenes[1].MockupId.Should().Be(angle.Id);
+        board.Scenes[1].Text.Should().Be("Keep standard text");
+        board.Scenes[0].Text.Should().Be("Keep standard text");
+        board.AiShots.Should().ContainSingle().Which.Should().Match<AiShotPlan>(x =>
+            x.SceneOrder == 1 && x.MockupId == angle.Id && x.DurationSeconds == 6 && x.Model == "veo-3.1-lite-generate-preview");
+    }
+
+    [TestMethod]
+    [DataRow(8, 1, "fade", 0, 240)]
+    [DataRow(15, 2, "fade", 12, 480)]
+    [DataRow(15, 2, "none", 0, 480)]
+    [DataRow(15, 2, "cut", 0, 480)]
+    public void Plan_FullAiVideo_UsesSelectedTransitionAndActualOutputFrames(int duration, int clipCount, string transition, int overlap, int outputFrames)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var angle = fixture.AddAsset(product, "AlternativeAngle");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: duration, StandardOptions: new(Transition: transition),
+            AiShotOptions: new(Coverage: "full_video", FullSceneMockupIds: [hero.Id, angle.Id]));
+
+        var result = _planner.Plan(product, [hero, angle], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Mode.Should().Be("ai_shot");
+        result.Value.Scenes.Should().HaveCount(clipCount).And.OnlyContain(x =>
+            x.GenerationStrategy == "ai_shot" && x.DurationFrames == 240 && x.Motion == "static");
+        result.Value.AiShots.Should().HaveCount(clipCount).And.OnlyContain(x => x.DurationSeconds == 8);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        result.Value.OutputDurationFrames.Should().Be(outputFrames);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(outputFrames);
+        if (clipCount == 1) result.Value.Scenes.Select(x => x.Transition).Should().Equal("none");
+        else result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", transition == "cut" ? "none" : transition);
+        if (clipCount == 2) result.Value.Scenes.Select(x => x.MockupId).Should().Equal(hero.Id, angle.Id);
+    }
+
+    [TestMethod]
+    [DataRow("none", 0)]
+    [DataRow("fade", 12)]
+    [DataRow("swipe", 12)]
+    [DataRow("zoom", 12)]
+    [DataRow("flash", 12)]
+    [DataRow("whip_pan", 12)]
+    [DataRow("blur", 12)]
+    [DataRow("cut", 0)]
+    public void Plan_MultipleAiScenes_UsesSelectedTransitionAtEveryBoundary(string transition, int overlap)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 12,
+            AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id), new(MockupId: source.Id)], StandardOptions: new(Transition: transition));
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var normalized = transition == "cut" ? "none" : transition;
+        result.Value.Scenes.Select(x => x.Transition).Should().Equal("none", normalized, normalized);
+        result.Value.TransitionOverlapFrames.Should().Be(overlap);
+        result.Value.OutputDurationFrames.Should().Be(360);
+        result.Value.Scenes.Sum(x => x.DurationFrames).Should().Be(result.Value.OutputDurationFrames);
+    }
+
+    [TestMethod]
+    public void Plan_ChangingTransition_ReusesAiClipsAndChangesStoryboardFingerprint()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8, AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id)],
+            StandardOptions: new(Transition: "fade"));
+
+        var withFade = _planner.Plan(product, [source], config).Value;
+        var withNone = _planner.Plan(product, [source], config with { StandardOptions = config.StandardOptions! with { Transition = "none" } }).Value;
+
+        withFade.Fingerprint.Should().NotBe(withNone.Fingerprint);
+        withFade.AiShots!.Select(shot => shot.Fingerprint).Should().Equal(withNone.AiShots!.Select(shot => shot.Fingerprint));
+        withFade.OutputDurationFrames.Should().Be(240);
+        withNone.OutputDurationFrames.Should().Be(240);
+    }
+
+    [TestMethod]
+    public void Plan_AiShotSourceRevisionOrPromptChange_ChangesClipAndStoryboardFingerprints()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(MockupId: asset.Id));
+        var original = _planner.Plan(product, [asset], config).Value;
+        var prompted = _planner.Plan(product, [asset], config with { AiShotOptions = config.AiShotOptions! with { Prompt = "Slow tracking" } }).Value;
+        asset.ContentHash = new string('b', 64);
+        asset.MetadataRevision++;
+        asset.ApprovedRevision++;
+        var changedSource = _planner.Plan(product, [asset], config).Value;
+
+        prompted.Fingerprint.Should().NotBe(original.Fingerprint);
+        prompted.AiShots![0].Fingerprint.Should().NotBe(original.AiShots![0].Fingerprint);
+        changedSource.Fingerprint.Should().NotBe(original.Fingerprint);
+        changedSource.AiShots![0].Fingerprint.Should().NotBe(original.AiShots![0].Fingerprint);
+    }
+
+    [TestMethod]
+    public void Plan_MaterialDetailOnAMockupWithoutAMarkedDetail_UsesTheChosenMockup()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var result = _planner.Plan(product, [hero], new(Mode: "ai_shot",
+            AiShotOptions: new(Concept: "material_detail", MockupId: hero.Id)));
+        result.IsSuccess.Should().BeTrue();
+        result.Value.AiShots!.Should().OnlyContain(shot => shot.MockupId == hero.Id);
+    }
+
+    [TestMethod]
+    [DataRow("Lifestyle", false)]
+    [DataRow("Hero", false)]
+    [DataRow("Lifestyle", true)]
+    [DataRow("Hero", true)]
+    public void Plan_LifestyleConcept_NeedsImageRightsWhateverTheImageRole(string role, bool rights)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, role);
+        var result = _planner.Plan(product, [source], new(Mode: "ai_shot",
+            AiShotOptions: new(Concept: "lifestyle_motion", MockupId: source.Id, RightsConfirmed: rights)));
+        result.IsSuccess.Should().Be(rights);
+        if (!rights) result.Error.Message.Should().Contain("image-rights confirmation");
+    }
+
+    [TestMethod]
+    public void Plan_FullLifestyleShot_UsesEverySelectedImageOnceRightsAreConfirmed()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var lifestyle = fixture.AddAsset(product, "Lifestyle");
+        var hero = fixture.AddAsset(product);
+        var result = _planner.Plan(product, [lifestyle, hero], new(Mode: "ai_shot", DurationSeconds: 15,
+            AiShotOptions: new(Coverage: "full_video", Concept: "product_in_use", MockupId: lifestyle.Id,
+                RightsConfirmed: true, FullSceneMockupIds: [lifestyle.Id, hero.Id])));
+        result.IsSuccess.Should().BeTrue();
+        result.Value.AiShots!.Select(shot => shot.MockupId).Should().Equal(lifestyle.Id, hero.Id);
+    }
+
+    [TestMethod]
+    public void Plan_ApprovedStudioFrame_IsUsedForEveryShowcaseSceneWithSafeMotion()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
+            AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id, CameraMovement: "pan_right")], AiStudioMode: "studio",
+            AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = _planner.Plan(product, [source, frame], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id &&
+            scene.SourceHash == frame.ContentHash && scene.CompiledPrompt!.Contains("keep its reviewed studio set and background stable"));
+        result.Value.Scenes[0].CompiledPrompt.Should().Contain("use the supplied keyframe as the exact first frame only");
+        result.Value.Scenes[0].CompiledPrompt.Should().EndWith("No floating product, invented viewpoint, orbit, camera roll, snap zoom or sudden reframing.");
+        result.Value.AiShots!.Select(shot => shot.Fingerprint).Should().OnlyHaveUniqueItems();
+    }
+
+    [TestMethod]
+    public void Plan_StudioCameraOrFrameChanges_ChangesSceneFingerprint()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
+            AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var original = _planner.Plan(product, [source, frame], config).Value;
+        var changedCamera = _planner.Plan(product, [source, frame], config with
+        {
+            AiScenes = [new(MockupId: source.Id, CameraMovement: "pan_left")]
+        }).Value;
+        frame.ContentHash = new string('c', 64);
+        frame.MetadataRevision++;
+        frame.ApprovedRevision++;
+        var changedFrame = _planner.Plan(product, [source, frame], config).Value;
+
+        changedCamera.AiShots!.Single().Fingerprint.Should().NotBe(original.AiShots!.Single().Fingerprint);
+        changedFrame.AiShots!.Single().Fingerprint.Should().NotBe(original.AiShots!.Single().Fingerprint);
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("pending")]
+    [DataRow("rejected")]
+    [DataRow("different_product")]
+    public void Plan_StudioMode_InvalidFrameStates_RejectsFrame(string state)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source, state == "wrong_layout" ? AiStudioFrameIdentity.FlatLay : AiStudioFrameIdentity.HangingWindow);
+        var frameId = frame.Id;
+        switch (state)
+        {
+            case "missing": frameId = Guid.Empty; break;
+            case "pending": frame.ApprovalStatus = "pending"; frame.ApprovedRevision = null; break;
+            case "rejected": frame.ApprovalStatus = "rejected"; frame.ApprovedRevision = null; break;
+            case "different_product": frame.ProductId = Guid.NewGuid(); break;
+        }
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
+            AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id,
+            AiStudioFrameId: frameId == Guid.Empty ? null : frameId);
+
+        var result = _planner.Plan(product, [source, frame], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("StudioFrameRequired");
+    }
+
+    // A reviewed keyframe stays usable after its source mock-up is edited again or another layout is chosen: how it
+    // was made does not make the approved picture unsafe to animate.
+    [TestMethod]
+    [DataRow("stale_source")]
+    [DataRow("wrong_layout")]
+    public void Plan_StudioMode_ApprovedFrameMadeDifferently_IsStillUsed(string state)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source, state == "wrong_layout" ? AiStudioFrameIdentity.FlatLay : AiStudioFrameIdentity.HangingWindow);
+        if (state == "stale_source")
+        {
+            source.MetadataRevision++;
+            source.ApprovedRevision++;
+        }
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)], AiStudioMode: "studio",
+            AiStudioLayout: AiStudioFrameIdentity.HangingWindow, AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = _planner.Plan(product, [source, frame], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(frame.Id);
+    }
+
+    [TestMethod]
+    public void Plan_StudioMode_NonShowcaseScene_KeepsOriginalSource()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id, TemplateCode: "signature_product_reveal")],
+            AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
+
+        var result = _planner.Plan(product, [source, frame], config);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(source.Id);
+        result.Value.Scenes.Single().CompiledPrompt.Should().NotContain("keep the set, background and light direction consistent");
+    }
+
+    [TestMethod]
+    public void Plan_DirectMode_UsesApprovedMockupAsStartFrame()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+
+        var result = _planner.Plan(product, [source], new(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)]));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().MockupId.Should().Be(source.Id);
+        result.Value.Scenes.Single().CompiledPrompt.Should().NotContain("reviewed studio start frame");
+    }
+
+    // A keyframe is made for one scene template; the scenes here use the default one.
+    private static MockupImage CreateStudioFrame(MockupImage source, string layout = AiStudioFrameIdentity.HangingWindow,
+        string templateCode = "cinematic_product_showcase")
+    {
+        var frame = WorkflowTestData.Asset(source.ProductId, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ApprovedRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        var aspectRatio = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        var metadata = new AiStudioFrameMetadata(AiStudioFrameIdentity.Fingerprint(source, layout, aspectRatio, templateCode: templateCode), source.Id,
+            source.ContentHash!, source.MetadataRevision, layout, aspectRatio, AiStudioFrameIdentity.PromptVersion, TemplateCode: templateCode);
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(metadata);
+        return frame;
+    }
+}

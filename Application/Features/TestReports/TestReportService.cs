@@ -1,0 +1,303 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using APCS.Application.Abstractions;
+using APCS.Application.Features.TestReports.Dtos;
+using APCS.Common.Constants;
+using APCS.Common.Models;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace APCS.Application.Features.TestReports;
+
+/// <summary>
+/// The test runs the admin pages read, and the button that starts a new one.
+/// </summary>
+public interface ITestReportService
+{
+    /// <summary>
+    /// Lists the runs that match the filter, newest first.
+    /// </summary>
+    Task<Result<PagedResult<TestReportRunDto>>> ListAsync(TestReportFilterDto filter, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets one run with the tests it covered.
+    /// </summary>
+    Task<Result<TestReportDetailDto>> GetAsync(string runId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Starts a test run and returns it right away, while it is still going.
+    /// </summary>
+    Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a run and its report.
+    /// </summary>
+    Task<Result<bool>> DeleteRunAsync(string runId, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// The states a run can be in.
+/// </summary>
+public static class TestReportStatuses
+{
+    public const string Running = "running";
+    public const string Passed = "passed";
+    public const string Failed = "failed";
+    public const string Error = "error";
+}
+
+/// <summary>
+/// Keeps the runs in the store and starts new ones.
+/// </summary>
+public sealed class TestReportService : ITestReportService
+{
+    private readonly ITestReportRunner _runner;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<TestReportService> _logger;
+    private readonly ITestReportRunBroadcaster? _runBroadcaster;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _runLock = new();
+    private string? _runningRunId;
+
+    /// <summary>
+    /// Creates the service.
+    /// </summary>
+    public TestReportService(
+        ITestReportRunner runner,
+        IServiceScopeFactory scopeFactory,
+        ILogger<TestReportService> logger,
+        TimeProvider? timeProvider = null,
+        ITestReportRunBroadcaster? runBroadcaster = null)
+    {
+        _runner = runner;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _runBroadcaster = runBroadcaster;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<PagedResult<TestReportRunDto>>> ListAsync(TestReportFilterDto filter, CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+        var runs = await store.ListAsync(cancellationToken);
+
+        IEnumerable<TestReportRunDto> filtered = runs;
+        if (filter.FromUtc is not null)
+        {
+            filtered = filtered.Where(run => run.StartedAtUtc >= filter.FromUtc.Value);
+        }
+
+        if (filter.ToUtc is not null)
+        {
+            filtered = filtered.Where(run => run.StartedAtUtc <= filter.ToUtc.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Status))
+        {
+            filtered = filtered.Where(run => string.Equals(run.Status, filter.Status, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var ordered = filtered.OrderByDescending(run => run.StartedAtUtc).ToList();
+        var pageIndex = Math.Max(1, filter.PageIndex);
+        var pageSize = Math.Clamp(filter.PageSize, 1, 100);
+        var items = ordered.Skip((pageIndex - 1) * pageSize).Take(pageSize).ToList();
+
+        return Result.Success(new PagedResult<TestReportRunDto>(items, ordered.Count, pageIndex, pageSize));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TestReportDetailDto>> GetAsync(string runId, CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+
+        var run = await store.GetRunAsync(runId, cancellationToken);
+        if (run is null)
+        {
+            return Result.Failure<TestReportDetailDto>(Error.NotFound(ErrorCodes.TestReportNotFound, "No test run with that id exists."));
+        }
+
+        var rawReport = await store.GetRawReportAsync(runId, cancellationToken);
+        if (rawReport is null)
+        {
+            return Result.Success(new TestReportDetailDto { Run = run, Files = [] });
+        }
+
+        TestReportSummary summary;
+        try
+        {
+            summary = PlaywrightReportParser.Parse(rawReport);
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure<TestReportDetailDto>(Error.Failure(ErrorCodes.TestReportRunFailed, $"The report of this run cannot be read: {exception.Message}"));
+        }
+
+        return Result.Success(new TestReportDetailDto { Run = run, Files = summary.Files });
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default)
+    {
+        TestReportRunDto run;
+        lock (_runLock)
+        {
+            if (_runningRunId is not null)
+            {
+                return Result.Failure<TestReportRunDto>(Error.Conflict(ErrorCodes.TestReportRunInProgress, "A test run is already going."));
+            }
+
+            var startedAt = _timeProvider.GetUtcNow().UtcDateTime;
+            run = new TestReportRunDto
+            {
+                RunId = $"run-{startedAt:yyyyMMdd-HHmmss}",
+                StartedAtUtc = startedAt,
+                Status = TestReportStatuses.Running,
+                TriggeredBy = triggeredBy,
+            };
+
+            _runningRunId = run.RunId;
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+            await store.SaveRunAsync(run, null, cancellationToken);
+        }
+        catch
+        {
+            lock (_runLock)
+            {
+                _runningRunId = null;
+            }
+
+            throw;
+        }
+
+        _ = RunInBackgroundAsync(run);
+        await PublishRunChangedAsync(run.RunId, run.Status, cancellationToken);
+        return Result.Success(run);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<bool>> DeleteRunAsync(string runId, CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+
+        var run = await store.GetRunAsync(runId, cancellationToken);
+        if (run is null)
+        {
+            return Result.Failure<bool>(Error.NotFound(ErrorCodes.TestReportNotFound, "No test run with that id exists."));
+        }
+
+        await store.DeleteRunAsync(runId, cancellationToken);
+        return Result.Success(true);
+    }
+
+    private async Task RunInBackgroundAsync(TestReportRunDto run)
+    {
+        TestReportRunDto finished;
+        string? rawReport = null;
+
+        try
+        {
+            var result = await _runner.RunAsync(run.RunId, CancellationToken.None);
+            rawReport = result.RawReport;
+
+            if (rawReport is null)
+            {
+                finished = run with
+                {
+                    FinishedAtUtc = _timeProvider.GetUtcNow().UtcDateTime,
+                    Status = TestReportStatuses.Error,
+                    DurationMs = (long)_timeProvider.GetUtcNow().UtcDateTime.Subtract(run.StartedAtUtc).TotalMilliseconds,
+                    Branch = result.Branch,
+                    CommitSha = result.CommitSha,
+                    FailureSummary = Summarize(result),
+                };
+            }
+            else
+            {
+                var summary = PlaywrightReportParser.Parse(rawReport);
+                finished = run with
+                {
+                    FinishedAtUtc = _timeProvider.GetUtcNow().UtcDateTime,
+                    Status = summary.FailedTests > 0 ? TestReportStatuses.Failed : TestReportStatuses.Passed,
+                    DurationMs = summary.DurationMs,
+                    Branch = result.Branch,
+                    CommitSha = result.CommitSha,
+                    TotalTests = summary.TotalTests,
+                    PassedTests = summary.PassedTests,
+                    FailedTests = summary.FailedTests,
+                    FlakyTests = summary.FlakyTests,
+                    SkippedTests = summary.SkippedTests,
+                    KnownIssueTests = summary.KnownIssueTests,
+                    UnexpectedFailedTests = summary.FailedTests - summary.KnownIssueTests,
+                    FileCount = summary.Files.Count,
+                    SuiteCount = summary.Files.Sum(file => file.Specs.Count),
+                };
+            }
+        }
+        catch (Exception exception)
+        {
+            finished = run with
+            {
+                FinishedAtUtc = _timeProvider.GetUtcNow().UtcDateTime,
+                Status = TestReportStatuses.Error,
+                FailureSummary = exception.Message,
+            };
+        }
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+            await store.SaveRunAsync(finished, rawReport, CancellationToken.None);
+        }
+        finally
+        {
+            lock (_runLock)
+            {
+                _runningRunId = null;
+            }
+
+            await PublishRunChangedAsync(finished.RunId, finished.Status, CancellationToken.None);
+        }
+    }
+
+    private async Task PublishRunChangedAsync(string runId, string status, CancellationToken cancellationToken)
+    {
+        if (_runBroadcaster is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _runBroadcaster.PublishRunChangedAsync(runId, status, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "The test run state could not be pushed for {RunId}.", runId);
+        }
+    }
+
+    private static string Summarize(TestReportRunnerResult result)
+    {
+        var log = result.Log.Trim();
+        if (log.Length == 0)
+        {
+            return $"The test command ended with code {result.ExitCode} and wrote no report.";
+        }
+
+        var tail = log.Length <= 600 ? log : log[^600..];
+        return $"The test command ended with code {result.ExitCode}.{Environment.NewLine}{tail}";
+    }
+}

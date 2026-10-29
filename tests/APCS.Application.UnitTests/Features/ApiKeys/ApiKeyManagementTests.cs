@@ -27,7 +27,7 @@ public sealed class ApiKeyManagementTests
         current.SetupGet(x => x.IsAuthenticated).Returns(true);
         current.SetupGet(x => x.UserId).Returns(owner);
         accounts.Setup(x => x.FindByIdAsync(owner, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", true, true));
+            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", true, true, "active", null));
         accounts.Setup(x => x.GetRolesAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(new[] { "Seller" });
         repository.Setup(x => x.LockOwnerAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(transaction.Object);
         repository.Setup(x => x.ListOwnedAsync(owner, It.IsAny<CancellationToken>())).ReturnsAsync(rows);
@@ -38,9 +38,19 @@ public sealed class ApiKeyManagementTests
     }
     private static SaveApiKeyRequestDto Request(string? key = "test-key-1234", bool confirmed = true) =>
         new() { Provider = "openai", Name = " Workspace ", Environment = "Production", ApiKey = key, Confirmed = confirmed };
-    private ApiKey Row() => new() { Id = Guid.NewGuid(), UserId = owner, ServiceProvider = "openai", AuthType = "api_key",
-        KeyIdentifier = "Original", KeyValueEncrypted = "old-encrypted", KeyLast4 = "old4", IsActive = true,
-        LastCheckSucceeded = true, LastCheckedAt = clock.GetUtcNow().UtcDateTime };
+    private ApiKey Row() => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = owner,
+        ServiceProvider = "openai",
+        AuthType = "api_key",
+        KeyIdentifier = "Original",
+        KeyValueEncrypted = "old-encrypted",
+        KeyLast4 = "old4",
+        IsActive = true,
+        LastCheckSucceeded = true,
+        LastCheckedAt = clock.GetUtcNow().UtcDateTime
+    };
 
     [TestMethod]
     public async Task Add_EncryptsAndCommitsOnlyValidatedKey()
@@ -117,7 +127,7 @@ public sealed class ApiKeyManagementTests
     {
         var service = Create();
         accounts.Setup(x => x.FindByIdAsync(owner, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", false, true));
+            .ReturnsAsync(new AccountInfoDto(owner, "seller@example.com", "Seller", false, true, "suspended", null));
         (await service.SaveAsync(null, Request())).Error.Type.Should().Be(ErrorType.Forbidden);
         (await service.DeleteAsync(Guid.NewGuid())).Error.Type.Should().Be(ErrorType.Forbidden);
         (await service.ValidateAsync(Guid.NewGuid())).Error.Type.Should().Be(ErrorType.Forbidden);

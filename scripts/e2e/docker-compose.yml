@@ -1,0 +1,48 @@
+# Hạ tầng cho E2E và integration test.
+#
+# Tách khỏi docker-compose.yml ở thư mục gốc: file đó là cho local dev và có
+# volume giữ dữ liệu Redis. File này cho test — không volume, dữ liệu bị xoá mỗi
+# lần recreate, và dùng port chuẩn 5432/6379.
+#
+# Postgres 18 với pgvector: entity model tạo các cột kiểu vector, server phải có
+# extension này, và pgvector/pgvector:pg18 kèm sẵn.
+#
+# Chạy:  docker compose -f scripts/e2e/docker-compose.yml up -d
+# Dừng:   docker compose -f scripts/e2e/docker-compose.yml down -v
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: apcs-e2e-postgres
+    ports:
+      - "${TEST_PG_PORT:-55432}:5432"
+    environment:
+      POSTGRES_USER: ${TEST_DB_USER:-apcs}
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-apcs}
+      POSTGRES_DB: postgres
+    # trust cho phép psql nối không cần mật khẩu từ trong container; mật khẩu vẫn
+    # bắt buộc khi nối từ host qua port đã publish.
+    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "synchronous_commit=off"]
+    tmpfs:
+      # Postgres 18 đặt dữ liệu trong /var/lib/postgresql/<major>/, nên phải mount
+      # ở thư mục cha. Mount thẳng vào /data khiến container exit với "database
+      # files are incompatible with server".
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEST_DB_USER:-apcs} -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+
+  redis:
+    image: redis:7-alpine
+    container_name: apcs-e2e-redis
+    ports:
+      - "${TEST_REDIS_PORT:-56379}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
