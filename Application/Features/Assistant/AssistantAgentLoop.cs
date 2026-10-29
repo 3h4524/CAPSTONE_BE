@@ -26,6 +26,8 @@ public sealed class AssistantAgentLoop(
     private const string PrefetchCallId = "prefetch";
     private const string CachedModelName = "cache";
     private const int ReplayChunkChars = 48;
+    private const int MaxEmptyRetries = 1;
+    private const string EmptyResponseMessage = "The assistant could not come up with an answer. Please rephrase or try again.";
 
     public async IAsyncEnumerable<AssistantStreamEvent> RunAsync(
         AssistantChatSession session,
@@ -60,6 +62,7 @@ public sealed class AssistantAgentLoop(
         var conversation = promptBuilder.Build(session, articles).ToList();
         var endTurn = false;
         var skipFinalPass = false;
+        var emptyRetriesLeft = MaxEmptyRetries;
 
         try
         {
@@ -88,6 +91,13 @@ public sealed class AssistantAgentLoop(
                 }
 
                 state.RecordUsage(completed);
+                if (completed?.Message is not { ToolCalls.Count: > 0 } && state.Text.Length == textBefore && !state.HasVisibleOutput && emptyRetriesLeft > 0)
+                {
+                    emptyRetriesLeft--;
+                    iteration--;
+                    continue;
+                }
+
                 if (endTurn || completed?.Message is not { ToolCalls.Count: > 0 } assistantTurn)
                     break;
 
@@ -120,6 +130,13 @@ public sealed class AssistantAgentLoop(
 
                 if (iteration >= AssistantLimits.MaxToolIterations)
                     endTurn = true;
+            }
+
+            if (!state.HasVisibleOutput)
+            {
+                state.Error = new AssistantErrorData(AssistantErrors.EmptyResponseCode, EmptyResponseMessage);
+                yield return AssistantStreamEvent.Error(AssistantErrors.EmptyResponseCode, EmptyResponseMessage);
+                yield break;
             }
 
             if (state.UsedOnlyKnowledgeTools && articles.Count > 0)
@@ -241,6 +258,8 @@ public sealed class AssistantAgentLoop(
         public string Text => text.ToString();
 
         public IReadOnlyList<AssistantCitationData> Citations => citations;
+
+        public bool HasVisibleOutput => text.Length > 0 || clientActions.Count > 0 || pendingActionIds.Count > 0 || choices is not null;
 
         public bool UsedOnlyKnowledgeTools => ToolCalls.All(call => call.Name == KnowledgeToolName) && clientActions.Count == 0 && pendingActionIds.Count == 0 && choices is null;
 

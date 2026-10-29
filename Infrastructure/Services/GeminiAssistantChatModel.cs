@@ -37,7 +37,7 @@ public sealed class GeminiAssistantChatModel(
         {
             Temperature = settings.Temperature,
             MaxOutputTokens = settings.MaxOutputTokens,
-            Tools = allowTools ? request.Tools.Select(ToDeclaration).ToList() : null,
+            Tools = request.Tools.Count > 0 ? request.Tools.Select(ToDeclaration).ToList() : null,
             ToolMode = allowTools ? ChatToolMode.Auto : ChatToolMode.None,
             RawRepresentationFactory = _ => new GenerateContentConfig { ThinkingConfig = new ThinkingConfig { ThinkingLevel = ResolveThinkingLevel() } }
         };

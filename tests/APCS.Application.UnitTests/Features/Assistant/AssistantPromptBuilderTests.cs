@@ -110,4 +110,21 @@ public sealed class AssistantPromptBuilderTests
     [TestMethod]
     public void Build_TellsTheModelNeverToRevealToolNamesOrInternalDetails() =>
         builder.Build(AssistantTestSupport.Session("hi"))[0].Text.Should().Contain("Never mention tool names");
+
+    [TestMethod]
+    public void Build_TellsTheModelWhichWorkflowAndNodesTheUserMeans()
+    {
+        var canvas = new AssistantCanvasDto(
+            Guid.NewGuid(), 1, false,
+            [new("a", "design-image", "Design", AssistantTestSupport.Json("""{"variants":2}""")), new("b", "apply-mockup", "Mockup", AssistantTestSupport.Json("{}"))],
+            [], "Spring flow");
+        var context = new AssistantClientContextDto("/workflows", canvas.WorkflowId, null, ["a"], canvas);
+
+        var messages = builder.Build(AssistantTestSupport.Session("what is this node", context));
+
+        var user = messages[^1].Text!;
+        user.Should().Contain("Spring flow").And.Contain("selectedNodes").And.Contain("design-image").And.Contain("variants");
+        user.Should().NotContain("\"selectedNodeConfigs\"");
+        messages[0].Text.Should().Contain("Never ask which workflow or node the user means").And.Contain("Be decisive");
+    }
 }

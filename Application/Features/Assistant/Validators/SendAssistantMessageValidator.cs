@@ -45,6 +45,7 @@ public sealed class AssistantCanvasValidator : AbstractValidator<AssistantCanvas
             .NotNull()
             .Must(edges => edges.Count <= AssistantLimits.MaxCanvasEdges)
             .WithMessage($"The canvas can have at most {AssistantLimits.MaxCanvasEdges} connections.");
+        RuleFor(canvas => canvas.WorkflowName).MaximumLength(AssistantLimits.MaxIdentifierLength * 3);
         RuleForEach(canvas => canvas.Nodes).ChildRules(node =>
         {
             node.RuleFor(item => item.Id).NotEmpty().MaximumLength(AssistantLimits.MaxIdentifierLength);

@@ -484,4 +484,58 @@ public sealed class AssistantAgentLoopTests
 
         events.Select(e => e.Type).Should().Equal("conversation", "delta", "done");
     }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheModelAnswersNothing_RetriesOnceAndUsesTheSecondAnswer()
+    {
+        var model = new FakeChatModel([AssistantTestSupport.Done()], [AssistantTestSupport.Text("Here you go"), AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(FirstMessage()));
+
+        model.Requests.Should().HaveCount(2);
+        events.Last().Type.Should().Be("done");
+        saved.Single().Content.Should().Be("Here you go");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheModelStaysSilent_ReportsAnErrorInsteadOfAnEmptyDone()
+    {
+        var model = new FakeChatModel([AssistantTestSupport.Done()], [AssistantTestSupport.Done()], [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(FirstMessage()));
+
+        model.Requests.Should().HaveCount(2);
+        events.Should().NotContain(e => e.Type == "done");
+        events.Last().Data.Should().BeOfType<AssistantErrorData>().Which.Code.Should().Be(AssistantErrors.EmptyResponseCode);
+        saved.Single().Metadata.Should().Contain(AssistantErrors.EmptyResponseCode);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheFinalAnswerAfterToolsIsEmpty_StillReportsAnError()
+    {
+        var tool = new StubTool("list_workflows");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("list_workflows"))],
+            [AssistantTestSupport.Done()],
+            [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model, tool).RunAsync(FirstMessage("list my workflows")));
+
+        events.Last().Type.Should().Be("error");
+        events.Should().NotContain(e => e.Type == "done");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_AnActionWithoutAnyText_CountsAsAnAnswer()
+    {
+        var action = new AssistantClientActionData(Guid.NewGuid(), "navigate", AssistantTestSupport.Json("""{"path":"/usage"}"""));
+        var tool = new StubTool("navigate", AssistantToolKind.ClientAction, (_, _) => Task.FromResult(
+            AssistantToolOutcome.Ok(new { status = "offered" }, true, AssistantStreamEvent.ClientAction(action)).WithFinalText(string.Empty)));
+        var model = new FakeChatModel([AssistantTestSupport.Done("", AssistantTestSupport.Call("navigate"))]);
+
+        var events = await Collect(Loop(model, tool).RunAsync(FirstMessage("open usage")));
+
+        events.Last().Type.Should().Be("done");
+        events.Should().NotContain(e => e.Type == "error");
+    }
 }

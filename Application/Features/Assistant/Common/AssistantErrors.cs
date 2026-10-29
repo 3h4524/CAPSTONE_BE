@@ -6,6 +6,7 @@ public static class AssistantErrors
 {
     public const string ModelNotConfiguredCode = "assistant.model_not_configured";
     public const string ModelUnavailableCode = "assistant.model_unavailable";
+    public const string EmptyResponseCode = "assistant.empty_response";
 
     public static Error Unauthenticated() =>
         Error.Unauthorized("assistant.unauthorized", "The request is not authenticated.");

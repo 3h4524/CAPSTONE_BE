@@ -16,7 +16,8 @@ public sealed record AssistantCanvasDto(
     long Revision,
     bool IsDirty,
     IReadOnlyList<AssistantCanvasNodeDto> Nodes,
-    IReadOnlyList<AssistantCanvasEdgeDto> Edges);
+    IReadOnlyList<AssistantCanvasEdgeDto> Edges,
+    string? WorkflowName = null);
 
 public sealed record AssistantCanvasNodeDto(string Id, string Type, string Label, JsonElement Config);
 
