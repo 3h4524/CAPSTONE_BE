@@ -24,5 +24,8 @@ public sealed class AssistantOptions
     [Range(0, 60)]
     public int RateLimitRetryDelaySeconds { get; set; } = 8;
 
+    [Range(0, 30)]
+    public int OverloadRetryDelaySeconds { get; set; } = 2;
+
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
 }

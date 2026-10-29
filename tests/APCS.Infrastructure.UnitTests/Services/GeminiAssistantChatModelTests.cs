@@ -50,4 +50,17 @@ public sealed class GeminiAssistantChatModelTests
         options.RateLimitRetries.Should().Be(2);
         options.RateLimitRetryDelaySeconds.Should().Be(8);
     }
+
+    [TestMethod]
+    [DataRow("This model is currently experiencing high demand. Spikes in demand are usually temporary.", true)]
+    [DataRow("The model is overloaded. Please try again later.", true)]
+    [DataRow("503 UNAVAILABLE", true)]
+    [DataRow("API key not valid", false)]
+    [DataRow("Invalid argument", false)]
+    public void IsOverloaded_RecognisesTemporaryServerFailuresOnly(string message, bool expected) =>
+        GeminiAssistantChatModel.IsOverloaded(new InvalidOperationException(message)).Should().Be(expected);
+
+    [TestMethod]
+    public void AssistantOptions_RetryOverloadAfterTwoSeconds() =>
+        new AssistantOptions().OverloadRetryDelaySeconds.Should().Be(2);
 }

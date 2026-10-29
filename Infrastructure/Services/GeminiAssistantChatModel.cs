@@ -81,9 +81,10 @@ public sealed class GeminiAssistantChatModel(
                 break;
 
             logger.LogWarning("Assistant model stream failed with {ExceptionType} on attempt {Attempt}", failure.GetType().Name, attempt + 1);
-            if (updates.Count == 0 && attempt < settings.RateLimitRetries && IsRateLimited(failure))
+            if (updates.Count == 0 && attempt < settings.RateLimitRetries && (IsRateLimited(failure) || IsOverloaded(failure)))
             {
-                await Task.Delay(TimeSpan.FromSeconds(settings.RateLimitRetryDelaySeconds), cancellationToken);
+                var delaySeconds = IsRateLimited(failure) ? settings.RateLimitRetryDelaySeconds : settings.OverloadRetryDelaySeconds;
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
                 continue;
             }
 
@@ -119,6 +120,12 @@ public sealed class GeminiAssistantChatModel(
         "high" => ThinkingLevel.High,
         _ => ThinkingLevel.Low
     };
+
+    internal static bool IsOverloaded(Exception exception) =>
+        exception.Message.Contains("high demand", StringComparison.OrdinalIgnoreCase)
+        || exception.Message.Contains("overloaded", StringComparison.OrdinalIgnoreCase)
+        || exception.Message.Contains("UNAVAILABLE", StringComparison.Ordinal)
+        || exception.Message.Contains("503", StringComparison.Ordinal);
 
     internal static bool IsRateLimited(Exception exception) =>
         exception.Message.Contains("quota", StringComparison.OrdinalIgnoreCase)

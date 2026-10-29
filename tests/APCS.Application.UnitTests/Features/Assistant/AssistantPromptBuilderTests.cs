@@ -106,4 +106,8 @@ public sealed class AssistantPromptBuilderTests
     [TestMethod]
     public void Build_WithoutArticles_OmitsTheBlock() =>
         builder.Build(AssistantTestSupport.Session("hi"), [])[^1].Text.Should().Be("hi");
+
+    [TestMethod]
+    public void Build_TellsTheModelNeverToRevealToolNamesOrInternalDetails() =>
+        builder.Build(AssistantTestSupport.Session("hi"))[0].Text.Should().Contain("Never mention tool names");
 }
