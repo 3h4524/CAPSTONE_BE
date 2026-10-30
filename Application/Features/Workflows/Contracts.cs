@@ -57,7 +57,11 @@ public sealed record AiVideoSceneOptions(
     int? TrimStartFrames = null,
     int? TrimEndFrames = null,
     string? TransitionIn = null,
-    int? TransitionDurationFrames = null);
+    int? TransitionDurationFrames = null,
+    int? PromptRuleVersion = null,
+    string? StartingState = null,
+    string? PrimaryAction = null,
+    string? EndingState = null);
 public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
     string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
 public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
@@ -115,12 +119,22 @@ public sealed record AiStudioFrameRequest(Guid SourceMockupId, string Layout, st
 public sealed record AiStudioFrameQuote(string Fingerprint, int PromptVersion, decimal EstimatedCostUsd,
     MockupResponse? ExistingFrame, string Note);
 public sealed record AiStudioFrameGenerationResponse(MockupResponse Frame, bool Reused, decimal EstimatedCostUsd);
+/// <summary>One readable section of the exact prompt assembled for an AI scene.</summary>
+public sealed record AiPromptPart(string Key, string Label, string Content, bool IncludedInFinalPrompt);
+/// <summary>A verified, owner-scoped lesson selected for one AI video scene.</summary>
+public sealed record VideoPromptExperience(Guid LessonId, string? Revision, string Content);
+/// <summary>Explains the prompt supplied to the provider without exposing a separate prompt-building endpoint.</summary>
+public sealed record AiPromptTrace(int? RuleVersion, string RagStatus, IReadOnlyList<string> AppliedRules,
+    IReadOnlyList<string> Warnings, IReadOnlyList<AiPromptPart> Parts, string FinalPrompt,
+    IReadOnlyList<VideoPromptExperience>? RetrievedExperiences = null);
 public sealed record ScenePlan(Guid MockupId, long SourceRevision, string SourceHash, string Role, int SceneOrder, int DurationFrames, Region Crop, Region EndCrop, string Motion, string Transition, string Text, string GenerationStrategy, IReadOnlyList<string> Warnings,
     string? AiTemplateCode = null, int? PromptVersion = null, string? CompiledPrompt = null, AiVideoSceneOptions? AiSettings = null, Region? SourceCrop = null,
     string? AiProviderKey = null, string? AiModelKey = null, string? AiModelName = null, double StartScale = 1, double EndScale = 1, double StartRotation = 0, double EndRotation = 0,
-    int TrimStartFrames = 0, int TrimEndFrames = 0, int TransitionFrames = 0);
+    int TrimStartFrames = 0, int TrimEndFrames = 0, int TransitionFrames = 0, string? AiResolution = null, decimal? AiPricePerSecondUsd = null,
+    AiPromptTrace? AiPromptTrace = null);
 public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash, string Model, string Preset, string Prompt, int DurationSeconds, string Fingerprint,
-    string ProviderKey = AiVideoModel.ProviderKey, string ModelKey = AiVideoModel.ModelKey, int PromptVersion = 1, Region? SourceCrop = null);
+    string ProviderKey = VeoVideoModel.ProviderKey, string ModelKey = VeoVideoModel.ModelKey, int PromptVersion = 1, Region? SourceCrop = null,
+    string Resolution = VeoVideoModel.Resolution, decimal PricePerSecondUsd = VeoVideoModel.PricePerSecondUsd);
 public sealed record Storyboard(string Template, int TemplateVersion, int DurationSeconds, string ProductType, IReadOnlyList<ScenePlan> Scenes, string Fingerprint,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
     string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null,
@@ -128,6 +142,31 @@ public sealed record Storyboard(string Template, int TemplateVersion, int Durati
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16");
 public sealed record AiSceneVideoResponse(int SceneOrder, string Status, string? PreviewUrl, string? Failure);
+/// <summary>Evidence produced by the locally configured OCR and VBench tools for one scene.</summary>
+public sealed record VideoSceneEvaluationResponse(string Status, DateTimeOffset? EvaluatedAtUtc,
+    string EvaluatorVersion, IReadOnlyDictionary<string, object?> Metrics, string? Detail = null);
+/// <summary>A suggestion produced from explicit review facts; the seller always confirms the target.</summary>
+public sealed record CorrectionSuggestionResponse(string Target, string Reason, string Confidence);
+/// <summary>One timestamped observation made by the seller while reviewing a scene.</summary>
+public sealed record VideoSceneReviewResponse(Guid Id, int StartMilliseconds, int EndMilliseconds,
+    string Category, string Severity, bool PresentInSourceImage, string Description, string Status,
+    CorrectionSuggestionResponse Suggestion, string? ConfirmedTarget, Guid? LessonId,
+    string? LessonStatus, string? LessonRevision, string? LessonContent,
+    DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
+/// <summary>All quality evidence and seller observations saved for a single scene.</summary>
+public sealed record VideoSceneQualityResponse(Guid VideoId, int SceneOrder,
+    VideoSceneEvaluationResponse? Evaluation, IReadOnlyList<VideoSceneReviewResponse> Reviews);
+/// <summary>Creates or updates one seller observation for a scene.</summary>
+public sealed record SaveVideoSceneReviewRequest(int StartMilliseconds, int EndMilliseconds, string Category,
+    string Severity, bool PresentInSourceImage, string Description, bool ConfirmSuggestion = false,
+    string? TargetOverride = null, string? CandidateLesson = null, Guid? ReviewId = null,
+    bool SuspectRagExperience = false);
+/// <summary>Changes a candidate lesson after the seller has reviewed its text and evidence.</summary>
+public sealed record SetVideoExperienceStatusRequest(string Status);
+/// <summary>Creates a new candidate revision from an existing private video lesson.</summary>
+public sealed record ReviseVideoExperienceRequest(Guid ReviewId, string Content);
+/// <summary>Returns the lifecycle state of a lesson that originated from a reviewed video scene.</summary>
+public sealed record VideoExperienceResponse(Guid LessonId, string Status, string? Revision, string Content);
 public sealed record WorkerAsset(Guid MockupId, string Url, string FileName);
 public sealed record UploadGrant(string Url, IReadOnlyDictionary<string, string> Fields, string StorageKey, string ResourceType);
 public sealed record WorkerJob(Guid Id, Guid LeaseToken, string Kind, JsonElement Payload, IReadOnlyList<WorkerAsset> Assets, IReadOnlyDictionary<string, UploadGrant> Uploads);
@@ -141,4 +180,6 @@ public sealed record RenderJobPayload(Guid VideoId, Storyboard Storyboard);
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
     string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0);
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates);
+/// <summary>Protected prompt snapshot written after quote confirmation and consumed once by the render step.</summary>
+public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard Storyboard);
 public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion, string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest);

@@ -24,7 +24,7 @@ public sealed class AiVideoNotSubmittedException(string message, Exception? inne
 /// </summary>
 public sealed class AiVideoSubmissionUnknownException(string message, Exception? inner = null) : Exception(message, inner);
 
-/// <summary>Only the backend handles the Seller's Gemini credential and Google video URLs.</summary>
+/// <summary>Only the backend handles seller credentials and provider video URLs.</summary>
 public interface IVeoVideoProvider
 {
     Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
@@ -50,8 +50,8 @@ public interface IAiVideoGenerationStrategyFactory
     IAiVideoGenerationStrategy Resolve(string providerKey, string modelKey);
 }
 
-/// <param name="Done">Whether Google has finished the operation.</param>
+/// <param name="Done">Whether the provider has finished the operation.</param>
 /// <param name="VideoUri">Where the clip can be downloaded, when one was made.</param>
-/// <param name="Failure">Why a finished operation has no clip, in Google's words where it gave any.</param>
-/// <param name="NotCharged">Google stated that the attempt without a clip was not billed.</param>
+/// <param name="Failure">Why a finished operation has no clip, in the provider's words where available.</param>
+/// <param name="NotCharged">The provider explicitly stated that the attempt without a clip was not billed.</param>
 public sealed record VeoOperationResult(bool Done, string? VideoUri, string? Failure, bool NotCharged = false);

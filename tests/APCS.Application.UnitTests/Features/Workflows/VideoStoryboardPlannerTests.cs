@@ -505,7 +505,9 @@ public sealed class VideoStoryboardPlannerTests
         board.Scenes[1].Text.Should().Be("Keep standard text");
         board.Scenes[0].Text.Should().Be("Keep standard text");
         board.AiShots.Should().ContainSingle().Which.Should().Match<AiShotPlan>(x =>
-            x.SceneOrder == 1 && x.MockupId == angle.Id && x.DurationSeconds == 6 && x.Model == "veo-3.1-lite-generate-preview");
+            x.SceneOrder == 1 && x.MockupId == angle.Id && x.DurationSeconds == 6 &&
+            x.Model == AiVideoModel.ModelName && x.ProviderKey == AiVideoModel.ProviderKey &&
+            x.Resolution == AiVideoModel.Resolution && x.PricePerSecondUsd == AiVideoModel.PricePerSecondUsd);
     }
 
     [TestMethod]
@@ -666,7 +668,7 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_StudioCameraOrFrameChanges_ChangesSceneFingerprint()
+    public void Plan_StudioAdvancedCameraIsIgnoredButFrameChangesSceneFingerprint()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -685,7 +687,7 @@ public sealed class VideoStoryboardPlannerTests
         frame.ApprovedRevision++;
         var changedFrame = _planner.Plan(product, [source, frame], config).Value;
 
-        changedCamera.AiShots!.Single().Fingerprint.Should().NotBe(original.AiShots!.Single().Fingerprint);
+        changedCamera.AiShots!.Single().Fingerprint.Should().Be(original.AiShots!.Single().Fingerprint);
         changedFrame.AiShots!.Single().Fingerprint.Should().NotBe(original.AiShots!.Single().Fingerprint);
     }
 
@@ -773,6 +775,216 @@ public sealed class VideoStoryboardPlannerTests
         result.Value.Scenes.Single().MockupId.Should().Be(source.Id);
         result.Value.Scenes.Single().CompiledPrompt.Should().NotContain("reviewed studio start frame");
     }
+
+    [TestMethod]
+    public void Plan_P1Rules_UsesTemplateDefaultsAndExposesExactPromptTrace()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct("mug");
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var scene = new AiVideoSceneOptions(MockupId: source.Id, TemplateCode: "lifestyle_in_use", RightsConfirmed: true,
+            CameraMovement: "locked", Lighting: "golden_hour", ExtraInstructions: "Use a dramatic orbit.", PromptRuleVersion: 1,
+            StartingState: "the adult already holds the mug by its handle", PrimaryAction: "lift the mug slightly",
+            EndingState: "the mug remains in the same hand and stays recognizable");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [scene],
+            AiGlobalInstructions: "Add celebratory confetti.");
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsSuccess.Should().BeTrue();
+        var plannedScene = result.Value.Scenes.Single();
+        plannedScene.AiSettings!.Framing.Should().Be("medium");
+        plannedScene.AiSettings.CameraAngle.Should().Be("eye_level");
+        plannedScene.AiSettings!.CameraMovement.Should().Be("gentle_tracking");
+        plannedScene.AiSettings.SubjectMotion.Should().Be("natural");
+        plannedScene.AiSettings.MotionIntensity.Should().Be("subtle");
+        plannedScene.AiSettings.Lighting.Should().Be("warm_natural");
+        plannedScene.AiSettings.ExtraInstructions.Should().BeNull();
+        plannedScene.AiPromptTrace.Should().NotBeNull();
+        plannedScene.AiPromptTrace!.RuleVersion.Should().Be(1);
+        plannedScene.AiPromptTrace.RagStatus.Should().Be("disabled");
+        plannedScene.AiPromptTrace.AppliedRules.Should().Contain("p1-start-action-end");
+        plannedScene.AiPromptTrace.Warnings.Should().ContainSingle().Which.Should().Contain("template defaults");
+        plannedScene.AiPromptTrace.Parts.Should().Contain(part => part.Key == "template" && part.IncludedInFinalPrompt);
+        plannedScene.AiPromptTrace.Parts.Should().Contain(part => part.Key == "prompt_rules" && part.IncludedInFinalPrompt && part.Content.Contains("lift the mug slightly"));
+        plannedScene.AiPromptTrace.Parts.Should().Contain(part => part.Key == "product_context" && part.IncludedInFinalPrompt);
+        plannedScene.AiPromptTrace.Parts.Should().Contain(part => part.Key == "source_guardrails" && part.IncludedInFinalPrompt);
+        plannedScene.AiPromptTrace.Parts.Should().Contain(part => part.Key == "template_guardrails" && part.IncludedInFinalPrompt);
+        plannedScene.AiPromptTrace.Parts.Should().ContainSingle(part => part.Key == "rag" && !part.IncludedInFinalPrompt && part.Content.Contains("Disabled"));
+        plannedScene.CompiledPrompt.Should().Be(plannedScene.AiPromptTrace.FinalPrompt);
+        result.Value.AiShots!.Single().Prompt.Should().Be(plannedScene.AiPromptTrace.FinalPrompt);
+        plannedScene.CompiledPrompt.Should().NotContain("Use a dramatic orbit.");
+        plannedScene.CompiledPrompt.Should().NotContain("Add celebratory confetti.");
+        plannedScene.CompiledPrompt.Should().NotContain("Disabled: no retrieved experience");
+    }
+
+    [TestMethod]
+    public void Plan_LegacyLifestyleScene_UsesTemplateDefaultsWhileAdvancedControlsAreDisabled()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var scene = new AiVideoSceneOptions(MockupId: source.Id, TemplateCode: "lifestyle_in_use", RightsConfirmed: true,
+            CameraMovement: "locked", Lighting: "golden_hour", ExtraInstructions: "Keep the logo visible.");
+
+        var result = _planner.Plan(product, [source], new(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [scene]));
+
+        result.IsSuccess.Should().BeTrue();
+        var plannedScene = result.Value.Scenes.Single();
+        plannedScene.AiSettings!.CameraMovement.Should().Be("gentle_tracking");
+        plannedScene.AiSettings.Lighting.Should().Be("warm_natural");
+        plannedScene.AiSettings.ExtraInstructions.Should().BeNull();
+        plannedScene.AiPromptTrace!.RuleVersion.Should().BeNull();
+        plannedScene.AiPromptTrace.AppliedRules.Should().BeEmpty();
+        plannedScene.AiPromptTrace.Warnings.Should().BeEmpty();
+        plannedScene.CompiledPrompt.Should().NotContain("Keep the logo visible.");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithNonLifestyleSource_ReturnsValidationError()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+
+        var result = _planner.Plan(product, [source], P1Config(source.Id));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("approved Lifestyle image");
+    }
+
+    [TestMethod]
+    [DataRow("starting")]
+    [DataRow("action")]
+    [DataRow("ending")]
+    public void Plan_P1Rules_WithMissingBriefPart_ReturnsValidationError(string missingPart)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var scene = missingPart switch
+        {
+            "starting" => P1Scene(source.Id) with { StartingState = "" },
+            "action" => P1Scene(source.Id) with { PrimaryAction = "" },
+            "ending" => P1Scene(source.Id) with { EndingState = "" },
+            _ => throw new InvalidOperationException($"Unexpected P1 brief part: {missingPart}")
+        };
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [scene]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("start state, one primary action, and an end state");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithTextAtTheMaximumLength_AcceptsBrief()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { EndingState = new string('x', 240) }]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithTextOverTheMaximumLength_ReturnsValidationError()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { EndingState = new string('x', 241) }]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("start state, one primary action, and an end state");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithUnsupportedVersion_ReturnsValidationError()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { PromptRuleVersion = 2 }]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("unsupported prompt-rule version");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithStudioStartFrame_ReturnsValidationError()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { StartFrameMode = "studio" }]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("use its approved Lifestyle image directly");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WithCreatorTemplate_ReturnsValidationError()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { TemplateCode = "creator_pov_ugc" }]
+        };
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("only with the Lifestyle In-Use template");
+    }
+
+    [TestMethod]
+    public void Plan_P1Rules_WhenActionChanges_ChangesPaidShotFingerprint()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct("mug");
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var initial = _planner.Plan(product, [source], P1Config(source.Id)).Value;
+        var changed = _planner.Plan(product, [source], P1Config(source.Id) with
+        {
+            AiScenes = [P1Scene(source.Id) with { PrimaryAction = "tilt the mug slightly toward the camera" }]
+        }).Value;
+
+        initial.AiShots!.Single().Fingerprint.Should().NotBe(changed.AiShots!.Single().Fingerprint);
+        initial.Scenes.Single().CompiledPrompt.Should().NotBe(changed.Scenes.Single().CompiledPrompt);
+    }
+
+    private static GenerateVideoConfig P1Config(Guid sourceId) => new(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [P1Scene(sourceId)]);
+
+    private static AiVideoSceneOptions P1Scene(Guid sourceId) => new(MockupId: sourceId, TemplateCode: "lifestyle_in_use", RightsConfirmed: true,
+        PromptRuleVersion: 1, StartingState: "the adult already holds the product", PrimaryAction: "lift the product slightly",
+        EndingState: "the product remains in the same hand and stays recognizable");
 
     // A keyframe is made for one scene template; the scenes here use the default one.
     private static MockupImage CreateStudioFrame(MockupImage source, string layout = AiStudioFrameIdentity.HangingWindow,

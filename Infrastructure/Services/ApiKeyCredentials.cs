@@ -15,6 +15,7 @@ public sealed class ApiKeyCredentials(IDataProtectionProvider protection, IHttpC
         var url = provider switch
         {
             "gemini" => "https://generativelanguage.googleapis.com/v1beta/models",
+            "minimax" => "https://api.minimax.io/v1/models",
             "openai" => "https://api.openai.com/v1/models",
             "replicate" => "https://api.replicate.com/v1/account",
             // Ideogram has no plain "who am I" call for every key; a dry run is priced but never generated or billed,
