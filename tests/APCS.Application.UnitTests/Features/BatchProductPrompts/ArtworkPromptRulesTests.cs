@@ -54,6 +54,54 @@ public sealed class ArtworkPromptRulesTests
     }
 
     [TestMethod]
+    public void SplitKeywords_KnowsEveryRelative_NotJustAList_ButKeepsFiguresToDraw()
+    {
+        // From WordNet: no list names "granddaughter", "nephews" or "stepson"; a possessive is the word itself.
+        var parts = ArtworkPromptRules.SplitKeywords("granddaughter gift, unicorn, nephews, stepson's fishing rod, astronaut, hiker");
+
+        parts.Motifs.Should().Be("unicorn, fishing rod, astronaut, hiker");
+        parts.Ignored.Should().Equal("granddaughter", "gift", "nephews", "stepson's");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_AKeywordAskingForLettering_IsLeftOutWhole_KeepingOnlyItsFeel()
+    {
+        var parts = ArtworkPromptRules.SplitKeywords("kindness, positive quote, oversized typography, funny saying, est 1985, flowers");
+
+        parts.Motifs.Should().Be("kindness, flowers");
+        parts.Mood.Should().Be("playful feel");
+        parts.Ignored.Should().Equal("positive quote", "oversized typography", "funny saying", "est 1985");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_ProductWordsSeveralWordsLong_LeaveNoneOfTheirWords()
+    {
+        var parts = ArtworkPromptRules.SplitKeywords("southwest wall art, phone case, beach house decor, lighthouse t-shirt, cozy home decor");
+
+        parts.Motifs.Should().Be("southwest, beach house, lighthouse");
+        parts.Mood.Should().Be("cozy feel");
+        parts.Ignored.Should().Equal("wall art", "phone case", "decor", "t-shirt", "home decor");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_DescribingWordsAlone_BecomeTheMood_ButDescribeAThingTheyComeWith()
+    {
+        var parts = ArtworkPromptRules.SplitKeywords("geometric, coastal, whimsical, stormy sea, national park, rainy day");
+
+        parts.Motifs.Should().Be("stormy sea, national park, rainy day");
+        parts.Mood.Should().Be("geometric, coastal, whimsical feel");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_BareNumbersAndMotifsPastTheFifth_AreLeftOut()
+    {
+        var parts = ArtworkPromptRules.SplitKeywords("123, mountain, tent, campfire, forest, lake, river");
+
+        parts.Motifs.Should().Be("mountain, tent, campfire, forest, lake");
+        parts.Ignored.Should().Equal("123", "river");
+    }
+
+    [TestMethod]
     public void Fit_PhraseTemplate_DropsMotifsThePhraseAlreadySays()
     {
         var fitted = ArtworkPromptRules.Fit(Components("Coffee Then Code", "coffee, coding, codes, laptop"));
@@ -168,6 +216,38 @@ public sealed class ArtworkPromptRulesTests
             .And.Contain("one richly detailed featured illustration in vivid, saturated full color")
             .And.Contain("without covering any letter")
             .And.Contain("sticker-style double outline");
+    }
+
+    [TestMethod]
+    public void LetteringInstruction_PhraseTemplate_WithoutADesignNumber_LeavesTheIllustrationsPlaceToTheModel()
+    {
+        ArtworkPromptRules.LetteringInstruction("Use the exact phrase \"{subject}\".")
+            .Should().Contain("set around the lettering (above it, below it or framing it), without covering any letter");
+    }
+
+    [TestMethod]
+    [DataRow(0, "placed above the lettering", "above")]
+    [DataRow(1, "placed below the lettering", "below")]
+    [DataRow(2, "placed above the lettering", "above")]
+    [DataRow(5, "placed below the lettering", "below")]
+    public void LetteringInstruction_PhraseTemplate_GivesEachDesignTheNextPlaceForTheIllustration(int design, string wording, string name)
+    {
+        const string template = "Use the exact phrase \"{subject}\".";
+
+        ArtworkPromptRules.LetteringInstruction(template, design: design)
+            .Should().Contain($"that fits the theme, {wording}").And.Contain("without covering any letter")
+            .And.NotContain("above it, below it or framing it");
+        ArtworkPromptRules.IllustrationPlacement(template, ownPrompt: false, design).Should().Be(name);
+    }
+
+    [TestMethod]
+    public void IllustrationPlacement_IsLeftOpen_ForAPictureTemplate_TheSellersOwnPrompt_OrNoDesignNumber()
+    {
+        ArtworkPromptRules.IllustrationPlacement("A watercolor of {subject}.", ownPrompt: false, 0).Should().BeNull();
+        ArtworkPromptRules.IllustrationPlacement("A badge. " + PromptDefaultsResolver.CustomPhraseSentence, ownPrompt: true, 0).Should().BeNull();
+        ArtworkPromptRules.IllustrationPlacement("Use the exact phrase \"{subject}\".", ownPrompt: false, null).Should().BeNull();
+        ArtworkPromptRules.LetteringInstruction("A badge. " + PromptDefaultsResolver.CustomPhraseSentence, ownPrompt: true, design: 1)
+            .Should().NotContain("placed below");
     }
 
     [TestMethod]

@@ -31,4 +31,17 @@ public sealed record BatchProductPromptResponseDto(
     int CharacterCount,
     bool IsCustomized,
     bool CanEdit,
-    string? CustomPrompt = null);
+    string? CustomPrompt = null)
+{
+    /// <summary>
+    /// The motifs the design draws from the product's keywords (comma-separated); null when the product has its own image
+    /// prompt, which draws on no keywords.
+    /// </summary>
+    public string? Motifs { get; init; }
+
+    /// <summary>
+    /// What of the product's keywords the design leaves out (product words, who it is for, keywords asking for lettering,
+    /// motifs the phrase already says or past the first five); null when the product has its own image prompt.
+    /// </summary>
+    public IReadOnlyList<string>? IgnoredKeywords { get; init; }
+}

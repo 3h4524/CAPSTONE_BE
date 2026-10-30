@@ -443,6 +443,32 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    public async Task ProcessBatchJobAsync_PhraseTemplate_GivesEachDesignItsOwnPlaceForTheIllustration_AndKeepsItWithTheImage()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 3);
+        var stored = await db.AiPrompts.SingleAsync();
+        stored.SystemPrompt = "Create a print-ready {style} composition using the exact phrase \"{subject}\".";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var prompts = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, bool, bool, CancellationToken>((_, prompt, _, _, _, _) => prompts.Add(prompt))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        prompts.Should().HaveCount(3);
+        prompts.Count(p => p.Contains("placed above the lettering")).Should().Be(2);
+        prompts.Count(p => p.Contains("placed below the lettering")).Should().Be(1);
+        db.ChangeTracker.Clear();
+        var placements = (await db.DesignImages.OrderBy(i => i.VariationIndex).ToListAsync())
+            .Select(i => System.Text.Json.JsonDocument.Parse(i.GenerationMetadata!).RootElement.GetProperty("illustrationPlacement").GetString());
+        placements.Should().Equal("above", "below", "above");
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_PromptFromAnyOtherTemplate_DrawsMotifsAsPictures()
     {
         await using var db = CreateContext();

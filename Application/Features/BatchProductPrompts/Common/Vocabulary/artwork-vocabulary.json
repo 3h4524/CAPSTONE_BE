@@ -1,0 +1,48 @@
+{
+ "about": "The app's own words for sorting a product's keywords into motifs and mood (ArtworkPromptRules.SplitKeywords). English word knowledge (relatives, adjectives) comes from wordnet-words.json instead. Words are matched case-insensitively, singular or plural.",
+ "productPhrases": {
+  "about": "Several words that together name the product or where it goes, one of which would be drawn on its own (the phone, the wall); taken out of a keyword before its words are sorted.",
+  "words": ["wall art", "phone case", "home decor"]
+ },
+ "productWords": {
+  "about": "The product, its sale or its listing rather than anything to draw.",
+  "words": [
+   "shirt", "tshirt", "tee", "hoodie", "sweatshirt", "sweater", "mug", "poster", "tote", "bag", "apparel", "clothing", "outfit",
+   "merch", "merchandise", "unisex", "streetwear", "decor", "gift", "present", "idea", "graphic", "design", "print"
+  ]
+ },
+ "fillerWords": {
+  "about": "Words that only join listing words (\"gift for her\"); dropped without being listed as left out.",
+  "words": ["for"]
+ },
+ "textWords": {
+  "about": "Words that ask for lettering. The template decides which words a design prints, so a keyword with one of these is left out whole: an image model asked for it writes extra words.",
+  "words": [
+   "quote", "quotation", "saying", "slogan", "typography", "typographic", "lettering", "typeface", "font", "text",
+   "calligraphy", "microtype", "est"
+  ]
+ },
+ "peopleWords": {
+  "about": "Who the product is for, when no relative: a model writes the word out or draws a stranger. Relatives come from wordnet-words.json; a job (nurse, teacher) or a figure (astronaut, hiker) stays, being something to draw.",
+  "words": [
+   "friend", "bestie", "bff", "lover", "fan", "enthusiast", "owner", "people", "person", "everyone", "everybody", "kid", "child",
+   "children", "boy", "girl", "lady", "ladies", "guy", "gal", "men", "mens", "women", "womens", "him", "her", "his", "hers",
+   "mum", "mums", "nana", "stepmom", "stepmum", "stepdad"
+  ]
+ },
+ "moodWords": {
+  "about": "Words for the feel of a design, wherever they stand in a keyword, and the mood each one becomes.",
+  "words": {
+   "funny": "playful", "humor": "playful", "humour": "playful", "humorous": "playful", "hilarious": "playful", "playful": "playful",
+   "sarcastic": "sassy", "sarcasm": "sassy", "sassy": "sassy",
+   "cute": "cute", "kawaii": "cute", "adorable": "cute",
+   "vintage": "vintage", "retro": "retro", "classic": "classic", "boho": "boho", "spooky": "spooky", "cozy": "cozy", "cosy": "cozy",
+   "minimalist": "minimalist", "minimal": "minimalist", "gothic": "gothic", "grunge": "grunge", "y2k": "y2k",
+   "inspirational": "uplifting", "motivational": "uplifting", "inspiring": "uplifting"
+  }
+ },
+ "emptyWords": {
+  "about": "Praise that names no feel a picture could show.",
+  "words": ["cool", "aesthetic", "trendy", "awesome", "best", "ever"]
+ }
+}
