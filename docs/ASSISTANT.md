@@ -82,7 +82,7 @@ Deleting sets `deleted_at` immediately and signals `AssistantConversationPurgeWo
 Each model call costs several seconds, so the design minimises calls:
 
 - **Help articles are retrieved before the model runs** (`AssistantKnowledgeBase.PrefetchAsync`, `faq` content type, the user's own message as the query, 2.5 s timeout, skipped when a workflow canvas is open). The articles go into the prompt as `<help_articles>`, so a help question needs one model call instead of two, and the repeated query hits the RAG caches.
-- **Pure help answers are cached** for 30 minutes (first message of a chat, no canvas, no tool other than `search_faq`), keyed by the normalised message and role and by the RAG generation token, so re-indexing invalidates them. A cache hit replays the answer without calling the model (`model: "cache"`).
+- **Pure help answers are cached** for 30 minutes (first message of a chat, no canvas, no tool other than `search_faq`), keyed by the normalised message, role and page path (route without its query string) and by the RAG generation token, so re-indexing invalidates them. A cache hit replays the answer without calling the model (`model: "cache"`).
 - **Tools that end the turn carry the user-facing sentence in a `reply` argument** (`edit_workflow_canvas`, `arrange_workflow_canvas`, `navigate`, `start_workflow_run`, `workflow_run_action`; `offer_choices` uses `question`). The loop streams it and skips the closing model call. Without a reply the model writes the closing sentence as before.
 - The node catalog is added to the system prompt when a canvas is open, so the model does not call `get_node_catalog` first.
 - Thinking is set to `Assistant:ThinkingLevel` (default `Low`).

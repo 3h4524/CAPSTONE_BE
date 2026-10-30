@@ -449,6 +449,24 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
+    public async Task AnswerCacheKey_DependsOnThePagePathButNotItsQuery()
+    {
+        cache.Setup(c => c.GetAsync<string>(APCS.Application.Features.Rag.Common.RagCacheConstants.SearchGenerationKey, It.IsAny<CancellationToken>())).ReturnsAsync("gen1");
+        var keys = new List<string>();
+        cache.Setup(c => c.GetAsync<AssistantCachedAnswer>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, CancellationToken>((key, _) => keys.Add(key))
+            .ReturnsAsync((AssistantCachedAnswer?)null);
+        var knowledgeBase = new AssistantKnowledgeBase(rag.Object, cache.Object, NullLogger<AssistantKnowledgeBase>.Instance);
+
+        foreach (var route in new[] { "/workflows", "/batches", "/workflows?id=1", "/workflows?id=2" })
+            await knowledgeBase.GetAnswerAsync(AssistantTestSupport.Session("how do I use this?", new(route, null, null, null, null)), CancellationToken.None);
+
+        keys.Should().HaveCount(4);
+        keys[0].Should().NotBe(keys[1]);
+        keys[2].Should().Be(keys[0]).And.Be(keys[3]);
+    }
+
+    [TestMethod]
     public async Task RunAsync_WhenTheAnswerCacheIsDown_FallsBackToTheModel()
     {
         cache.Setup(c => c.GetAsync<string>(It.IsAny<string>(), It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("redis down"));

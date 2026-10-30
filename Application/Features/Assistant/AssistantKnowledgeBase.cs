@@ -83,8 +83,17 @@ public sealed partial class AssistantKnowledgeBase(
             return null;
         var role = session.Caller.IsAdmin && !session.Caller.IsSeller ? "admin" : "seller";
         var normalized = WhiteSpace().Replace(session.Message.Trim(), " ").ToLowerInvariant();
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{role}\u001f{normalized}")))[..32].ToLowerInvariant();
+        var pathname = PagePath(session.Context?.Route);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{role}\u001f{pathname}\u001f{normalized}")))[..32].ToLowerInvariant();
         return $"assistant:answer:{generation}:{hash}";
+    }
+
+    private static string PagePath(string? route)
+    {
+        if (string.IsNullOrWhiteSpace(route))
+            return string.Empty;
+        var queryStart = route.IndexOf('?');
+        return (queryStart >= 0 ? route[..queryStart] : route).Trim().ToLowerInvariant();
     }
 
     [GeneratedRegex(@"\s+")]
