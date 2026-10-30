@@ -38,6 +38,7 @@ Rules that must hold for every new tool:
 - Write actions are `ConfirmableAssistantTool<TArgs>`. The model can only prepare them; `AssistantService.ConfirmActionAsync` claims the row atomically (`pending` to `executing`), re-checks expiry (15 minutes) and runs `ExecuteConfirmedAsync`.
 - Paid AI video steps are never exposed. `workflow_run_action` refuses `resume_mockups` and `retry` on an `ai_shot` workflow because they need a quote token that only the UI holds.
 - Tools run sequentially because they share one `DbContext`. Results are capped at 12 000 characters.
+- Successful query tool results (except `search_faq`) are kept in the assistant message metadata as `toolMemory` (800 characters per result, 2 400 per message). The prompt replays them as `<tool_memory>` for the last 3 assistant messages so follow-ups such as "the second one" need no new tool call. The API strips `toolMemory` from the metadata it returns.
 
 To add a tool: create the class, register it, add unit tests next to the existing tool tests, and mention it in the system prompt in `AssistantPromptBuilder` only if the model needs guidance.
 

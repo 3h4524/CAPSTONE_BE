@@ -176,6 +176,57 @@ public sealed class AssistantServiceTests
     }
 
     [TestMethod]
+    public async Task StartChatAsync_ReadsToolMemoryOfAssistantMessagesIntoHistory()
+    {
+        var conversation = Conversation();
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        conversations.Setup(r => r.GetByIdAsync(conversation.Id, It.IsAny<CancellationToken>())).ReturnsAsync(conversation);
+        var history = new List<AssistantMessage>
+        {
+            new() { Id = Guid.NewGuid(), ConversationId = conversation.Id, Role = "user", Content = "list my workflows", Metadata = "{}", CreatedAt = Now.UtcDateTime },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = conversation.Id,
+                Role = "assistant",
+                Content = "You have two workflows.",
+                Metadata = """{"toolMemory":[{"tool":"list_workflows","result":"{\"items\":[{\"id\":\"w1\"}]}"}]}""",
+                CreatedAt = Now.UtcDateTime.AddMinutes(1)
+            }
+        };
+        messages.Setup(r => r.Query()).Returns(history.AsQueryable().BuildMock());
+
+        var result = await Service().StartChatAsync(new(conversation.Id, "start the first one", null), AssistantTestSupport.Seller);
+
+        result.Value.History[0].ToolMemory.Should().BeNull();
+        result.Value.History[1].ToolMemory.Should().Contain("list_workflows").And.Contain("w1");
+    }
+
+    [TestMethod]
+    public async Task GetConversationAsync_DoesNotExposeToolMemory()
+    {
+        var conversation = Conversation();
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        var message = new AssistantMessage
+        {
+            Id = Guid.NewGuid(),
+            ConversationId = conversation.Id,
+            Role = "assistant",
+            Content = "You have two workflows.",
+            Metadata = """{"kind":"chat","toolMemory":[{"tool":"list_workflows","result":"{}"}]}""",
+            CreatedAt = Now.UtcDateTime
+        };
+        messages.Setup(r => r.Query()).Returns(new List<AssistantMessage> { message }.AsQueryable().BuildMock());
+        pendingActions.Setup(r => r.Query()).Returns(new List<AssistantPendingAction>().AsQueryable().BuildMock());
+
+        var result = await Service().GetConversationAsync(conversation.Id);
+
+        var metadata = result.Value.Messages.Single().Metadata;
+        metadata.TryGetProperty("toolMemory", out _).Should().BeFalse();
+        metadata.GetProperty("kind").GetString().Should().Be("chat");
+    }
+
+    [TestMethod]
     public async Task ListConversationsAsync_ReturnsOwnNonDeletedNewestFirst()
     {
         var older = Conversation();

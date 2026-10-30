@@ -78,6 +78,50 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
+    public async Task RunAsync_QueryTool_RemembersItsResultInMetadata()
+    {
+        var tool = new StubTool("list_workflows", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Ok(new { items = new[] { new { id = "w1" } } })));
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("list_workflows", callId: "c1"))],
+            [AssistantTestSupport.Text("You have one"), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
+
+        var metadata = AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!;
+        metadata.ToolMemory.Should().ContainSingle().Which.Should().Match<AssistantToolMemoryData>(memory =>
+            memory.Tool == "list_workflows" && memory.Result.Contains("w1"));
+    }
+
+    [TestMethod]
+    public async Task RunAsync_NonQueryToolsAndSearchFaq_AreNotRemembered()
+    {
+        var faq = new StubTool("search_faq");
+        var navigate = new StubTool("navigate", AssistantToolKind.ClientAction);
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("search_faq", callId: "c1"), AssistantTestSupport.Call("navigate", callId: "c2"))],
+            [AssistantTestSupport.Text("Done"), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, faq, navigate).RunAsync(AssistantTestSupport.Session()));
+
+        AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!.ToolMemory.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task RunAsync_LargeToolResults_AreTruncatedAndCapped()
+    {
+        var big = new string('x', 5000);
+        var tool = new StubTool("get_workflow", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Ok(new { big })));
+        var calls = Enumerable.Range(1, 5).Select(i => AssistantTestSupport.Call("get_workflow", callId: $"c{i}")).ToArray();
+        var model = new FakeChatModel([AssistantTestSupport.Done("", calls)], [AssistantTestSupport.Text("ok"), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
+
+        var memory = AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!.ToolMemory!;
+        memory.Should().OnlyContain(item => item.Result.Length < 1000);
+        memory.Sum(item => item.Result.Length).Should().BeLessThanOrEqualTo(AssistantLimits.ToolMemoryMessageChars);
+    }
+
+    [TestMethod]
     public async Task RunAsync_QueryTool_ExecutesToolAndCallsModelAgainWithResult()
     {
         var tool = new StubTool("lookup", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Ok(new { value = 7 })));

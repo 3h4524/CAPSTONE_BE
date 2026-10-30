@@ -55,6 +55,29 @@ public sealed class AssistantPromptBuilderTests
     }
 
     [TestMethod]
+    public void Build_AddsToolMemoryOnlyToTheLastThreeRememberedAssistantMessages()
+    {
+        var history = Enumerable.Range(1, 4)
+            .SelectMany(i => new AssistantHistoryMessage[]
+            {
+                new(AssistantMessageRoles.User, $"q{i}"),
+                new(AssistantMessageRoles.Assistant, $"a{i}", $"[{{\"tool\":\"list_workflows\",\"result\":\"r{i}\"}}]")
+            })
+            .ToArray();
+
+        var messages = builder.Build(AssistantTestSupport.Session("now", history: history));
+
+        var assistantTexts = messages.Where(message => message.Role == AssistantMessageRole.Assistant).Select(message => message.Text!).ToArray();
+        assistantTexts[0].Should().Be("a1");
+        assistantTexts[1..].Should().AllSatisfy(text => text.Should().Contain("<tool_memory>"));
+        assistantTexts[3].Should().StartWith("a4").And.Contain("r4");
+    }
+
+    [TestMethod]
+    public void Build_SystemPromptExplainsToolMemory() =>
+        builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("<tool_memory>");
+
+    [TestMethod]
     public void Build_IncludesConfigOnlyForSelectedNodes()
     {
         var canvas = new AssistantCanvasDto(

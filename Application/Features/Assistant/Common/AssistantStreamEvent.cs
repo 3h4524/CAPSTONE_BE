@@ -16,6 +16,8 @@ public sealed record AssistantErrorData(string Code, string Message);
 
 public sealed record AssistantToolCallData(string Name, bool Ok);
 
+public sealed record AssistantToolMemoryData(string Tool, string Result);
+
 public sealed record AssistantConversationEventData(Guid ConversationId, Guid UserMessageId);
 
 public sealed record AssistantDeltaEventData(string Text);

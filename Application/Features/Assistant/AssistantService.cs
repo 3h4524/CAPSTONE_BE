@@ -27,6 +27,8 @@ public sealed class AssistantService(
     AssistantToolRegistry registry,
     TimeProvider timeProvider) : IAssistantService
 {
+    private const string ToolMemoryKey = "toolMemory";
+
     public async Task<Result<AssistantChatSession>> StartChatAsync(
         SendAssistantMessageRequestDto request,
         AssistantCaller caller,
@@ -54,9 +56,14 @@ public sealed class AssistantService(
                 .Where(item => item.ConversationId == conversationId)
                 .OrderByDescending(item => item.CreatedAt)
                 .Take(AssistantLimits.HistoryWindow)
-                .Select(item => new AssistantHistoryMessage(item.Role, item.Content))
+                .Select(item => new { item.Role, item.Content, item.Metadata })
                 .ToListAsync(cancellationToken);
-            history.AddRange(recent.AsEnumerable().Reverse().Where(item => !string.IsNullOrWhiteSpace(item.Content)));
+            history.AddRange(recent.AsEnumerable().Reverse()
+                .Where(item => !string.IsNullOrWhiteSpace(item.Content))
+                .Select(item => new AssistantHistoryMessage(
+                    item.Role,
+                    item.Content,
+                    item.Role == AssistantMessageRoles.Assistant ? ReadToolMemory(item.Metadata) : null)));
             var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
             if (conversation is not null)
             {
@@ -321,7 +328,31 @@ public sealed class AssistantService(
     }
 
     private static AssistantMessageResponseDto ToMessageDto(AssistantMessage message) =>
-        new(message.Id, message.Role, message.Content, JsonDocument.Parse(message.Metadata).RootElement.Clone(), message.CreatedAt);
+        new(message.Id, message.Role, message.Content, PublicMetadata(message.Metadata), message.CreatedAt);
+
+    private static JsonElement PublicMetadata(string metadataJson)
+    {
+        if (JsonNode.Parse(metadataJson) is not JsonObject metadata)
+            return JsonDocument.Parse(metadataJson).RootElement.Clone();
+        metadata.Remove(ToolMemoryKey);
+        return JsonSerializer.SerializeToElement(metadata);
+    }
+
+    private static string? ReadToolMemory(string? metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+            return null;
+        try
+        {
+            return JsonNode.Parse(metadataJson) is JsonObject metadata && metadata[ToolMemoryKey] is JsonArray memory && memory.Count > 0
+                ? memory.ToJsonString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
     private static AssistantPendingActionResponseDto ToActionDto(AssistantPendingAction action, DateTime now)
     {

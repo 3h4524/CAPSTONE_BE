@@ -118,6 +118,8 @@ public sealed class AssistantAgentLoop(
 
                     conversation.Add(AssistantModelMessage.Tool(new AssistantToolResult(call.CallId, call.Name, outcome.ModelResultJson)));
                     state.ToolCalls.Add(new AssistantToolCallData(call.Name, outcome.Succeeded));
+                    if (outcome.Succeeded && call.Name != KnowledgeToolName && tools.FirstOrDefault(tool => tool.Name == call.Name)?.Kind == AssistantToolKind.Query)
+                        state.Remember(call.Name, outcome.ModelResultJson);
                     yield return AssistantStreamEvent.ToolFinished(call.CallId, call.Name, outcome.Succeeded);
                     endTurn |= outcome.EndsTurn;
                     if (outcome.EndsTurn && outcome.FinalText is { Length: > 0 } finalText && state.Text.Length == textBefore)
@@ -245,6 +247,7 @@ public sealed class AssistantAgentLoop(
         private readonly List<AssistantCitationData> citations = [];
         private readonly List<AssistantClientActionData> clientActions = [];
         private readonly List<Guid> pendingActionIds = [];
+        private readonly List<AssistantToolMemoryData> toolMemory = [];
         private AssistantChoicesData? choices;
 
         public List<AssistantToolCallData> ToolCalls { get; } = [];
@@ -270,6 +273,13 @@ public sealed class AssistantAgentLoop(
         public bool HasContent => text.Length > 0 || Error is not null || ToolCalls.Count > 0;
 
         public void AppendText(string value) => text.Append(value);
+
+        public void Remember(string toolName, string resultJson)
+        {
+            var result = AssistantJson.Truncate(resultJson, AssistantLimits.ToolMemoryResultChars);
+            if (toolMemory.Sum(item => item.Result.Length) + result.Length <= AssistantLimits.ToolMemoryMessageChars)
+                toolMemory.Add(new AssistantToolMemoryData(toolName, result));
+        }
 
         public void RecordUsage(AssistantModelUpdate? completed)
         {
@@ -306,6 +316,7 @@ public sealed class AssistantAgentLoop(
             pendingActionIds.Count > 0 ? pendingActionIds : null,
             choices,
             Error,
-            AssistantMessageKinds.Chat);
+            AssistantMessageKinds.Chat,
+            ToolMemory: toolMemory.Count > 0 ? toolMemory : null);
     }
 }

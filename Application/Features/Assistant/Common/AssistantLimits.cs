@@ -16,4 +16,7 @@ public static class AssistantLimits
     public const int MaxToolResultChars = 12000;
     public const int ConversationListSize = 20;
     public const int TitleLength = 60;
+    public const int ToolMemoryResultChars = 800;
+    public const int ToolMemoryMessageChars = 2400;
+    public const int ToolMemoryHistoryMessages = 3;
 }
