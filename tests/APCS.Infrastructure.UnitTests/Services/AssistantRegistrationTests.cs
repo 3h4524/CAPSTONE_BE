@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 namespace APCS.Infrastructure.UnitTests.Services;
 
 [TestClass]
+[DoNotParallelize]
 public sealed class AssistantRegistrationTests
 {
     [TestMethod]
@@ -83,6 +84,38 @@ public sealed class AssistantRegistrationTests
         using var provider = BuildProvider([]);
 
         provider.GetRequiredService<IOptions<AssistantOptions>>().Value.IsConfigured.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void AssistantOptions_ReadsSemicolonSeparatedApiKeysFromTheEnvironment()
+    {
+        Environment.SetEnvironmentVariable("Assistant__ApiKeys", "key-1; key-2");
+        try
+        {
+            using var provider = BuildProvider([]);
+
+            provider.GetRequiredService<IOptions<AssistantOptions>>().Value.EffectiveApiKeys.Should().Equal("key-1", "key-2");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("Assistant__ApiKeys", null);
+        }
+    }
+
+    [TestMethod]
+    public void AssistantOptions_ReadsIndexedApiKeysFromConfiguration()
+    {
+        using var provider = BuildProvider(new()
+        {
+            ["Assistant:ApiKeys:0"] = "key-1",
+            ["Assistant:ApiKeys:1"] = "key-2",
+            ["Gemini:Embeddings:ApiKey"] = "embedding-key"
+        });
+
+        var options = provider.GetRequiredService<IOptions<AssistantOptions>>().Value;
+
+        options.EffectiveApiKeys.Should().Equal("key-1", "key-2");
+        options.ApiKey.Should().BeEmpty();
     }
 
     private static ServiceProvider BuildProvider(Dictionary<string, string?> overrides)

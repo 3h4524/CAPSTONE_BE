@@ -148,6 +148,8 @@ public static class DependencyInjection
             .ValidateDataAnnotations();
         services.PostConfigure<AssistantOptions>(options =>
         {
+            if (!options.HasApiKeys)
+                options.ApiKeys = configuration.GetOptionalStringArray($"{AssistantOptions.SectionName}:{nameof(AssistantOptions.ApiKeys)}");
             if (string.IsNullOrWhiteSpace(options.ApiKey) && !options.HasApiKeys)
                 options.ApiKey = FirstConfigured(
                     configuration[$"{GeminiTextGenerationOptions.SectionName}:ApiKey"],
