@@ -39,7 +39,7 @@ public sealed class AssistantToolBaseTests
         var properties = schema.GetProperty("properties");
         properties.GetProperty("moreRequests").GetProperty("type").GetString().Should().Be("boolean");
         properties.TryGetProperty("reply", out _).Should().BeTrue();
-        schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()).Should().Equal("reply");
+        schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()).Should().Equal("reply", "moreRequests");
     }
 
     [TestMethod]

@@ -28,6 +28,11 @@ public sealed class AssistantAgentLoop(
     private const int ReplayChunkChars = 48;
     private const int MaxEmptyRetries = 1;
     private const string EmptyResponseMessage = "The assistant could not come up with an answer. Please rephrase or try again.";
+    private const string CompletionDoneMarker = "DONE";
+    private const string CompletionCheckNote =
+        "<completion_check>Read the user's latest message again. If a question in it is not answered yet, answer it now in plain text. "
+        + "If a requested change or action has not been made yet, call the tool for it now. "
+        + "Do not repeat what you already did. If everything is done, reply with exactly DONE and nothing else.</completion_check>";
 
     public async IAsyncEnumerable<AssistantStreamEvent> RunAsync(
         AssistantChatSession session,
@@ -61,6 +66,8 @@ public sealed class AssistantAgentLoop(
         var declarations = tools.Select(tool => tool.Declaration).ToArray();
         var conversation = promptBuilder.Build(session, articles).ToList();
         var endTurn = false;
+        var completionCheckUsed = false;
+        var isCompletionCheck = false;
         var emptyRetriesLeft = MaxEmptyRetries;
 
         try
@@ -69,10 +76,23 @@ public sealed class AssistantAgentLoop(
             {
                 AssistantModelUpdate? completed = null;
                 var textBefore = state.Text.Length;
+                var heldText = new StringBuilder();
+                var completionPass = isCompletionCheck;
+                var releaseText = !completionPass;
+                isCompletionCheck = false;
                 await foreach (var update in chatModel.StreamAsync(new(conversation, declarations, !endTurn), cancellationToken))
                 {
                     if (update.Kind == AssistantModelUpdateKind.Text && update.Text is { } text)
                     {
+                        if (!releaseText)
+                        {
+                            heldText.Append(text);
+                            if (IsCompletionDonePrefix(heldText.ToString()))
+                                continue;
+                            releaseText = true;
+                            text = heldText.ToString().TrimStart();
+                        }
+
                         var delta = state.Text.Length == textBefore ? state.WithParagraphBreak(text) : text;
                         state.AppendText(delta);
                         yield return AssistantStreamEvent.Delta(delta);
@@ -95,7 +115,7 @@ public sealed class AssistantAgentLoop(
                 }
 
                 state.RecordUsage(completed);
-                if (completed?.Message is not { ToolCalls.Count: > 0 } && state.Text.Length == textBefore && !state.HasVisibleOutput && emptyRetriesLeft > 0)
+                if (!completionPass && completed?.Message is not { ToolCalls.Count: > 0 } && state.Text.Length == textBefore && !state.HasVisibleOutput && emptyRetriesLeft > 0)
                 {
                     emptyRetriesLeft--;
                     iteration--;
@@ -108,6 +128,7 @@ public sealed class AssistantAgentLoop(
                 conversation.Add(assistantTurn);
                 var modelWroteText = state.Text.Length > textBefore;
                 var roundEndsTurn = false;
+                var roundAsksUser = false;
                 var roundHasReply = modelWroteText;
                 var moreRequests = false;
                 foreach (var call in assistantTurn.ToolCalls)
@@ -129,6 +150,7 @@ public sealed class AssistantAgentLoop(
                         continue;
 
                     roundEndsTurn = true;
+                    roundAsksUser |= tools.FirstOrDefault(tool => tool.Name == call.Name)?.Kind == AssistantToolKind.Interaction;
                     moreRequests |= AssistantToolSchemas.RequestsMore(call.Arguments);
                     roundHasReply |= outcome.FinalText is not null;
                     if (outcome.FinalText is { Length: > 0 } finalText && !modelWroteText)
@@ -139,11 +161,23 @@ public sealed class AssistantAgentLoop(
                     }
                 }
 
+                completionCheckUsed |= moreRequests;
                 if (roundEndsTurn && !moreRequests)
                 {
-                    if (roundHasReply)
+                    if (!roundHasReply)
+                    {
+                        endTurn = true;
+                    }
+                    else if (completionCheckUsed || roundAsksUser || iteration >= AssistantLimits.MaxToolIterations)
+                    {
                         break;
-                    endTurn = true;
+                    }
+                    else
+                    {
+                        completionCheckUsed = true;
+                        isCompletionCheck = true;
+                        conversation.Add(AssistantModelMessage.User(CompletionCheckNote));
+                    }
                 }
 
                 if (iteration >= AssistantLimits.MaxToolIterations)
@@ -177,6 +211,12 @@ public sealed class AssistantAgentLoop(
             await knowledgeBase.SaveAnswerAsync(session, new AssistantCachedAnswer(state.Text, state.Citations), CancellationToken.None);
 
         yield return AssistantStreamEvent.Done(state.AssistantMessageId, state.Model ?? chatModel.ModelName, state.InputTokens, state.OutputTokens);
+    }
+
+    private static bool IsCompletionDonePrefix(string text)
+    {
+        var trimmed = text.Trim().TrimEnd('.', '!');
+        return CompletionDoneMarker.StartsWith(trimmed, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<AssistantStreamEvent> ReplayCachedAnswer(AssistantCachedAnswer answer, AssistantTurnState state)

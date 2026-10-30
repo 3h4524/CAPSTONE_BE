@@ -171,22 +171,67 @@ public sealed class AssistantAgentLoopTests
 
         await Collect(Loop(model, edit, arrange).RunAsync(AssistantTestSupport.Session()));
 
-        model.Requests.Should().ContainSingle();
+        model.Requests.Should().HaveCount(2);
         saved.Single().Content.Should().Be("I connected the steps.\n\nI tidied the layout.");
     }
 
     [TestMethod]
-    public async Task RunAsync_ActionWithoutMoreRequests_EndsTheTurnWithoutAnotherModelCall()
+    public async Task RunAsync_ActionWithoutMoreRequests_RunsOneCompletionCheckAndHidesDone()
     {
         var edit = ActionTool("edit_workflow_canvas", "I added the step.");
         var model = new FakeChatModel(
             [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":false}""", "c1"))],
+            [AssistantTestSupport.Text("DO"), AssistantTestSupport.Text("NE"), AssistantTestSupport.Done("DONE")]);
+
+        var events = await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().HaveCount(2);
+        model.Requests[1].AllowTools.Should().BeTrue();
+        model.Requests[1].Messages[^1].Text.Should().Contain("<completion_check>");
+        events.Where(e => e.Type == "delta").Select(e => ((AssistantDeltaEventData)e.Data).Text).Should().Equal("I added the step.");
+        saved.Single().Content.Should().Be("I added the step.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_CompletionCheck_AnswersTheQuestionTheActionLeftOut()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I added the approval step.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", "{}", "c1"))],
+            [AssistantTestSupport.Text("APCS is a print on demand app."), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session("what is APCS and add an approval step")));
+
+        saved.Single().Content.Should().Be("I added the approval step.\n\nAPCS is a print on demand app.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_CompletionCheck_CanCallTheActionTheModelLeftOutAndStopsAfterIt()
+    {
+        var arrange = ActionTool("arrange_workflow_canvas", "I tidied the layout.");
+        var edit = ActionTool("edit_workflow_canvas", "I connected the steps.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("arrange_workflow_canvas", "{}", "c1"))],
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", "{}", "c2"))],
             [AssistantTestSupport.Text("should not run"), AssistantTestSupport.Done()]);
 
-        await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+        var events = await Collect(Loop(model, arrange, edit).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().HaveCount(2);
+        events.Count(e => e.Type == "client_action").Should().Be(2);
+        saved.Single().Content.Should().Be("I tidied the layout.\n\nI connected the steps.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_OfferChoices_DoesNotRunTheCompletionCheck()
+    {
+        var choices = new StubTool("offer_choices", AssistantToolKind.Interaction, (_, _) => Task.FromResult(
+            AssistantToolOutcome.Ok(new { status = "shown" }, true).WithFinalText("Which layout?")));
+        var model = new FakeChatModel([AssistantTestSupport.Done("", AssistantTestSupport.Call("offer_choices"))]);
+
+        await Collect(Loop(model, choices).RunAsync(AssistantTestSupport.Session()));
 
         model.Requests.Should().ContainSingle();
-        saved.Single().Content.Should().Be("I added the step.");
     }
 
     [TestMethod]
@@ -459,7 +504,7 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
-    public async Task RunAsync_EndTurnToolAfterExplanatoryText_SkipsTheFinalModelCall()
+    public async Task RunAsync_EndTurnToolAfterExplanatoryText_OnlyRunsTheCompletionCheck()
     {
         var action = new AssistantClientActionData(Guid.NewGuid(), "navigate", AssistantTestSupport.Json("""{"path":"/usage"}"""));
         var tool = new StubTool("navigate", AssistantToolKind.ClientAction, (_, _) => Task.FromResult(
@@ -469,7 +514,8 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session("open usage", new(("/dashboard"), null, null, null, null))));
 
-        model.Requests.Should().HaveCount(1);
+        model.Requests.Should().HaveCount(2);
+        model.Requests[1].Messages[^1].Text.Should().Contain("<completion_check>");
         events.Should().Contain(e => e.Type == "client_action");
         saved.Single().Content.Should().Be("Here is the link.");
     }
@@ -576,7 +622,7 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
-    public async Task RunAsync_ToolFinalText_IsStreamedAsTheAnswerAndSkipsTheFinalModelCall()
+    public async Task RunAsync_ToolFinalText_IsStreamedAsTheAnswerAndOnlyRunsTheCompletionCheck()
     {
         var tool = new StubTool("edit_workflow_canvas", AssistantToolKind.ClientAction, (_, _) => Task.FromResult(
             AssistantToolOutcome.Ok(new { status = "proposed" }, true).WithFinalText("Review and apply it.")));
@@ -584,7 +630,7 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model, tool).RunAsync(FirstMessage("add a step")));
 
-        model.Requests.Should().HaveCount(1);
+        model.Requests.Should().HaveCount(2);
         events.Where(e => e.Type == "delta").Select(e => ((AssistantDeltaEventData)e.Data).Text).Should().Equal("Review and apply it.");
         saved.Single().Content.Should().Be("Review and apply it.");
     }

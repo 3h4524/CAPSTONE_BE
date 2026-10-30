@@ -94,7 +94,7 @@ public static class AssistantToolSchemas
     public const string MoreRequestsProperty = "moreRequests";
 
     private const string MoreRequestsDescription =
-        "True when the user's message still has other parts you have not handled yet (a question to answer or another change or action). You will be called again to finish them. False or omitted when this call completes the message.";
+        "True when the user's message still has other parts you have not handled yet (a question to answer or another change or action). You will be called again to finish them. False when this call completes everything the user asked.";
 
     public static JsonElement Build(string parametersSchemaJson, AssistantToolKind kind)
     {
@@ -104,6 +104,9 @@ public static class AssistantToolSchemas
         var properties = schema["properties"] as JsonObject ?? new JsonObject();
         properties[MoreRequestsProperty] = new JsonObject { ["type"] = "boolean", ["description"] = MoreRequestsDescription };
         schema["properties"] = properties;
+        var required = schema["required"] as JsonArray ?? new JsonArray();
+        required.Add(MoreRequestsProperty);
+        schema["required"] = required;
         return JsonSerializer.SerializeToElement(schema);
     }
 
