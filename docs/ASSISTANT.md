@@ -51,7 +51,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:Temperature` | `0.3` | |
 | `Assistant:MaxOutputTokens` | `2048` | |
 | `Assistant:ThinkingLevel` | `Low` | `Minimal`, `Low`, `Medium` or `High`. |
-| `Assistant:RateLimitRetries` | `2` | Retries after a quota, 429 or "high demand" (503) error, only before any text was streamed. |
+| `Assistant:RateLimitRetries` | `2` | Retries after an HTTP 429, 500, 503 or 504 from Gemini (read from `ApiException.StatusCode`), only before any text was streamed. |
 | `Assistant:OverloadRetryDelaySeconds` | `2` | Pause before retrying an overload error. |
 | `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |

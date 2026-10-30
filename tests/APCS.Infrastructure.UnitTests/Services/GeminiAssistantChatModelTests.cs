@@ -1,7 +1,9 @@
+using System.Net;
 using APCS.Application.Abstractions.Ai;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
+using Google.GenAI;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace APCS.Infrastructure.UnitTests.Services;
@@ -34,13 +36,27 @@ public sealed class GeminiAssistantChatModelTests
     }
 
     [TestMethod]
-    [DataRow("You exceeded your current quota, please check your plan", true)]
-    [DataRow("HTTP 429 Too Many Requests", true)]
-    [DataRow("RESOURCE_EXHAUSTED", true)]
-    [DataRow("API key not valid", false)]
-    [DataRow("Invalid argument", false)]
-    public void IsRateLimited_RecognisesQuotaFailuresOnly(string message, bool expected) =>
-        GeminiAssistantChatModel.IsRateLimited(new InvalidOperationException(message)).Should().Be(expected);
+    [DataRow(429, true)]
+    [DataRow(400, false)]
+    [DataRow(403, false)]
+    [DataRow(503, false)]
+    public void IsRateLimited_RecognisesQuotaFailuresOnly(int statusCode, bool expected) =>
+        GeminiAssistantChatModel.IsRateLimited(new ClientError("error", statusCode, "STATUS", null!)).Should().Be(expected);
+
+    [TestMethod]
+    public void IsRateLimited_ReadsHttpRequestExceptionStatusCode() =>
+        GeminiAssistantChatModel.IsRateLimited(new HttpRequestException("error", null, HttpStatusCode.TooManyRequests)).Should().BeTrue();
+
+    [TestMethod]
+    [DataRow("You exceeded your current quota (429)")]
+    [DataRow("503 UNAVAILABLE: high demand")]
+    public void Classification_IgnoresStatusTextInMessages(string message)
+    {
+        var exception = new InvalidOperationException(message);
+
+        GeminiAssistantChatModel.IsRateLimited(exception).Should().BeFalse();
+        GeminiAssistantChatModel.IsOverloaded(exception).Should().BeFalse();
+    }
 
     [TestMethod]
     public void AssistantOptions_DefaultToTwoRetriesWithAnEightSecondPause()
@@ -52,13 +68,18 @@ public sealed class GeminiAssistantChatModelTests
     }
 
     [TestMethod]
-    [DataRow("This model is currently experiencing high demand. Spikes in demand are usually temporary.", true)]
-    [DataRow("The model is overloaded. Please try again later.", true)]
-    [DataRow("503 UNAVAILABLE", true)]
-    [DataRow("API key not valid", false)]
-    [DataRow("Invalid argument", false)]
-    public void IsOverloaded_RecognisesTemporaryServerFailuresOnly(string message, bool expected) =>
-        GeminiAssistantChatModel.IsOverloaded(new InvalidOperationException(message)).Should().Be(expected);
+    [DataRow(500, true)]
+    [DataRow(503, true)]
+    [DataRow(504, true)]
+    [DataRow(501, false)]
+    public void IsOverloaded_RecognisesTemporaryServerFailuresOnly(int statusCode, bool expected) =>
+        GeminiAssistantChatModel.IsOverloaded(new ServerError("error", statusCode, "STATUS", null!)).Should().Be(expected);
+
+    [TestMethod]
+    [DataRow(400)]
+    [DataRow(429)]
+    public void IsOverloaded_IgnoresClientErrors(int statusCode) =>
+        GeminiAssistantChatModel.IsOverloaded(new ClientError("error", statusCode, "STATUS", null!)).Should().BeFalse();
 
     [TestMethod]
     public void AssistantOptions_RetryOverloadAfterTwoSeconds() =>

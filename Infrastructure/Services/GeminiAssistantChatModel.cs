@@ -122,15 +122,25 @@ public sealed class GeminiAssistantChatModel(
     };
 
     internal static bool IsOverloaded(Exception exception) =>
-        exception.Message.Contains("high demand", StringComparison.OrdinalIgnoreCase)
-        || exception.Message.Contains("overloaded", StringComparison.OrdinalIgnoreCase)
-        || exception.Message.Contains("UNAVAILABLE", StringComparison.Ordinal)
-        || exception.Message.Contains("503", StringComparison.Ordinal);
+        StatusCodeOf(exception) is StatusCodes.InternalError or StatusCodes.Unavailable or StatusCodes.DeadlineExceeded;
 
     internal static bool IsRateLimited(Exception exception) =>
-        exception.Message.Contains("quota", StringComparison.OrdinalIgnoreCase)
-        || exception.Message.Contains("429", StringComparison.Ordinal)
-        || exception.Message.Contains("RESOURCE_EXHAUSTED", StringComparison.OrdinalIgnoreCase);
+        StatusCodeOf(exception) == StatusCodes.TooManyRequests;
+
+    private static int? StatusCodeOf(Exception exception) => exception switch
+    {
+        ApiException apiException => apiException.StatusCode,
+        HttpRequestException { StatusCode: { } statusCode } => (int)statusCode,
+        _ => null
+    };
+
+    private static class StatusCodes
+    {
+        public const int TooManyRequests = 429;
+        public const int InternalError = 500;
+        public const int Unavailable = 503;
+        public const int DeadlineExceeded = 504;
+    }
 
     private static AITool ToDeclaration(AssistantToolDeclaration tool) =>
         AIFunctionFactory.CreateDeclaration(tool.Name, tool.Description, tool.ParametersSchema);
