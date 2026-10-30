@@ -129,7 +129,8 @@ public sealed class DesignGenerationService(
         foreach (var product in productList)
         {
             if (request.DesignTemplateId.HasValue) product.DesignTemplateId = request.DesignTemplateId;
-            if (overrideStyleName is not null) product.StylePreset = overrideStyleName;
+            // "No style" is a choice too: the style an earlier job gave the product must not stay on it.
+            product.StylePreset = overrideStyleName;
             product.ProcessingStatus = BatchJobProductStatuses.Queued;
             product.UpdatedAt = now;
             await products.UpdateAsync(product, cancellationToken: cancellationToken);
@@ -298,6 +299,19 @@ public sealed class DesignGenerationService(
         if (request.DesignText?.Trim().Length > ProductRules.MaximumDesignTextLength)
             return Result.Failure<StartGenerationResponseDto>(Error.Validation(
                 $"Keep the design text under {ProductRules.MaximumDesignTextLength} characters."));
+        if (request.VariationCount is < GenerationConfigKeys.MinVariationCount or > GenerationConfigKeys.MaxVariationCount)
+            return Result.Failure<StartGenerationResponseDto>(Error.Validation(
+                $"Generate between {GenerationConfigKeys.MinVariationCount} and {GenerationConfigKeys.MaxVariationCount} designs."));
+        if (request.Instructions?.Trim().Length > PromptRules.MaximumInstructionsLength)
+            return Result.Failure<StartGenerationResponseDto>(Error.Validation(
+                $"Keep the instructions under {PromptRules.MaximumInstructionsLength} characters."));
+        Guid? stylePresetId = null;
+        if (!string.IsNullOrWhiteSpace(request.StyleArtPresetId))
+        {
+            if (!Guid.TryParse(request.StyleArtPresetId, out var parsed))
+                return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.StyleNotFound());
+            stylePresetId = parsed;
+        }
 
         var job = await batchJobs.Query()
             .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
@@ -337,10 +351,34 @@ public sealed class DesignGenerationService(
         // BR50: generating again consumes quota again.
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
         if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
-        var (variationCount, _) = ReadConfig(job.Config);
+        // The Seller may ask for a different number of designs than the job first made.
+        var variationCount = request.VariationCount ?? ReadConfig(job.Config).VariationCount;
         var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
         if (variationCount > subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0))
             return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
+
+        // A template or art style chosen here is the product's from now on, as the workflow's choice is when a job starts.
+        if (request.DesignTemplateId is Guid templateId)
+        {
+            if (!await designTemplates.Query().AnyAsync(t => t.Id == templateId, cancellationToken))
+                return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.TemplateNotFound());
+            product.DesignTemplateId = templateId;
+        }
+        if (request.StyleArtPresetId is not null)
+        {
+            string? styleName = null;
+            if (stylePresetId is Guid presetId)
+            {
+                styleName = await styleArtPresets.Query().Where(s => s.Id == presetId).Select(s => s.Name).SingleOrDefaultAsync(cancellationToken);
+                if (styleName is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.StyleNotFound());
+            }
+            product.StylePreset = styleName;
+            // An art style typed in the prompt editor would take the place of the one just chosen.
+            row.CustomArtStyle = null;
+        }
+
+        // This product's instructions in this job, as the prompt editor sets them: empty means none, rather than the job's.
+        if (request.Instructions is not null) row.CustomInstructions = request.Instructions.Trim();
 
         // The Seller's changes are the product's, so a later job makes its designs from them too.
         if (request.CustomPrompt is not null) product.CustomPrompt = PromptComposer.NullIfEmpty(request.CustomPrompt);
@@ -376,6 +414,7 @@ public sealed class DesignGenerationService(
         job.Status = BatchJobStatuses.Queued;
         job.CompletedAt = null;
         job.UpdatedAt = now;
+        job.Config = WriteRegenerate(job.Config, row.Id, variationCount);
         await batchJobs.UpdateAsync(job, cancellationToken: cancellationToken);
 
         var batch = await batches.Query().SingleOrDefaultAsync(b => b.Id == job.BatchId, cancellationToken);
@@ -422,6 +461,7 @@ public sealed class DesignGenerationService(
         // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
         var reviewedStatus = requireApproval == false ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
         var (variationCount, aspectRatio) = ReadConfig(job.Config);
+        var regenerate = ReadRegenerate(job.Config);
 
         // The same job can be waiting in the queue of more than one application instance. The claim is made
         // in the database, so only one of them goes on; it also marks the job as running.
@@ -488,8 +528,10 @@ public sealed class DesignGenerationService(
                 var product = row.ProductId is Guid productId ? productById.GetValueOrDefault(productId) : null;
                 var prompt = promptByRow.GetValueOrDefault(row.Id);
                 var template = prompt?.DesignTemplateId is Guid templateId ? templateById.GetValueOrDefault(templateId) : null;
+                // A product generated again makes as many designs as the Seller asked for then.
+                var designs = regenerate is { } again && again.RowId == row.Id ? again.VariationCount : variationCount;
                 await ProcessRowAsync(run, row, prompt, product, template, thinRows.Contains(row.Id), historyByRow.GetValueOrDefault(row.Id),
-                    imageSlots, token);
+                    designs, imageSlots, token);
             });
 
         // A cancel that arrived during the last product is consumed too, so a later retry is not stopped by it.
@@ -577,7 +619,9 @@ public sealed class DesignGenerationService(
             // The Seller's own prompt is all there is to design from: it is thin when it is only a few words.
             if (HasCustomPrompt(product))
             {
-                if (ArtworkPromptRules.IsThinCustomPrompt(product.CustomPrompt)) thin.Add(row.Id);
+                // Instructions added to it describe the design as well.
+                var instructions = row.CustomInstructions ?? jobInstructions ?? string.Empty;
+                if (ArtworkPromptRules.IsThinCustomPrompt($"{product.CustomPrompt} {instructions}")) thin.Add(row.Id);
                 continue;
             }
             var defaults = await PromptDefaultsResolver.ResolveAsync(product, designTemplates, styleArtPresets, cancellationToken);
@@ -631,7 +675,7 @@ public sealed class DesignGenerationService(
 
     // Makes every variation of one product, side by side, then records how the product came out.
     private async Task ProcessRowAsync(JobRun run, BatchJobProduct row, AiPrompt? prompt, Product? product, DesignTemplate? template,
-        bool enrich, RowHistory? history, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+        bool enrich, RowHistory? history, int variationCount, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
     {
         var job = run.Job;
         if (prompt is null)
@@ -689,29 +733,38 @@ public sealed class DesignGenerationService(
             }, cancellationToken);
         }
 
-        var saved = await Task.WhenAll(Enumerable.Range(0, run.VariationCount).Select(variation =>
-            GenerateVariationAsync(run, row, prompt, requestPrompt, enrich, transparent, cutOut, variation, history?.LastVariation ?? 0,
-                imageSlots, cancellationToken)));
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, variationCount).Select(variation =>
+            GenerateVariationAsync(run, row, prompt, requestPrompt, enrich, transparent, cutOut, variation, variationCount,
+                history?.LastVariation ?? 0, imageSlots, cancellationToken)));
 
-        await WithDbAsync(() => CompleteRowAsync(run, row, product, saved.Count(ok => ok), history, cancellationToken), cancellationToken);
+        await WithDbAsync(() => CompleteRowAsync(run, row, product, outcomes, history, cancellationToken), cancellationToken);
+    }
+
+    // How one requested design came out: saved, or not made, with the provider's reason when it blocked it (a safety or
+    // copyright check), which the Seller is shown.
+    private sealed record VariationOutcome(bool Saved, string? BlockedReason = null)
+    {
+        public static readonly VariationOutcome Made = new(true);
+        public static readonly VariationOutcome Lost = new(false);
     }
 
     /// <summary>
-    /// Makes one image once a slot is free and saves it: true when it was saved. Only the provider call, the
+    /// Makes one image once a slot is free and saves it, and says how it went. Only the provider call, the
     /// cut-out and the upload run alongside other images; everything written goes through WithDbAsync.
     /// </summary>
+    /// <param name="variationCount">How many designs the product is getting this time.</param>
     /// <param name="lastVariation">The highest variation number the product already has in the job; the new one follows it.</param>
-    private async Task<bool> GenerateVariationAsync(JobRun run, BatchJobProduct row, AiPrompt prompt, string requestPrompt,
-        bool enrich, bool transparent, bool cutOut, int variation, int lastVariation, SemaphoreSlim imageSlots, CancellationToken cancellationToken)
+    private async Task<VariationOutcome> GenerateVariationAsync(JobRun run, BatchJobProduct row, AiPrompt prompt, string requestPrompt,
+        bool enrich, bool transparent, bool cutOut, int variation, int variationCount, int lastVariation, SemaphoreSlim imageSlots,
+        CancellationToken cancellationToken)
     {
         var job = run.Job;
-        var variationCount = run.VariationCount;
 
         await imageSlots.WaitAsync(cancellationToken);
         try
         {
             // The provider already turned the account away: asking again would only be refused again.
-            if (run.Stop.Reason is not null) return false;
+            if (run.Stop.Reason is not null) return VariationOutcome.Lost;
 
             // Saved with the log entry: the job's update time tells other workers it is still being worked on.
             await WithDbAsync(async () =>
@@ -757,7 +810,9 @@ public sealed class DesignGenerationService(
                             $"{ImageGenerationProviders.Label(run.ImageProvider.Provider)} refused the account, so no further image is requested: "
                             + run.Stop.Reason, cancellationToken);
                 }, cancellationToken);
-                return false;
+                return result.IsBlocked
+                    ? new VariationOutcome(false, result.ErrorMessage ?? "The provider blocked the image.")
+                    : VariationOutcome.Lost;
             }
 
             var cutOutStarted = timeProvider.GetTimestamp();
@@ -788,7 +843,7 @@ public sealed class DesignGenerationService(
                 {
                     await WithDbAsync(() => LogAsync(job.Id, row.Id, "error", "upload_failed",
                         ex is OperationCanceledException ? "Image upload timed out." : ex.Message, cancellationToken), cancellationToken);
-                    return false;
+                    return VariationOutcome.Lost;
                 }
             }
             var uploadTime = timeProvider.GetElapsedTime(uploadStarted);
@@ -843,7 +898,7 @@ public sealed class DesignGenerationService(
                     TimeSpan.FromSeconds((double)elapsedSeconds), result, cutOutTime, uploadTime, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }, cancellationToken);
-            return true;
+            return VariationOutcome.Made;
         }
         finally
         {
@@ -852,10 +907,11 @@ public sealed class DesignGenerationService(
     }
 
     // Records how one product came out once all its variations are done. Called through WithDbAsync.
-    private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, int successCount, RowHistory? history,
-        CancellationToken cancellationToken)
+    private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, IReadOnlyList<VariationOutcome> outcomes,
+        RowHistory? history, CancellationToken cancellationToken)
     {
         var job = run.Job;
+        var successCount = outcomes.Count(outcome => outcome.Saved);
         // A product generated again keeps its earlier designs, so it only fails when it has none at all; it counts as
         // approved while one of its designs is (SetImageApprovalAsync's rule), the new ones being approved automatically
         // or left for review.
@@ -865,8 +921,7 @@ public sealed class DesignGenerationService(
             : hasApproved ? BatchJobProductStatuses.Approved
             : BatchJobProductStatuses.ImageReviewRequired;
         row.Status = status;
-        // A product left without images because the provider refused the account says why, rather than the generic reason.
-        row.ErrorMessage = hasDesigns ? null : run.Stop.Reason ?? "All requested variations failed or were blocked.";
+        row.ErrorMessage = RowMessage(outcomes, run.Stop.Reason, keptEarlier: history is not null);
         row.CompletedAt = timeProvider.GetUtcNow().UtcDateTime;
         row.UpdatedAt = row.CompletedAt;
         await batchJobProducts.UpdateAsync(row, cancellationToken: cancellationToken);
@@ -895,6 +950,39 @@ public sealed class DesignGenerationService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// What the Seller is told about a product once its designs are done: why it has none, or how many the provider
+    /// blocked (a safety or copyright check, such as a real brand or character), so they can change the prompt. Null when
+    /// every design was made, or when the only ones lost simply failed and the product kept earlier designs.
+    /// </summary>
+    private static string? RowMessage(IReadOnlyList<VariationOutcome> outcomes, string? stopReason, bool keptEarlier)
+    {
+        var requested = outcomes.Count;
+        var saved = outcomes.Count(outcome => outcome.Saved);
+        var blocked = outcomes.Where(outcome => outcome.BlockedReason is not null).ToList();
+        var reason = blocked.Count > 0 ? Sentence(blocked[0].BlockedReason!) : null;
+
+        if (saved == 0 && !keptEarlier)
+        {
+            // A product left without images because the provider refused the account says why, rather than the generic reason.
+            if (stopReason is not null) return stopReason;
+            if (reason is null) return "All requested variations failed or were blocked.";
+            return blocked.Count == requested
+                ? $"{reason} Change the prompt and generate it again."
+                : $"No design could be made: {blocked.Count} of {requested} were blocked. {reason}";
+        }
+        if (reason is null) return null;
+
+        var designs = $"{blocked.Count} of {requested} {(keptEarlier ? "new " : string.Empty)}design{(requested == 1 ? string.Empty : "s")}";
+        return $"{designs} {(blocked.Count == 1 ? "was" : "were")} blocked. {reason}";
+    }
+
+    private static string Sentence(string text)
+    {
+        var trimmed = text.Trim();
+        return trimmed.EndsWith('.') || trimmed.EndsWith('!') || trimmed.EndsWith('?') ? trimmed : $"{trimmed}.";
+    }
+
     public async Task<Result<BatchJobDetailDto>> GetJobAsync(Guid batchJobId, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
@@ -912,7 +1000,7 @@ public sealed class DesignGenerationService(
             .ToListAsync(cancellationToken);
         var productIds = rows.Where(r => r.ProductId.HasValue).Select(r => r.ProductId!.Value).ToList();
         var productInfo = await products.Query().Where(p => productIds.Contains(p.Id))
-            .Select(p => new { p.Id, p.Name, p.ProductType, p.DesiredDesignText, p.CustomPrompt })
+            .Select(p => new { p.Id, p.Name, p.ProductType, p.DesiredDesignText, p.CustomPrompt, p.DesignTemplateId })
             .ToDictionaryAsync(p => p.Id, cancellationToken);
         var images = await designImages.Query()
             .Where(i => i.BatchJobId == job.Id && i.DeletedAt == null)
@@ -932,7 +1020,7 @@ public sealed class DesignGenerationService(
                 r.Id, r.ProductId, info?.Name ?? string.Empty, info?.ProductType ?? string.Empty,
                 r.SequenceOrder, r.Status, r.ErrorMessage,
                 imagesByRow.TryGetValue(r.Id, out var list) ? list : [],
-                info?.DesiredDesignText, info?.CustomPrompt);
+                info?.DesiredDesignText, info?.CustomPrompt, info?.DesignTemplateId, r.CustomInstructions);
         }).ToList();
 
         var counters = new BatchJobCountersDto(
@@ -1389,6 +1477,41 @@ public sealed class DesignGenerationService(
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
         {
             return ImageGenerationProviders.Default;
+        }
+    }
+
+    // The one product being generated again and how many designs it gets: a product is only regenerated once its job
+    // has finished, so there is never more than one at a time.
+    private sealed record RegenerateRequest(Guid RowId, int VariationCount);
+
+    private static string WriteRegenerate(string config, Guid rowId, int variationCount)
+    {
+        JsonObject root;
+        try { root = JsonNode.Parse(config)?.AsObject() ?? new JsonObject(); }
+        catch (System.Text.Json.JsonException) { root = new JsonObject(); }
+
+        root[GenerationConfigKeys.Regenerate] = new JsonObject
+        {
+            [GenerationConfigKeys.RegenerateRowId] = rowId.ToString(),
+            [GenerationConfigKeys.VariationCount] = variationCount
+        };
+        return root.ToJsonString();
+    }
+
+    private static RegenerateRequest? ReadRegenerate(string config)
+    {
+        try
+        {
+            var node = JsonNode.Parse(config)?[GenerationConfigKeys.Regenerate];
+            return Guid.TryParse((string?)node?[GenerationConfigKeys.RegenerateRowId], out var rowId)
+                && (int?)node?[GenerationConfigKeys.VariationCount] is int count
+                && count is >= GenerationConfigKeys.MinVariationCount and <= GenerationConfigKeys.MaxVariationCount
+                ? new RegenerateRequest(rowId, count)
+                : null;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
         }
     }
 

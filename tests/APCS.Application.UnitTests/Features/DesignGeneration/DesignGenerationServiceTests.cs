@@ -310,6 +310,23 @@ public sealed class DesignGenerationServiceTests
     }
 
     [TestMethod]
+    public async Task StartAsync_NoStyleChosen_RemovesTheStyleAnEarlierJobGaveTheProduct()
+    {
+        Product? started = null;
+        var fixture = CreateFixture(editProduct: product =>
+        {
+            product.StylePreset = "Minimalist";
+            started = product;
+        });
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        started!.StylePreset.Should().BeNull();
+        fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt.Should().NotContain("Minimalist");
+    }
+
+    [TestMethod]
     public async Task StartAsync_ForAProductWithoutPrompts_StartsAtVersionOne()
     {
         var fixture = CreateFixture();

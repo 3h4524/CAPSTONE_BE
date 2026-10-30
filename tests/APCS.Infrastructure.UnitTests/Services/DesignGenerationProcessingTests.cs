@@ -768,6 +768,284 @@ public sealed class DesignGenerationProcessingTests
         (await db.Products.SingleAsync()).CustomPrompt.Should().BeNull();
     }
 
+    [TestMethod]
+    public async Task RegenerateProductAsync_AskedForFewerDesigns_MakesThatMany_AndTheJobKeepsItsOwnCount()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+
+        (await CreateService(db).RegenerateProductAsync(jobId, rowId, new RegenerateProductRequestDto(VariationCount: 1)))
+            .IsSuccess.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.OrderBy(image => image.VariationIndex).Select(image => image.VariationIndex).ToListAsync())
+            .Should().Equal(1, 2, 3);
+        (await db.UsageStatistics.SingleAsync()).ImagesGenerated.Should().Be(3);
+        var detail = await CreateService(db).GetJobAsync(jobId);
+        detail.Value.VariationCount.Should().Be(2, "the job still started with two designs per product");
+    }
+
+    [TestMethod]
+    public async Task RegenerateProductAsync_TemplateStyleAndInstructionsChosen_MakeTheNewPrompt()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var template = new DesignTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Badge", Type = "system", ArtStyle = "vintage_badge", ExamplePrompts = "[]",
+            BasePrompt = "A {style} badge of a mountain.", IsSystemTemplate = true, IsActive = true
+        };
+        var preset = new StyleArtPreset
+        {
+            Id = Guid.NewGuid(), Name = "Watercolor", Description = "d", StyleModifiers = "soft washes", Recommendations = "[]",
+            IsSystemTemplate = true, IsActive = true, CreatedAt = UtcNow.UtcDateTime, UpdatedAt = UtcNow.UtcDateTime
+        };
+        db.DesignTemplates.Add(template);
+        db.StyleArtPresets.Add(preset);
+        var row = await db.BatchJobProducts.SingleAsync();
+        row.CustomArtStyle = "pixel art";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var result = await CreateService(db).RegenerateProductAsync(jobId, row.Id, new RegenerateProductRequestDto(
+            DesignTemplateId: template.Id, StyleArtPresetId: preset.Id.ToString(), Instructions: "warm sunset colors, add wildflowers"));
+
+        result.IsSuccess.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var product = await db.Products.SingleAsync();
+        product.DesignTemplateId.Should().Be(template.Id);
+        product.StylePreset.Should().Be("Watercolor");
+        var saved = await db.BatchJobProducts.SingleAsync();
+        saved.CustomArtStyle.Should().BeNull("the chosen art style replaces the one typed in the prompt editor");
+        saved.CustomInstructions.Should().Be("warm sunset colors, add wildflowers");
+        var prompt = await db.AiPrompts.OrderByDescending(p => p.VersionNumber).FirstAsync();
+        prompt.DesignTemplateId.Should().Be(template.Id);
+        prompt.GeneratedPrompt.Should().Contain("Watercolor").And.Contain("warm sunset colors, add wildflowers")
+            .And.NotContain("pixel art");
+    }
+
+    [TestMethod]
+    public async Task RegenerateProductAsync_StyleRemovedAndInstructionsEmptied_UsesTheTemplatesStyleAndNoInstructions()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var job = await db.BatchJobs.SingleAsync();
+        job.Config = "{\"variationCount\":1,\"aspectRatio\":\"1:1\",\"instructions\":\"keep it retro\"}";
+        var product = await db.Products.SingleAsync();
+        product.StylePreset = "Watercolor";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+
+        (await CreateService(db).RegenerateProductAsync(jobId, rowId, new RegenerateProductRequestDto(StyleArtPresetId: "", Instructions: "")))
+            .IsSuccess.Should().BeTrue();
+
+        db.ChangeTracker.Clear();
+        (await db.Products.SingleAsync()).StylePreset.Should().BeNull();
+        (await db.AiPrompts.OrderByDescending(p => p.VersionNumber).FirstAsync()).GeneratedPrompt.Should().NotContain("keep it retro");
+    }
+
+    [TestMethod]
+    public async Task RegenerateProductAsync_UnknownTemplate_IsRefused()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+
+        var result = await CreateService(db).RegenerateProductAsync(jobId, rowId, new RegenerateProductRequestDto(DesignTemplateId: Guid.NewGuid()));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("DesignGeneration.TemplateNotFound");
+        db.ChangeTracker.Clear();
+        (await db.AiPrompts.CountAsync()).Should().Be(1);
+    }
+
+    [TestMethod]
+    [DataRow("instructions")]
+    [DataRow("style")]
+    public async Task RegenerateProductAsync_InvalidChange_IsRefusedBeforeAnythingChanges(string field)
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+        var request = field switch
+        {
+            "instructions" => new RegenerateProductRequestDto(Instructions: new string('i', 1001)),
+            _ => new RegenerateProductRequestDto(StyleArtPresetId: "not-an-id")
+        };
+
+        var result = await CreateService(db).RegenerateProductAsync(jobId, rowId, request);
+
+        result.IsSuccess.Should().BeFalse();
+        db.ChangeTracker.Clear();
+        (await db.AiPrompts.CountAsync()).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task RegenerateProductAsync_UnknownStyle_IsRefused()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+
+        var result = await CreateService(db).RegenerateProductAsync(jobId, rowId,
+            new RegenerateProductRequestDto(StyleArtPresetId: Guid.NewGuid().ToString()));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Code.Should().Be("DesignGeneration.StyleNotFound");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_RegenerateNoteThatCannotBeRead_MakesAsManyDesignsAsTheJob()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        var job = await db.BatchJobs.SingleAsync();
+        job.Config = "{\"variationCount\":2,\"aspectRatio\":\"1:1\",\"regenerate\":{\"rowId\":\"nope\",\"variationCount\":1}}";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_IdeogramShortOwnPromptWithInstructions_IsNotFilledOutByIdeogram()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        await UseCustomPromptAsync(db, "A fox.");
+        var row = await db.BatchJobProducts.SingleAsync();
+        row.CustomInstructions = "curled up asleep under a snowy pine tree at dusk";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), false,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(5)]
+    public async Task RegenerateProductAsync_DesignCountOutOfRange_IsRefused(int variationCount)
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+
+        var result = await CreateService(db).RegenerateProductAsync(jobId, rowId, new RegenerateProductRequestDto(VariationCount: variationCount));
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+    }
+
+    private const string CopyrightBlock =
+        "Generation blocked by Ideogram: the image failed its safety or copyright check (it may show a real brand or character).";
+
+    private static Mock<IImageGenerationProvider> ProviderReturning(params ImageGenerationResult[] results)
+    {
+        var provider = new Mock<IImageGenerationProvider>();
+        var sequence = provider.SetupSequence(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()));
+        foreach (var result in results) sequence = sequence.ReturnsAsync(result);
+        return provider;
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_EveryDesignBlocked_TellsTheSellerWhyAndToChangeThePrompt()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        var provider = ProviderReturning(
+            ImageGenerationResult.Blocked(CopyrightBlock, "ideogram-4"), ImageGenerationResult.Blocked(CopyrightBlock, "ideogram-4"));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var row = await db.BatchJobProducts.SingleAsync();
+        row.Status.Should().Be(BatchJobProductStatuses.Failed);
+        row.ErrorMessage.Should().Be($"{CopyrightBlock} Change the prompt and generate it again.");
+        var detail = await CreateService(db).GetJobAsync(jobId);
+        detail.Value.Products.Single().ErrorMessage.Should().Contain("real brand or character");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_OneDesignBlocked_KeepsTheOther_AndSaysOneWasBlocked()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        var provider = ProviderReturning(
+            ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m), ImageGenerationResult.Blocked(CopyrightBlock, "ideogram-4"));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var row = await db.BatchJobProducts.SingleAsync();
+        row.Status.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
+        row.ErrorMessage.Should().Be($"1 of 2 designs was blocked. {CopyrightBlock}");
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_OneDesignBlockedAndTheOtherFailed_SaysNoneCouldBeMade()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        var provider = ProviderReturning(
+            ImageGenerationResult.Failed("The provider is busy.", "ideogram-4"), ImageGenerationResult.Blocked("Prompt blocked by Ideogram: unsafe", "ideogram-4"));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.BatchJobProducts.SingleAsync()).ErrorMessage.Should()
+            .Be("No design could be made: 1 of 2 were blocked. Prompt blocked by Ideogram: unsafe.");
+    }
+
+    [TestMethod]
+    public async Task RegenerateProductAsync_NewDesignsBlocked_KeepsTheEarlierOnes_AndSaysTheNewOnesWereBlocked()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 1);
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var rowId = (await db.BatchJobProducts.AsNoTracking().SingleAsync()).Id;
+        (await CreateService(db).RegenerateProductAsync(jobId, rowId, new RegenerateProductRequestDto())).IsSuccess.Should().BeTrue();
+        db.ChangeTracker.Clear();
+
+        await CreateService(db, provider: ProviderReturning(ImageGenerationResult.Blocked(CopyrightBlock, "ideogram-4")))
+            .ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var row = await db.BatchJobProducts.SingleAsync();
+        row.Status.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
+        row.ErrorMessage.Should().Be($"1 of 1 new design was blocked. {CopyrightBlock}");
+    }
+
     private static async Task UseCustomPromptAsync(AppDbContext db, string customPrompt, string? designText = null)
     {
         var product = await db.Products.SingleAsync();
