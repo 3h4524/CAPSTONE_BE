@@ -10,6 +10,10 @@ public interface IListingContentService
         CancellationToken cancellationToken = default,
         ListingSeoFeedbackDto? seoFeedback = null);
 
+    Task<Result<ListingRetrievalEvaluationResponse>> EvaluateRetrievalForAdminAsync(
+        Guid productId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<ListingContentResponseDto>> GetAsync(
         Guid productId,
         CancellationToken cancellationToken = default);

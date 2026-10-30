@@ -185,6 +185,7 @@ public static class DependencyInjection
     /// </summary>
     private static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddMemoryCache();
         services.AddHttpContextAccessor();
         var keyProtection = services.AddDataProtection().SetApplicationName("APCS");
         if (configuration["ApiKeys:KeyRingPath"] is { Length: > 0 } keyRingPath)

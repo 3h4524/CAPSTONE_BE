@@ -25,6 +25,35 @@ public sealed class RagController(IRagService service) : ControllerBase
         return Ok(results);
     }
 
+    [HttpPost("admin/search")]
+    [Authorize(Roles = AuthConstants.AdminRole)]
+    public async Task<IActionResult> SearchWithDiagnostics(
+        RagSearchRequest request,
+        CancellationToken cancellationToken)
+        => Ok(await service.SearchWithDiagnosticsAsync(request, cancellationToken));
+
+    [HttpPost("admin/evaluation")]
+    [Authorize(Roles = AuthConstants.AdminRole)]
+    public async Task<IActionResult> Evaluate(
+        RagEvaluationRequest request,
+        CancellationToken cancellationToken)
+        => Ok(await service.EvaluateAsync(request, cancellationToken));
+
+    [HttpGet("admin/health")]
+    [Authorize(Roles = AuthConstants.AdminRole)]
+    public async Task<IActionResult> GetCorpusHealth(
+        [FromQuery] string? contentType,
+        [FromQuery] int staleDays = 30,
+        CancellationToken cancellationToken = default)
+        => Ok(await service.GetCorpusHealthAsync(contentType, staleDays, cancellationToken));
+
+    [HttpPost("admin/reingest")]
+    [Authorize(Roles = AuthConstants.AdminRole)]
+    public async Task<IActionResult> Reingest(
+        RagReingestRequest request,
+        CancellationToken cancellationToken)
+        => Ok(await service.ReingestAsync(request, cancellationToken));
+
     [HttpGet("admin/documents")]
     [Authorize(Roles = AuthConstants.AdminRole)]
     public async Task<IActionResult> GetAdminDocuments(
