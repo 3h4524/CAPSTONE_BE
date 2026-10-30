@@ -15,7 +15,7 @@ public interface IVideoPlanningService
 }
 public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<VideoTemplate> templates, GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
-    VideoStoryboardPlanner planner) : IVideoPlanningService
+    VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -57,7 +57,10 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             ? approved.Where(x => requestedIds.Contains(x.Id)).Concat(approved.Take(8)).DistinctBy(x => x.Id).ToList()
             : approved.Where(x => requestedIds.Contains(x.Id)).ToList();
         selected.AddRange(owned.Where(x => requestedIds.Contains(x.Id) && x.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && x.Role == "VideoScene"));
-        return planner.Plan(product, selected.DistinctBy(x => x.Id).ToArray(), request.Config, aiTemplates);
+        var experienceMap = experiences is null
+            ? null
+            : await experiences.RetrieveForScenesAsync(user.UserId!.Value, product, request.Config, ct);
+        return planner.Plan(product, selected.DistinctBy(x => x.Id).ToArray(), request.Config, aiTemplates, experienceMap);
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)

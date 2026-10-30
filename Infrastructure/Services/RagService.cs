@@ -238,6 +238,12 @@ public sealed class RagService(
             query = query.Where(x => x.Chunk.Document.Language == request.Language);
         if (!string.IsNullOrWhiteSpace(request.ContentType))
             query = query.Where(x => x.Chunk.Document.ContentType == NormalizeContentType(request.ContentType));
+        if (request.VideoExperience is not null)
+        {
+            if (!string.Equals(request.ContentType, RagContentTypes.Video, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("A video experience scope requires video content.", nameof(request));
+            query = ApplyVideoExperienceScope(query, request.VideoExperience);
+        }
 
         var vectorRows = await query
             .OrderBy(x => x.Embedding.CosineDistance(queryVector))
@@ -474,6 +480,82 @@ public sealed class RagService(
         return true;
     }
 
+    public async Task<RagVideoExperienceDto?> GetVideoExperienceAsync(Guid documentId, Guid ownerId,
+        CancellationToken cancellationToken = default)
+    {
+        var document = await dbContext.RagDocuments.AsNoTracking().SingleOrDefaultAsync(x => x.Id == documentId
+            && x.ContentType == RagContentTypes.Video && x.SourceType == "video-experience", cancellationToken);
+        if (document is null || !MetadataMatchesOwner(document.IngestionMetadata, ownerId))
+            return null;
+        using var metadata = ParseMetadata(document.IngestionMetadata);
+        var status = ReadString(metadata, "experienceStatus") ?? RagExperienceStatuses.Candidate;
+        return new(document.Id, status, document.Version, document.IngestionContent);
+    }
+
+    public async Task<RagVideoExperienceDto?> SetVideoExperienceStatusAsync(Guid documentId, Guid ownerId, string status,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStatus = status?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedStatus) || !RagExperienceStatuses.IsSupported(normalizedStatus))
+            throw new ArgumentException("Unsupported video experience status.", nameof(status));
+
+        var document = await dbContext.RagDocuments.SingleOrDefaultAsync(x => x.Id == documentId
+            && x.ContentType == RagContentTypes.Video && x.SourceType == "video-experience", cancellationToken);
+        if (document is null || !MetadataMatchesOwner(document.IngestionMetadata, ownerId))
+            return null;
+        if (normalizedStatus == RagExperienceStatuses.Verified)
+        {
+            var chunkCount = await dbContext.RagChunks.CountAsync(x => x.DocumentId == documentId, cancellationToken);
+            if (document.Status != RagDocumentStatuses.Ready || chunkCount == 0)
+                return null;
+            var superseded = await dbContext.RagDocuments
+                .Where(x => x.SourceId == document.SourceId && x.Id != document.Id && x.Status == RagDocumentStatuses.Ready)
+                .ToListAsync(cancellationToken);
+            foreach (var previous in superseded)
+            {
+                previous.Status = RagDocumentStatuses.Superseded;
+                previous.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+
+        var metadata = DeserializeMutableMetadata(document.IngestionMetadata);
+        metadata["experienceStatus"] = normalizedStatus;
+        document.IngestionMetadata = JsonSerializer.Serialize(metadata);
+        document.UpdatedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return new(document.Id, normalizedStatus, document.Version, document.IngestionContent);
+    }
+
+    public async Task<RagVideoExperienceDto?> ReviseVideoExperienceAsync(Guid documentId, Guid ownerId, string content,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedContent = Normalize(content);
+        if (normalizedContent.Length is < 1 or > 1500)
+            throw new ArgumentException("Video experience content must contain 1-1500 characters.", nameof(content));
+        var document = await dbContext.RagDocuments.SingleOrDefaultAsync(x => x.Id == documentId
+            && x.ContentType == RagContentTypes.Video && x.SourceType == "video-experience", cancellationToken);
+        if (document is null || !MetadataMatchesOwner(document.IngestionMetadata, ownerId))
+            return null;
+
+        var revision = int.TryParse(document.Version, out var currentRevision) ? currentRevision + 1 : 2;
+        var oldMetadata = DeserializeMutableMetadata(document.IngestionMetadata);
+        oldMetadata["experienceStatus"] = RagExperienceStatuses.Retired;
+        oldMetadata["replacedByRevision"] = revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        document.IngestionMetadata = JsonSerializer.Serialize(oldMetadata);
+        document.UpdatedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        oldMetadata.Remove("replacedByRevision");
+        oldMetadata["experienceStatus"] = RagExperienceStatuses.Candidate;
+        oldMetadata["replacesLessonId"] = documentId.ToString();
+        var sourceId = $"{document.SourceId}:r{revision}";
+        var newDocumentId = await IngestAsync(new RagIngestRequest(document.Title, document.SourceType, document.SourceUrl,
+            revision.ToString(System.Globalization.CultureInfo.InvariantCulture), document.Language, normalizedContent,
+            oldMetadata, document.ContentType, sourceId), cancellationToken);
+        return new(newDocumentId, RagExperienceStatuses.Candidate,
+            revision.ToString(System.Globalization.CultureInfo.InvariantCulture), normalizedContent);
+    }
+
     private static IEnumerable<string> SplitIntoChunks(string content)
     {
         var start = 0;
@@ -559,6 +641,51 @@ public sealed class RagService(
         if (request.Niche is not null && !NicheMatches(ReadString(document, "niche"), request.Niche))
             return false;
         return request.MinimumViralScore is null || ReadDouble(document, "viralScore") >= request.MinimumViralScore.Value;
+    }
+
+    private static IQueryable<RagEmbedding> ApplyVideoExperienceScope(IQueryable<RagEmbedding> query,
+        VideoExperienceSearchRequest scope)
+    {
+        var ownerAndStatus = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["ownerId"] = scope.OwnerId.ToString(),
+            ["experienceStatus"] = RagExperienceStatuses.Verified
+        });
+        query = query.Where(x => EF.Functions.JsonContains(x.Chunk.Document.IngestionMetadata, ownerAndStatus));
+        if (!string.IsNullOrWhiteSpace(scope.TemplateCode))
+        {
+            var templateCode = JsonSerializer.Serialize(new Dictionary<string, string> { ["templateCode"] = scope.TemplateCode.Trim() });
+            query = query.Where(x => EF.Functions.JsonContains(x.Chunk.Document.IngestionMetadata, templateCode));
+        }
+        if (!string.IsNullOrWhiteSpace(scope.ModelKey))
+        {
+            var modelKey = JsonSerializer.Serialize(new Dictionary<string, string> { ["modelKey"] = scope.ModelKey.Trim() });
+            query = query.Where(x => EF.Functions.JsonContains(x.Chunk.Document.IngestionMetadata, modelKey));
+        }
+        if (!string.IsNullOrWhiteSpace(scope.PrimaryAction))
+        {
+            var primaryAction = JsonSerializer.Serialize(new Dictionary<string, string> { ["primaryAction"] = scope.PrimaryAction.Trim() });
+            query = query.Where(x => EF.Functions.JsonContains(x.Chunk.Document.IngestionMetadata, primaryAction));
+        }
+        return query;
+    }
+
+    private static bool MetadataMatchesOwner(string metadata, Guid ownerId)
+    {
+        using var document = ParseMetadata(metadata);
+        return string.Equals(ReadString(document, "ownerId"), ownerId.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, object?> DeserializeMutableMetadata(string metadata)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, object?>>(metadata) ?? new Dictionary<string, object?>();
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, object?>();
+        }
     }
 
     private static double FreshnessScore(string metadata, DateTime updatedAt, DateTimeOffset now, int halfLifeDays)

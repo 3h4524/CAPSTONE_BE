@@ -18,7 +18,7 @@ await writeFile(sourceImage, image);
 await processOutput(process.env.FFMPEG_PATH, ["-y", "-loop", "1", "-i", sourceImage, "-t", "8", "-vf", "scale=720:1280", "-r", "24", "-pix_fmt", "yuv420p", "-c:v", "libx264", clip], AbortSignal.timeout(120_000));
 const base = fixtureBoard("tshirt", image, 8);
 const scene = { ...base.scenes[0]!, sceneOrder: 0, durationFrames: 240, text: "", generationStrategy: "ai_shot" as const };
-const board = { ...base, mode: "ai_shot" as const, scenes: [scene], aiShots: [{ sceneOrder: 0, mockupId: scene.mockupId, sourceHash: scene.sourceHash, model: "veo-3.1-lite-generate-preview" as const, preset: "product_cinematic" as const, prompt: "Synthetic smoke test", durationSeconds: 8 as const, fingerprint: "b".repeat(64) }] };
+const board = { ...base, mode: "ai_shot" as const, scenes: [scene], aiShots: [{ sceneOrder: 0, mockupId: scene.mockupId, sourceHash: scene.sourceHash, model: "MiniMax-H3" as const, preset: "product_cinematic" as const, prompt: "Synthetic smoke test", durationSeconds: 8 as const, fingerprint: "b".repeat(64), providerKey: "minimax" as const, modelKey: "minimax_h3", resolution: "768P" as const, pricePerSecondUsd: 0.08 }] };
 const renderer = new RemotionVideoRenderer();
 const result = await renderer.render({ storyboard: board, sources: { [scene.mockupId]: pngSource(image, scene.sourceHash) }, clips: { 0: clip } }, directory, AbortSignal.timeout(240_000), () => {});
 process.stdout.write(`AI Shot smoke: ${JSON.stringify(result.qa)}\n`);

@@ -10,4 +10,10 @@ public interface IRagService
     Task<IReadOnlyList<RagAdminDocumentDto>> GetAdminDocumentsAsync(string? status, string? sourceId, CancellationToken cancellationToken = default);
     Task<RagAdminDocumentDetailDto?> GetAdminDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
     Task<bool> ActivateDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
+    Task<RagVideoExperienceDto?> SetVideoExperienceStatusAsync(Guid documentId, Guid ownerId, string status,
+        CancellationToken cancellationToken = default);
+    Task<RagVideoExperienceDto?> GetVideoExperienceAsync(Guid documentId, Guid ownerId,
+        CancellationToken cancellationToken = default);
+    Task<RagVideoExperienceDto?> ReviseVideoExperienceAsync(Guid documentId, Guid ownerId, string content,
+        CancellationToken cancellationToken = default);
 }

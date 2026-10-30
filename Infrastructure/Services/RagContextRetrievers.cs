@@ -18,8 +18,10 @@ public sealed class ImageContextRetriever(IRagService ragService) : IImageContex
 
 public sealed class VideoContextRetriever(IRagService ragService) : IVideoContextRetriever
 {
-    public Task<IReadOnlyList<RagSearchResultDto>> SearchAsync(string query, int topK = 5, CancellationToken cancellationToken = default) =>
-        ragService.SearchAsync(new RagSearchRequest(query, topK, ContentType: RagContentTypes.Video), cancellationToken);
+    public Task<IReadOnlyList<RagSearchResultDto>> SearchAsync(string query, VideoExperienceSearchRequest scope,
+        int topK = 5, CancellationToken cancellationToken = default) =>
+        ragService.SearchAsync(new RagSearchRequest(query, topK, ContentType: RagContentTypes.Video,
+            SourceType: "video-experience", VideoExperience: scope), cancellationToken);
 }
 
 public sealed class PolicyContextRetriever(IRagService ragService) : IPolicyContextRetriever

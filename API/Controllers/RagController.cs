@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.Rag.Common;
 using APCS.Application.Features.Rag.Dtos;
 using APCS.Common.Constants;
 using Microsoft.AspNetCore.Authorization;
@@ -14,6 +15,8 @@ public sealed class RagController(IRagService service) : ControllerBase
     [HttpPost("ingest")]
     public async Task<IActionResult> Ingest(RagIngestRequest request, CancellationToken cancellationToken)
     {
+        if (string.Equals(request.ContentType, RagContentTypes.Video, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { message = "Video experience lessons can only be created from a confirmed video review." });
         var documentId = await service.IngestAsync(request, cancellationToken);
         return Accepted(new { documentId, status = "queued" });
     }
@@ -21,6 +24,9 @@ public sealed class RagController(IRagService service) : ControllerBase
     [HttpPost("search")]
     public async Task<IActionResult> Search(RagSearchRequest request, CancellationToken cancellationToken)
     {
+        if (string.Equals(request.ContentType, RagContentTypes.Video, StringComparison.OrdinalIgnoreCase)
+            || request.VideoExperience is not null)
+            return BadRequest(new { message = "Video experience lessons are private to the video-review workflow." });
         var results = await service.SearchAsync(request, cancellationToken);
         return Ok(results);
     }

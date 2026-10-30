@@ -39,12 +39,20 @@ test("Standard storyboard enforces the two-to-four scene range independently of 
 });
 test("AI Shot storyboard accepts a mixed 6-second clip and a full 15-second overlap", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);
-  const ai = { sceneOrder: 0, mockupId: base.scenes[0]!.mockupId, sourceHash: base.scenes[0]!.sourceHash, model: "veo-3.1-lite-generate-preview", preset: "product_cinematic", prompt: "Smooth product motion", durationSeconds: 6, fingerprint: "b".repeat(64) };
+  const ai = { sceneOrder: 0, mockupId: base.scenes[0]!.mockupId, sourceHash: base.scenes[0]!.sourceHash, model: "MiniMax-H3", preset: "product_cinematic", prompt: "Smooth product motion", durationSeconds: 6, fingerprint: "b".repeat(64), providerKey: "minimax", modelKey: "minimax_h3", resolution: "768P", pricePerSecondUsd: 0.08 };
   const mixed = { ...base, mode: "ai_shot", aiShots: [ai], scenes: [{ ...base.scenes[0], generationStrategy: "ai_shot", durationFrames: 180 }, { ...base.scenes[1], durationFrames: 180 }] };
   assert.equal(storyboardSchema.safeParse(mixed).success, true);
+  const queuedWithTemplateCameraMotion = {
+    ...mixed,
+    scenes: mixed.scenes.map((scene, index) =>
+      index === 0 ? { ...scene, motion: "gentle_tracking" } : scene),
+  };
+  assert.equal(storyboardSchema.safeParse(queuedWithTemplateCameraMotion).success, true);
   const full = { ...base, mode: "ai_shot", durationSeconds: 15, transitionOverlapFrames: 30, aiShots: [{ ...ai, durationSeconds: 8 }, { ...ai, sceneOrder: 1, durationSeconds: 8 }], scenes: [{ ...base.scenes[0], generationStrategy: "ai_shot", durationFrames: 240 }, { ...base.scenes[1], generationStrategy: "ai_shot", durationFrames: 240 }] };
   assert.equal(storyboardSchema.safeParse(full).success, true);
   assert.equal(storyboardSchema.safeParse({ ...full, transitionOverlapFrames: 0 }).success, false);
+  const legacyVeo = { ...mixed, aiShots: [{ ...ai, model: "veo-3.1-lite-generate-preview", providerKey: undefined, modelKey: undefined, resolution: undefined, pricePerSecondUsd: undefined }] };
+  assert.equal(storyboardSchema.safeParse(legacyVeo).success, true);
 });
 test("transitioned storyboards overlay boundaries without changing output frames", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);

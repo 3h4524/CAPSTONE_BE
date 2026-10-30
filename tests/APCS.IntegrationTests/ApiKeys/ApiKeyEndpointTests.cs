@@ -66,6 +66,7 @@ public sealed class ApiKeyEndpointTests
             .Select(item => item.GetProperty("id").GetString())
             .ToList();
         ids.Should().Contain(["gemini", "replicate", "printify"]);
+        ids.Should().NotContain("minimax");
         ids.Should().OnlyHaveUniqueItems();
     }
 

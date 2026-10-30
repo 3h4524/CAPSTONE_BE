@@ -1,5 +1,6 @@
 using APCS.Api.Controllers;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.Rag.Common;
 using APCS.Application.Features.Rag.Dtos;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc;
@@ -11,20 +12,28 @@ namespace APCS.Api.UnitTests.Controllers;
 public sealed class RagControllerTests
 {
     [TestMethod]
-    public async Task IngestAndSearch_ForwardRequestsAndCancellation()
+    public async Task Ingest_VideoExperience_ReturnsBadRequestWithoutCallingGenericRagService()
     {
-        var documentId = Guid.NewGuid();
-        var ingest = new RagIngestRequest("Policy", "etsy", null, "1", "en", "Content");
-        var search = new RagSearchRequest("listing title", 3);
-        IReadOnlyList<RagSearchResultDto> results = [new(Guid.NewGuid(), documentId, "Policy", "listing", "Content", null, .9, new Dictionary<string, object?>())];
-        using var cancellation = new CancellationTokenSource();
         var service = new Mock<IRagService>(MockBehavior.Strict);
-        service.Setup(x => x.IngestAsync(ingest, cancellation.Token)).ReturnsAsync(documentId);
-        service.Setup(x => x.SearchAsync(search, cancellation.Token)).ReturnsAsync(results);
-        var controller = new RagController(service.Object);
+        var request = new RagIngestRequest("Lesson", "video-experience", null, "1", "en", "Content",
+            ContentType: RagContentTypes.Video);
 
-        (await controller.Ingest(ingest, cancellation.Token)).Should().BeOfType<AcceptedResult>().Which.Value.Should().NotBeNull();
-        (await controller.Search(search, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(results);
-        service.VerifyAll();
+        var action = await new RagController(service.Object).Ingest(request, CancellationToken.None);
+
+        action.Should().BeOfType<BadRequestObjectResult>();
+        service.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task Search_VideoExperienceScope_ReturnsBadRequestWithoutCallingGenericRagService()
+    {
+        var service = new Mock<IRagService>(MockBehavior.Strict);
+        var request = new RagSearchRequest("hands", ContentType: RagContentTypes.Video,
+            VideoExperience: new(Guid.NewGuid(), "lifestyle_in_use", "minimax_h3", "touch collar"));
+
+        var action = await new RagController(service.Object).Search(request, CancellationToken.None);
+
+        action.Should().BeOfType<BadRequestObjectResult>();
+        service.VerifyNoOtherCalls();
     }
 }
