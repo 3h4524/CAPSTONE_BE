@@ -86,6 +86,24 @@ public sealed class AssistantPromptBuilderTests
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("<tool_memory>");
 
     [TestMethod]
+    public void Build_IncludesNodePositionsWhenTheClientSendsThem()
+    {
+        var canvas = new AssistantCanvasDto(
+            Guid.NewGuid(), 1, false,
+            [
+                new("a", "product-input", "Input", AssistantTestSupport.Json("{}"), new(10.4, 20.6)),
+                new("b", "design-image", "Design", AssistantTestSupport.Json("{}"))
+            ],
+            []);
+        var context = new AssistantClientContextDto("/workflows", canvas.WorkflowId, null, [], canvas);
+
+        var text = builder.Build(AssistantTestSupport.Session("is it left to right?", context))[^1].Text!;
+
+        text.Should().Contain("\"id\":\"a\",\"type\":\"product-input\",\"label\":\"Input\",\"x\":10,\"y\":21");
+        text.Should().Contain("\"id\":\"b\",\"type\":\"design-image\",\"label\":\"Design\"}");
+    }
+
+    [TestMethod]
     public void Build_IncludesConfigOnlyForSelectedNodes()
     {
         var canvas = new AssistantCanvasDto(

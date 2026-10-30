@@ -19,6 +19,8 @@ public sealed record AssistantCanvasDto(
     IReadOnlyList<AssistantCanvasEdgeDto> Edges,
     string? WorkflowName = null);
 
-public sealed record AssistantCanvasNodeDto(string Id, string Type, string Label, JsonElement Config);
+public sealed record AssistantCanvasNodeDto(string Id, string Type, string Label, JsonElement Config, AssistantCanvasPositionDto? Position = null);
+
+public sealed record AssistantCanvasPositionDto(double X, double Y);
 
 public sealed record AssistantCanvasEdgeDto(string Id, string Source, string Target);
