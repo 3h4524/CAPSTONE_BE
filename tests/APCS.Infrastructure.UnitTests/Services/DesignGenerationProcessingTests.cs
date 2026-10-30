@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
@@ -1225,6 +1226,51 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    public async Task ProcessBatchJobAsync_JobAnotherServerIsOn_IsLeftAloneEvenWhenThisServerCannotReadTheKey()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0);
+        await SetReportedAsync(db, jobId, minutesAgo: 1);
+        var credentials = KeyRingWithoutTheKey();
+
+        // A server sharing the database puts every unfinished job back on its queue when it starts, this one included.
+        await CreateService(db, credentials: credentials).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        credentials.Verify(x => x.Unprotect(It.IsAny<string>()), Times.Never);
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Running);
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync())
+            .Should().OnlyContain(r => r.Status == BatchJobProductStatuses.GeneratingImage && r.ErrorMessage == null);
+        (await db.BatchJobLogs.AnyAsync(l => l.EventType == "job_failed")).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_KeyThisServerCannotRead_FailsTheJobSayingWhatToDo()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, jobStatus: BatchJobStatuses.Queued);
+
+        await CreateService(db, credentials: KeyRingWithoutTheKey()).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.BatchJobs.SingleAsync(j => j.Id == jobId)).Status.Should().Be(BatchJobStatuses.Failed);
+        (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync()).Should().OnlyContain(r =>
+            r.Status == BatchJobProductStatuses.Failed
+            && r.ErrorMessage == "The Gemini API key could not be read on this server: it was saved through another server. "
+                + "Enter the key again in API Keys, then retry the failed products.");
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+    }
+
+    // The key ring of a server the Seller's key was not saved through: it cannot decrypt the key.
+    private static Mock<IApiKeyCredentials> KeyRingWithoutTheKey()
+    {
+        var credentials = new Mock<IApiKeyCredentials>();
+        credentials.Setup(x => x.Unprotect(It.IsAny<string>()))
+            .Throws(new CryptographicException("The key {8a906c37-65d1-4e4d-a41a-df36ae6d2dff} was not found in the key ring."));
+        return credentials;
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_JobItsWorkerAbandoned_IsResumed()
     {
         await using var db = CreateContext();
@@ -1535,14 +1581,18 @@ public sealed class DesignGenerationProcessingTests
         Mock<IImageGenerationProvider>? provider = null,
         IDesignBackgroundRemover? backgroundRemover = null,
         Mock<IPublicImageService>? storage = null,
-        int maxConcurrentImages = 1)
+        int maxConcurrentImages = 1,
+        Mock<IApiKeyCredentials>? credentials = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
         currentUser.SetupGet(x => x.UserId).Returns(UserId);
 
-        var credentials = new Mock<IApiKeyCredentials>();
-        credentials.Setup(x => x.Unprotect(It.IsAny<string>())).Returns("plain-key");
+        if (credentials is null)
+        {
+            credentials = new Mock<IApiKeyCredentials>();
+            credentials.Setup(x => x.Unprotect(It.IsAny<string>())).Returns("plain-key");
+        }
 
         if (provider is null)
         {

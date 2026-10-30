@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
@@ -439,6 +440,15 @@ public sealed class DesignGenerationService(
         var job = await batchJobs.Query().SingleOrDefaultAsync(x => x.Id == batchJobId, cancellationToken);
         if (job is null) return;
 
+        // The same job can be waiting in the queue of more than one application instance: each one puts the unfinished
+        // jobs back when it starts. The claim is made in the database, so only one of them goes on; it also marks the job
+        // as running. It comes before anything else, so an instance that could not work on the job (one that cannot read
+        // the Seller's key, say) never fails a job another instance is running.
+        if (!await claims.TryClaimAsync(job.Id, cancellationToken))
+            return;
+        job.Status = BatchJobStatuses.Running;
+        job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+
         var providerName = ReadImageProvider(job.Config);
         var imageProvider = imageProviders.FirstOrDefault(provider => provider.Provider == providerName);
         if (imageProvider is null)
@@ -456,19 +466,23 @@ public sealed class DesignGenerationService(
             await FailJobAsync(job.Id, $"The {ImageGenerationProviders.Label(providerName)} API key is no longer available.", cancellationToken);
             return;
         }
-        var apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
+        string apiKeyPlain;
+        try
+        {
+            apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
+        }
+        catch (CryptographicException)
+        {
+            // A key is encrypted with the key ring of the server it was saved through, which another server sharing the
+            // database does not have.
+            await FailJobAsync(job.Id, UnreadableKeyMessage(providerName), cancellationToken);
+            return;
+        }
         var requireApproval = ReadRequireApproval(job.Config);
         // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
         var reviewedStatus = requireApproval == false ? BatchJobProductStatuses.Approved : BatchJobProductStatuses.ImageReviewRequired;
         var (variationCount, aspectRatio) = ReadConfig(job.Config);
         var regenerate = ReadRegenerate(job.Config);
-
-        // The same job can be waiting in the queue of more than one application instance. The claim is made
-        // in the database, so only one of them goes on; it also marks the job as running.
-        if (!await claims.TryClaimAsync(job.Id, cancellationToken))
-            return;
-        job.Status = BatchJobStatuses.Running;
-        job.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
 
         var rows = await batchJobProducts.Query()
             .Where(x => x.BatchJobId == job.Id && x.Status == BatchJobProductStatuses.GeneratingImage)
@@ -1202,6 +1216,11 @@ public sealed class DesignGenerationService(
         string.Equals(key.ServiceProvider, provider, StringComparison.OrdinalIgnoreCase)
         && key.IsActive == true && key.LastCheckSucceeded == true
         && (!key.ExpiresAt.HasValue || key.ExpiresAt > now);
+
+    // What the Seller is told when the server running the job cannot decrypt their key, and what to do about it.
+    private static string UnreadableKeyMessage(string provider) =>
+        $"The {ImageGenerationProviders.Label(provider)} API key could not be read on this server: it was saved through another "
+        + "server. Enter the key again in API Keys, then retry the failed products.";
 
     private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval,
         Guid? workflowId, string imageProvider)
