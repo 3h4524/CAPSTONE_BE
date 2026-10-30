@@ -18,6 +18,12 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<ApiUsageRecord> ApiUsageRecords { get; set; }
 
+    public virtual DbSet<AssistantConversation> AssistantConversations { get; set; }
+
+    public virtual DbSet<AssistantMessage> AssistantMessages { get; set; }
+
+    public virtual DbSet<AssistantPendingAction> AssistantPendingActions { get; set; }
+
     public virtual DbSet<AuditLog> AuditLogs { get; set; }
 
     public virtual DbSet<AuthToken> AuthTokens { get; set; }
@@ -327,6 +333,120 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.ApiUsageRecords)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("api_usage_records_user_id_fkey");
+        });
+
+        modelBuilder.Entity<AssistantConversation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("assistant_conversations_pkey");
+
+            entity.ToTable("assistant_conversations");
+
+            entity.HasIndex(e => new { e.UserId, e.UpdatedAt }, "idx_assistant_conversations_user_updated")
+                .IsDescending(false, true)
+                .HasFilter("(deleted_at IS NULL)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.Title)
+                .HasMaxLength(200)
+                .HasColumnName("title");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.AssistantConversations)
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("assistant_conversations_user_id_fkey");
+        });
+
+        modelBuilder.Entity<AssistantMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("assistant_messages_pkey");
+
+            entity.ToTable("assistant_messages");
+
+            entity.HasIndex(e => new { e.ConversationId, e.CreatedAt }, "idx_assistant_messages_conversation_created");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Content)
+                .HasDefaultValueSql("''::text")
+                .HasColumnName("content");
+            entity.Property(e => e.ConversationId).HasColumnName("conversation_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.InputTokens).HasColumnName("input_tokens");
+            entity.Property(e => e.Metadata)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("metadata");
+            entity.Property(e => e.Model)
+                .HasMaxLength(100)
+                .HasColumnName("model");
+            entity.Property(e => e.OutputTokens).HasColumnName("output_tokens");
+            entity.Property(e => e.Role)
+                .HasMaxLength(20)
+                .HasColumnName("role");
+
+            entity.HasOne(d => d.Conversation).WithMany(p => p.AssistantMessages)
+                .HasForeignKey(d => d.ConversationId)
+                .HasConstraintName("assistant_messages_conversation_id_fkey");
+        });
+
+        modelBuilder.Entity<AssistantPendingAction>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("assistant_pending_actions_pkey");
+
+            entity.ToTable("assistant_pending_actions");
+
+            entity.HasIndex(e => e.ConversationId, "idx_assistant_pending_actions_conversation");
+
+            entity.HasIndex(e => new { e.UserId, e.Status }, "idx_assistant_pending_actions_user_status");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Arguments)
+                .HasColumnType("jsonb")
+                .HasColumnName("arguments");
+            entity.Property(e => e.ConversationId).HasColumnName("conversation_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
+            entity.Property(e => e.Result)
+                .HasColumnType("jsonb")
+                .HasColumnName("result");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'pending'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.Summary).HasColumnName("summary");
+            entity.Property(e => e.Title)
+                .HasMaxLength(200)
+                .HasColumnName("title");
+            entity.Property(e => e.ToolName)
+                .HasMaxLength(100)
+                .HasColumnName("tool_name");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.Conversation).WithMany(p => p.AssistantPendingActions)
+                .HasForeignKey(d => d.ConversationId)
+                .HasConstraintName("assistant_pending_actions_conversation_id_fkey");
+
+            entity.HasOne(d => d.User).WithMany(p => p.AssistantPendingActions)
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("assistant_pending_actions_user_id_fkey");
         });
 
         modelBuilder.Entity<AuditLog>(entity =>
