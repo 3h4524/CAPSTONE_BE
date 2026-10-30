@@ -67,6 +67,17 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
+    public async Task RunAsync_ModelRetrying_EmitsStatusBeforeTheAnswer()
+    {
+        var model = new FakeChatModel([AssistantModelUpdate.Retrying(8), AssistantTestSupport.Text("Hi"), AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session()));
+
+        events.Select(e => e.Type).Should().Equal("conversation", "tool_started", "tool_finished", "status", "delta", "done");
+        events.Single(e => e.Type == "status").Data.Should().BeEquivalentTo(new AssistantStatusEventData("retrying", 8));
+    }
+
+    [TestMethod]
     public async Task RunAsync_QueryTool_ExecutesToolAndCallsModelAgainWithResult()
     {
         var tool = new StubTool("lookup", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Ok(new { value = 7 })));

@@ -114,6 +114,7 @@ public sealed class GeminiAssistantChatModel : IAssistantChatModel
             {
                 delayedRetries++;
                 var delaySeconds = IsRateLimited(failure) ? settings.RateLimitRetryDelaySeconds : settings.OverloadRetryDelaySeconds;
+                yield return AssistantModelUpdate.Retrying(delaySeconds);
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
                 continue;
             }

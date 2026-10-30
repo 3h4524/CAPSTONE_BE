@@ -88,6 +88,10 @@ public sealed class AssistantAgentLoop(
                     {
                         completed = update;
                     }
+                    else if (update.Kind == AssistantModelUpdateKind.Retrying)
+                    {
+                        yield return AssistantStreamEvent.Status(update.RetryInSeconds ?? 0);
+                    }
                 }
 
                 state.RecordUsage(completed);

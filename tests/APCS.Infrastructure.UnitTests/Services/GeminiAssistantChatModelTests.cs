@@ -144,6 +144,37 @@ public sealed class GeminiAssistantChatModelTests
     }
 
     [TestMethod]
+    public async Task StreamAsync_WhenModelIsOverloaded_YieldsRetryingBeforeRetrying()
+    {
+        var client = FakeChatClient.FailingThenAnswering(new ServerError("busy", 503, "UNAVAILABLE", null!), 1, "hello");
+        var model = CreateModel(
+            new AssistantOptions { ApiKey = "key-1", OverloadRetryDelaySeconds = 0 },
+            new Dictionary<string, FakeChatClient> { ["key-1"] = client });
+
+        var updates = await CollectAsync(model);
+
+        updates.Select(update => update.Kind).Should().Equal(
+            AssistantModelUpdateKind.Retrying, AssistantModelUpdateKind.Text, AssistantModelUpdateKind.Completed);
+        updates[0].RetryInSeconds.Should().Be(0);
+        client.Calls.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task StreamAsync_WhenSwitchingKeys_DoesNotYieldRetrying()
+    {
+        var clients = new Dictionary<string, FakeChatClient>
+        {
+            ["key-1"] = FakeChatClient.Failing(new ClientError("quota", 429, "RESOURCE_EXHAUSTED", null!)),
+            ["key-2"] = FakeChatClient.Answering("hello")
+        };
+        var model = CreateModel(new AssistantOptions { ApiKeys = ["key-1", "key-2"] }, clients);
+
+        var updates = await CollectAsync(model);
+
+        updates.Should().NotContain(update => update.Kind == AssistantModelUpdateKind.Retrying);
+    }
+
+    [TestMethod]
     public void EffectiveApiKeys_SkipsBlankAndDuplicateKeysAndAppendsApiKey()
     {
         var options = new AssistantOptions { ApiKeys = [" key-1 ", "", "key-2", "key-1"], ApiKey = "key-3" };
@@ -163,13 +194,15 @@ public sealed class GeminiAssistantChatModelTests
         return updates;
     }
 
-    private sealed class FakeChatClient(Exception? failure, string? text) : IChatClient
+    private sealed class FakeChatClient(string? text, Exception? failure, int failingCalls) : IChatClient
     {
         public int Calls { get; private set; }
 
-        public static FakeChatClient Failing(Exception failure) => new(failure, null);
+        public static FakeChatClient Failing(Exception failure) => new(null, failure, int.MaxValue);
 
-        public static FakeChatClient Answering(string text) => new(null, text);
+        public static FakeChatClient Answering(string text) => new(text, null, 0);
+
+        public static FakeChatClient FailingThenAnswering(Exception failure, int failingCalls, string text) => new(text, failure, failingCalls);
 
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
@@ -181,7 +214,7 @@ public sealed class GeminiAssistantChatModelTests
         {
             Calls++;
             await Task.Yield();
-            if (failure is not null)
+            if (failure is not null && Calls <= failingCalls)
                 throw failure;
             yield return new ChatResponseUpdate(ChatRole.Assistant, text);
         }

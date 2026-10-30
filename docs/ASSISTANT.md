@@ -19,7 +19,7 @@ The request body carries `conversationId`, `message` and a `context` (route, ope
 
 ### SSE events
 
-`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, then exactly one of `done` or `error`. Every event is `event: <type>` followed by one JSON line of camelCase data.
+`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, `status`, then exactly one of `done` or `error`. `status` (`{ "state": "retrying", "retryInSeconds": 8 }`) is sent while the assistant waits before retrying a rate limited or busy model. Every event is `event: <type>` followed by one JSON line of camelCase data.
 
 ## Tools
 

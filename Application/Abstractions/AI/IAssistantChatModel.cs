@@ -41,7 +41,8 @@ public enum AssistantModelUpdateKind
 {
     Text,
     Completed,
-    Failed
+    Failed,
+    Retrying
 }
 
 public sealed record AssistantModelUpdate(
@@ -51,7 +52,8 @@ public sealed record AssistantModelUpdate(
     int? InputTokens = null,
     int? OutputTokens = null,
     string? Model = null,
-    string? FailureCode = null)
+    string? FailureCode = null,
+    int? RetryInSeconds = null)
 {
     public static AssistantModelUpdate TextDelta(string text) => new(AssistantModelUpdateKind.Text, Text: text);
 
@@ -59,6 +61,8 @@ public sealed record AssistantModelUpdate(
         new(AssistantModelUpdateKind.Completed, Message: message, InputTokens: inputTokens, OutputTokens: outputTokens, Model: model);
 
     public static AssistantModelUpdate Failed(string failureCode) => new(AssistantModelUpdateKind.Failed, FailureCode: failureCode);
+
+    public static AssistantModelUpdate Retrying(int retryInSeconds) => new(AssistantModelUpdateKind.Retrying, RetryInSeconds: retryInSeconds);
 }
 
 public interface IAssistantChatModel

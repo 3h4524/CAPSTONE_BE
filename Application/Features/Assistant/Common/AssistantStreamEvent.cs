@@ -26,6 +26,8 @@ public sealed record AssistantToolFinishedEventData(string CallId, string Name, 
 
 public sealed record AssistantCitationsEventData(IReadOnlyList<AssistantCitationData> Items);
 
+public sealed record AssistantStatusEventData(string State, int RetryInSeconds);
+
 public sealed record AssistantDoneEventData(Guid AssistantMessageId, string Model, int? InputTokens, int? OutputTokens);
 
 public sealed record AssistantStreamEvent(string Type, object Data)
@@ -49,6 +51,9 @@ public sealed record AssistantStreamEvent(string Type, object Data)
     public static AssistantStreamEvent PendingAction(AssistantPendingActionEventData action) => new("pending_action", action);
 
     public static AssistantStreamEvent Choices(AssistantChoicesData choices) => new("choices", choices);
+
+    public static AssistantStreamEvent Status(int retryInSeconds) =>
+        new("status", new AssistantStatusEventData("retrying", retryInSeconds));
 
     public static AssistantStreamEvent Done(Guid assistantMessageId, string model, int? inputTokens, int? outputTokens) =>
         new("done", new AssistantDoneEventData(assistantMessageId, model, inputTokens, outputTokens));
