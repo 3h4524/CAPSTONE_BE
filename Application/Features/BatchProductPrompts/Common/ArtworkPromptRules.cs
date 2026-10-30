@@ -6,7 +6,8 @@ namespace APCS.Application.Features.BatchProductPrompts.Common;
 /// Keeps an image model from spoiling a design with stray lettering. Keywords written for the listing
 /// ("hiking shirt", "funny camping gift") are cut down to what can be drawn, words about the feel of the design go to
 /// its mood instead, and every image request says which text, if any, belongs in the artwork: a model asked for
-/// "motifs" otherwise often writes them out as small, misspelled words.
+/// "motifs" otherwise often writes them out as small, misspelled words. The words keywords are sorted by are data, not
+/// code: see <see cref="ArtworkVocabulary"/>.
 /// </summary>
 public static partial class ArtworkPromptRules
 {
@@ -15,42 +16,6 @@ public static partial class ArtworkPromptRules
 
     /// <summary>Stands in for the motifs when a template asks for some and none can be drawn, so its sentence still reads.</summary>
     public const string FallbackMotifs = "simple themed shapes";
-
-    // Words about the listing (the product, its buyer, the sale) rather than anything to draw.
-    private static readonly HashSet<string> ListingWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "shirt", "shirts", "tshirt", "tshirts", "tee", "tees", "hoodie", "hoodies", "sweatshirt", "sweatshirts",
-        "sweater", "mug", "mugs", "poster", "posters", "tote", "totes", "bag", "apparel", "clothing", "outfit",
-        "merch", "unisex", "gift", "gifts", "present", "idea", "ideas", "lover", "lovers", "fan", "fans", "for",
-        "men", "mens", "women", "womens", "him", "her", "graphic", "design", "print"
-    };
-
-    // Who the product is for, named by family tie or not at all: a model writes the word out or draws a stranger.
-    // Jobs stay ("nurse", "teacher", "developer"): each has an icon people recognize.
-    private static readonly HashSet<string> PersonWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "mom", "moms", "mum", "mums", "mama", "mamas", "mommy", "mother", "mothers",
-        "dad", "dads", "daddy", "papa", "father", "fathers",
-        "grandma", "grandmas", "grandpa", "grandpas", "granny", "nana", "grandmother", "grandfather",
-        "wife", "husband", "boyfriend", "girlfriend", "sister", "sisters", "brother", "brothers",
-        "son", "sons", "daughter", "daughters", "aunt", "auntie", "uncle", "kid", "kids", "boy", "boys", "girl", "girls",
-        "friend", "friends", "bestie", "besties", "people", "person", "everyone", "enthusiast", "enthusiasts",
-        "owner", "owners"
-    };
-
-    // The feel of a design rather than something in it, and the mood it becomes; a null mood says nothing a picture could show.
-    private static readonly Dictionary<string, string?> ToneWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["funny"] = "playful", ["humor"] = "playful", ["humour"] = "playful", ["humorous"] = "playful",
-        ["hilarious"] =  "playful", ["playful"] = "playful",
-        ["sarcastic"] = "sassy", ["sarcasm"] = "sassy", ["sassy"] = "sassy",
-        ["cute"] = "cute", ["kawaii"] = "cute", ["adorable"] = "cute",
-        ["vintage"] = "vintage", ["retro"] = "retro", ["classic"] = "classic",
-        ["boho"] = "boho", ["spooky"] = "spooky", ["cozy"] = "cozy", ["cosy"] = "cozy",
-        ["minimalist"] = "minimalist", ["minimal"] = "minimalist",
-        ["inspirational"] = "uplifting", ["motivational"] = "uplifting", ["inspiring"] = "uplifting",
-        ["cool"] = null, ["aesthetic"] = null, ["trendy"] = null, ["awesome"] = null, ["best"] = null
-    };
 
     /// <summary>A description shorter than this says too little about the design to go on.</summary>
     public const int ThinDescriptionWords = 5;
@@ -70,15 +35,28 @@ public static partial class ArtworkPromptRules
 
     // Asks for a finished graphic, not lettering with a few tiny icons: one detailed, full-color featured illustration set
     // around the lettering and some supporting details, every one of them a picture, so the richness never comes from extra
-    // words. The letters stay clean and filled, never covered.
-    private const string PhraseInstruction =
+    // words. The letters stay clean and filled, never covered. The illustration's place goes between the two halves.
+    private const string PhraseInstructionStart =
         "Lettering: the only text in the artwork is the exact quoted phrase, spelled exactly as written and shown once. "
         + "Add no other words, letters, numbers, labels or taglines. "
         + "Build a full, finished graphic around it: one richly detailed featured illustration in vivid, saturated full color "
-        + "that fits the theme, set around the lettering (above it, below it or framing it) without covering any letter, "
-        + "with bold filled shapes and fine details, and a few supporting details, every one drawn as a picture, never as a "
-        + "word or label. "
+        + "that fits the theme, ";
+
+    private const string PhraseInstructionEnd =
+        ", without covering any letter, with bold filled shapes and fine details, and a few supporting details, every one "
+        + "drawn as a picture, never as a word or label. "
         + "Keep the letters themselves clean, filled and fully visible: ";
+
+    // Where the featured illustration goes: each design of a product is given one place, the next one in turn, so a
+    // product's designs differ in layout. Asked to frame the lettering instead (tried 2026-10-30), Ideogram printed a word
+    // twice or put icons inside the letters, so only these two are used.
+    private static readonly (string Name, string Wording)[] Placements =
+    [
+        ("above", "placed above the lettering"),
+        ("below", "placed below the lettering")
+    ];
+
+    private const string OpenPlacement = "set around the lettering (above it, below it or framing it)";
 
     // A print on a garment or bag has no backdrop and may go on any color: its letters keep bold colors inside a sticker-style
     // double outline (thick dark, thin light), which reads on light and dark products alike without washing the design out.
@@ -113,12 +91,22 @@ public static partial class ArtworkPromptRules
     /// <summary>A product's keywords sorted into what a template can draw and the feel they ask for.</summary>
     /// <param name="Motifs">Comma-separated things to draw, at most <see cref="MaximumMotifKeywords"/>, in the Seller's order.</param>
     /// <param name="Mood">The feel the keywords name ("playful, vintage feel"), or empty.</param>
-    public sealed record KeywordParts(string Motifs, string Mood);
+    public sealed record KeywordParts(string Motifs, string Mood)
+    {
+        /// <summary>
+        /// What of the keywords is not drawn, in the Seller's order: words about the product or who it is for, praise,
+        /// keywords that ask for lettering (whole), and motifs past the first <see cref="MaximumMotifKeywords"/>. Shown to
+        /// the Seller, who can then put a keyword another way.
+        /// </summary>
+        public IReadOnlyList<string> Ignored { get; init; } = [];
+    }
 
     /// <summary>
-    /// Sorts a product's keywords word by word: listing words and words for a person ("mom", "friends") are dropped,
-    /// words about the feel ("funny", "vintage") go to the mood, and what is left of each keyword is a motif
-    /// ("funny dog mom" becomes the motif "dog" and the mood "playful"). Empty and repeated motifs are dropped.
+    /// Sorts a product's keywords. A keyword asking for lettering ("positive quote") is left out whole; in any other,
+    /// words for the product ("shirt", "wall art"), for who it is for ("mom", "friends"), praise ("best") and bare numbers
+    /// are dropped, and words for the feel ("funny", "vintage") go to the mood. What is left is a motif ("funny dog mom"
+    /// becomes the motif "dog" and the mood "playful"), unless it is describing words only ("geometric", "coastal"), which
+    /// go to the mood too. Repeated motifs are dropped. The words come from <see cref="ArtworkVocabulary"/>.
     /// </summary>
     public static KeywordParts SplitKeywords(string? keywords)
     {
@@ -126,26 +114,82 @@ public static partial class ArtworkPromptRules
 
         var motifs = new List<string>();
         var moods = new List<string>();
+        var ignored = new List<string>();
         foreach (var keyword in keywords.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
-            var drawn = new List<string>();
-            foreach (var word in TShirt().Replace(keyword, " ").Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            // The template decides which words are printed: a model asked for "positive quote" writes one. Only the feel
+            // it names, if any, still counts.
+            if (Tokens(keyword).Any(word => Has(ArtworkVocabulary.TextWords, Key(word))))
             {
-                if (ListingWords.Contains(word) || PersonWords.Contains(word)) continue;
-                if (ToneWords.TryGetValue(word, out var mood))
-                {
-                    if (mood is not null && !moods.Contains(mood)) moods.Add(mood);
-                    continue;
-                }
-                drawn.Add(word);
+                foreach (var word in Tokens(keyword))
+                    if (ArtworkVocabulary.MoodWords.TryGetValue(Key(word), out var feel)) AddOnce(moods, feel);
+                AddOnce(ignored, keyword);
+                continue;
             }
 
-            var motif = string.Join(' ', drawn);
-            if (motif.Length > 0 && motifs.Count < MaximumMotifKeywords && !motifs.Contains(motif, StringComparer.OrdinalIgnoreCase))
-                motifs.Add(motif);
+            // Product words several words long go first, so none of their words is drawn ("wall art" leaves no wall).
+            var text = keyword;
+            foreach (var phrase in new[] { TShirt(), ArtworkVocabulary.ProductPhrases })
+            {
+                foreach (Match match in phrase.Matches(text)) AddOnce(ignored, match.Value);
+                text = phrase.Replace(text, " ");
+            }
+
+            var kept = new List<string>();
+            foreach (var word in Tokens(text))
+            {
+                var key = Key(word);
+                if (ArtworkVocabulary.MoodWords.TryGetValue(key, out var mood)) AddOnce(moods, mood);
+                else if (ArtworkVocabulary.FillerWords.Contains(key)) continue;
+                else if (IsNotDrawn(key)) AddOnce(ignored, word);
+                else kept.Add(word);
+            }
+            if (kept.Count == 0) continue;
+
+            // Describing words alone say how the design feels; with a thing they describe it ("stormy sea", "national park").
+            if (kept.All(word => ArtworkVocabulary.Adjectives.Contains(Key(word))))
+            {
+                foreach (var word in kept) AddOnce(moods, Key(word));
+                continue;
+            }
+
+            var motif = string.Join(' ', kept);
+            if (motifs.Contains(motif, StringComparer.OrdinalIgnoreCase)) continue;
+            if (motifs.Count < MaximumMotifKeywords) motifs.Add(motif);
+            else AddOnce(ignored, motif);
         }
 
-        return new(string.Join(", ", motifs), moods.Count == 0 ? string.Empty : $"{string.Join(", ", moods)} feel");
+        return new(string.Join(", ", motifs), moods.Count == 0 ? string.Empty : $"{string.Join(", ", moods)} feel")
+        {
+            Ignored = ignored
+        };
+    }
+
+    // A word that names the product, who it is for, or nothing a picture could show.
+    private static bool IsNotDrawn(string key) =>
+        Has(ArtworkVocabulary.ProductWords, key)
+        || Has(ArtworkVocabulary.PeopleWords, key)
+        || Has(ArtworkVocabulary.FamilyWords, key)
+        || Has(ArtworkVocabulary.EmptyWords, key)
+        || (key.Length > 0 && key.All(char.IsDigit));
+
+    private static string[] Tokens(string text) =>
+        text.Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+    // How a word is looked up: lower case, without the punctuation around it or a possessive ("mom's" is "mom").
+    private static string Key(string word)
+    {
+        var key = word.Trim().Trim(KeyTrim).ToLowerInvariant();
+        return key.EndsWith("'s", StringComparison.Ordinal) || key.EndsWith("’s", StringComparison.Ordinal) ? key[..^2] : key;
+    }
+
+    private static readonly char[] KeyTrim = ['.', ',', ';', ':', '!', '?', '"', '“', '”', '(', ')', '[', ']', '\'', '‘', '’'];
+
+    private static bool Has(IReadOnlySet<string> words, string key) => words.Contains(key) || words.Contains(Singular(key));
+
+    private static void AddOnce(List<string> list, string value)
+    {
+        if (!list.Contains(value, StringComparer.OrdinalIgnoreCase)) list.Add(value);
     }
 
     /// <summary>The motifs of <see cref="SplitKeywords"/>.</summary>
@@ -209,13 +253,26 @@ public static partial class ArtworkPromptRules
     /// <param name="ownPrompt">
     /// The design is made from the Seller's own image prompt: the lettering is kept right, but its look is left to them.
     /// </param>
-    public static string LetteringInstruction(string? basePrompt, bool onGarment = true, bool ownPrompt = false)
+    /// <param name="design">
+    /// Which of the product's designs this is, from 0: with a phrase template it decides where the featured illustration
+    /// goes (<see cref="IllustrationPlacement"/>). Without it the model chooses.
+    /// </param>
+    public static string LetteringInstruction(string? basePrompt, bool onGarment = true, bool ownPrompt = false, int? design = null)
     {
         if (!PrintsExactPhrase(basePrompt)) return MotifInstruction;
-        return ownPrompt
-            ? OwnPromptPhraseInstruction + (onGarment ? OwnPromptGarmentLettering : OwnPromptBackdropLettering)
-            : PhraseInstruction + (onGarment ? GarmentLettering : BackdropLettering);
+        if (ownPrompt) return OwnPromptPhraseInstruction + (onGarment ? OwnPromptGarmentLettering : OwnPromptBackdropLettering);
+
+        var placement = design is int index ? Placements[index % Placements.Length].Wording : OpenPlacement;
+        return PhraseInstructionStart + placement + PhraseInstructionEnd + (onGarment ? GarmentLettering : BackdropLettering);
     }
+
+    /// <summary>
+    /// Where <see cref="LetteringInstruction"/> puts the featured illustration of a product's design ("above" or "below"
+    /// the lettering), or null when it leaves that to the model or the Seller: a template that prints no phrase,
+    /// the Seller's own prompt, or no design number.
+    /// </summary>
+    public static string? IllustrationPlacement(string? basePrompt, bool ownPrompt, int? design) =>
+        PrintsExactPhrase(basePrompt) && !ownPrompt && design is int index ? Placements[index % Placements.Length].Name : null;
 
     /// <summary>The line of things to avoid for a design made from the Seller's own prompt, which has no template's to use.</summary>
     /// <param name="basePrompt">The prompt the design was made from (<c>AiPrompt.SystemPrompt</c>): it quotes the design text when there is one.</param>

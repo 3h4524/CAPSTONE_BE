@@ -52,6 +52,55 @@ public sealed class BatchProductPromptServiceTests
     }
 
     [TestMethod]
+    public async Task GetEffectiveAsync_ShowsTheMotifsDrawn_AndTheKeywordsLeftOut()
+    {
+        var ids = TestIds();
+        var templateId = Guid.NewGuid();
+        var templates = new Mock<IRepository<DesignTemplate>>();
+        templates.Setup(r => r.Query()).Returns(new[]
+        {
+            new DesignTemplate
+            {
+                Id = templateId, Name = "Phrase", Type = "typography", ExamplePrompts = "[]",
+                BasePrompt = "Create a {style} composition using the exact phrase \"{subject}\", use {keywords} as small supporting motifs."
+            }
+        }.AsQueryable().BuildMock());
+        var service = CreateService(ids.UserId,
+            rows: MockRows(new BatchJobProduct { Id = ids.RowId, BatchJobId = ids.BatchId, ProductId = ids.ProductId, Status = "pending" }),
+            batches: MockBatches(new BatchJob { Id = ids.BatchId, UserId = ids.UserId, Name = "B", Status = "draft", Config = "{}" }),
+            products: MockProducts(new Product
+            {
+                Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending",
+                DesignTemplateId = templateId, DesiredDesignText = "Coffee Then Code", MainKeywords = "coffee, coding, mug, gift for mom, laptop"
+            }),
+            templates: templates);
+
+        var result = await service.GetEffectiveAsync(ids.RowId);
+
+        result.Value.Motifs.Should().Be("coding, laptop");
+        result.Value.IgnoredKeywords.Should().Equal(["mug", "gift", "mom", "coffee"], "\"coffee\" is already in the phrase");
+    }
+
+    [TestMethod]
+    public async Task GetEffectiveAsync_ProductWithItsOwnPrompt_ShowsNoKeywords()
+    {
+        var ids = TestIds();
+        var service = CreateService(ids.UserId,
+            rows: MockRows(new BatchJobProduct { Id = ids.RowId, BatchJobId = ids.BatchId, ProductId = ids.ProductId, Status = "pending" }),
+            batches: MockBatches(new BatchJob { Id = ids.BatchId, UserId = ids.UserId, Name = "B", Status = "draft", Config = "{}" }),
+            products: MockProducts(new Product
+            {
+                Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending",
+                CustomPrompt = "A fox asleep under a pine tree.", MainKeywords = "fox, gift"
+            }));
+
+        var result = await service.GetEffectiveAsync(ids.RowId);
+
+        result.Value.Motifs.Should().BeNull();
+        result.Value.IgnoredKeywords.Should().BeNull();
+    }
+
+    [TestMethod]
     public async Task SaveAsync_WhenRowNotPending_ReturnsConflict()
     {
         var ids = TestIds();
