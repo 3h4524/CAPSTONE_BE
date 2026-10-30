@@ -105,11 +105,11 @@ public sealed class WorkflowCanvasPatchSimulatorTests
         Run(Op("update_config", nodeId: "a", configJson: "{\"v\":\"" + new string('x', 8200) + "\"}")).Errors.Should().ContainSingle().Which.Should().Contain("too large");
 
     [TestMethod]
-    public void Simulate_RenameNode_IsRejectedBecauseRenamingIsTurnedOff()
+    public void Simulate_RenameNode_IsAnUnknownOperation()
     {
         var simulation = Run(Op("rename_node", nodeId: "a", label: "New"));
 
-        simulation.Errors.Should().ContainSingle().Which.Should().Contain("renaming steps is turned off");
+        simulation.Errors.Should().ContainSingle().Which.Should().Contain("Unknown operation").And.NotContainEquivalentOf("turned off");
         simulation.Result.Nodes.Single(node => node.Id == "a").Label.Should().Be("Input");
     }
 

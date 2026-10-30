@@ -110,8 +110,6 @@ public sealed class WorkflowCanvasPatchSimulator
                 return null;
             case "update_config":
                 return UpdateConfig(operation, nodes, out applied);
-            case "rename_node":
-                return "rename_node: renaming steps is turned off. Steps keep their generated names.";
             default:
                 return $"Unknown operation '{operation.Op}'.";
         }
