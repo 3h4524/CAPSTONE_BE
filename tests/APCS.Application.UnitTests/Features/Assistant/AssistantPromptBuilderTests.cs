@@ -134,6 +134,30 @@ public sealed class AssistantPromptBuilderTests
     }
 
     [TestMethod]
+    [DataRow(new double[] { 0, 0, 400, 30, 800, 10 }, "left to right in one row")]
+    [DataRow(new double[] { 0, 0, 20, 300, 10, 600 }, "top to bottom in one column")]
+    [DataRow(new double[] { 0, 0, 400, 0, 0, 300 }, "spread over several rows and columns")]
+    public void Build_DescribesTheCurrentCanvasLayout(double[] coordinates, string expected)
+    {
+        var nodes = Enumerable.Range(0, coordinates.Length / 2)
+            .Select(i => new AssistantCanvasNodeDto($"n{i}", "design-image", $"Step {i}", AssistantTestSupport.Json("{}"), new(coordinates[i * 2], coordinates[i * 2 + 1])))
+            .ToArray();
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, nodes, []);
+
+        var text = builder.Build(AssistantTestSupport.Session("how is it laid out?", new("/workflows", canvas.WorkflowId, null, [], canvas)))[^1].Text!;
+
+        text.Should().Contain($"\"layout\":\"{expected}\"");
+    }
+
+    [TestMethod]
+    public void Build_OmitsTheLayoutWithoutPositions()
+    {
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, [new("a", "product-input", "Input", AssistantTestSupport.Json("{}"))], []);
+
+        builder.Build(AssistantTestSupport.Session("hi", new("/workflows", canvas.WorkflowId, null, [], canvas)))[^1].Text.Should().NotContain("\"layout\"");
+    }
+
+    [TestMethod]
     public void Build_IncludesConfigOnlyForSelectedNodes()
     {
         var canvas = new AssistantCanvasDto(
