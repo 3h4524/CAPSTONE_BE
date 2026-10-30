@@ -103,7 +103,11 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("steer back to the open task")]
     [DataRow("first make the structure right")]
     [DataRow("<action_memory>")]
-    [DataRow("navigate (/support)")]
+    [DataRow("Call navigate to /support only when the user asks")]
+    [DataRow("never quote coordinates")]
+    [DataRow("matches more than one step on the canvas")]
+    [DataRow("Steps cannot be renamed for now")]
+    [DataRow("Never say you will make a change unless you call the tool")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 

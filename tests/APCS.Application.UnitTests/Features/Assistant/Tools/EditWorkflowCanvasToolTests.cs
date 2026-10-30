@@ -66,7 +66,7 @@ public sealed class EditWorkflowCanvasToolTests
     [TestMethod]
     public async Task ExecuteAsync_WhenGraphIsNotRunnable_ReturnsWarningsButStillProposes()
     {
-        var args = """{"operations":[{"op":"rename_node","nodeId":"a","label":"Renamed"}]}""";
+        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing"}]}""";
 
         var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
 
@@ -78,7 +78,7 @@ public sealed class EditWorkflowCanvasToolTests
     [TestMethod]
     public async Task ExecuteAsync_WithReply_CarriesItAsTheFinalText()
     {
-        var args = """{"operations":[{"op":"rename_node","nodeId":"a","label":"Start"}],"reply":"Review and apply the change."}""";
+        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing"}],"reply":"Review and apply the change."}""";
 
         var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
 
@@ -88,7 +88,7 @@ public sealed class EditWorkflowCanvasToolTests
     [TestMethod]
     public async Task ExecuteAsync_WithoutReply_LeavesTheFinalAnswerToTheModel()
     {
-        var args = """{"operations":[{"op":"rename_node","nodeId":"a","label":"Start"}]}""";
+        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing"}]}""";
 
         var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
 

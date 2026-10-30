@@ -105,12 +105,33 @@ public sealed class WorkflowCanvasPatchSimulatorTests
         Run(Op("update_config", nodeId: "a", configJson: "{\"v\":\"" + new string('x', 8200) + "\"}")).Errors.Should().ContainSingle().Which.Should().Contain("too large");
 
     [TestMethod]
-    public void Simulate_RenameNode_ChangesLabel() =>
-        Run(Op("rename_node", nodeId: "a", label: "New")).Result.Nodes.Single(node => node.Id == "a").Label.Should().Be("New");
+    public void Simulate_RenameNode_IsRejectedBecauseRenamingIsTurnedOff()
+    {
+        var simulation = Run(Op("rename_node", nodeId: "a", label: "New"));
+
+        simulation.Errors.Should().ContainSingle().Which.Should().Contain("renaming steps is turned off");
+        simulation.Result.Nodes.Single(node => node.Id == "a").Label.Should().Be("Input");
+    }
 
     [TestMethod]
-    public void Simulate_RenameWithBlankLabel_IsRejected() =>
-        Run(Op("rename_node", nodeId: "a", label: " ")).Errors.Should().ContainSingle();
+    public void Simulate_AddNode_GetsTheNextFreeNameAndIgnoresTheModelLabel()
+    {
+        var simulation = Run(
+            Op("add_node", @ref: "n1", type: "design-image", label: "Fancy"),
+            Op("add_node", @ref: "n2", type: "design-image"));
+
+        simulation.Errors.Should().BeEmpty();
+        simulation.Result.Nodes.Single(node => node.Id == "n1").Label.Should().Be("Design image");
+        simulation.Result.Nodes.Single(node => node.Id == "n2").Label.Should().Be("Design image 1");
+        simulation.Operations.Select(operation => operation.Label).Should().Equal("Design image", "Design image 1");
+    }
+
+    [TestMethod]
+    [DataRow(new[] { "Product input" }, "Design image")]
+    [DataRow(new[] { " design IMAGE ", "Design image 1" }, "Design image 2")]
+    [DataRow(new[] { "Design image", "Design image 2" }, "Design image 1")]
+    public void UniqueLabel_NumbersRepeatedNamesLikeTheFrontend(string[] taken, string expected) =>
+        WorkflowCanvasPatchSimulator.UniqueLabel("Design image", taken).Should().Be(expected);
 
     [TestMethod]
     public void Simulate_UnknownOperation_IsRejected() =>

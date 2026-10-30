@@ -21,10 +21,9 @@ public sealed class EditWorkflowCanvasTool(
 
     protected override string ParametersSchemaJson => """
         {"type":"object","properties":{"operations":{"type":"array","description":"Ordered canvas operations, at most 20.","items":{"type":"object","properties":{
-        "op":{"type":"string","enum":["add_node","remove_node","connect","disconnect","update_config","rename_node"]},
+        "op":{"type":"string","enum":["add_node","remove_node","connect","disconnect","update_config"]},
         "ref":{"type":"string","description":"New node id (add_node only), reused later as source, target, after or nodeId."},
         "type":{"type":"string","enum":["product-input","prompt-synthesis","design-image","design-approval","apply-mockup","approval-gate","generate-video","review-video","export-zip","generate-listing"]},
-        "label":{"type":"string"},
         "after":{"type":"string","description":"Existing node id to place the new node after."},
         "nodeId":{"type":"string"},
         "source":{"type":"string"},

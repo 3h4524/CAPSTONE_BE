@@ -32,7 +32,7 @@ public sealed class AssistantAgentLoop(
     private const string CompletionCheckNote =
         "<completion_check>Read the user's latest message again. If a question in it is not answered yet, answer it now in plain text. "
         + "If a requested change or action has not been made yet, call the tool for it now. "
-        + "Do not repeat what you already did. If everything is done, reply with exactly DONE and nothing else.</completion_check>";
+        + "Never summarise or repeat what you already did. If everything is done, reply with exactly DONE and nothing else.</completion_check>";
 
     public async IAsyncEnumerable<AssistantStreamEvent> RunAsync(
         AssistantChatSession session,

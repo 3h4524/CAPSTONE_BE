@@ -73,6 +73,8 @@ FAQ articles are RAG documents with `contentType = faq`. Ingest them from Admin,
 
 `Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
 
+Step names are unique: the step type name, numbered when it repeats (`Design image`, `Design image 1`, `Design image 2`). `add_node` ignores any label from the model and takes the next free name with the same rule as the frontend (`WorkflowCanvasPatchSimulator.UniqueLabel`, `uniqueNodeLabel` in `src/helpers/workflow-graph.ts`). Renaming is turned off for now, so `rename_node` is rejected and is no longer in the tool schema. When a step name in the user's message matches several steps, the prompt tells the model to ask with `offer_choices` instead of guessing.
+
 The catalog and the connection rule mirror the frontend (`src/constants/workflow.ts`, `src/helpers/workflow-graph.ts`). Update both sides together; unit tests compare the run order with `WorkflowCapabilityRegistry`.
 
 ## Deleting conversations

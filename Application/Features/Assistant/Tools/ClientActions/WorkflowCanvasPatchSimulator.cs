@@ -36,8 +36,6 @@ public sealed record CanvasPatchSimulation(
 
 public sealed class WorkflowCanvasPatchSimulator
 {
-    private const int MaxLabelLength = 100;
-
     public CanvasPatchSimulation Simulate(
         AssistantCanvasDto canvas,
         IReadOnlyList<CanvasOperationArgs> operations,
@@ -113,13 +111,7 @@ public sealed class WorkflowCanvasPatchSimulator
             case "update_config":
                 return UpdateConfig(operation, nodes, out applied);
             case "rename_node":
-                if (operation.NodeId is null || !nodes.TryGetValue(operation.NodeId, out var node))
-                    return $"rename_node: node '{operation.NodeId}' does not exist.";
-                if (string.IsNullOrWhiteSpace(operation.Label) || operation.Label.Length > MaxLabelLength)
-                    return $"rename_node: label must be 1 to {MaxLabelLength} characters.";
-                node.Label = operation.Label;
-                applied = Normalize(operation, null);
-                return null;
+                return "rename_node: renaming steps is turned off. Steps keep their generated names.";
             default:
                 return $"Unknown operation '{operation.Op}'.";
         }
@@ -138,12 +130,11 @@ public sealed class WorkflowCanvasPatchSimulator
             return $"add_node: id '{operation.Ref}' is already used.";
         if (operation.Type is null || !allowedNodeTypes.Contains(operation.Type))
             return $"add_node: type '{operation.Type}' is not available.";
-        if (operation.Label is { Length: > MaxLabelLength })
-            return $"add_node: label must be at most {MaxLabelLength} characters.";
         if (operation.After is not null && !nodes.ContainsKey(operation.After))
             return $"add_node: after '{operation.After}' does not exist.";
-        nodes[operation.Ref] = new SimNode(operation.Type, operation.Label ?? operation.Type, new JsonObject());
-        applied = Normalize(operation, null);
+        var label = UniqueLabel(WorkflowNodeCatalog.LabelOf(operation.Type), nodes.Values.Select(node => node.Label));
+        nodes[operation.Ref] = new SimNode(operation.Type, label, new JsonObject());
+        applied = Normalize(operation with { Label = label }, null);
         return null;
     }
 
@@ -228,6 +219,19 @@ public sealed class WorkflowCanvasPatchSimulator
 
         return false;
     }
+
+    public static string UniqueLabel(string baseLabel, IEnumerable<string> takenLabels)
+    {
+        var taken = takenLabels.Select(NormalizeLabel).ToHashSet(StringComparer.Ordinal);
+        if (!taken.Contains(NormalizeLabel(baseLabel)))
+            return baseLabel;
+        var suffix = 1;
+        while (taken.Contains(NormalizeLabel($"{baseLabel} {suffix}")))
+            suffix++;
+        return $"{baseLabel} {suffix}";
+    }
+
+    private static string NormalizeLabel(string label) => label.Trim().ToLowerInvariant();
 
     private static NormalizedCanvasOperation Normalize(CanvasOperationArgs operation, JsonElement? config) =>
         new(operation.Op!, operation.Ref, operation.Type, operation.Label, operation.After, operation.NodeId, operation.Source, operation.Target, config);
