@@ -92,8 +92,8 @@ public sealed class SearchFaqToolTests
     {
         var declaration = new SearchFaqTool(rag.Object).Declaration;
 
-        declaration.Description.Should().Contain("write the query in English");
+        declaration.Description.Should().Contain("write the query in English").And.Contain("Make the query stand alone");
         declaration.ParametersSchema.GetProperty("properties").GetProperty("query").GetProperty("description").GetString()
-            .Should().Contain("in English");
+            .Should().Contain("in English").And.Contain("standalone").And.Contain("earlier messages");
     }
 }

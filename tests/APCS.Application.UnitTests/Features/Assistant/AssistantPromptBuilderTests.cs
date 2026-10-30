@@ -107,6 +107,7 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("describe the layout in words")]
     [DataRow("matches more than one step on the canvas")]
     [DataRow("write the query in English, then answer in the user's language")]
+    [DataRow("Make the query stand alone")]
     [DataRow("Steps cannot be renamed for now")]
     [DataRow("Never say you will make a change unless you call the tool")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
