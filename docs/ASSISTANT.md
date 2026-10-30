@@ -39,6 +39,8 @@ Rules that must hold for every new tool:
 - Paid AI video steps are never exposed. `workflow_run_action` refuses `resume_mockups` and `retry` on an `ai_shot` workflow because they need a quote token that only the UI holds.
 - Tools run sequentially because they share one `DbContext`. Results are capped at 12 000 characters.
 - Successful query tool results (except `search_faq`) are kept in the assistant message metadata as `toolMemory` (800 characters per result, 2 400 per message). The prompt replays them as `<tool_memory>` for the last 3 assistant messages so follow-ups such as "the second one" need no new tool call. The API strips `toolMemory` from the metadata it returns.
+- The client actions a message proposed (kind, settings cut to 800 characters) and the user's choice for each (`applied`, `dismissed` or `undecided`, from `clientActionStates`) are replayed the same way as `<action_memory>`, so the model knows what it already proposed when the user refers to it or says it did not work.
+- Canvas nodes in `app_context` carry their `x` and `y` position when the client sends them, so the model can answer questions about the layout.
 
 To add a tool: create the class, register it, add unit tests next to the existing tool tests, and mention it in the system prompt in `AssistantPromptBuilder` only if the model needs guidance.
 

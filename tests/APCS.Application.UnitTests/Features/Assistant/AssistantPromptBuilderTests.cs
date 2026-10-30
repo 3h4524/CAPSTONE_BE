@@ -82,6 +82,32 @@ public sealed class AssistantPromptBuilderTests
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().NotContain("Nothing more is needed after the call");
 
     [TestMethod]
+    public void Build_AddsActionMemoryToRememberedAssistantMessages()
+    {
+        var messages = builder.Build(AssistantTestSupport.Session(
+            "it is still top to bottom",
+            history:
+            [
+                new(AssistantMessageRoles.User, "tidy it"),
+                new(AssistantMessageRoles.Assistant, "I arranged it.", null, """[{"action":"arrange_workflow_canvas","state":"applied","details":"{\"layout\":\"horizontal\"}"}]""")
+            ]));
+
+        var assistant = messages.Single(message => message.Role == AssistantMessageRole.Assistant).Text!;
+        assistant.Should().StartWith("I arranged it.").And.Contain("<action_memory>").And.Contain("horizontal").And.Contain("applied");
+        assistant.Should().NotContain("<tool_memory>");
+    }
+
+    [TestMethod]
+    [DataRow("answer it first in plain text")]
+    [DataRow("Never propose the same change again")]
+    [DataRow("steer back to the open task")]
+    [DataRow("first make the structure right")]
+    [DataRow("<action_memory>")]
+    [DataRow("navigate (/support)")]
+    public void Build_SystemPromptHasConversationRules(string rule) =>
+        builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
+
+    [TestMethod]
     public void Build_SystemPromptExplainsToolMemory() =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("<tool_memory>");
 

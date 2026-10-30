@@ -63,7 +63,8 @@ public sealed class AssistantService(
                 .Select(item => new AssistantHistoryMessage(
                     item.Role,
                     item.Content,
-                    item.Role == AssistantMessageRoles.Assistant ? ReadToolMemory(item.Metadata) : null)));
+                    item.Role == AssistantMessageRoles.Assistant ? ReadToolMemory(item.Metadata) : null,
+                    item.Role == AssistantMessageRoles.Assistant ? ReadActionMemory(item.Metadata) : null)));
             var conversation = await conversations.GetByIdAsync(conversationId, cancellationToken);
             if (conversation is not null)
             {
@@ -336,6 +337,36 @@ public sealed class AssistantService(
             return JsonDocument.Parse(metadataJson).RootElement.Clone();
         metadata.Remove(ToolMemoryKey);
         return JsonSerializer.SerializeToElement(metadata);
+    }
+
+    private static string? ReadActionMemory(string? metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+            return null;
+        try
+        {
+            if (JsonNode.Parse(metadataJson) is not JsonObject metadata || metadata["clientActions"] is not JsonArray actions || actions.Count == 0)
+                return null;
+            var states = metadata["clientActionStates"] as JsonObject;
+            var memory = new JsonArray();
+            foreach (var action in actions.OfType<JsonObject>())
+            {
+                var id = action["id"]?.GetValue<string>() ?? string.Empty;
+                var state = states?.FirstOrDefault(entry => string.Equals(entry.Key, id, StringComparison.OrdinalIgnoreCase)).Value?.GetValue<string>();
+                memory.Add(new JsonObject
+                {
+                    ["action"] = action["kind"]?.GetValue<string>(),
+                    ["state"] = state ?? "undecided",
+                    ["details"] = AssistantJson.Truncate(action["payload"]?.ToJsonString() ?? "{}", AssistantLimits.ActionMemoryDetailsChars)
+                });
+            }
+
+            return memory.ToJsonString();
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static string? ReadToolMemory(string? metadataJson)

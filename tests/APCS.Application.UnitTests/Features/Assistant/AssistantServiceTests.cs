@@ -203,6 +203,43 @@ public sealed class AssistantServiceTests
     }
 
     [TestMethod]
+    public async Task StartChatAsync_ReadsProposedActionsAndTheirStateIntoHistory()
+    {
+        var conversation = Conversation();
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        conversations.Setup(r => r.GetByIdAsync(conversation.Id, It.IsAny<CancellationToken>())).ReturnsAsync(conversation);
+        var applied = Guid.NewGuid();
+        var undecided = Guid.NewGuid();
+        var history = new List<AssistantMessage>
+        {
+            new()
+            {
+                Id = Guid.NewGuid(),
+                ConversationId = conversation.Id,
+                Role = "assistant",
+                Content = "I arranged it.",
+                Metadata = $$$"""
+                    {"clientActions":[
+                      {"id":"{{{applied}}}","kind":"arrange_workflow_canvas","payload":{"layout":"horizontal","perRow":3}},
+                      {"id":"{{{undecided}}}","kind":"navigate","payload":{"path":"/usage"}}],
+                     "clientActionStates":{"{{{applied}}}":"applied"}}
+                    """,
+                CreatedAt = Now.UtcDateTime
+            }
+        };
+        messages.Setup(r => r.Query()).Returns(history.AsQueryable().BuildMock());
+
+        var result = await Service().StartChatAsync(new(conversation.Id, "still wrong", null), AssistantTestSupport.Seller);
+
+        var memory = System.Text.Json.Nodes.JsonNode.Parse(result.Value.History.Single().ActionMemory!)!.AsArray();
+        memory.Should().HaveCount(2);
+        memory[0]!["action"]!.GetValue<string>().Should().Be("arrange_workflow_canvas");
+        memory[0]!["state"]!.GetValue<string>().Should().Be("applied");
+        memory[0]!["details"]!.GetValue<string>().Should().Contain("horizontal");
+        memory[1]!["state"]!.GetValue<string>().Should().Be("undecided");
+    }
+
+    [TestMethod]
     public async Task GetConversationAsync_DoesNotExposeToolMemory()
     {
         var conversation = Conversation();

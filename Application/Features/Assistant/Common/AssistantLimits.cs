@@ -19,4 +19,5 @@ public static class AssistantLimits
     public const int ToolMemoryResultChars = 800;
     public const int ToolMemoryMessageChars = 2400;
     public const int ToolMemoryHistoryMessages = 3;
+    public const int ActionMemoryDetailsChars = 800;
 }
