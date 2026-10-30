@@ -86,4 +86,14 @@ public sealed class SearchFaqToolTests
     public void IsAvailable_ForSellerAndAdmin() =>
         new[] { AssistantTestSupport.Seller, AssistantTestSupport.Admin }
             .Select(caller => new SearchFaqTool(rag.Object).IsAvailable(Context(caller))).Should().AllBeEquivalentTo(true);
+
+    [TestMethod]
+    public void Declaration_AsksForAnEnglishQueryBecauseTheArticlesAreInEnglish()
+    {
+        var declaration = new SearchFaqTool(rag.Object).Declaration;
+
+        declaration.Description.Should().Contain("write the query in English");
+        declaration.ParametersSchema.GetProperty("properties").GetProperty("query").GetProperty("description").GetString()
+            .Should().Contain("in English");
+    }
 }

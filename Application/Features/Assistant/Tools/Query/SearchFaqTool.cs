@@ -18,10 +18,10 @@ public sealed class SearchFaqTool(IRagService ragService) : AssistantTool<Search
     public override AssistantToolKind Kind => AssistantToolKind.Query;
 
     protected override string Description =>
-        "Search the APCS help center for how-to, rules, limits, pricing and troubleshooting answers. Always call this before answering product questions.";
+        "Search the APCS help center for how-to, rules, limits, pricing and troubleshooting answers. Always call this before answering product questions. The help articles are written in English, so write the query in English even when the user writes in another language.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"query":{"type":"string","description":"What the user wants to know, as a short search query."},"topK":{"type":"integer","description":"Number of articles to return, 1 to 8."}},"required":["query"]}
+        {"type":"object","properties":{"query":{"type":"string","description":"What the user wants to know, as a short search query in English. Translate the user's question first if it is in another language."},"topK":{"type":"integer","description":"Number of articles to return, 1 to 8."}},"required":["query"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => true;
