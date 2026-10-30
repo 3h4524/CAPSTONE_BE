@@ -71,17 +71,19 @@ public sealed class DataQueryToolsTests
     }
 
     [TestMethod]
-    public async Task GetSubscriptionOverview_ReturnsPlanAndQuotasButNoInvoicesOrPlanCatalog()
+    public async Task GetSubscriptionOverview_ReturnsPlanQuotasAndAvailablePlansButNoInvoices()
     {
         var subscriptions = new Mock<ISubscriptionService>();
         var current = new CurrentSubscriptionDto(Guid.NewGuid(), Guid.NewGuid(), "Pro", "short", "active", "monthly", 19m, DateOnly.FromDayNumber(10), DateOnly.FromDayNumber(40), null, null);
         subscriptions.Setup(s => s.GetOverviewAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new SubscriptionOverviewResponseDto(
-            current, [new UsageQuotaDto("images", "Images", 5, 100, "count", 5m, false)], [], [], true)));
+            current, [new UsageQuotaDto("images", "Images", 5, 100, "count", 5m, false)],
+            [new AvailablePlanDto(Guid.NewGuid(), "Studio", "studio", null, 79.99m, 799.99m, false, [], new PlanQuotasDto(5000, 100, 50000, 100m, 500, 2000, 10))],
+            [], true)));
 
         var outcome = await new GetSubscriptionOverviewTool(subscriptions.Object).ExecuteAsync(Context(), default, default);
 
-        outcome.ModelResultJson.Should().Contain("Pro").And.Contain("Images");
-        outcome.ModelResultJson.ToLowerInvariant().Should().NotContain("invoice").And.NotContain("availableplans");
+        outcome.ModelResultJson.Should().Contain("Pro").And.Contain("Images").And.Contain("Studio").And.Contain("79.99");
+        outcome.ModelResultJson.ToLowerInvariant().Should().NotContain("invoice");
     }
 
     [TestMethod]

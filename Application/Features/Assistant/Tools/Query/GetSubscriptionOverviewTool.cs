@@ -8,7 +8,7 @@ public sealed class GetSubscriptionOverviewTool(ISubscriptionService subscriptio
 
     public override AssistantToolKind Kind => AssistantToolKind.Query;
 
-    protected override string Description => "Get the user's current subscription plan, quotas and renewal date.";
+    protected override string Description => "Get the user's current subscription plan, quotas and renewal date, plus the plans available to buy with their prices and limits.";
 
     protected override string ParametersSchemaJson => """{"type":"object","properties":{}}""";
 
@@ -43,6 +43,16 @@ public sealed class GetSubscriptionOverviewTool(ISubscriptionService subscriptio
                 quota.Unit,
                 quota.PercentUsed,
                 quota.IsWarning
+            }),
+            availablePlans = overview.AvailablePlans.Select(plan => new
+            {
+                plan.Name,
+                plan.Tier,
+                plan.Description,
+                plan.MonthlyPriceUsd,
+                plan.AnnualPriceUsd,
+                plan.IsCurrentPlan,
+                plan.Quotas
             }),
             hasActivePaidPlan = overview.HasActivePaidPlan
         });
