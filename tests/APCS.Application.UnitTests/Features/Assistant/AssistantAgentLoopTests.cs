@@ -121,6 +121,103 @@ public sealed class AssistantAgentLoopTests
         memory.Sum(item => item.Result.Length).Should().BeLessThanOrEqualTo(AssistantLimits.ToolMemoryMessageChars);
     }
 
+    private static StubTool ActionTool(string name, string reply) => new(
+        name,
+        AssistantToolKind.ClientAction,
+        (_, _) => Task.FromResult(AssistantToolOutcome.Ok(
+            new { status = "offered" },
+            true,
+            AssistantStreamEvent.ClientAction(new AssistantClientActionData(Guid.NewGuid(), name, AssistantTestSupport.Json("{}"))))
+            .WithFinalText(reply)));
+
+    [TestMethod]
+    public async Task RunAsync_ActionWithMoreRequests_ContinuesToAnswerTheRestOfTheMessage()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I added the approval step.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":true}""", "c1"))],
+            [AssistantTestSupport.Text("APCS turns products into listings."), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().HaveCount(2);
+        model.Requests[1].AllowTools.Should().BeTrue();
+        saved.Single().Content.Should().Be("I added the approval step.\n\nAPCS turns products into listings.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_ActionWithMoreRequests_CanCallASecondAction()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I connected the steps.");
+        var arrange = ActionTool("arrange_workflow_canvas", "I tidied the layout.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":true}""", "c1"))],
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("arrange_workflow_canvas", "{}", "c2"))]);
+
+        var events = await Collect(Loop(model, edit, arrange).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().HaveCount(2);
+        events.Count(e => e.Type == "client_action").Should().Be(2);
+        saved.Single().Content.Should().Be("I connected the steps.\n\nI tidied the layout.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_TwoActionsInOneResponse_ShowBothReplies()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I connected the steps.");
+        var arrange = ActionTool("arrange_workflow_canvas", "I tidied the layout.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", "{}", "c1"), AssistantTestSupport.Call("arrange_workflow_canvas", "{}", "c2"))]);
+
+        await Collect(Loop(model, edit, arrange).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().ContainSingle();
+        saved.Single().Content.Should().Be("I connected the steps.\n\nI tidied the layout.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_ActionWithoutMoreRequests_EndsTheTurnWithoutAnotherModelCall()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I added the step.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":false}""", "c1"))],
+            [AssistantTestSupport.Text("should not run"), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+
+        model.Requests.Should().ContainSingle();
+        saved.Single().Content.Should().Be("I added the step.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_FaqQuestionAndAction_KeepsBothTheAnswerAndTheAction()
+    {
+        var faq = new StubTool("search_faq", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Ok(new { results = new[] { new { title = "About APCS" } } })));
+        var edit = ActionTool("edit_workflow_canvas", "I added the approval step.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("search_faq", """{"query":"what is APCS"}""", "c1"))],
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":true}""", "c2"))],
+            [AssistantTestSupport.Text("APCS is a print on demand assistant."), AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model, faq, edit).RunAsync(AssistantTestSupport.Session("what is APCS and add an approval step")));
+
+        events.Should().Contain(e => e.Type == "client_action");
+        saved.Single().Content.Should().Contain("I added the approval step.").And.Contain("APCS is a print on demand assistant.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_TextAcrossToolRounds_IsSeparatedIntoParagraphs()
+    {
+        var tool = new StubTool("lookup");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Text("Let me check."), AssistantTestSupport.Done("Let me check.", AssistantTestSupport.Call("lookup", callId: "c1"))],
+            [AssistantTestSupport.Text("It is 7."), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
+
+        saved.Single().Content.Should().Be("Let me check.\n\nIt is 7.");
+    }
+
     [TestMethod]
     public async Task RunAsync_QueryTool_ExecutesToolAndCallsModelAgainWithResult()
     {

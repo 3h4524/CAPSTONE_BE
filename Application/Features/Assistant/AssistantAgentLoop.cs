@@ -61,7 +61,6 @@ public sealed class AssistantAgentLoop(
         var declarations = tools.Select(tool => tool.Declaration).ToArray();
         var conversation = promptBuilder.Build(session, articles).ToList();
         var endTurn = false;
-        var skipFinalPass = false;
         var emptyRetriesLeft = MaxEmptyRetries;
 
         try
@@ -74,8 +73,9 @@ public sealed class AssistantAgentLoop(
                 {
                     if (update.Kind == AssistantModelUpdateKind.Text && update.Text is { } text)
                     {
-                        state.AppendText(text);
-                        yield return AssistantStreamEvent.Delta(text);
+                        var delta = state.Text.Length == textBefore ? state.WithParagraphBreak(text) : text;
+                        state.AppendText(delta);
+                        yield return AssistantStreamEvent.Delta(delta);
                     }
                     else if (update.Kind == AssistantModelUpdateKind.Failed)
                     {
@@ -106,6 +106,10 @@ public sealed class AssistantAgentLoop(
                     break;
 
                 conversation.Add(assistantTurn);
+                var modelWroteText = state.Text.Length > textBefore;
+                var roundEndsTurn = false;
+                var roundHasReply = modelWroteText;
+                var moreRequests = false;
                 foreach (var call in assistantTurn.ToolCalls)
                 {
                     yield return AssistantStreamEvent.ToolStarted(call.CallId, call.Name);
@@ -121,18 +125,26 @@ public sealed class AssistantAgentLoop(
                     if (outcome.Succeeded && call.Name != KnowledgeToolName && tools.FirstOrDefault(tool => tool.Name == call.Name)?.Kind == AssistantToolKind.Query)
                         state.Remember(call.Name, outcome.ModelResultJson);
                     yield return AssistantStreamEvent.ToolFinished(call.CallId, call.Name, outcome.Succeeded);
-                    endTurn |= outcome.EndsTurn;
-                    if (outcome.EndsTurn && outcome.FinalText is { Length: > 0 } finalText && state.Text.Length == textBefore)
-                    {
-                        state.AppendText(finalText);
-                        yield return AssistantStreamEvent.Delta(finalText);
-                    }
+                    if (!outcome.EndsTurn)
+                        continue;
 
-                    skipFinalPass |= outcome.EndsTurn && (outcome.FinalText is not null || state.Text.Length > textBefore);
+                    roundEndsTurn = true;
+                    moreRequests |= AssistantToolSchemas.RequestsMore(call.Arguments);
+                    roundHasReply |= outcome.FinalText is not null;
+                    if (outcome.FinalText is { Length: > 0 } finalText && !modelWroteText)
+                    {
+                        var reply = state.WithParagraphBreak(finalText);
+                        state.AppendText(reply);
+                        yield return AssistantStreamEvent.Delta(reply);
+                    }
                 }
 
-                if (skipFinalPass)
-                    break;
+                if (roundEndsTurn && !moreRequests)
+                {
+                    if (roundHasReply)
+                        break;
+                    endTurn = true;
+                }
 
                 if (iteration >= AssistantLimits.MaxToolIterations)
                     endTurn = true;
@@ -273,6 +285,9 @@ public sealed class AssistantAgentLoop(
         public bool HasContent => text.Length > 0 || Error is not null || ToolCalls.Count > 0;
 
         public void AppendText(string value) => text.Append(value);
+
+        public string WithParagraphBreak(string value) =>
+            text.Length == 0 || text[^1] == '\n' || value.StartsWith('\n') ? value : $"\n\n{value}";
 
         public void Remember(string toolName, string resultJson)
         {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
@@ -59,7 +60,7 @@ public abstract class AssistantTool<TArgs> : IAssistantTool where TArgs : class
     protected abstract string ParametersSchemaJson { get; }
 
     public AssistantToolDeclaration Declaration =>
-        new(Name, Description, JsonDocument.Parse(ParametersSchemaJson).RootElement.Clone());
+        new(Name, Description, AssistantToolSchemas.Build(ParametersSchemaJson, Kind));
 
     public abstract bool IsAvailable(AssistantToolContext context);
 
@@ -87,3 +88,27 @@ public abstract class AssistantTool<TArgs> : IAssistantTool where TArgs : class
 }
 
 public sealed record NoArguments;
+
+public static class AssistantToolSchemas
+{
+    public const string MoreRequestsProperty = "moreRequests";
+
+    private const string MoreRequestsDescription =
+        "True when the user's message still has other parts you have not handled yet (a question to answer or another change or action). You will be called again to finish them. False or omitted when this call completes the message.";
+
+    public static JsonElement Build(string parametersSchemaJson, AssistantToolKind kind)
+    {
+        if (kind == AssistantToolKind.Query || JsonNode.Parse(parametersSchemaJson) is not JsonObject schema)
+            return JsonDocument.Parse(parametersSchemaJson).RootElement.Clone();
+
+        var properties = schema["properties"] as JsonObject ?? new JsonObject();
+        properties[MoreRequestsProperty] = new JsonObject { ["type"] = "boolean", ["description"] = MoreRequestsDescription };
+        schema["properties"] = properties;
+        return JsonSerializer.SerializeToElement(schema);
+    }
+
+    public static bool RequestsMore(JsonElement arguments) =>
+        arguments.ValueKind == JsonValueKind.Object
+        && arguments.TryGetProperty(MoreRequestsProperty, out var value)
+        && value.ValueKind == JsonValueKind.True;
+}

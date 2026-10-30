@@ -74,6 +74,14 @@ public sealed class AssistantPromptBuilderTests
     }
 
     [TestMethod]
+    public void Build_SystemPromptExplainsMessagesWithSeveralRequests() =>
+        builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("moreRequests").And.Contain("never drop a part");
+
+    [TestMethod]
+    public void Build_SystemPromptNoLongerTellsTheModelToStopAfterAnAction() =>
+        builder.Build(AssistantTestSupport.Session())[0].Text.Should().NotContain("Nothing more is needed after the call");
+
+    [TestMethod]
     public void Build_SystemPromptExplainsToolMemory() =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("<tool_memory>");
 
