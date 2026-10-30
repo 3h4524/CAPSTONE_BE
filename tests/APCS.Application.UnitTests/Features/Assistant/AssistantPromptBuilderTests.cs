@@ -104,7 +104,7 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("first make the structure right")]
     [DataRow("<action_memory>")]
     [DataRow("Call navigate to /support only when the user asks")]
-    [DataRow("never quote coordinates")]
+    [DataRow("describe the layout in words")]
     [DataRow("matches more than one step on the canvas")]
     [DataRow("Steps cannot be renamed for now")]
     [DataRow("Never say you will make a change unless you call the tool")]
@@ -116,21 +116,23 @@ public sealed class AssistantPromptBuilderTests
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain("<tool_memory>");
 
     [TestMethod]
-    public void Build_IncludesNodePositionsWhenTheClientSendsThem()
+    public void Build_ListsNodesInReadingOrderWithoutCoordinates()
     {
         var canvas = new AssistantCanvasDto(
             Guid.NewGuid(), 1, false,
             [
-                new("a", "product-input", "Input", AssistantTestSupport.Json("{}"), new(10.4, 20.6)),
-                new("b", "design-image", "Design", AssistantTestSupport.Json("{}"))
+                new("c", "apply-mockup", "Apply mockup", AssistantTestSupport.Json("{}"), new(900, 10)),
+                new("a", "product-input", "Input", AssistantTestSupport.Json("{}"), new(10, 20)),
+                new("b", "design-image", "Design", AssistantTestSupport.Json("{}"), new(450, 0))
             ],
             []);
         var context = new AssistantClientContextDto("/workflows", canvas.WorkflowId, null, [], canvas);
 
         var text = builder.Build(AssistantTestSupport.Session("is it left to right?", context))[^1].Text!;
 
-        text.Should().Contain("\"id\":\"a\",\"type\":\"product-input\",\"label\":\"Input\",\"x\":10,\"y\":21");
-        text.Should().Contain("\"id\":\"b\",\"type\":\"design-image\",\"label\":\"Design\"}");
+        text.IndexOf("\"id\":\"a\"", StringComparison.Ordinal).Should().BeLessThan(text.IndexOf("\"id\":\"b\"", StringComparison.Ordinal));
+        text.IndexOf("\"id\":\"b\"", StringComparison.Ordinal).Should().BeLessThan(text.IndexOf("\"id\":\"c\"", StringComparison.Ordinal));
+        text.Should().NotContain("\"x\"").And.NotContain("\"y\"");
     }
 
     [TestMethod]
