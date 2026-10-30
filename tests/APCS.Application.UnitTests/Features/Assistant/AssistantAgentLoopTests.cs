@@ -193,6 +193,20 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
+    public async Task RunAsync_CompletionCheck_DropsASummaryOfWhatWasAlreadySaid()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I connected the steps in run order.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", "{}", "c1"))],
+            [AssistantTestSupport.Text("I connected the steps in run order, "), AssistantTestSupport.Text("review and apply."), AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+
+        events.Where(e => e.Type == "delta").Should().ContainSingle();
+        saved.Single().Content.Should().Be("I connected the steps in run order.");
+    }
+
+    [TestMethod]
     public async Task RunAsync_CompletionCheck_AnswersTheQuestionTheActionLeftOut()
     {
         var edit = ActionTool("edit_workflow_canvas", "I added the approval step.");

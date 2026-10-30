@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Assistant.Common;
@@ -11,7 +12,7 @@ using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Assistant;
 
-public sealed class AssistantAgentLoop(
+public sealed partial class AssistantAgentLoop(
     IAssistantChatModel chatModel,
     AssistantPromptBuilder promptBuilder,
     AssistantToolRegistry registry,
@@ -78,19 +79,15 @@ public sealed class AssistantAgentLoop(
                 var textBefore = state.Text.Length;
                 var heldText = new StringBuilder();
                 var completionPass = isCompletionCheck;
-                var releaseText = !completionPass;
                 isCompletionCheck = false;
                 await foreach (var update in chatModel.StreamAsync(new(conversation, declarations, !endTurn), cancellationToken))
                 {
                     if (update.Kind == AssistantModelUpdateKind.Text && update.Text is { } text)
                     {
-                        if (!releaseText)
+                        if (completionPass)
                         {
                             heldText.Append(text);
-                            if (IsCompletionDonePrefix(heldText.ToString()))
-                                continue;
-                            releaseText = true;
-                            text = heldText.ToString().TrimStart();
+                            continue;
                         }
 
                         var delta = state.Text.Length == textBefore ? state.WithParagraphBreak(text) : text;
@@ -112,6 +109,14 @@ public sealed class AssistantAgentLoop(
                     {
                         yield return AssistantStreamEvent.Status(update.RetryInSeconds ?? 0);
                     }
+                }
+
+                var completionText = heldText.ToString().Trim();
+                if (completionPass && completionText.Length > 0 && !IsCompletionDone(completionText) && !RepeatsEarlierText(state.Text, completionText))
+                {
+                    var delta = state.WithParagraphBreak(completionText);
+                    state.AppendText(delta);
+                    yield return AssistantStreamEvent.Delta(delta);
                 }
 
                 state.RecordUsage(completed);
@@ -213,11 +218,23 @@ public sealed class AssistantAgentLoop(
         yield return AssistantStreamEvent.Done(state.AssistantMessageId, state.Model ?? chatModel.ModelName, state.InputTokens, state.OutputTokens);
     }
 
-    private static bool IsCompletionDonePrefix(string text)
+    private const double RepeatedWordShare = 0.6;
+
+    private static bool IsCompletionDone(string text) =>
+        string.Equals(text.Trim().TrimEnd('.', '!'), CompletionDoneMarker, StringComparison.OrdinalIgnoreCase);
+
+    private static bool RepeatsEarlierText(string earlierText, string text)
     {
-        var trimmed = text.Trim().TrimEnd('.', '!');
-        return CompletionDoneMarker.StartsWith(trimmed, StringComparison.OrdinalIgnoreCase);
+        var earlierWords = Words(earlierText).ToHashSet(StringComparer.Ordinal);
+        var words = Words(text).ToArray();
+        return words.Length > 0 && words.Count(earlierWords.Contains) >= RepeatedWordShare * words.Length;
     }
+
+    private static IEnumerable<string> Words(string text) =>
+        WordPattern().Matches(text.ToLowerInvariant()).Select(match => match.Value).Where(word => word.Length > 1);
+
+    [GeneratedRegex(@"[\p{L}\p{N}]+")]
+    private static partial Regex WordPattern();
 
     private static IEnumerable<AssistantStreamEvent> ReplayCachedAnswer(AssistantCachedAnswer answer, AssistantTurnState state)
     {
