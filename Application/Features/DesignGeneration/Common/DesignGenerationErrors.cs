@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.AI;
 using APCS.Common.Models;
 
 namespace APCS.Application.Features.DesignGeneration.Common;
@@ -26,6 +27,16 @@ public static class DesignGenerationErrors
     public static Error ImageNotFound() =>
         Error.NotFound("DesignGeneration.ImageNotFound", "One of the images was not found in this job.");
 
+    public static Error NotRegeneratable() =>
+        Error.Conflict("DesignGeneration.NotRegeneratable", "A product can be generated again once the job and the product have finished.");
+
+    public static Error RowNotFound() =>
+        Error.NotFound("DesignGeneration.RowNotFound", "The product was not found in this job.");
+
+    public static Error ProductMovedOn() =>
+        Error.Conflict("DesignGeneration.ProductMovedOn",
+            "This product was set back to pending or added to a later job, so it is generated there.");
+
     public static Error NoFailedProducts() =>
         Error.Conflict("DesignGeneration.NoFailedProducts", "This job has no failed products to retry.");
 
@@ -46,8 +57,8 @@ public static class DesignGenerationErrors
         Error.Conflict("Batches.NoPendingProducts", "This batch job has no pending products to generate.");
 
     // BR51.
-    public static Error MissingApiKey() =>
-        new("MSG35", "Connect a valid Gemini API key before starting image generation.", ErrorType.Conflict);
+    public static Error MissingApiKey(string provider) =>
+        new("MSG35", $"Connect a valid {ImageGenerationProviders.Label(provider)} API key before starting image generation.", ErrorType.Conflict);
 
     // BR52.
     public static Error ActiveJobExists() =>

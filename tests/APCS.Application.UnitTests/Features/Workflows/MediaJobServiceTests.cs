@@ -288,7 +288,7 @@ public sealed class MediaJobServiceTests
             var scenes = payload.Storyboard.Scenes.Select((scene, index) => scene with
             { DurationFrames = 240, GenerationStrategy = "ai_shot", Transition = index == 0 ? "none" : "fade" }).ToArray();
             var storyboard = payload.Storyboard with { Mode = "ai_shot", DurationSeconds = 16, Scenes = scenes,
-                TransitionOverlapFrames = 12, OutputDurationFrames = 468, AiShots = [] };
+                TransitionOverlapFrames = 12, OutputDurationFrames = 480, AiShots = [] };
             job.Payload = WorkflowJson.Write(new AiRenderJobPayload(payload.VideoId, storyboard, []));
         }
 
@@ -297,7 +297,7 @@ public sealed class MediaJobServiceTests
         var validJob = validFixture.JobRows.Single();
         SetupVerification(validFixture);
         var valid = await validFixture.MediaService.CompleteAsync(validJob.Id,
-            Completion(validJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 15.6 } }, default);
+            Completion(validJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 16 } }, default);
         valid.IsSuccess.Should().BeTrue();
 
         var invalidFixture = RenderFixture();
@@ -305,7 +305,7 @@ public sealed class MediaJobServiceTests
         var invalidJob = invalidFixture.JobRows.Single();
         SetupVerification(invalidFixture);
         var invalid = await invalidFixture.MediaService.CompleteAsync(invalidJob.Id,
-            Completion(invalidJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 16 } }, default);
+            Completion(invalidJob) with { Qa = WorkflowTestData.Qa() with { DurationSeconds = 15.6 } }, default);
         invalid.Error.Message.Should().Be("Video failed technical QA.");
         invalidFixture.VideoRows.Single().Status.Should().Be("queued");
     }

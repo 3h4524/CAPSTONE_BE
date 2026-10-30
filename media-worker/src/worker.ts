@@ -83,6 +83,11 @@ async function execute(job: WorkerJob) {
         sources[scene.mockupId] = pngSource(asset.data, scene.sourceHash);
       }
       const aiShots = payload.storyboard.aiShots ?? [];
+      const music = payload.storyboard.videoEdit?.music && !payload.storyboard.videoEdit.music.muted
+        ? assets.get(`music/${payload.storyboard.videoEdit.music.trackId}.mp3`)?.file
+        : undefined;
+      if (payload.storyboard.videoEdit?.music && !payload.storyboard.videoEdit.music.muted && !music)
+        throw new Error("Selected music track is unavailable");
       const sceneErrors: unknown[] = [];
       let nextShot = 0;
       let completedShots = 0;
@@ -137,7 +142,7 @@ async function execute(job: WorkerJob) {
       if (sceneErrors.length > 0) throw sceneErrors[0];
       duringAiShot = false;
       stage = "Rendering";
-      const result = await renderer.render({ storyboard: payload.storyboard, sources, clips }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
+      const result = await renderer.render({ storyboard: payload.storyboard, sources, clips, music }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
       stage = "Uploading"; progress = 90;
       if (!job.uploads.video || !job.uploads.thumbnail) throw new Error("Missing upload grants");
       const video = await uploadFile(job.uploads.video, result.video, signal);

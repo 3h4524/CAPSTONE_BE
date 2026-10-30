@@ -124,8 +124,15 @@ public sealed class LifestyleMockupServiceTests
         fixture.Storage.Setup(x => x.UploadMockupAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Stream _, string _, string key, CancellationToken _) => new StoredMockup(key, "7", new string('b', 64), 1024, 1536));
         fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>())).Returns("https://signed.example/preview");
-        return new(current.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object, keys.Object, credentials.Object,
-            provider.Object, fixture.Storage.Object, fixture.MockupService, fixture.Unit.Object, fixture.Time,
-            NullLogger<LifestyleMockupService>.Instance);
+        // Ideogram comes first, as nothing about the order picks the provider: only Gemini combines images.
+        provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Gemini);
+        var ideogram = new Mock<IImageGenerationProvider>(MockBehavior.Strict);
+        ideogram.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
+        var service = new LifestyleMockupService(current.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object, keys.Object,
+            credentials.Object, [ideogram.Object, provider.Object], fixture.Storage.Object, fixture.MockupService, fixture.Unit.Object,
+            fixture.Time, NullLogger<LifestyleMockupService>.Instance);
+        // Picking Gemini reads its name; checked here, so a test can still verify nothing else was asked of it.
+        provider.VerifyGet(x => x.Provider);
+        return service;
     }
 }

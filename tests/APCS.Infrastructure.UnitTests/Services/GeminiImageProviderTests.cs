@@ -101,6 +101,20 @@ public sealed class GeminiImageProviderTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_GoogleInternalErrorOnce_SendsTheCallAgainAndGetsTheImage()
+    {
+        var requests = 0;
+        var provider = Provider(_ => ++requests == 1
+            ? Json(HttpStatusCode.InternalServerError, """{"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}""")
+            : Json(HttpStatusCode.OK, Generated));
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        result.IsSuccess.Should().BeTrue();
+        requests.Should().Be(2);
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_GoogleStaysBusy_GivesUpAfterTheRetries()
     {
         var requests = 0;

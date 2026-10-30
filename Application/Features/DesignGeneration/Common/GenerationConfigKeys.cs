@@ -23,6 +23,21 @@ public static class GenerationConfigKeys
     /// </summary>
     public const string WorkflowId = "workflowId";
 
+    /// <summary>
+    /// The image generation provider the job's designs are made with. Absent on jobs started before the
+    /// Seller could choose, which were all made with Gemini.
+    /// </summary>
+    public const string ImageProvider = "imageProvider";
+
+    /// <summary>
+    /// The product being generated again and how many designs it gets this time, as <c>{ "rowId", "variationCount" }</c>.
+    /// The job's own variation count stays what the job started with.
+    /// </summary>
+    public const string Regenerate = "regenerate";
+    public const string RegenerateRowId = "rowId";
+
     public const int DefaultVariationCount = 1;
+    public const int MinVariationCount = 1;
+    public const int MaxVariationCount = 4;
     public const string DefaultAspectRatio = "1:1";
 }

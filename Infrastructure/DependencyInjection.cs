@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
@@ -26,6 +27,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pgvector.EntityFrameworkCore;
 
@@ -96,11 +98,27 @@ public static class DependencyInjection
         services.AddOptions<GeminiOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Gemini));
         services.AddSingleton<IOptions<DesignGenerationSettings>>(provider =>
-            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(
-                Math.Max(1, provider.GetRequiredService<IOptions<GeminiOptions>>().Value.MaxConcurrentImages))));
+        {
+            var gemini = provider.GetRequiredService<IOptions<GeminiOptions>>().Value;
+            var ideogram = provider.GetRequiredService<IOptions<IdeogramOptions>>().Value;
+            return Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(Math.Max(1, gemini.MaxConcurrentImages))
+            {
+                MaxConcurrentImagesByProvider = new Dictionary<string, int>
+                {
+                    [ImageGenerationProviders.Ideogram] = Math.Max(1, ideogram.MaxConcurrentImages)
+                }
+            });
+        });
         services.AddHttpClient("Gemini", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" });
+        services.AddOptions<IdeogramOptions>()
+            .Bind(configuration.GetSection(ConfigurationSections.Ideogram));
+        services.AddHttpClient("Ideogram", client => client.Timeout = TimeSpan.FromSeconds(120))
+            .RedactLoggedHeaders(new[] { "Api-Key" });
+        // Every service takes all the image providers and picks one by name: design generation the one its job names,
+        // lifestyle mock-ups and AI Studio frames Gemini, the only provider that can combine images.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
+        services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -110,6 +128,7 @@ public static class DependencyInjection
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
+        services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -124,6 +143,19 @@ public static class DependencyInjection
             if (string.IsNullOrWhiteSpace(options.ApiKey))
                 options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
         });
+        services.AddOptions<AssistantOptions>()
+            .Bind(configuration.GetSection(AssistantOptions.SectionName))
+            .ValidateDataAnnotations();
+        services.PostConfigure<AssistantOptions>(options =>
+        {
+            if (!options.HasApiKeys)
+                options.ApiKeys = configuration.GetOptionalStringArray($"{AssistantOptions.SectionName}:{nameof(AssistantOptions.ApiKeys)}");
+            if (string.IsNullOrWhiteSpace(options.ApiKey) && !options.HasApiKeys)
+                options.ApiKey = FirstConfigured(
+                    configuration[$"{GeminiTextGenerationOptions.SectionName}:ApiKey"],
+                    configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
+        });
+        services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
@@ -154,6 +186,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
 
         return services;
@@ -174,6 +207,8 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
+        services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 
@@ -229,9 +264,22 @@ public static class DependencyInjection
             // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
             client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
         });
-        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddOptions<RagCacheOptions>()
+            .Bind(configuration.GetSection(RagCacheOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IRagEmbeddingProvider>(provider => new MemoizedEmbeddingProvider(
+            provider.GetRequiredService<GeminiEmbeddingProvider>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<MemoizedEmbeddingProvider>>()));
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
-        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<RagService>();
+        services.AddScoped<IRagService>(provider => new CachedRagSearchService(
+            provider.GetRequiredService<RagService>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<CachedRagSearchService>>()));
         services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
         services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
         services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();
@@ -262,4 +310,7 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static string FirstConfigured(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 }

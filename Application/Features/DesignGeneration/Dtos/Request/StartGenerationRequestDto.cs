@@ -11,6 +11,9 @@ namespace APCS.Application.Features.DesignGeneration.Dtos.Request;
 /// them automatically. Omit it to keep the behavior from before approval existed.
 /// </param>
 /// <param name="WorkflowId">Optional: the workflow this job is started from. It is only recorded on the job.</param>
+/// <param name="ImageProvider">
+/// The provider that makes the designs, "gemini" or "ideogram"; the Seller needs a connected key for it. Omit it for Gemini.
+/// </param>
 public sealed record StartGenerationRequestDto(
     Guid? DesignTemplateId,
     Guid? StyleArtPresetId,
@@ -18,4 +21,5 @@ public sealed record StartGenerationRequestDto(
     string AspectRatio,
     string? Instructions = null,
     bool? RequireApproval = null,
-    Guid? WorkflowId = null);
+    Guid? WorkflowId = null,
+    string? ImageProvider = null);

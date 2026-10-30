@@ -24,7 +24,9 @@ public sealed record SaveWorkflowRequest(string Name, string Description, Workfl
 public sealed record WorkflowResponse(Guid Id, string Name, string Description, int NodeCount, long Revision, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, WorkflowDefinition Definition);
 public sealed record ProductInputConfig(Guid BatchId, Guid ProductId);
 public sealed record MockupConfig(IReadOnlyList<Guid>? MockupIds = null, string? ArtworkGroupKey = null);
-public sealed record StandardOptions(string MotionPreset = "gentle", string Crop = "safe", string Transition = "none");
+public sealed record StandardOptions(string MotionPreset = "zoom", string Crop = "safe", string Transition = "none");
+public sealed record StandardSceneOptions(Guid MockupId, Region? StartCrop = null, Region? EndCrop = null, Region? BaseCrop = null,
+    double StartScale = 1, double EndScale = 1, double StartRotation = 0, double EndRotation = 0);
 public sealed record AiVideoSceneOptions(
     Guid? MockupId = null,
     string TemplateCode = "cinematic_product_showcase",
@@ -42,7 +44,25 @@ public sealed record AiVideoSceneOptions(
     string? StudioLayout = null,
     Guid? StudioFrameId = null,
     string? StudioPrompt = null,
-    IReadOnlyList<string>? StudioReferenceHashes = null);
+    IReadOnlyList<string>? StudioReferenceHashes = null,
+    string? StandardMotionPreset = null,
+    Region? StandardBaseCrop = null,
+    Region? StandardStartCrop = null,
+    Region? StandardEndCrop = null,
+    double? StandardStartScale = null,
+    double? StandardEndScale = null,
+    double? StandardStartRotation = null,
+    double? StandardEndRotation = null,
+    int? DisplayDurationFrames = null,
+    int? TrimStartFrames = null,
+    int? TrimEndFrames = null,
+    string? TransitionIn = null,
+    int? TransitionDurationFrames = null);
+public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
+    string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
+public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
+    int FadeInFrames = 15, int FadeOutFrames = 15, bool Loop = true, bool Muted = false);
+public sealed record VideoEditConfig(int Version = 1, VideoMusicConfig? Music = null, IReadOnlyList<VideoOverlay>? Overlays = null);
 public sealed record VideoOutputSpec(string Format, int Width, int Height, string AspectRatio);
 public static class VideoOutputFormats
 {
@@ -66,7 +86,8 @@ public sealed record GenerateVideoConfig(
     IReadOnlyList<string?>? SceneMotionPresets = null, int? TemplateVersion = null, string OutputFormat = VideoOutputFormats.Default,
     IReadOnlyList<AiVideoSceneOptions>? AiScenes = null, string? AiGlobalInstructions = null,
     string AiStudioMode = "direct", string AiStudioLayout = "hanging_window",
-    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null);
+    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null,
+    IReadOnlyList<StandardSceneOptions>? StandardScenes = null, VideoEditConfig? VideoEdit = null);
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
     string? PreviewVideoUrl, int DefaultDurationSeconds, string DefaultTransition, string DefaultMotionPreset,
@@ -96,12 +117,14 @@ public sealed record AiStudioFrameQuote(string Fingerprint, int PromptVersion, d
 public sealed record AiStudioFrameGenerationResponse(MockupResponse Frame, bool Reused, decimal EstimatedCostUsd);
 public sealed record ScenePlan(Guid MockupId, long SourceRevision, string SourceHash, string Role, int SceneOrder, int DurationFrames, Region Crop, Region EndCrop, string Motion, string Transition, string Text, string GenerationStrategy, IReadOnlyList<string> Warnings,
     string? AiTemplateCode = null, int? PromptVersion = null, string? CompiledPrompt = null, AiVideoSceneOptions? AiSettings = null, Region? SourceCrop = null,
-    string? AiProviderKey = null, string? AiModelKey = null, string? AiModelName = null);
+    string? AiProviderKey = null, string? AiModelKey = null, string? AiModelName = null, double StartScale = 1, double EndScale = 1, double StartRotation = 0, double EndRotation = 0,
+    int TrimStartFrames = 0, int TrimEndFrames = 0, int TransitionFrames = 0);
 public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash, string Model, string Preset, string Prompt, int DurationSeconds, string Fingerprint,
     string ProviderKey = AiVideoModel.ProviderKey, string ModelKey = AiVideoModel.ModelKey, int PromptVersion = 1, Region? SourceCrop = null);
 public sealed record Storyboard(string Template, int TemplateVersion, int DurationSeconds, string ProductType, IReadOnlyList<ScenePlan> Scenes, string Fingerprint,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
-    string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null);
+    string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null,
+    VideoEditConfig? VideoEdit = null);
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16");
 public sealed record AiSceneVideoResponse(int SceneOrder, string Status, string? PreviewUrl, string? Failure);

@@ -2,6 +2,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Authentication.Dtos;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Batches;
+using APCS.Application.Features.Batches.Dtos;
 using APCS.Application.Features.Batches.Validators;
 using APCS.Common.Constants;
 using APCS.Domain.Entities;
@@ -177,6 +178,62 @@ public sealed class BatchApprovalTests
         result.IsSuccess.Should().BeTrue();
         batch.DeletedAt.Should().NotBeNull();
         unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task AddProductAsync_WithDesignText_StoresItTrimmedAndReturnsIt()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
+        var productRepo = MockRepository(Array.Empty<Product>());
+        Product? added = null;
+        productRepo.Setup(x => x.AddAsync(It.IsAny<Product>(), false, It.IsAny<CancellationToken>()))
+            .Callback<Product, bool, CancellationToken>((product, _, _) => added = product).Returns(Task.CompletedTask);
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.AddProductAsync(batch.Id,
+            new SaveProductDto("Mountain Sunrise", "tshirt", "Hikers", ["mountain"], null, null, "  GO HIGHER  "));
+
+        result.IsSuccess.Should().BeTrue();
+        added!.DesiredDesignText.Should().Be("GO HIGHER");
+        result.Value.DesignText.Should().Be("GO HIGHER");
+    }
+
+    [TestMethod]
+    public async Task AddProductAsync_WithACustomPrompt_StoresItTrimmedAndReturnsIt()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
+        var productRepo = MockRepository(Array.Empty<Product>());
+        Product? added = null;
+        productRepo.Setup(x => x.AddAsync(It.IsAny<Product>(), false, It.IsAny<CancellationToken>()))
+            .Callback<Product, bool, CancellationToken>((product, _, _) => added = product).Returns(Task.CompletedTask);
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.AddProductAsync(batch.Id,
+            new SaveProductDto("Mountain Sunrise", "tshirt", "Hikers", ["mountain"], null, null, CustomPrompt: "  A mountain badge.  "));
+
+        result.IsSuccess.Should().BeTrue();
+        added!.CustomPrompt.Should().Be("A mountain badge.");
+        result.Value.CustomPrompt.Should().Be("A mountain badge.");
+    }
+
+    [TestMethod]
+    public void SaveProductValidator_CustomPromptOverOneThousandCharacters_IsRejected()
+    {
+        var validation = new SaveProductValidator().Validate(
+            new SaveProductDto("Mountain Sunrise", "tshirt", "Hikers", ["mountain"], null, null, CustomPrompt: new string('x', 1001)));
+
+        validation.Errors.Should().ContainSingle(error => error.PropertyName == nameof(SaveProductDto.CustomPrompt));
+    }
+
+    [TestMethod]
+    public void SaveProductValidator_DesignTextOverOneHundredCharacters_IsRejected()
+    {
+        var validation = new SaveProductValidator().Validate(
+            new SaveProductDto("Mountain Sunrise", "tshirt", "Hikers", ["mountain"], null, null, new string('x', 101)));
+
+        validation.Errors.Should().ContainSingle(error => error.PropertyName == nameof(SaveProductDto.DesignText));
     }
 
     private static Mock<IRepository<TEntity>> MockRepository<TEntity>(IEnumerable<TEntity> data) where TEntity : class

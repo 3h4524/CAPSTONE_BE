@@ -1,4 +1,5 @@
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 using FluentAssertions;
 
@@ -75,6 +76,44 @@ public sealed class WorkflowRuntimeTests
         var pending = fixture.AddAsset(product); pending.ApprovalStatus = "pending"; pending.ApprovedRevision = null;
         var selected = await fixture.Runtime.ApprovedAssetsAsync(run, new([], "group-saved-for-an-earlier-product"), default);
         selected.Select(x => x.Id).Should().Equal(approved.Id);
+    }
+
+    [TestMethod]
+    public async Task PlanAsync_StandardGeneratedKeyframeOutsideApplySelection_IsUsedOnlyAfterCurrentApproval()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var run = fixture.AddRun(product);
+        var source = fixture.AddAsset(product);
+        var frame = WorkflowTestData.Asset(product.Id, "VideoScene");
+        frame.SourceType = MockupSources.AiGenerated;
+        frame.MetadataRevision = 1;
+        frame.ContentHash = new string('b', 64);
+        frame.ApprovalStatus = "pending";
+        frame.ApprovedRevision = null;
+        var aspect = VideoOutputFormats.Resolve(VideoOutputFormats.Default).AspectRatio;
+        frame.Regions = AiStudioFrameIdentity.SerializeRegions(new(
+            AiStudioFrameIdentity.Fingerprint(source, "none", aspect, templateCode: "cinematic_product_showcase"),
+            source.Id, source.ContentHash!, source.MetadataRevision, "none", aspect, AiStudioFrameIdentity.PromptVersion,
+            TemplateCode: "cinematic_product_showcase"));
+        fixture.AssetRows.Add(frame);
+        var startCrop = new Region(.1, .1, .8, .8);
+        var endCrop = new Region(.2, .2, .6, .6);
+        var config = new GenerateVideoConfig(Mode: "standard", Template: "product_showcase", TemplateVersion: 2,
+            AssetSelection: "manual", SelectedMockupIds: [frame.Id], SceneOrder: [frame.Id],
+            StandardScenes: [new(frame.Id, startCrop, endCrop)]);
+
+        var pending = await fixture.Runtime.PlanAsync(run, config, default);
+        pending.IsSuccess.Should().BeFalse();
+        pending.Error.Code.Should().Be("WaitingForInput");
+
+        frame.ApprovalStatus = "approved";
+        frame.ApprovedRevision = frame.MetadataRevision;
+        var approved = await fixture.Runtime.PlanAsync(run, config, default);
+
+        approved.IsSuccess.Should().BeTrue();
+        approved.Value.Scenes.Should().HaveCount(2).And.OnlyContain(scene => scene.MockupId == frame.Id);
+        approved.Value.Scenes.Should().OnlyContain(scene => scene.Crop == startCrop && scene.EndCrop == endCrop);
     }
 
     [TestMethod]

@@ -15,6 +15,7 @@ namespace APCS.Application.Features.BatchProductPrompts.Dtos.Response;
 /// <param name="CharacterCount">The combined prompt length.</param>
 /// <param name="IsCustomized">Whether any override is stored.</param>
 /// <param name="CanEdit">Whether the row is currently editable.</param>
+/// <param name="CustomPrompt">The product's own image prompt, which replaces the design template; null when it has none.</param>
 public sealed record BatchProductPromptResponseDto(
     Guid RowId,
     string Subject,
@@ -29,4 +30,5 @@ public sealed record BatchProductPromptResponseDto(
     string EffectivePrompt,
     int CharacterCount,
     bool IsCustomized,
-    bool CanEdit);
+    bool CanEdit,
+    string? CustomPrompt = null);

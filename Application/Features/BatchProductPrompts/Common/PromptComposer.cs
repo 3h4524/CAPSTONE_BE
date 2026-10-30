@@ -31,11 +31,12 @@ public static partial class PromptComposer
         var usedStyle = ContainsPlaceholder(source, "style");
         var usedKeywords = ContainsPlaceholder(source, "keywords");
 
-        var resolved = source
+        // An empty value leaves two spaces where it was ("a print-ready  composition"); they are closed up.
+        var resolved = MultipleSpaces().Replace(source
             .Replace("{subject}", subject, StringComparison.OrdinalIgnoreCase)
             .Replace("{niche}", niche, StringComparison.OrdinalIgnoreCase)
             .Replace("{style}", artStyle, StringComparison.OrdinalIgnoreCase)
-            .Replace("{keywords}", keywords.Trim(), StringComparison.OrdinalIgnoreCase);
+            .Replace("{keywords}", keywords.Trim(), StringComparison.OrdinalIgnoreCase), " ");
 
         var parts = new List<string> { resolved.Trim() };
         if (!usedSubject && subject.Trim().Length > 0)
@@ -86,4 +87,7 @@ public static partial class PromptComposer
 
     [GeneratedRegex(@"\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}", RegexOptions.CultureInvariant)]
     private static partial Regex DoubleBrace();
+
+    [GeneratedRegex(@"[ \t]{2,}", RegexOptions.CultureInvariant)]
+    private static partial Regex MultipleSpaces();
 }

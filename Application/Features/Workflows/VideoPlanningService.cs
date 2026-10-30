@@ -31,6 +31,10 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         var approved = owned.Where(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision)
             .Where(x => group == null || x.ArtworkGroupKey == group).ToArray();
         var requestedIds = new HashSet<Guid>(request.MockupIds);
+        if (request.Config.SelectedMockupIds is { } selectedIds) requestedIds.UnionWith(selectedIds);
+        if (request.Config.SceneOrder is { } sceneOrder) requestedIds.UnionWith(sceneOrder);
+        if (request.Config.StandardScenes is { } standardScenes)
+            requestedIds.UnionWith(standardScenes.Select(scene => scene.MockupId));
         if (request.Config.AiScenes is { } scenes)
         {
             foreach (var scene in scenes)

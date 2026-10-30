@@ -5,6 +5,10 @@ export type StandardVideoScene = {
   durationFrames: number;
   crop: VideoRegion;
   endCrop: VideoRegion;
+  startScale?: number;
+  endScale?: number;
+  startRotation?: number;
+  endRotation?: number;
   motion: string;
   transition: VideoTransition;
   text: string;
@@ -20,13 +24,20 @@ export type ShotImageGeometry =
 
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 const mix = (start: number, end: number, progress: number) => start + (end - start) * progress;
+const stable = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 
 export const getSceneFrame = (scene: StandardVideoScene, frame: number) => {
   const progress = clamp(frame / Math.max(1, scene.durationFrames - 1));
   const crop = Object.fromEntries((["x", "y", "width", "height"] as const).map(key =>
-    [key, mix(scene.crop[key], scene.endCrop[key], progress)]
+    [key, stable(mix(scene.crop[key], scene.endCrop[key], progress))]
   )) as VideoRegion;
-  return { crop, opacity: 1, containScale: scene.motion === "contain_gentle" ? .97 + .03 * progress : 1 };
+  return {
+    crop,
+    opacity: 1,
+    containScale: scene.motion === "contain_gentle" ? stable(.97 + .03 * progress) : 1,
+    scale: stable(mix(scene.startScale ?? 1, scene.endScale ?? 1, progress)),
+    rotation: stable(mix(scene.startRotation ?? 0, scene.endRotation ?? 0, progress)),
+  };
 };
 
 export const getTransitionFrameStyle = (transition: VideoTransition, frame: number, overlapFrames: number, side: TransitionSide) => {
@@ -40,16 +51,17 @@ export const getTransitionFrameStyle = (transition: VideoTransition, frame: numb
   return { opacity: side === "incoming" ? progress : 1, transform: "none", clipPath: "none", filter: side === "incoming" ? `blur(${(1 - progress) * 14}px)` : "none", flashOpacity: 0 };
 };
 
-export const getShotImageGeometry = (scene: StandardVideoScene, source: StandardVideoSource, frame: number,
+export const getShotImageGeometry = (scene: StandardVideoScene, _source: StandardVideoSource, frame: number,
   output: StandardVideoOutput = { width: 1080, height: 2160 }): ShotImageGeometry => {
   const { crop, containScale } = getSceneFrame(scene, frame);
   if (scene.motion === "contain_gentle") return { mode: "contain", scale: containScale };
-  const scale = Math.min(output.width / (source.width * crop.width), output.height / (source.height * crop.height));
-  const width = source.width * scale;
-  const height = source.height * scale;
+  // Keep the worker in lockstep with the editor and browser storyboard: the normalized crop is
+  // the output viewport and therefore maps directly to the output canvas.
+  const width = output.width / crop.width;
+  const height = output.height / crop.height;
   return {
     mode: "crop", width, height,
-    left: (output.width - width * crop.width) / 2 - crop.x * width,
-    top: (output.height - height * crop.height) / 2 - crop.y * height,
+    left: -crop.x * width,
+    top: -crop.y * height,
   };
 };

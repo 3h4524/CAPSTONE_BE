@@ -23,10 +23,13 @@ public interface ILifestyleMockupService
 /// image at the Mockup Approval gate. The person photo itself is not stored.
 /// </remarks>
 public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
-    IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IImageGenerationProvider images,
+    IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IEnumerable<IImageGenerationProvider> imageProviders,
     IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
     ILogger<LifestyleMockupService> logger) : ILifestyleMockupService
 {
+    // Gemini is the provider that can combine a photo with a mock-up.
+    private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Gemini);
+
     // Both images travel inline in one Gemini request, which is capped at about 20 MB.
     public const int MaximumPersonBytes = 8 * 1024 * 1024;
 

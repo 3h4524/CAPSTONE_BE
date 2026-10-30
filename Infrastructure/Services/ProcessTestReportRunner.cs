@@ -55,16 +55,27 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
 
     private async Task<(int ExitCode, string Output)> RunCommandAsync(CancellationToken cancellationToken)
     {
+        var isWindows = OperatingSystem.IsWindows();
         var startInfo = new ProcessStartInfo
         {
-            FileName = "bash",
+            FileName = isWindows ? "cmd.exe" : "bash",
             WorkingDirectory = _workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
 
-        startInfo.ArgumentList.Add("-c");
+        if (isWindows)
+        {
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/s");
+            startInfo.ArgumentList.Add("/c");
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("-c");
+        }
+
         startInfo.ArgumentList.Add(_options.RunnerCommand);
 
         using var process = new Process { StartInfo = startInfo };

@@ -41,6 +41,10 @@ public partial class User
 
     public virtual ICollection<ApiUsageRecord> ApiUsageRecords { get; set; } = new List<ApiUsageRecord>();
 
+    public virtual ICollection<AssistantConversation> AssistantConversations { get; set; } = new List<AssistantConversation>();
+
+    public virtual ICollection<AssistantPendingAction> AssistantPendingActions { get; set; } = new List<AssistantPendingAction>();
+
     public virtual ICollection<AuditLog> AuditLogs { get; set; } = new List<AuditLog>();
 
     public virtual ICollection<AuthToken> AuthTokens { get; set; } = new List<AuthToken>();

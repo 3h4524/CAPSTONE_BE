@@ -1,7 +1,11 @@
+using System.Linq.Expressions;
+using System.Text.Json;
 using APCS.Api.Controllers;
 using APCS.Api.UnitTests.TestSupport;
+using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
 using APCS.Common.Models;
+using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -13,6 +17,59 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class VideoMediaControllerTests
 {
+    [TestMethod]
+    public async Task Music_WithoutRepository_ReturnsAnEmptyCatalog()
+    {
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
+
+        var result = (await controller.Music(CancellationToken.None)).Should().BeOfType<OkObjectResult>().Subject;
+
+        result.Value.Should().BeAssignableTo<IEnumerable<object>>().Which.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task Music_AvailableLicensedTracks_ReturnsSortedCatalogAndFiltersInvalidTracks()
+    {
+        using var cancellation = new CancellationTokenSource();
+        Expression<Func<MusicTrack, bool>>? capturedPredicate = null;
+        var repository = new Mock<IRepository<MusicTrack>>(MockBehavior.Strict);
+        IReadOnlyList<MusicTrack> tracks =
+        [
+            Track("Worry", previewUrl: null),
+            Track("Ambient Air", previewUrl: "https://media.example/ambient-preview.mp3"),
+        ];
+        repository.Setup(x => x.FindAsync(It.IsAny<Expression<Func<MusicTrack, bool>>>(), cancellation.Token))
+            .Callback((Expression<Func<MusicTrack, bool>> predicate, CancellationToken _) => capturedPredicate = predicate)
+            .ReturnsAsync(tracks);
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>(), repository.Object);
+
+        var result = (await controller.Music(cancellation.Token)).Should().BeOfType<OkObjectResult>().Subject;
+
+        var catalog = JsonSerializer.SerializeToElement(result.Value);
+        catalog.GetArrayLength().Should().Be(2);
+        catalog[0].GetProperty("Name").GetString().Should().Be("Ambient Air");
+        catalog[0].GetProperty("PreviewUrl").GetString().Should().Be("https://media.example/ambient-preview.mp3");
+        catalog[1].GetProperty("Name").GetString().Should().Be("Worry");
+        catalog[1].GetProperty("PreviewUrl").GetString().Should().Be("https://media.example/worry.mp3");
+
+        capturedPredicate.Should().NotBeNull();
+        var accepts = capturedPredicate!.Compile();
+        accepts(Track("Valid")).Should().BeTrue();
+        new[]
+        {
+            Track("Deleted", deletedAt: DateTime.UtcNow),
+            Track("Unavailable", isAvailable: false),
+            Track("Not royalty free", royaltyFree: false),
+            Track("No license", licenseType: null),
+            Track("Blank license", licenseType: ""),
+            Track("No audio", audioUrl: null),
+            Track("Blank audio", audioUrl: ""),
+        }.Should().OnlyContain(track => !accepts(track));
+        repository.VerifyAll();
+    }
+
     [TestMethod]
     public async Task Templates_ActiveCatalog_ForwardsCancellationAndReturnsOk()
     {
@@ -86,6 +143,47 @@ public sealed class VideoMediaControllerTests
         var controller = new VideoMediaController(service.Object, Mock.Of<IVideoArtifactService>(), Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
         var result = (await controller.Upload(Guid.NewGuid(), file, default)).Should().BeOfType<ObjectResult>().Subject;
         result.StatusCode.Should().Be(400);
+        result.Value.Should().BeOfType<ProblemDetails>().Which.Title.Should().Be("Use a static image.");
+    }
+
+    [TestMethod]
+    public async Task GenerateLifestyle_ValidPhoto_ReturnsCreatedAndForwardsUploadDetails()
+    {
+        var productId = Guid.NewGuid();
+        var garmentId = Guid.NewGuid();
+        var generated = VideoWorkflowTestData.Mockup();
+        using var cancellation = new CancellationTokenSource();
+        using var content = new MemoryStream([1, 2, 3]);
+        var file = new FormFile(content, 0, 3, "file", "person.png");
+        var service = new Mock<ILifestyleMockupService>(MockBehavior.Strict);
+        service.Setup(x => x.GenerateAsync(productId, garmentId, It.IsAny<Stream>(), 3, cancellation.Token))
+            .ReturnsAsync(Result.Success(generated));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), service.Object, Mock.Of<IAiStudioFrameService>());
+
+        var result = (await controller.GenerateLifestyle(productId, garmentId, file, cancellation.Token))
+            .Should().BeOfType<ObjectResult>().Subject;
+
+        result.StatusCode.Should().Be(StatusCodes.Status201Created);
+        result.Value.Should().BeSameAs(generated);
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task GenerateLifestyle_ServiceRejectsPhoto_ReturnsValidationProblem()
+    {
+        using var content = new MemoryStream([1]);
+        var file = new FormFile(content, 0, 1, "file", "person.gif");
+        var service = new Mock<ILifestyleMockupService>();
+        service.Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Stream>(), 1, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupResponse>(Error.Validation("Use a static image.")));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), service.Object, Mock.Of<IAiStudioFrameService>());
+
+        var result = (await controller.GenerateLifestyle(Guid.NewGuid(), Guid.NewGuid(), file, CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Subject;
+
+        result.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
         result.Value.Should().BeOfType<ProblemDetails>().Which.Title.Should().Be("Use a static image.");
     }
 
@@ -184,4 +282,27 @@ public sealed class VideoMediaControllerTests
         controller.GetCustomAttributes(typeof(AuthorizeAttribute), true).Cast<AuthorizeAttribute>().Single().Roles.Should().Be("Seller");
         controller.GetCustomAttributes(typeof(AllowAnonymousAttribute), true).Should().BeEmpty();
     }
+
+    private static MusicTrack Track(
+        string name,
+        DateTime? deletedAt = null,
+        bool? isAvailable = true,
+        bool royaltyFree = true,
+        string? licenseType = "owned",
+        string? audioUrl = "https://media.example/worry.mp3",
+        string? previewUrl = null) => new()
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            ArtistName = "LONOWN",
+            DurationSeconds = 28,
+            Genre = "Other",
+            Mood = "Calm",
+            DeletedAt = deletedAt,
+            IsAvailable = isAvailable,
+            RoyaltyFree = royaltyFree,
+            LicenseType = licenseType!,
+            AudioUrl = audioUrl!,
+            PreviewUrl = previewUrl,
+        };
 }

@@ -153,10 +153,10 @@ public sealed class BatchService(
         if (!await batches.Query().AnyAsync(x => x.Id == batchId && x.UserId == userId && x.DeletedAt == null, cancellationToken))
             return Result.Failure<IReadOnlyList<ProductDto>>(MissingBatch);
         var rows = await products.Query().Where(x => x.BatchId == batchId && x.UserId == userId && x.DeletedAt == null)
-            .OrderBy(x => x.CreatedAt).Select(x => new { x.Id, x.BatchId, x.Name, x.ProductType, x.NicheCategory, x.InputDescription, x.MainKeywords, x.Notes, x.ProcessingStatus, x.CreatedAt }).ToListAsync(cancellationToken);
+            .OrderBy(x => x.CreatedAt).Select(x => new { x.Id, x.BatchId, x.Name, x.ProductType, x.NicheCategory, x.InputDescription, x.MainKeywords, x.Notes, x.ProcessingStatus, x.CreatedAt, x.DesiredDesignText, x.CustomPrompt }).ToListAsync(cancellationToken);
         var list = rows.Select(x => new ProductDto(x.Id, x.BatchId, x.Name, x.ProductType, x.NicheCategory,
             ParseKeywords(x.MainKeywords), GetProductDescription(x.InputDescription, x.Name, x.ProductType, x.NicheCategory, x.MainKeywords),
-            x.Notes, x.ProcessingStatus, x.CreatedAt)).ToArray();
+            x.Notes, x.ProcessingStatus, x.CreatedAt, x.DesiredDesignText, x.CustomPrompt)).ToArray();
         return Result.Success<IReadOnlyList<ProductDto>>(list);
     }
 
@@ -175,7 +175,7 @@ public sealed class BatchService(
         var product = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batchId, Name = name,
             ProductType = request.ProductType, NicheCategory = Clean(request.Niche), MainKeywords = string.Join(", ", keywords),
             Notes = Clean(request.SourceNotes), InputDescription = BuildInputDescription(name, request.ProductType, Clean(request.Niche), keywords, request.ProductDescription),
-            ProcessingStatus = "pending", CreatedAt = now };
+            DesiredDesignText = Clean(request.DesignText), CustomPrompt = Clean(request.CustomPrompt), ProcessingStatus = "pending", CreatedAt = now };
         await products.AddAsync(product, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success(Map(product));
@@ -228,7 +228,7 @@ public sealed class BatchService(
             inserted.Add(new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batchId, Name = name,
                 ProductType = item.ProductType, NicheCategory = niche, MainKeywords = string.Join(", ", keywords),
                 Notes = Clean(item.SourceNotes), InputDescription = BuildInputDescription(name, item.ProductType, niche, keywords, item.ProductDescription),
-                ProcessingStatus = "pending", CreatedAt = now });
+                DesiredDesignText = Clean(item.DesignText), CustomPrompt = Clean(item.CustomPrompt), ProcessingStatus = "pending", CreatedAt = now });
         }
 
         foreach (var product in inserted) await products.AddAsync(product, cancellationToken: cancellationToken);
@@ -251,6 +251,8 @@ public sealed class BatchService(
         product.Name = name; product.ProductType = request.ProductType; product.NicheCategory = Clean(request.Niche);
         product.MainKeywords = string.Join(", ", keywords); product.Notes = Clean(request.SourceNotes);
         product.InputDescription = BuildInputDescription(name, request.ProductType, Clean(request.Niche), keywords, request.ProductDescription);
+        product.DesiredDesignText = Clean(request.DesignText);
+        product.CustomPrompt = Clean(request.CustomPrompt);
         product.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await products.UpdateAsync(product, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
@@ -307,7 +309,8 @@ public sealed class BatchService(
     private static string[] NormalizeKeywords(IEnumerable<string> values) => values.Select(x => x.Trim().ToLowerInvariant()).Where(x => x.Length > 0).Distinct(StringComparer.Ordinal).Take(13).ToArray();
     private static IReadOnlyList<string> ParseKeywords(string? value) => string.IsNullOrWhiteSpace(value) ? [] : value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
     private static ProductDto Map(Product p) => new(p.Id, p.BatchId, p.Name, p.ProductType, p.NicheCategory, ParseKeywords(p.MainKeywords),
-        GetProductDescription(p.InputDescription, p.Name, p.ProductType, p.NicheCategory, p.MainKeywords), p.Notes, p.ProcessingStatus, p.CreatedAt);
+        GetProductDescription(p.InputDescription, p.Name, p.ProductType, p.NicheCategory, p.MainKeywords), p.Notes, p.ProcessingStatus, p.CreatedAt,
+        p.DesiredDesignText, p.CustomPrompt);
 
     private static string BuildInputDescription(string name, string productType, string? niche, IEnumerable<string> keywords, string? productDescription)
     {
