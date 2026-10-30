@@ -16,7 +16,7 @@ public sealed partial class AssistantKnowledgeBase(
     ILogger<AssistantKnowledgeBase> logger)
 {
     private const int PrefetchTopK = 4;
-    private static readonly TimeSpan PrefetchTimeout = TimeSpan.FromMilliseconds(2500);
+    private static readonly TimeSpan PrefetchTimeout = TimeSpan.FromMilliseconds(1200);
     private static readonly TimeSpan AnswerTtl = TimeSpan.FromMinutes(30);
 
     public static bool IsAnswerCacheable(AssistantChatSession session) =>
