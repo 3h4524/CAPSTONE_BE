@@ -19,4 +19,5 @@ public sealed record UpdatePlanRequestDto(
     bool CustomApiKeysAllowed,
     bool WhiteLabelExportEnabled,
     bool PrioritySupport,
-    bool IsActive);
+    bool IsActive,
+    IReadOnlyList<PlanFeatureInputDto>? Features = null);

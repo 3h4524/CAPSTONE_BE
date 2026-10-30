@@ -35,7 +35,8 @@ public sealed class PayOsOptions
 
     /// <summary>
     /// Gets or sets the conversion rate to translate a plan's price into the
-    /// VND amount PayOS requires. Default is 1000m since prices are stored in thousands of VND (nghìn đồng).
+    /// VND amount PayOS requires. Prices are stored in USD; every VND figure the API returns uses
+    /// this rate too, so set it (PayOS__UsdToVndRate) to the real rate, e.g. 25000.
     /// </summary>
     public decimal UsdToVndRate { get; set; } = 1000m;
 

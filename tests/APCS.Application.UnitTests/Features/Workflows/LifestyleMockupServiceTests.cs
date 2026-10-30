@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.AI;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
@@ -126,6 +127,6 @@ public sealed class LifestyleMockupServiceTests
         fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>())).Returns("https://signed.example/preview");
         return new(current.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object, keys.Object, credentials.Object,
             provider.Object, fixture.Storage.Object, fixture.MockupService, fixture.Unit.Object, fixture.Time,
-            NullLogger<LifestyleMockupService>.Instance);
+            NullLogger<LifestyleMockupService>.Instance, TestEntitlements.AllowAll());
     }
 }

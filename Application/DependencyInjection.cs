@@ -40,6 +40,10 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ISubscriptionService, SubscriptionService>();
         services.AddScoped<IUsageStatisticsService, UsageStatisticsService>();
+        services.AddScoped<Features.Entitlements.IPlanEntitlementService, Features.Entitlements.PlanEntitlementService>();
+        services.AddScoped<Features.Entitlements.IUsageAllowanceService, Features.Entitlements.UsageAllowanceService>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IPlanInsightsService, Features.Admin.SubscriptionPlans.PlanInsightsService>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.AiReview.IPlanAiReviewService, Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();

@@ -7,6 +7,8 @@ namespace APCS.Application.Features.Subscriptions.Dtos.Response;
 /// Null when the plan has no annual price; the client must not offer an Annual billing option
 /// for a plan with a null value here (BR191).
 /// </param>
+/// <param name="MonthlyPriceVnd">The monthly price in whole đồng, as PayOS charges it.</param>
+/// <param name="AnnualPriceVnd">The annual price in whole đồng; null when there is none.</param>
 /// <param name="IsCurrentPlan">True for the card matching the Seller's active subscription (BR92).</param>
 public sealed record AvailablePlanDto(
     Guid PlanId,
@@ -17,7 +19,9 @@ public sealed record AvailablePlanDto(
     decimal? AnnualPriceUsd,
     bool IsCurrentPlan,
     IReadOnlyList<PlanFeatureFlagDto> Features,
-    PlanQuotasDto Quotas);
+    PlanQuotasDto Quotas,
+    decimal MonthlyPriceVnd = 0m,
+    decimal? AnnualPriceVnd = null);
 
 /// <summary>
 /// One feature flag/limit row for a plan, passed through generically since the actual

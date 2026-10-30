@@ -9,9 +9,13 @@ namespace APCS.Application.Features.Subscriptions.Dtos.Response;
 /// True when the Seller already has a non-zero-priced active subscription (BR190) — the client
 /// uses this to decide whether a plan card's CTA opens checkout or shows MSG57 instead.
 /// </param>
+/// <param name="TrialEligible">True when the Seller has no paid plan and never started a trial.</param>
+/// <param name="TrialDays">How long the free Pro trial lasts.</param>
 public sealed record SubscriptionOverviewResponseDto(
     CurrentSubscriptionDto? CurrentSubscription,
     IReadOnlyList<UsageQuotaDto> UsageQuotas,
     IReadOnlyList<AvailablePlanDto> AvailablePlans,
     IReadOnlyList<RecentInvoiceDto> RecentInvoices,
-    bool HasActivePaidPlan);
+    bool HasActivePaidPlan,
+    bool TrialEligible = false,
+    int TrialDays = 0);

@@ -3,6 +3,8 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Logging;
@@ -19,7 +21,7 @@ public interface IAiStudioFrameService
 public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IImageGenerationProvider images,
     IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
-    ILogger<AiStudioFrameService> logger) : IAiStudioFrameService
+    ILogger<AiStudioFrameService> logger, IPlanEntitlementService entitlements) : IAiStudioFrameService
 {
     public const int MaximumSourceBytes = 20 * 1024 * 1024;
     public const int MaximumReferenceCount = 3;
@@ -31,6 +33,13 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
 
     public async Task<Result<AiStudioFrameQuote>> QuoteAsync(Guid productId, AiStudioFrameRequest request, CancellationToken ct)
     {
+        // Generating goes through this quote first, so the plan check here covers both.
+        if (user.UserId is Guid userId)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.StudioKeyframe, ct);
+            if (planCheck.IsFailure) return Result.Failure<AiStudioFrameQuote>(planCheck.Error);
+        }
+
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameQuote>(context.Error);
         var (_, source, _, referenceMetadata, aspectRatio, fingerprint) = context.Value;
@@ -144,7 +153,7 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         var usageId = Guid.NewGuid();
         await usage.AddAsync(new ApiUsageRecord
         {
-            Id = usageId, UserId = userId, ProductId = productId, Provider = "gemini", Feature = "image_generation",
+            Id = usageId, UserId = userId, ProductId = productId, Provider = "gemini", Feature = UsageFeatures.ImageGeneration,
             ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
         }, cancellationToken: ct);
         await assets.AddAsync(new MockupImage

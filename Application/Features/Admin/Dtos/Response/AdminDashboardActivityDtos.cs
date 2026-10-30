@@ -1,11 +1,5 @@
 namespace APCS.Application.Features.Admin.Dtos.Response;
 
-public sealed record MonthlyRevenueDto(
-    string Month,
-    decimal Subscriptions,
-    decimal Usage
-);
-
 public sealed record SupportTicketDto(
     Guid Id,
     string UserName,

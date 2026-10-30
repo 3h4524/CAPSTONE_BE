@@ -1,6 +1,7 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -20,7 +21,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<WorkflowNodeRun> nodes, IRepository<Product> products,
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
-    WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time) : IWorkflowRunService
+    WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
+    IPlanEntitlementService entitlements) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -38,6 +40,14 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         var definition = WorkflowJson.Read<WorkflowDefinition>(workflow.Definition);
         var error = graph.Validate(definition);
         if (error != null) return Result.Failure<RunResponse>(error);
+        if (definition.Nodes.FirstOrDefault(x => x.Type == "generate-video") is { } videoNode)
+        {
+            // A run with a video is a full run: Free has a few of them a month.
+            var fullRun = await entitlements.RequireAllowanceAsync(user.UserId!.Value, UsageAllowances.FullRuns, cancellationToken: ct);
+            if (fullRun.IsFailure) return Result.Failure<RunResponse>(fullRun.Error);
+            var videoCheck = await CheckVideoPlanAsync(user.UserId!.Value, WorkflowJson.Config<GenerateVideoConfig>(videoNode), ct);
+            if (videoCheck.IsFailure) return Result.Failure<RunResponse>(videoCheck.Error);
+        }
         var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
         var product = await products.GetByIdAsync(input.ProductId, ct);
         if (product is null || product.UserId != user.UserId || product.DeletedAt != null || product.BatchId != input.BatchId)
@@ -181,6 +191,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     return Result.Failure<RunResponse>(Error.Validation("Regeneration requires AI Shot mode."));
                 if (request.SceneOrder.HasValue && request.Action != "regenerate_ai_shot")
                     return Result.Failure<RunResponse>(Error.Validation("A scene can only be selected for AI clip regeneration."));
+                var videoCheck = await CheckVideoPlanAsync(run.UserId, selectedConfig, ct);
+                if (videoCheck.IsFailure) return Result.Failure<RunResponse>(videoCheck.Error);
                 var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
                 if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             }
@@ -221,6 +233,24 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     private async Task<RunResponse> MapAsync(WorkflowRun run, CancellationToken ct) => new(run.Id, run.WorkflowId, run.ProductId, run.Status,
         run.Revision, run.WorkflowRevision, run.CreatedAt, run.ErrorMessage,
         (await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct)).Select(x => new NodeRunResponse(x.Id, x.NodeId, x.NodeType, x.Status, x.Attempt, x.Stage, x.Progress, x.ErrorMessage, JsonSerializer.Deserialize<JsonElement>(x.OutputSnapshot))).ToArray());
+    /// <summary>
+    /// Checks a video configuration against the Seller's plan: AI video and landscape output are
+    /// plan features, and standard renders count toward Free's or the trial's allowance and the
+    /// daily safety cap.
+    /// </summary>
+    private async Task<Result> CheckVideoPlanAsync(Guid userId, GenerateVideoConfig config, CancellationToken ct)
+    {
+        if (config.Mode == "ai_shot") return await entitlements.RequireFeatureAsync(userId, PlanFeatures.AiVideo, ct);
+        if (config.OutputFormat == "landscape")
+        {
+            var format = await entitlements.RequireFeatureAsync(userId, PlanFeatures.AllVideoFormats, ct);
+            if (format.IsFailure) return format;
+        }
+        var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Videos, cancellationToken: ct);
+        if (allowance.IsFailure) return allowance;
+        return await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyVideoCap, cancellationToken: ct);
+    }
+
     private static Error Missing() => Error.NotFound("WorkflowRunNotFound", "Workflow run not found.");
     private static Error Stale() => Error.Conflict("StaleRevision", "The workflow or video changed. Reload before continuing.");
 }

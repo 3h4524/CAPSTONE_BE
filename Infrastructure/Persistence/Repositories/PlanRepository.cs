@@ -40,6 +40,15 @@ public sealed class PlanRepository(AppDbContext dbContext)
             .SingleOrDefaultAsync(cancellationToken);
 
     /// <inheritdoc />
+    public Task<SubscriptionPlan?> GetPurchasableByTierAsync(
+        string tier,
+        CancellationToken cancellationToken = default) =>
+        dbContext.SubscriptionPlans
+            .AsNoTracking()
+            .Where(plan => plan.Tier == tier && plan.IsActive == true)
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<SubscriptionPlan>> GetAllForAdminAsync(CancellationToken cancellationToken = default) =>
         QueryAllForAdminAsync(cancellationToken);
 

@@ -72,6 +72,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Permission> Permissions { get; set; }
 
+    public virtual DbSet<PlanAiReview> PlanAiReviews { get; set; }
+
     public virtual DbSet<PlanFeature> PlanFeatures { get; set; }
 
     public virtual DbSet<PrintifyIntegration> PrintifyIntegrations { get; set; }
@@ -1815,6 +1817,42 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Resource)
                 .HasMaxLength(100)
                 .HasColumnName("resource");
+        });
+
+        modelBuilder.Entity<PlanAiReview>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_plan_ai_reviews");
+
+            entity.ToTable("plan_ai_reviews");
+
+            entity.HasIndex(e => new { e.Status, e.GeneratedAt }, "idx_plan_ai_reviews_status_generated_at").IsDescending(false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.DroppedParts).HasColumnName("dropped_parts");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.GeneratedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("generated_at");
+            entity.Property(e => e.InputJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("input_json");
+            entity.Property(e => e.RawAnswer).HasColumnName("raw_answer");
+            entity.Property(e => e.InputTokens).HasColumnName("input_tokens");
+            entity.Property(e => e.Model)
+                .HasMaxLength(100)
+                .HasColumnName("model");
+            entity.Property(e => e.OutputTokens).HasColumnName("output_tokens");
+            entity.Property(e => e.PeriodEnd).HasColumnName("period_end");
+            entity.Property(e => e.PeriodStart).HasColumnName("period_start");
+            entity.Property(e => e.ReviewJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("review_json");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.TriggeredBy).HasColumnName("triggered_by");
         });
 
         modelBuilder.Entity<PlanFeature>(entity =>

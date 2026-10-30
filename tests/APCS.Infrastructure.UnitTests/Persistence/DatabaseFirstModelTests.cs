@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(60);
+        mappedTables.Should().HaveCount(61);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
@@ -36,8 +36,20 @@ public sealed class DatabaseFirstModelTests
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
             "rag_documents", "rag_chunks", "rag_embeddings",
-            "test_report_runs"
+            "test_report_runs", "plan_ai_reviews"
         });
+    }
+
+    [TestMethod]
+    public void Model_PlanAiReview_KeepsTheInputAndReviewAsJson()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(PlanAiReview))!;
+        entityType.GetTableName().Should().Be("plan_ai_reviews");
+        entityType.FindProperty(nameof(PlanAiReview.InputJson))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.IsNullable.Should().BeTrue();
     }
 
     [TestMethod]

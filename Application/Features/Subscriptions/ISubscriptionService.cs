@@ -79,6 +79,23 @@ public interface ISubscriptionService
     Task<Result> CancelScheduledDowngradeAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates a PayOS payment link for the next cycle of the Seller's paid plan (Renew now). Open
+    /// while the plan is past due or within <c>RenewalRules.RenewWindowDays</c> of renewing; the
+    /// cycle is added once the payment is confirmed, through the same checkout status and webhook.
+    /// </summary>
+    Task<Result<CheckoutResponseDto>> RenewAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Starts the free 14-day Pro trial for a Seller with no plan who never had one.
+    /// </summary>
+    Task<Result<TrialResponseDto>> StartTrialAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets what the Seller's current plan allows.
+    /// </summary>
+    Task<Result<EntitlementsResponseDto>> GetEntitlementsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Renders an existing invoice as a downloadable PDF. Never creates or edits an
     /// invoice — read/export-only.
     /// </summary>

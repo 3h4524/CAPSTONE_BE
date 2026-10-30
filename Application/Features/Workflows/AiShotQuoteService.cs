@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -20,7 +21,7 @@ public interface IAiShotQuoteService
 
 public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<WorkflowNodeRun> nodes,
     IRepository<MediaJob> jobs, IApiKeyRepository keys, WorkflowRuntime runtime, IAiShotQuoteSigner signer,
-    TimeProvider time) : IAiShotQuoteService
+    TimeProvider time, IPlanEntitlementService entitlements) : IAiShotQuoteService
 {
     public async Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct)
     {
@@ -62,6 +63,9 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
     private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("Choose AI Shot to request a quote."));
+        // Every paid AI video action is quoted or verified here, so this one check gates them all.
+        var planCheck = await entitlements.RequireFeatureAsync(run.UserId, PlanFeatures.AiVideo, ct);
+        if (planCheck.IsFailure) return Result.Failure<(Storyboard, decimal, int)>(planCheck.Error);
         var key = (await keys.ListOwnedAsync(run.UserId, ct)).FirstOrDefault(x => x.ServiceProvider == "gemini" && x.IsActive == true && x.LastCheckSucceeded == true);
         if (key == null) return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("Connect a Gemini API key with paid Veo access first."));
         var planned = await runtime.PlanAsync(run, config, ct);

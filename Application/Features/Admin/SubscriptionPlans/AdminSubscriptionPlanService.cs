@@ -3,10 +3,13 @@ using APCS.Application.Common.Validation;
 using APCS.Application.Features.Admin.SubscriptionPlans.Common;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.Subscriptions;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Admin.SubscriptionPlans;
 
@@ -21,7 +24,8 @@ public sealed class AdminSubscriptionPlanService(
     TimeProvider timeProvider,
     IValidator<CreatePlanRequestDto> createValidator,
     IValidator<UpdatePlanRequestDto> updateValidator,
-    IValidator<DeletePlanRequestDto> deleteValidator)
+    IValidator<DeletePlanRequestDto> deleteValidator,
+    IOptions<PaymentGatewaySettings> gatewaySettings)
     : IAdminSubscriptionPlanService
 {
     /// <inheritdoc />
@@ -33,8 +37,12 @@ public sealed class AdminSubscriptionPlanService(
         foreach (var plan in allPlans)
         {
             var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(plan.Id, cancellationToken);
+            var trialSubscriberCount = await subscriptions.CountActiveTrialsByPlanIdAsync(plan.Id, cancellationToken);
             var hasAnyReference = await subscriptions.HasAnySubscriptionReferenceAsync(plan.Id, cancellationToken);
-            dtos.Add(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference));
+            dtos.Add(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference) with
+            {
+                TrialSubscriberCount = trialSubscriberCount
+            });
         }
 
         return Result.Success<IReadOnlyList<AdminPlanDto>>(dtos);
@@ -50,8 +58,12 @@ public sealed class AdminSubscriptionPlanService(
         }
 
         var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(planId, cancellationToken);
+        var trialSubscriberCount = await subscriptions.CountActiveTrialsByPlanIdAsync(planId, cancellationToken);
         var hasAnyReference = await subscriptions.HasAnySubscriptionReferenceAsync(planId, cancellationToken);
-        return Result.Success(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference));
+        return Result.Success(MapToDto(plan, activeSubscriberCount, canDelete: !hasAnyReference) with
+        {
+            TrialSubscriberCount = trialSubscriberCount
+        });
     }
 
     /// <inheritdoc />
@@ -109,9 +121,14 @@ public sealed class AdminSubscriptionPlanService(
                 cancellationToken: cancellationToken);
         }
 
+        await UpsertFeaturesAsync(plan.Id, request.Features, utcNow, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return Result.Success(MapToDto(plan, activeSubscriberCount: 0, canDelete: true, request.WhiteLabelExportEnabled));
+        // Read back what was stored; the features just written are not on the new plan object.
+        var created = await plans.GetByIdForAdminAsync(plan.Id, cancellationToken);
+        return Result.Success(created is not null
+            ? MapToDto(created, activeSubscriberCount: 0, canDelete: true)
+            : MapToDto(plan, activeSubscriberCount: 0, canDelete: true, request.WhiteLabelExportEnabled, RequestedFeatures(request.Features)));
     }
 
     /// <inheritdoc />
@@ -157,13 +174,23 @@ public sealed class AdminSubscriptionPlanService(
         plan.IsActive = request.IsActive;
         plan.UpdatedAt = utcNow;
 
+        // The plan was read untracked together with its feature rows. Updating it with them would
+        // attach those rows, and the upserts below attach their own copies of the same keys, so
+        // the plan row is updated on its own.
+        plan.PlanFeatures = [];
         await plans.UpdateAsync(plan, cancellationToken: cancellationToken);
         await UpsertWhiteLabelFeatureAsync(planId, request.WhiteLabelExportEnabled, utcNow, cancellationToken);
+        await UpsertFeaturesAsync(planId, request.Features, utcNow, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(planId, cancellationToken);
+        var trialSubscriberCount = await subscriptions.CountActiveTrialsByPlanIdAsync(planId, cancellationToken);
         var hasAnyReferenceAfterUpdate = await subscriptions.HasAnySubscriptionReferenceAsync(planId, cancellationToken);
-        return Result.Success(MapToDto(plan, activeSubscriberCount, !hasAnyReferenceAfterUpdate, request.WhiteLabelExportEnabled));
+        var updated = await plans.GetByIdForAdminAsync(planId, cancellationToken);
+        var dto = updated is not null
+            ? MapToDto(updated, activeSubscriberCount, !hasAnyReferenceAfterUpdate)
+            : MapToDto(plan, activeSubscriberCount, !hasAnyReferenceAfterUpdate, request.WhiteLabelExportEnabled, RequestedFeatures(request.Features));
+        return Result.Success(dto with { TrialSubscriberCount = trialSubscriberCount });
     }
 
     /// <inheritdoc />
@@ -235,18 +262,84 @@ public sealed class AdminSubscriptionPlanService(
         await planFeatures.UpdateAsync(feature, cancellationToken: cancellationToken);
     }
 
-    private static AdminPlanDto MapToDto(SubscriptionPlan plan, int activeSubscriberCount, bool canDelete) =>
+    /// <summary>
+    /// Writes the plan features the Admin sent. A feature left out of the request keeps its row.
+    /// A flag never stores a limit.
+    /// </summary>
+    private async Task UpsertFeaturesAsync(
+        Guid planId,
+        IReadOnlyList<PlanFeatureInputDto>? features,
+        DateTime utcNow,
+        CancellationToken cancellationToken)
+    {
+        if (features is null || features.Count == 0)
+        {
+            return;
+        }
+
+        var existing = await planFeatures.Query()
+            .Where(feature => feature.PlanId == planId)
+            .ToListAsync(cancellationToken);
+
+        foreach (var input in features)
+        {
+            var isLimit = PlanFeatures.Find(input.Code)?.Kind == PlanFeatureKinds.Limit;
+            var limitValue = isLimit ? input.LimitValue : null;
+            var row = existing.FirstOrDefault(feature => feature.FeatureCode == input.Code);
+
+            if (row is null)
+            {
+                await planFeatures.AddAsync(
+                    new PlanFeature
+                    {
+                        PlanId = planId,
+                        FeatureCode = input.Code,
+                        IsEnabled = input.IsEnabled,
+                        LimitValue = limitValue,
+                        CreatedAt = utcNow
+                    },
+                    cancellationToken: cancellationToken);
+                continue;
+            }
+
+            row.IsEnabled = input.IsEnabled;
+            row.LimitValue = limitValue;
+            await planFeatures.UpdateAsync(row, cancellationToken: cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Lists every configurable feature for the plan. A flag with no row is off; a limit with no
+    /// row has no limit, which is how <see cref="PlanEntitlements"/> reads them.
+    /// </summary>
+    private static IReadOnlyList<PlanFeatureInputDto> MapFeatures(IEnumerable<PlanFeature> rows) =>
+        PlanFeatures.All
+            .Select(definition => rows.FirstOrDefault(feature => feature.FeatureCode == definition.Code) is { } row
+                ? new PlanFeatureInputDto(definition.Code, row.IsEnabled ?? false, row.LimitValue)
+                : new PlanFeatureInputDto(definition.Code, definition.Kind == PlanFeatureKinds.Limit, null))
+            .ToList();
+
+    private static IEnumerable<PlanFeature> RequestedFeatures(IReadOnlyList<PlanFeatureInputDto>? features) =>
+        (features ?? []).Select(feature => new PlanFeature
+        {
+            FeatureCode = feature.Code,
+            IsEnabled = feature.IsEnabled,
+            LimitValue = feature.LimitValue
+        });
+
+    private AdminPlanDto MapToDto(SubscriptionPlan plan, int activeSubscriberCount, bool canDelete) =>
         MapToDto(
             plan,
             activeSubscriberCount,
             canDelete,
             plan.PlanFeatures.Any(f => f.FeatureCode == PlanFeatureCodes.WhiteLabelExport && f.IsEnabled == true));
 
-    private static AdminPlanDto MapToDto(
+    private AdminPlanDto MapToDto(
         SubscriptionPlan plan,
         int activeSubscriberCount,
         bool canDelete,
-        bool whiteLabelExportEnabled) =>
+        bool whiteLabelExportEnabled,
+        IEnumerable<PlanFeature>? features = null) =>
         new(
             plan.Id,
             plan.Name,
@@ -268,5 +361,12 @@ public sealed class AdminSubscriptionPlanService(
             activeSubscriberCount,
             canDelete,
             plan.CreatedAt,
-            plan.UpdatedAt);
+            plan.UpdatedAt,
+            MapFeatures(features ?? plan.PlanFeatures))
+        {
+            // Prices are stored in USD; PayOS charges them at this rate.
+            MonthlyPriceVnd = gatewaySettings.Value.ToVnd(plan.MonthlyPriceUsd),
+            AnnualPriceVnd = plan.AnnualPriceUsd is { } annual ? gatewaySettings.Value.ToVnd(annual) : null,
+            UsdToVndRate = gatewaySettings.Value.UsdToVndRate
+        };
 }
