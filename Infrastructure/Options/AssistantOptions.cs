@@ -8,6 +8,8 @@ public sealed class AssistantOptions
 
     public string ApiKey { get; set; } = string.Empty;
 
+    public string[] ApiKeys { get; set; } = [];
+
     public string Model { get; set; } = "gemini-3.5-flash";
 
     [Range(0, 2)]
@@ -27,5 +29,14 @@ public sealed class AssistantOptions
     [Range(0, 30)]
     public int OverloadRetryDelaySeconds { get; set; } = 2;
 
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
+    public IReadOnlyList<string> EffectiveApiKeys =>
+        ApiKeys.Append(ApiKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Select(key => key.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+    public bool HasApiKeys => ApiKeys.Any(key => !string.IsNullOrWhiteSpace(key));
+
+    public bool IsConfigured => EffectiveApiKeys.Count > 0;
 }

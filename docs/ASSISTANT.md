@@ -55,6 +55,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:OverloadRetryDelaySeconds` | `2` | Pause before retrying an overload error. |
 | `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |
+| `Assistant:ApiKeys` | empty | Extra Gemini keys tried in order (env `Assistant__ApiKeys__0`, `Assistant__ApiKeys__1`). An HTTP 429 switches to the next key at once without waiting; the delayed retries start only when every key is rate limited. The working key is kept for later requests. |
 | `Rag:Cache:*` | enabled | See [ADR 0001](adr/0001-rag-query-caching.md). |
 
 ## Knowledge base
