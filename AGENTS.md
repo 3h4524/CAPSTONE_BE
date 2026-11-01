@@ -24,6 +24,7 @@ The list above resolves conflicts. This table decides reading order, so a task r
 | Change a layer boundary, a project reference, or add a dependency | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Rename or move types, or apply naming and language conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Change an entity or the schema | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *Database-first schema workflow* in [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Change the assistant chatbot or RAG caching | [`docs/ASSISTANT.md`](docs/ASSISTANT.md) and [`docs/adr/0001-rag-query-caching.md`](docs/adr/0001-rag-query-caching.md) |
 | Prepare a pull request | *Definition of done* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`.github/pull_request_template.md`](.github/pull_request_template.md) |
 | Use an APCS prompt or workflow | [`.agent/README.md`](.agent/README.md) |
 
