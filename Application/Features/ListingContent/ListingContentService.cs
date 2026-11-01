@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.ListingContent.Common;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.Rag.Dtos;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +26,7 @@ public sealed class ListingContentService(
     IRepository<ListingGenerationHistory> histories,
     IRepository<SeoScore> seoScores,
     IRepository<ApiUsageRecord> usageRecords,
+    IRagService ragService,
     IPolicyContextRetriever policyContextRetriever,
     IListingContextRetriever listingContextRetriever,
     IGeminiTextGenerationProvider generator,
@@ -46,17 +48,8 @@ public sealed class ListingContentService(
         if (product is null)
             return Result.Failure<ListingContentResponseDto>(Error.NotFound("ListingContent.ProductNotFound", "The product was not found."));
 
-        var input = new ListingContentInput(
-            product.Id,
-            product.Name,
-            product.ProductType,
-            product.NicheCategory,
-            product.TargetAudience,
-            product.InputDescription,
-            ParseKeywords(product.MainKeywords),
-            product.Notes);
-
-        var query = $"{input.Name}; {input.ProductType}; {input.Niche}; {input.TargetAudience}; {string.Join(", ", input.Keywords)}; {input.Description}; {input.Notes}";
+        var input = BuildInput(product);
+        var query = BuildRetrievalQuery(input);
         // Both retrievers share the request-scoped DbContext. Keep them sequential so a missing
         // pgvector extension or a slow RAG store cannot create concurrent DbContext operations.
         var policyContext = await SearchContextSafelyAsync(
@@ -198,6 +191,44 @@ public sealed class ListingContentService(
             productId, listing.Id, parsed.Title, parsed.Description,
             parsed.Tags.Select((tag, index) => new ListingContentTagDto(tag.Value, tag.Type, index + 1)).ToArray(),
             version, generated.Model, now));
+    }
+
+    public async Task<Result<ListingRetrievalEvaluationResponse>> EvaluateRetrievalForAdminAsync(
+        Guid productId,
+        CancellationToken cancellationToken = default)
+    {
+        var product = await products.Query()
+            .Where(item => item.Id == productId && item.DeletedAt == null)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (product is null)
+            return Result.Failure<ListingRetrievalEvaluationResponse>(Error.NotFound(
+                "ListingContent.ProductNotFound",
+                "The product was not found."));
+
+        var input = BuildInput(product);
+        var query = BuildRetrievalQuery(input);
+        var stopwatch = Stopwatch.StartNew();
+        var policyContext = await ragService.SearchWithDiagnosticsAsync(
+            new RagSearchRequest(query, 5, ContentType: "policy"),
+            cancellationToken);
+        var listingContext = await ragService.SearchWithDiagnosticsAsync(
+            new RagSearchRequest(query, 3, ContentType: "listing", Niche: input.Niche),
+            cancellationToken);
+        stopwatch.Stop();
+
+        return Result.Success(new ListingRetrievalEvaluationResponse(
+            product.Id,
+            input.Name,
+            input.ProductType,
+            input.Niche,
+            input.TargetAudience,
+            input.Description,
+            input.Keywords,
+            input.Notes,
+            query,
+            stopwatch.Elapsed.TotalMilliseconds,
+            policyContext,
+            listingContext));
     }
 
     private static string BuildSeoRegenerationInstructions(ListingSeoFeedbackDto feedback)
@@ -344,6 +375,19 @@ Regeneration rules:
     private static IReadOnlyList<string> ParseKeywords(string? value) => string.IsNullOrWhiteSpace(value)
         ? []
         : value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(13).ToArray();
+
+    private static ListingContentInput BuildInput(Product product) => new(
+        product.Id,
+        product.Name,
+        product.ProductType,
+        product.NicheCategory,
+        product.TargetAudience,
+        product.InputDescription,
+        ParseKeywords(product.MainKeywords),
+        product.Notes);
+
+    private static string BuildRetrievalQuery(ListingContentInput input) =>
+        $"{input.Name}; {input.ProductType}; {input.Niche}; {input.TargetAudience}; {string.Join(", ", input.Keywords)}; {input.Description}; {input.Notes}";
 
     private static IEnumerable<string> Tokenize(string value) => value.Split([' ', ',', '.', '-', '_', '/', '|', ':', ';', '!', '?', '(', ')'], StringSplitOptions.RemoveEmptyEntries)
         .Select(token => token.Trim().ToLowerInvariant()).Where(token => token.Length > 2);
