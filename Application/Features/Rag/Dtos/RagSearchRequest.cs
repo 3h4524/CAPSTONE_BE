@@ -10,4 +10,5 @@ public sealed record RagSearchRequest(
     string? ContentType = null,
     string? Platform = null,
     string? Niche = null,
-    double? MinimumViralScore = null);
+    double? MinimumViralScore = null,
+    VideoExperienceSearchRequest? VideoExperience = null);

@@ -67,6 +67,25 @@ public sealed class WorkflowRuntimeTests
     }
 
     [TestMethod]
+    public async Task PlanAsync_ConfirmedPromptSnapshot_UsesTheSameCompiledStoryboardForRendering()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var run = fixture.AddRun(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id)]);
+        var quoted = (await fixture.Runtime.PlanAsync(run, config, default)).Value;
+        var generate = fixture.NodeRows.Single(item => item.WorkflowRunId == run.Id && item.NodeType == "generate-video");
+        generate.OutputSnapshot = WorkflowJson.Write(new AiShotPromptSnapshot(WorkflowJson.Hash(WorkflowJson.Write(config)), quoted));
+
+        var result = await fixture.Runtime.PlanAsync(run, config, default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Fingerprint.Should().Be(quoted.Fingerprint);
+        result.Value.Scenes.Single().CompiledPrompt.Should().Be(quoted.Scenes.Single().CompiledPrompt);
+    }
+
+    [TestMethod]
     public async Task ApprovedAssetsAsync_ArtworkGroupOfAnotherProduct_KeepsTheApprovedMockups()
     {
         var fixture = new WorkflowTestData();

@@ -60,6 +60,7 @@ public static class DependencyInjection
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
         services.AddScoped<Features.Workflows.VideoStoryboardPlanner>();
+        services.AddScoped<Features.Workflows.IVideoExperienceContextService, Features.Workflows.VideoExperienceContextService>();
         services.AddScoped<Features.Workflows.WorkflowRuntime>();
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
@@ -69,6 +70,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
+        services.AddScoped<Features.Workflows.IVideoQualityReviewService, Features.Workflows.VideoQualityReviewService>();
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
         services.AddScoped<Features.Workflows.IAiShotQuoteService, Features.Workflows.AiShotQuoteService>();
         services.AddScoped<Features.Workflows.IAiShotJobService, Features.Workflows.AiShotJobService>();

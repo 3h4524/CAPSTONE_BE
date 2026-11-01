@@ -200,6 +200,7 @@ public sealed class ApiKeyService(
         var provider = key.Provider.Trim().ToLowerInvariant() switch
         {
             "gemini" => ("Google Gemini", "Listing content"),
+            "minimax" => ("MiniMax", "Video generation"),
             // Keep existing OpenAI credentials readable for existing accounts. New listing
             // generation code uses Gemini exclusively.
             "openai" => ("OpenAI (legacy)", "Listing content"),

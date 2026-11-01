@@ -9,19 +9,42 @@ namespace APCS.Application.Features.Workflows;
 public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IRepository<Product> products,
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
-    IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time)
+    IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
+    IVideoExperienceContextService? experiences = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
+        if (config.Mode == "ai_shot")
+        {
+            var generate = (await nodes.FindAsync(item => item.WorkflowRunId == run.Id && item.NodeType == "generate-video", ct))
+                .SingleOrDefault();
+            if (generate is not null)
+            {
+                try
+                {
+                    var snapshot = WorkflowJson.Read<AiShotPromptSnapshot>(generate.OutputSnapshot);
+                    var configFingerprint = WorkflowJson.Hash(WorkflowJson.Write(config));
+                    if (string.Equals(snapshot.ConfigFingerprint, configFingerprint, StringComparison.Ordinal))
+                        return Result.Success(snapshot.Storyboard);
+                }
+                catch (JsonException)
+                {
+                    // Empty, legacy, and completed-node output snapshots are not prompt snapshots.
+                }
+            }
+        }
         var mockupConfig = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
         var approved = await ApprovedAssetsAsync(run, mockupConfig, config, ct);
         var product = await products.GetByIdAsync(run.ProductId, ct);
         var aiTemplateCodes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
         var aiTemplates = await templates.FindAsync(x => x.IsSystemTemplate == true && x.IsActive == true && x.Code != null && aiTemplateCodes.Contains(x.Code), ct);
-        return product is null
-            ? Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."))
-            : planner.Plan(product, approved, config, aiTemplates);
+        if (product is null)
+            return Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."));
+        var experienceMap = experiences is null
+            ? null
+            : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
+        return planner.Plan(product, approved, config, aiTemplates, experienceMap);
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)

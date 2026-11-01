@@ -52,6 +52,11 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("Standard camera movement and framing has an invalid crop or transform value.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.ExtraInstructions is null or { Length: <= 500 }))
             .WithMessage("Keep each scene's extra instructions under 500 characters.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.PromptRuleVersion is null or AiVideoPromptRules.CurrentVersion))
+            .WithMessage("Choose a supported prompt-rule version.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => !scene.PromptRuleVersion.HasValue ||
+            ValidP1Text(scene.StartingState) && ValidP1Text(scene.PrimaryAction) && ValidP1Text(scene.EndingState)))
+            .WithMessage("P1 prompt rules require a start state, one primary action, and an end state of 1–240 characters.");
         RuleFor(x => x.AiGlobalInstructions).Must(x => x is null or { Length: <= 500 })
             .WithMessage("Keep shared AI scene directions under 500 characters.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.DurationSeconds == x.AiScenes.Sum(scene => scene.DurationSeconds))
@@ -85,6 +90,8 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         region.Width > 0 && region.Height > 0 && region.Width <= 1 && region.Height <= 1;
     private static bool ValidScale(double? scale) => scale is null || double.IsFinite(scale.Value) && scale is >= .01 and <= 5;
     private static bool ValidRotation(double? rotation) => rotation is null || double.IsFinite(rotation.Value) && rotation is >= -9999 and <= 9999;
+    private static bool ValidP1Text(string? value) => !string.IsNullOrWhiteSpace(value) && value.Trim().Length <= 240 &&
+        value.All(character => !char.IsControl(character));
 }
 
 public sealed class SaveWorkflowValidator : AbstractValidator<SaveWorkflowRequest>

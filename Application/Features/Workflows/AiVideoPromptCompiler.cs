@@ -23,9 +23,58 @@ internal sealed record AiVideoProductContext(
     string? GarmentColor = null,
     string? BackgroundColor = null);
 
+/// <summary>Normalized P1 settings and the rule text added to one prompt.</summary>
+internal sealed record AiPromptRuleApplication(AiVideoSceneOptions Settings, int? Version,
+    IReadOnlyList<string> AppliedRules, IReadOnlyList<string> Warnings, string? Guidance, string? PrimaryAction);
+
+internal static class AiVideoPromptRules
+{
+    internal const int CurrentVersion = 1;
+
+    internal static bool IsRequested(AiVideoSceneOptions options) => options.PromptRuleVersion.HasValue;
+
+    internal static bool Supports(AiVideoTemplateDefinition template) =>
+        template.Code == "lifestyle_in_use";
+
+    internal static AiPromptRuleApplication Apply(AiVideoTemplateDefinition template, AiVideoSceneOptions settings)
+    {
+        if (!IsRequested(settings))
+            return new(settings, null, [], [], null, null);
+
+        var defaults = template.Defaults;
+        var normalized = settings with
+        {
+            Framing = defaults.Framing,
+            CameraAngle = defaults.CameraAngle,
+            CameraMovement = defaults.CameraMovement,
+            SubjectMotion = defaults.SubjectMotion,
+            MotionIntensity = defaults.MotionIntensity,
+            Lighting = defaults.Lighting,
+            ExtraInstructions = null
+        };
+        var startingState = CleanRequired(settings.StartingState!);
+        var action = CleanRequired(settings.PrimaryAction!);
+        var endingState = CleanRequired(settings.EndingState!);
+        var guidance = $"P1 action plan: begin with {startingState}. Perform one primary action only: {action}. Finish with {endingState}. " +
+            "Continue the person-product relationship already established by the approved opening image; do not invent a pickup, handoff, wardrobe change, product swap, or extra action. Keep camera movement restrained so it supports the action and does not replace it.";
+        return new(normalized, CurrentVersion,
+            ["p1-template-default-controls", "p1-start-action-end", "p1-one-primary-action", "p1-person-product-continuity"],
+            ["P1 prompt rules use the template defaults; advanced camera, lighting, motion, shared, and custom-direction values are not applied."],
+            guidance, action);
+    }
+
+    private static string CleanRequired(string value) =>
+        new string(value.Trim().Where(character => !char.IsControl(character)).ToArray());
+}
+
 /// <summary>Builds a provider prompt from a versioned template and validated scene settings.</summary>
 public static class AiVideoPromptCompiler
 {
+    // Keep prompt-template testing deterministic. Re-enable this only when advanced scene controls
+    // are ready to be evaluated again in the UI and paid-generation path together.
+    internal static bool AdvancedControlsEnabled => false;
+    /// <summary>Matches MiniMax's 7,000-character request limit while retaining required preservation rules.</summary>
+    internal const int MaximumPromptCharacters = 7_000;
     public const string CommonGuardrail = "Product identity constraint for the entire shot: use the approved source image as the authoritative visual reference and keep the same exact product in every frame. Preserve its visible construction, silhouette, proportions, main colors, material character, distinctive details, and the placement, scale, geometry, colors, spelling and lettering of every visible artwork or logo. Do not redraw, replace, duplicate, morph or reinterpret the product or its printed design. Natural perspective, fabric folds and physically plausible material movement are allowed only when required by the selected action; they must not change the design content or detach it from the product surface. Create one continuous shot without cuts, dissolves, ghosted duplicates or sudden reframing. Do not introduce unrelated text, watermarks or extra products. No dialogue, speech, singing or music; use quiet ambient room tone only. These identity and continuity constraints take precedence over any earlier direction that conflicts with them.";
 
     private static readonly IReadOnlyDictionary<string, AiVideoTemplateDefinition> BuiltIns = CreateBuiltIns();
@@ -45,7 +94,13 @@ public static class AiVideoPromptCompiler
         return resolved is null ? null : WithRequiredGuardrail(resolved);
     }
 
-    internal static string Compile(AiVideoTemplateDefinition template, AiVideoSceneOptions options, AiVideoProductContext productContext, int durationSeconds, string? sharedInstructions = null, bool stableSingleImage = false)
+    internal static string Compile(AiVideoTemplateDefinition template, AiVideoSceneOptions options, AiVideoProductContext productContext, int durationSeconds, string? sharedInstructions = null, bool stableSingleImage = false) =>
+        CompileTrace(template, options, productContext, durationSeconds, sharedInstructions, stableSingleImage).FinalPrompt;
+
+    internal static AiPromptTrace CompileTrace(AiVideoTemplateDefinition template, AiVideoSceneOptions options,
+        AiVideoProductContext productContext, int durationSeconds, string? sharedInstructions = null,
+        bool stableSingleImage = false, AiPromptRuleApplication? ruleApplication = null,
+        IReadOnlyList<VideoPromptExperience>? experiences = null)
     {
         var settings = ApplyDefaults(template, options);
         var cameraMovement = stableSingleImage && template.Code == "cinematic_product_showcase"
@@ -59,7 +114,7 @@ public static class AiVideoPromptCompiler
             .Replace("{{SUBJECT_MOTION}}", SubjectMotion(settings.SubjectMotion), StringComparison.Ordinal)
             .Replace("{{MOTION_INTENSITY}}", MotionIntensity(settings.MotionIntensity), StringComparison.Ordinal)
             .Replace("{{LIGHTING}}", Lighting(settings.Lighting), StringComparison.Ordinal)
-            .Replace("{{PRODUCT_ACTION}}", ProductAction(productType), StringComparison.Ordinal)
+            .Replace("{{PRODUCT_ACTION}}", ruleApplication?.PrimaryAction ?? ProductAction(productType), StringComparison.Ordinal)
             .Replace("{{DURATION}}", durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
 
         var productContextPrompt = ProductContextPrompt(productType, productContext);
@@ -71,13 +126,63 @@ public static class AiVideoPromptCompiler
         var selectedControls = stableSingleImage && template.Code == "cinematic_product_showcase"
             ? $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; required camera movement {cameraMovement}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}. The product itself remains still while the camera performs the selected movement."
             : $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; {cameraMovement}; subject motion {SubjectMotion(settings.SubjectMotion)}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}";
-        var shared = string.IsNullOrWhiteSpace(sharedInstructions) ? null : $"Shared direction for all scenes: {sharedInstructions.Trim()}";
+        var shared = !AdvancedControlsEnabled || string.IsNullOrWhiteSpace(sharedInstructions)
+            ? null
+            : $"Shared direction for all scenes: {sharedInstructions.Trim()}";
         var custom = string.IsNullOrWhiteSpace(settings.ExtraInstructions) ? null : settings.ExtraInstructions.Trim();
         var sourceGuardrail = SourceGuardrail(productContext, stableSingleImage);
         var templateGuardrail = TemplateGuardrail(template.Code, settings, stableSingleImage);
-        return string.Join("\n\n", new[] { prompt, productContextPrompt, sceneGuidance, personGuidance, selectedControls, shared, custom, commonPrompt, sourceGuardrail, templateGuardrail }
-            .Where(part => !string.IsNullOrWhiteSpace(part)));
+        var parts = new List<AiPromptPart>();
+        AddPart(parts, "template", "Template prompt", prompt);
+        AddPart(parts, "prompt_rules", "Prompt rules", ruleApplication?.Guidance);
+        AddPart(parts, "product_context", "Product and source context", productContextPrompt);
+        AddPart(parts, "scene_guidance", "Scene guidance", sceneGuidance);
+        AddPart(parts, "person_guidance", "Person continuity", personGuidance);
+        AddPart(parts, "selected_controls", "Effective scene controls", selectedControls);
+        AddPart(parts, "shared_instructions", "Shared directions", shared);
+        AddPart(parts, "custom_instructions", "Custom direction", custom);
+        var ragEnabled = experiences is not null;
+        var selectedExperiences = (experiences ?? []).Take(3).ToArray();
+        if (selectedExperiences.Length > 0)
+        {
+            AddPart(parts, "rag", "RAG experience", ExperienceText(selectedExperiences));
+        }
+        else
+        {
+            parts.Add(new("rag", "RAG experience", ragEnabled
+                ? "No verified experience matched this scene."
+                : "Disabled: no retrieved experience was supplied for this prompt snapshot.", false));
+        }
+        AddPart(parts, "product_guardrails", "Product-preservation rules", commonPrompt);
+        AddPart(parts, "source_guardrails", "Source-image rules", sourceGuardrail);
+        AddPart(parts, "template_guardrails", "Template-specific rules", templateGuardrail);
+        var ragWarnings = new List<string>();
+        var finalPrompt = JoinPrompt(parts);
+        while (finalPrompt.Length > MaximumPromptCharacters && selectedExperiences.Length > 0)
+        {
+            selectedExperiences = selectedExperiences[..^1];
+            var ragIndex = parts.FindIndex(part => part.Key == "rag");
+            parts[ragIndex] = selectedExperiences.Length > 0
+                ? new("rag", "RAG experience", ExperienceText(selectedExperiences), true)
+                : new("rag", "RAG experience", "No verified experience matched this scene.", false);
+            ragWarnings.Add("A low-relevance RAG lesson was omitted to keep the compiled prompt within its limit.");
+            finalPrompt = JoinPrompt(parts);
+        }
+        return new(ruleApplication?.Version, selectedExperiences.Length > 0 ? "applied" : ragEnabled ? "none" : "disabled", ruleApplication?.AppliedRules ?? [],
+            (ruleApplication?.Warnings ?? []).Concat(ragWarnings).ToArray(), parts, finalPrompt, selectedExperiences);
     }
+
+    private static void AddPart(List<AiPromptPart> parts, string key, string label, string? content)
+    {
+        if (!string.IsNullOrWhiteSpace(content)) parts.Add(new(key, label, content, true));
+    }
+
+    private static string ExperienceText(IReadOnlyList<VideoPromptExperience> experiences) =>
+        "Verified experience for this scene. Apply it only when it does not conflict with the template, source image, or preservation rules:\n"
+        + string.Join("\n", experiences.Select(item => $"- {item.Content}"));
+
+    private static string JoinPrompt(IEnumerable<AiPromptPart> parts) => string.Join("\n\n",
+        parts.Where(part => part.IncludedInFinalPrompt).Select(part => part.Content));
 
     private static AiVideoTemplateDefinition WithRequiredGuardrail(AiVideoTemplateDefinition template)
     {
@@ -223,6 +328,18 @@ public static class AiVideoPromptCompiler
                 ? value
                 : fallback;
         var defaults = template.Defaults;
+        if (!AdvancedControlsEnabled)
+            return options with
+            {
+                TemplateCode = template.Code,
+                Framing = defaults.Framing,
+                CameraAngle = defaults.CameraAngle,
+                CameraMovement = defaults.CameraMovement,
+                SubjectMotion = defaults.SubjectMotion,
+                MotionIntensity = defaults.MotionIntensity,
+                Lighting = defaults.Lighting,
+                ExtraInstructions = null
+            };
         return options with
         {
             TemplateCode = template.Code,
@@ -240,7 +357,9 @@ public static class AiVideoPromptCompiler
     {
         if (rows == null) return new Dictionary<string, AiVideoTemplateDefinition>(StringComparer.Ordinal);
         var result = new Dictionary<string, AiVideoTemplateDefinition>(StringComparer.Ordinal);
-        foreach (var row in rows.Where(row => row.IsActive == true && row.Code != null))
+        foreach (var row in rows.Where(row => row.IsActive == true && row.Code != null)
+                     .OrderBy(row => row.Code, StringComparer.Ordinal)
+                     .ThenBy(row => row.TemplateVersion))
         {
             try
             {
@@ -283,20 +402,20 @@ public static class AiVideoPromptCompiler
             new(TemplateCode: "macro_detail_reveal", DurationSeconds: 4, Framing: "macro", CameraAngle: "three_quarter", CameraMovement: "pan_right", SubjectMotion: "none", MotionIntensity: "subtle", Lighting: "soft_studio"));
 
         var lifestyle = new AiVideoTemplateDefinition("lifestyle_in_use", "Lifestyle In-Use",
-            "A natural lifestyle shot of an adult already visible in the approved source image.", 2,
-            "Create a polished lifestyle commercial shot of the adult already visible in the approved source image, naturally wearing or using the exact product. The person performs {{PRODUCT_ACTION}} while the product and its artwork remain unobstructed and clearly readable. The camera performs {{CAMERA_MOVEMENT}} at {{CAMERA_ANGLE}} in {{FRAMING}}. {{LIGHTING}} Use natural body movement, realistic fabric physics and an authentic environment. Do not use a pose change that hides the product. Create a {{DURATION}}-second shot.",
+            "A natural lifestyle shot of an adult already visible in the approved source image.", 3,
+            "Create a polished lifestyle commercial shot of the adult already visible in the approved source image, naturally wearing or using the exact product. The person performs {{PRODUCT_ACTION}} from the established opening relationship. Keep the product and artwork recognizable whenever they are naturally visible; allow realistic folds, perspective, and brief natural occlusion without changing the design. The camera performs {{CAMERA_MOVEMENT}} at {{CAMERA_ANGLE}} in {{FRAMING}}. {{LIGHTING}} Use natural body movement, realistic fabric physics and an authentic environment. Do not introduce a pose change that requires a different person-product relationship. Create a {{DURATION}}-second shot.",
             true, false, Settings(["wide", "medium", "medium_close"], ["eye_level", "three_quarter"], ["locked", "push_in", "gentle_tracking"], ["minimal", "natural"], ["warm_natural", "golden_hour", "bright_clean"]),
             new(TemplateCode: "lifestyle_in_use", DurationSeconds: 4, Framing: "medium", CameraAngle: "eye_level", CameraMovement: "gentle_tracking", SubjectMotion: "natural", MotionIntensity: "subtle", Lighting: "warm_natural"));
 
         var ugc = new AiVideoTemplateDefinition("creator_pov_ugc", "Creator POV / UGC",
-            "An authentic creator-style product demonstration with a phone-camera feel.", 2,
-            "Create an authentic creator-style product demonstration featuring the adult already visible in the approved source image. Use a realistic phone-camera aesthetic in {{FRAMING}}, {{CAMERA_ANGLE}} composition. The camera uses {{CAMERA_MOVEMENT}} with controlled micro-movement. The creator naturally presents the exact product toward the camera without covering its artwork. {{LIGHTING}} Maintain candid UGC realism, accurate anatomy and stable product details. There is no dialogue, lip-sync or exaggerated performance. Create a {{DURATION}}-second shot.",
+            "An authentic creator-style product demonstration with a phone-camera feel.", 3,
+            "Create an authentic creator-style product demonstration featuring the adult already visible in the approved source image. Use a realistic phone-camera aesthetic in {{FRAMING}}, {{CAMERA_ANGLE}} composition. The camera uses {{CAMERA_MOVEMENT}} with controlled micro-movement. The creator naturally presents the exact product toward the camera and avoids deliberately hiding its main design; natural hand overlap, folds, and perspective are allowed when product identity remains stable. {{LIGHTING}} Maintain candid UGC realism, accurate anatomy and stable product details. There is no dialogue, lip-sync or exaggerated performance. Create a {{DURATION}}-second shot.",
             true, false, Settings(["medium_close", "close_up"], ["eye_level", "three_quarter"], ["locked", "push_in", "subtle_handheld"], ["minimal", "natural"], ["bright_clean", "warm_natural"]),
             new(TemplateCode: "creator_pov_ugc", DurationSeconds: 4, Framing: "close_up", CameraAngle: "eye_level", CameraMovement: "subtle_handheld", SubjectMotion: "natural", MotionIntensity: "subtle", Lighting: "bright_clean"));
 
         var story = new AiVideoTemplateDefinition("everyday_story_moment", "Everyday Story Moment",
-            "A warm, grounded everyday scene centered on the product.", 2,
-            "Create a warm, emotionally grounded everyday moment centered on the adult already visible in the approved source image and the exact product. The person performs {{PRODUCT_ACTION}} while the camera observes with {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use a natural expression, restrained movement and intimate commercial storytelling. The product remains clearly identifiable throughout. Create a {{DURATION}}-second shot.",
+            "A warm, grounded everyday scene centered on the product.", 3,
+            "Create a warm, emotionally grounded everyday moment centered on the adult already visible in the approved source image and the exact product. The person performs {{PRODUCT_ACTION}} while the camera observes with {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use a natural expression, restrained movement and intimate commercial storytelling. Keep product identity stable and recognizable whenever it is naturally visible; do not require artificial full visibility in every frame. Create a {{DURATION}}-second shot.",
             true, false, Settings(["wide", "medium", "medium_close"], ["eye_level", "three_quarter"], ["locked", "gentle_tracking", "push_in"], ["minimal", "natural"], ["warm_natural", "golden_hour", "moody_cinematic"]),
             new(TemplateCode: "everyday_story_moment", DurationSeconds: 4, Framing: "medium", CameraAngle: "eye_level", CameraMovement: "gentle_tracking", SubjectMotion: "natural", MotionIntensity: "subtle", Lighting: "golden_hour"));
 
