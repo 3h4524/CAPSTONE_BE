@@ -55,6 +55,10 @@ public sealed class SubscriptionRenewalJob(
                     pastDue,
                     expired);
             }
+
+            var spentGrants = await RemoveSpentGrantsAsync(dbContext, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+            if (spentGrants > 0)
+                logger.LogInformation("Removed {Count} kept features whose period has ended.", spentGrants);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -100,5 +104,24 @@ public sealed class SubscriptionRenewalJob(
                 cancellationToken);
 
         return (pastDue, lapsed.Count);
+    }
+
+    /// <summary>
+    /// Deletes features kept after an Admin's change once they no longer count: the period they
+    /// covered has ended, or the subscription has moved to another plan or ended.
+    /// </summary>
+    public static Task<int> RemoveSpentGrantsAsync(
+        AppDbContext dbContext,
+        DateTime utcNow,
+        CancellationToken cancellationToken)
+    {
+        var today = DateOnly.FromDateTime(utcNow);
+        return dbContext.SubscriptionFeatureGrants
+            .Where(grant => grant.ExpiresOn <= today
+                || !dbContext.Subscriptions.Any(subscription => subscription.Id == grant.SubscriptionId
+                    && subscription.PlanId == grant.PlanId
+                    && (subscription.Status == "active" || subscription.Status == "past_due")
+                    && subscription.DeletedAt == null))
+            .ExecuteDeleteAsync(cancellationToken);
     }
 }

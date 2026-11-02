@@ -5,7 +5,6 @@ using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Entitlements;
 
@@ -36,7 +35,7 @@ public sealed class UsageAllowanceService(
     IRepository<ApiUsageRecord> usageRecords,
     IRepository<MockupImage> mockups,
     IRepository<PromoVideo> videos,
-    IOptions<UsageAllowanceOptions> options,
+    IPlanSettings settings,
     TimeProvider timeProvider) : IUsageAllowanceService
 {
     private const string DesignGenerationJob = "design_generation";
@@ -53,7 +52,7 @@ public sealed class UsageAllowanceService(
             return new UsageAllowanceSummary(null, null, null, []);
 
         var items = new List<UsageAllowanceItem>();
-        foreach (var (code, limit) in Limits(entitlements))
+        foreach (var (code, limit) in await LimitsAsync(entitlements, cancellationToken))
             items.Add(new UsageAllowanceItem(code, UsageAllowances.Label(code), await CountAsync(userId, code, window, cancellationToken), limit));
 
         return new UsageAllowanceSummary(
@@ -72,7 +71,7 @@ public sealed class UsageAllowanceService(
         CancellationToken cancellationToken = default)
     {
         if (Window(entitlements) is not { } window) return Result.Success();
-        if (!Limits(entitlements).TryGetValue(code, out var limit)) return Result.Success();
+        if (!(await LimitsAsync(entitlements, cancellationToken)).TryGetValue(code, out var limit)) return Result.Success();
 
         var used = await CountAsync(userId, code, window, cancellationToken);
         return used + Math.Max(1, requested) <= limit
@@ -92,16 +91,35 @@ public sealed class UsageAllowanceService(
         }
 
         if (entitlements.IsTrial && entitlements.TrialEndsAt is { } endsAt)
-            return new AllowanceWindow(UsageAllowances.ScopeTrial, endsAt.AddDays(-SubscriptionService.TrialDays), endsAt, DateOnly.FromDateTime(endsAt));
+            return new AllowanceWindow(
+                UsageAllowances.ScopeTrial,
+                entitlements.TrialStartedAt ?? endsAt.AddDays(-PlanSettingKeys.DefaultTrialDays),
+                endsAt,
+                DateOnly.FromDateTime(endsAt));
+
+        // A paid plan counts only what it caps per month, also from the 1st.
+        if (!entitlements.IsTrial && PaidLimits(entitlements).Count > 0)
+        {
+            var now = timeProvider.GetUtcNow().UtcDateTime;
+            var from = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var to = from.AddMonths(1);
+            return new AllowanceWindow(UsageAllowances.ScopePlan, from, to, DateOnly.FromDateTime(to));
+        }
 
         return null;
     }
 
-    private Dictionary<string, int> Limits(PlanEntitlements entitlements)
+    // A paid plan's monthly limits; a limit with no value has no limit.
+    private static Dictionary<string, int> PaidLimits(PlanEntitlements entitlements) =>
+        entitlements.Limit(PlanFeatures.MonthlyListings) is { } listings
+            ? new() { [UsageAllowances.Listings] = listings }
+            : [];
+
+    private async Task<Dictionary<string, int>> LimitsAsync(PlanEntitlements entitlements, CancellationToken cancellationToken)
     {
         if (entitlements.IsFree)
         {
-            var free = options.Value.Free;
+            var free = (await settings.GetAllowancesAsync(cancellationToken)).Free;
             return new()
             {
                 [UsageAllowances.FullRuns] = free.FullRuns,
@@ -113,7 +131,9 @@ public sealed class UsageAllowanceService(
             };
         }
 
-        var trial = options.Value.Trial;
+        if (!entitlements.IsTrial) return PaidLimits(entitlements);
+
+        var trial = (await settings.GetAllowancesAsync(cancellationToken)).Trial;
         return new()
         {
             [UsageAllowances.Products] = trial.Products,

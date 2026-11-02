@@ -10,4 +10,10 @@ public interface IPlanInsightsService
 {
     /// <summary>Gets plan insights for the last <see cref="PlanInsightsService.PeriodDays"/> days.</summary>
     Task<Result<PlanInsightsDto>> GetAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the Sellers who used a plan feature between <paramref name="from"/> and
+    /// <paramref name="to"/>, or null when Plan Insights has no measure for that feature.
+    /// </summary>
+    Task<IReadOnlySet<Guid>?> UsersOfFeatureAsync(string featureCode, DateTime from, DateTime to, CancellationToken cancellationToken = default);
 }

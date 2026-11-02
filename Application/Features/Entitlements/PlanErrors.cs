@@ -11,9 +11,10 @@ public static class PlanErrors
     public static Error NoActivePlan() =>
         Error.Forbidden("Plan.NoActivePlan", "Start your free 14-day Pro trial or choose a plan to run this.");
 
-    public static Error FeatureLocked(string featureCode)
+    /// <summary>The plan does not include the feature. <paramref name="label"/> is its catalog label, when known.</summary>
+    public static Error FeatureLocked(string featureCode, string? label = null)
     {
-        var label = PlanFeatures.Find(featureCode)?.Label ?? featureCode;
+        label ??= PlanFeatures.Find(featureCode)?.Label ?? featureCode;
         return Error.Forbidden("Plan.FeatureLocked", $"{label} is not included in your plan. Upgrade to Pro to use it.");
     }
 
@@ -33,6 +34,8 @@ public static class PlanErrors
     public static Error AllowanceReached(string what, int limit, int remaining, string scope, DateOnly? resetsOn) =>
         Error.Conflict("Plan.AllowanceReached", scope == UsageAllowances.ScopeTrial
             ? $"Your Pro trial includes {limit} {what} and {remaining} {(remaining == 1 ? "is" : "are")} left. Choose a plan to keep going."
+            : scope == UsageAllowances.ScopePlan
+            ? $"Your plan includes {limit} {what} a month and {remaining} {(remaining == 1 ? "is" : "are")} left. They reset on {resetsOn?.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture)}, or upgrade to Pro for more."
             : $"Free includes {limit} {what} a month and {remaining} {(remaining == 1 ? "is" : "are")} left. They reset on {resetsOn?.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture)}, or upgrade to keep going.");
 
     public static Error MockupsPerRunExceeded(int limit, int requested) =>

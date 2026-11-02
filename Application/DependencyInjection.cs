@@ -40,6 +40,15 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ISubscriptionService, SubscriptionService>();
         services.AddScoped<IUsageStatisticsService, UsageStatisticsService>();
+        services.AddSingleton<Features.Entitlements.FeatureCatalogCache>();
+        services.AddSingleton<Features.Entitlements.PlanSettingsCache>();
+        services.AddScoped<Features.Entitlements.IPlanSettings, Features.Entitlements.PlanSettings>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IPlanSettingsAdminService, Features.Admin.SubscriptionPlans.PlanSettingsAdminService>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IPlanToolsService, Features.Admin.SubscriptionPlans.PlanToolsService>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IPlanChangeLog, Features.Admin.SubscriptionPlans.PlanChangeLog>();
+        services.AddScoped<Features.Entitlements.IFeatureCatalog, Features.Entitlements.FeatureCatalog>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IFeatureCatalogAdminService, Features.Admin.SubscriptionPlans.FeatureCatalogAdminService>();
+        services.AddScoped<Features.Admin.SubscriptionPlans.IPlanFeatureAssignmentService, Features.Admin.SubscriptionPlans.PlanFeatureAssignmentService>();
         services.AddScoped<Features.Entitlements.IPlanEntitlementService, Features.Entitlements.PlanEntitlementService>();
         services.AddScoped<Features.Entitlements.IUsageAllowanceService, Features.Entitlements.UsageAllowanceService>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanInsightsService, Features.Admin.SubscriptionPlans.PlanInsightsService>();

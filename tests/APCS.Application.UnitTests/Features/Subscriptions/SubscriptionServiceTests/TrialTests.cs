@@ -53,6 +53,27 @@ public sealed class TrialTests
     }
 
     [TestMethod]
+    public async Task StartTrialAsync_GivesThePlanTheAdminChose()
+    {
+        var starter = SubscriptionTestData.CreateStarterPlan();
+        starter.Tier = "starter";
+        var subscriptions = new Mock<ISubscriptionRepository>();
+        Subscription? added = null;
+        subscriptions.Setup(candidate => candidate.AddAsync(It.IsAny<Subscription>(), false, It.IsAny<CancellationToken>()))
+            .Callback<Subscription, bool, CancellationToken>((subscription, _, _) => added = subscription)
+            .Returns(Task.CompletedTask);
+        var plans = new Mock<IPlanRepository>();
+        plans.Setup(candidate => candidate.GetPurchasableByTierAsync("starter", It.IsAny<CancellationToken>())).ReturnsAsync(starter);
+        var service = SubscriptionTestData.CreateService(subscriptions, plans, planSettings: new TestPlanSettings(trialPlanTier: "starter"));
+
+        var result = await service.StartTrialAsync(CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        added!.PlanId.Should().Be(starter.Id);
+        plans.Verify(candidate => candidate.GetPurchasableByTierAsync("pro", It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task StartTrialAsync_WithoutAWorkingGeminiKey_IsRefused()
     {
         var subscriptions = new Mock<ISubscriptionRepository>();

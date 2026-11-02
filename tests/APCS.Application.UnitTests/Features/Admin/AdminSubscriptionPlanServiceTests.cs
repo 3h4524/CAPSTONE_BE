@@ -19,7 +19,8 @@ public sealed class AdminSubscriptionPlanServiceTests
         Mock<ISubscriptionRepository>? subscriptions = null,
         Mock<IRepository<PlanFeature>>? planFeatures = null,
         Mock<IUnitOfWork>? unitOfWork = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IPlanChangeLog? changeLog = null)
     {
         var planFeaturesMock = planFeatures ?? CreateEmptyPlanFeaturesMock();
         var unitOfWorkMock = unitOfWork ?? new Mock<IUnitOfWork>();
@@ -33,7 +34,8 @@ public sealed class AdminSubscriptionPlanServiceTests
             new CreatePlanRequestDtoValidator(),
             new UpdatePlanRequestDtoValidator(),
             new DeletePlanRequestDtoValidator(),
-            Options.Create(new PaymentGatewaySettings(25_000m, null)));
+            Options.Create(new PaymentGatewaySettings(25_000m, null)),
+            changeLog ?? Mock.Of<IPlanChangeLog>());
     }
 
     private static Mock<IRepository<PlanFeature>> CreateEmptyPlanFeaturesMock()

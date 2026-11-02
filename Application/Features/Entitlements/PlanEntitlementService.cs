@@ -4,7 +4,6 @@ using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Entitlements;
 
@@ -29,8 +28,8 @@ public interface IPlanEntitlementService
 
     /// <summary>
     /// Fails when <paramref name="requested"/> more of <paramref name="allowanceCode"/> (one of
-    /// <see cref="UsageAllowances"/>) would pass the Seller's Free or Pro trial allowance. A paid
-    /// plan always passes.
+    /// <see cref="UsageAllowances"/>) would pass the Seller's Free or Pro trial allowance, or a paid
+    /// plan's monthly limit (such as listings per month). Other paid plans always pass.
     /// </summary>
     Task<Result> RequireAllowanceAsync(Guid userId, string allowanceCode, int requested = 1, CancellationToken cancellationToken = default);
 
@@ -49,13 +48,12 @@ public sealed class PlanEntitlementService(
     IRepository<ApiUsageRecord> usageRecords,
     IApiKeyRepository apiKeys,
     IUsageAllowanceService allowances,
-    IOptions<UsageAllowanceOptions> allowanceOptions,
+    IPlanSettings settings,
+    IFeatureCatalog catalog,
+    IRepository<SubscriptionFeatureGrant> grants,
     TimeProvider timeProvider) : IPlanEntitlementService
 {
     private const string GeminiProvider = "gemini";
-
-    /// <summary>What the Pro trial does not include: the AI video tools, billed per second of video.</summary>
-    private static readonly string[] TrialExcludedFeatures = [PlanFeatures.AiVideo, PlanFeatures.StudioKeyframe];
 
     private readonly Dictionary<Guid, PlanEntitlements> cache = [];
 
@@ -73,13 +71,27 @@ public sealed class PlanEntitlementService(
         else
         {
             var isTrial = subscription.TrialEndsAt is not null;
-            var features = subscription.Plan.PlanFeatures
+            // What the trial leaves out is set per feature in the catalog.
+            var trialExcluded = isTrial
+                ? (await catalog.GetAllAsync(cancellationToken)).Where(entry => !entry.TrialAvailable).Select(entry => entry.Code).ToHashSet(StringComparer.Ordinal)
+                : [];
+            var planFeatures = subscription.Plan.PlanFeatures
                 .Where(feature => PlanFeatures.IsKnown(feature.FeatureCode))
                 .ToDictionary(
                     feature => feature.FeatureCode,
-                    feature => new PlanFeatureValue(
-                        (feature.IsEnabled ?? false) && !(isTrial && TrialExcludedFeatures.Contains(feature.FeatureCode)),
-                        feature.LimitValue));
+                    feature => new PlanFeatureValue(feature.IsEnabled ?? false, feature.LimitValue));
+
+            // What the subscriber keeps until the end of the period after an Admin's change.
+            var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
+            var kept = await grants.Query()
+                .Where(grant => grant.SubscriptionId == subscription.Id
+                    && grant.PlanId == subscription.PlanId
+                    && grant.ExpiresOn > today)
+                .ToListAsync(cancellationToken);
+            var features = EntitlementMerge.Merge(planFeatures, kept.Where(grant => PlanFeatures.IsKnown(grant.FeatureCode)))
+                .ToDictionary(
+                    pair => pair.Key,
+                    pair => trialExcluded.Contains(pair.Key) ? pair.Value with { IsEnabled = false } : pair.Value);
             entitlements = new PlanEntitlements(
                 true,
                 subscription.PlanId,
@@ -87,10 +99,13 @@ public sealed class PlanEntitlementService(
                 subscription.Plan.Tier,
                 isTrial,
                 subscription.TrialEndsAt,
-                isTrial ? TrialBatchSize(subscription.Plan.MaxBatchSize) : subscription.Plan.MaxBatchSize,
+                isTrial ? await TrialBatchSizeAsync(subscription.Plan.MaxBatchSize, cancellationToken) : subscription.Plan.MaxBatchSize,
                 isTrial ? 1 : subscription.Plan.MaxConcurrentJobs,
                 subscription.Plan.PrioritySupport == true,
-                features);
+                features,
+                TrialStartedAt: isTrial
+                    ? subscription.CreatedAt ?? subscription.StartDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc)
+                    : null);
         }
 
         cache[userId] = entitlements;
@@ -101,7 +116,10 @@ public sealed class PlanEntitlementService(
     public async Task<Result> RequireFeatureAsync(Guid userId, string featureCode, CancellationToken cancellationToken = default)
     {
         var entitlements = await GetAsync(userId, cancellationToken);
-        return entitlements.IsEnabled(featureCode) ? Result.Success() : Result.Failure(PlanErrors.FeatureLocked(featureCode));
+        if (entitlements.IsEnabled(featureCode)) return Result.Success();
+
+        var feature = await catalog.FindAsync(featureCode, cancellationToken);
+        return Result.Failure(PlanErrors.FeatureLocked(featureCode, feature?.Label));
     }
 
     /// <inheritdoc />
@@ -140,9 +158,9 @@ public sealed class PlanEntitlementService(
     }
 
     // The trial runs a few products at a time, never more than the plan itself.
-    private int TrialBatchSize(int planBatchSize)
+    private async Task<int> TrialBatchSizeAsync(int planBatchSize, CancellationToken cancellationToken)
     {
-        var trial = allowanceOptions.Value.Trial.ProductsPerRun;
+        var trial = (await settings.GetAllowancesAsync(cancellationToken)).Trial.ProductsPerRun;
         return planBatchSize < 0 ? trial : Math.Min(planBatchSize, trial);
     }
 

@@ -9,6 +9,7 @@ namespace APCS.Application.Features.Entitlements;
 /// <param name="MaxBatchSize">Products per run; -1 means no limit.</param>
 /// <param name="MaxConcurrentJobs">Design jobs running at once; -1 means no limit.</param>
 /// <param name="MaxMockupsPerRun">Mockups one run may make; -1 means no limit.</param>
+/// <param name="TrialStartedAt">When the trial began, so its allowances count from then whatever its length.</param>
 public sealed record PlanEntitlements(
     bool HasPlan,
     Guid? PlanId,
@@ -20,7 +21,8 @@ public sealed record PlanEntitlements(
     int MaxConcurrentJobs,
     bool PrioritySupport,
     IReadOnlyDictionary<string, PlanFeatureValue> Features,
-    int MaxMockupsPerRun = -1)
+    int MaxMockupsPerRun = -1,
+    DateTime? TrialStartedAt = null)
 {
     /// <summary>Products in one Free run.</summary>
     public const int FreeProductsPerRun = 1;
@@ -40,6 +42,11 @@ public sealed record PlanEntitlements(
         false, null, null, null, false, null, FreeProductsPerRun, 1, false,
         new Dictionary<string, PlanFeatureValue>
         {
+            // The basic pipeline, within the monthly allowances.
+            [PlanFeatures.DesignImages] = new(true, null),
+            [PlanFeatures.TemplateMockups] = new(true, null),
+            [PlanFeatures.StandardVideo] = new(true, null),
+            [PlanFeatures.ZipExport] = new(true, null),
             [PlanFeatures.DesignVariations] = new(true, FreeVariations),
             [PlanFeatures.AutoApproval] = new(true, null),
             [PlanFeatures.WorkflowListing] = new(true, null),

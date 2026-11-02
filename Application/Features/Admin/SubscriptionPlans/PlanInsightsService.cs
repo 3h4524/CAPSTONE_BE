@@ -8,6 +8,7 @@ using APCS.Application.Features.Revenues;
 using APCS.Application.Features.Revenues.Dtos;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.UsageStatistics;
+using APCS.Application.Features.Workflows;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +35,11 @@ public sealed class PlanInsightsService(
     IRepository<BatchJob> batchJobs,
     IRepository<MockupTemplate> mockupTemplates,
     IRepository<ListingGenerationHistory> listingHistory,
+    IRepository<AiPrompt> prompts,
+    IRepository<Domain.Entities.ListingContent> listings,
+    IRepository<EtsyUploadLog> etsyUploads,
+    IRepository<PrintifyUploadLog> printifyUploads,
+    WorkflowCapabilityRegistry workflowCapabilities,
     TimeProvider timeProvider,
     IOptions<PaymentGatewaySettings> gatewaySettings,
     IRevenueService revenueService,
@@ -145,6 +151,19 @@ public sealed class PlanInsightsService(
             verdicts,
             new VerdictRulesDto(Rules.PremiumPriceRatio, Rules.LowRetentionRate, Rules.PromoteBelowRate),
             churnSignals));
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlySet<Guid>?> UsersOfFeatureAsync(string featureCode, DateTime from, DateTime to, CancellationToken cancellationToken = default)
+    {
+        // Listing content has no metric of its own: every generated listing uses it.
+        var metric = featureCode == PlanFeatures.WorkflowListing
+            ? "listings"
+            : Metrics.Concat(ProTrialMetrics).FirstOrDefault(candidate => candidate.PlanFeature == featureCode)?.Key;
+        if (metric is null) return null;
+
+        var events = await LoadEventsAsync(metric, from, to, cancellationToken);
+        return events.Select(usage => usage.UserId).ToHashSet();
     }
 
     private async Task<List<UsageEvent>> LoadEventsAsync(string metric, DateTime from, DateTime to, CancellationToken cancellationToken) =>
@@ -488,6 +507,10 @@ public sealed class PlanInsightsService(
                 .FirstOrDefault();
         }
 
+        // The name of the plan a trial bought, for the per-plan breakdown.
+        string PlanNameOf(string tier) =>
+            paidInvoices.FirstOrDefault(invoice => invoice.Subscription.Plan.Tier == tier)?.Subscription.Plan.Name ?? tier;
+
         var current = trials.Where(trial => trial.CreatedAt >= from).ToList();
         var previous = trials.Where(trial => trial.CreatedAt < from).ToList();
         var outcomes = current.Select(trial => (Trial: trial, Tier: ConvertedTier(trial))).ToList();
@@ -524,7 +547,12 @@ public sealed class PlanInsightsService(
             TrialConversion.Rate(
                 previousOutcomes.Count(item => item.Converted),
                 previousOutcomes.Count(item => !item.Converted && Finished(item.Trial))),
-            comparison);
+            comparison,
+            converted
+                .GroupBy(item => item.Tier!)
+                .Select(group => new TrialConversionByPlanDto(group.Key, PlanNameOf(group.Key), group.Count()))
+                .OrderByDescending(item => item.Count)
+                .ToList());
     }
 
     private async Task<IReadOnlyList<PipelineStageDto>> BuildPipelineAsync(DateTime from, DateTime now, CancellationToken cancellationToken)
@@ -534,18 +562,25 @@ public sealed class PlanInsightsService(
             .Select(product => product.Id)
             .ToListAsync(cancellationToken);
 
+        // Each step of a workflow run, read from what it leaves behind: a step's node run is not always
+        // marked (the design steps run as a batch job before the run starts).
+        var prompted = await prompts.Query()
+            .Where(prompt => productIds.Contains(prompt.ProductId))
+            .Select(prompt => prompt.ProductId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
         var designs = await designImages.Query()
             .Where(image => image.DeletedAt == null && productIds.Contains(image.ProductId))
             .Select(image => new { image.ProductId, image.ApprovalStatus })
             .ToListAsync(cancellationToken);
-        var withMockup = await mockups.Query()
+        var mockupRows = await mockups.Query()
             .Where(mockup => mockup.DeletedAt == null && productIds.Contains(mockup.ProductId))
-            .Select(mockup => mockup.ProductId)
+            .Select(mockup => new { mockup.ProductId, mockup.ApprovalStatus })
             .Distinct()
             .ToListAsync(cancellationToken);
-        var withVideo = await videos.Query()
-            .Where(video => video.DeletedAt == null && productIds.Contains(video.ProductId))
-            .Select(video => video.ProductId)
+        var videoRows = await videos.Query()
+            .Where(video => video.DeletedAt == null && video.Status == "completed" && productIds.Contains(video.ProductId))
+            .Select(video => new { video.ProductId, video.ApprovalStatus })
             .Distinct()
             .ToListAsync(cancellationToken);
         var exported = await runs.Query()
@@ -554,20 +589,43 @@ public sealed class PlanInsightsService(
             .Select(run => run.ProductId)
             .Distinct()
             .ToListAsync(cancellationToken);
+        var listed = await listings.Query()
+            .Where(listing => productIds.Contains(listing.ProductId))
+            .Select(listing => listing.ProductId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var published = (await etsyUploads.Query()
+                .Where(upload => upload.UploadStatus == "success" && productIds.Contains(upload.ProductId))
+                .Select(upload => upload.ProductId)
+                .ToListAsync(cancellationToken))
+            .Concat(await printifyUploads.Query()
+                .Where(upload => upload.UploadStatus == "success" && productIds.Contains(upload.ProductId))
+                .Select(upload => upload.ProductId)
+                .ToListAsync(cancellationToken));
 
-        // Each step counts only the products that also reached every step before it.
-        string[] keys = ["products", "designed", "approved", "mockups", "videos", "exported"];
-        string[] labels = ["Products added", "Designs generated", "Design approved", "Mockups ready", "Video rendered", "Exported (ZIP)"];
-        var counts = PipelineFunnel.Nest(
+        // The publish steps are on the canvas before their executors exist; the page says so.
+        var canPublish = workflowCapabilities.Get().Nodes
+            .Any(node => node.Type is "publish-etsy" or "publish-printify" && node.Enabled);
+
+        // In run order, from the Seller's prompt to the push to a store. Listing content runs beside
+        // the video, but a store needs it, so it sits just before publishing. Each step counts only
+        // the products that also reached every step before it.
+        (string Key, string Label, IReadOnlySet<Guid> Products, bool Available)[] steps =
         [
-            productIds.ToHashSet(),
-            designs.Select(item => item.ProductId).ToHashSet(),
-            designs.Where(item => item.ApprovalStatus == "approved").Select(item => item.ProductId).ToHashSet(),
-            withMockup.ToHashSet(),
-            withVideo.ToHashSet(),
-            exported.ToHashSet(),
-        ]);
-        return keys.Select((key, index) => new PipelineStageDto(key, labels[index], counts[index])).ToList();
+            ("prompt_added", "Prompt added", productIds.ToHashSet(), true),
+            ("prompt_written", "Prompt written", prompted.ToHashSet(), true),
+            ("designed", "Design generated", designs.Select(item => item.ProductId).ToHashSet(), true),
+            ("design_approved", "Design approved", designs.Where(item => item.ApprovalStatus == "approved").Select(item => item.ProductId).ToHashSet(), true),
+            ("mockups", "Mockups applied", mockupRows.Select(item => item.ProductId).ToHashSet(), true),
+            ("mockups_approved", "Mockups approved", mockupRows.Where(item => item.ApprovalStatus == "approved").Select(item => item.ProductId).ToHashSet(), true),
+            ("video", "Video generated", videoRows.Select(item => item.ProductId).ToHashSet(), true),
+            ("video_approved", "Video approved", videoRows.Where(item => item.ApprovalStatus == "approved").Select(item => item.ProductId).ToHashSet(), true),
+            ("exported", "Exported (ZIP)", exported.ToHashSet(), true),
+            ("listing", "Listing written", listed.ToHashSet(), true),
+            ("published", "Published to store", published.ToHashSet(), canPublish),
+        ];
+        var counts = PipelineFunnel.Nest(steps.Select(step => step.Products).ToList());
+        return steps.Select((step, index) => new PipelineStageDto(step.Key, step.Label, counts[index], step.Available)).ToList();
     }
 
     private static decimal? Percent(int part, int whole) =>

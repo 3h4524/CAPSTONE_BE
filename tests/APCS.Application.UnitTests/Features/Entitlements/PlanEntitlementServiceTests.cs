@@ -38,7 +38,11 @@ public sealed class PlanEntitlementServiceTests
         return trial;
     }
 
-    private PlanEntitlementService CreateService(Subscription? subscription, int mockupsRenderedToday = 0)
+    private PlanEntitlementService CreateService(
+        Subscription? subscription,
+        int mockupsRenderedToday = 0,
+        IFeatureCatalog? catalog = null,
+        params SubscriptionFeatureGrant[] grants)
     {
         var subscriptions = new Mock<ISubscriptionRepository>();
         subscriptions.Setup(candidate => candidate.GetActiveWithPlanAsync(UserId, It.IsAny<CancellationToken>()))
@@ -67,8 +71,76 @@ public sealed class PlanEntitlementServiceTests
             Mock.Of<IRepository<ApiUsageRecord>>(),
             apiKeys.Object,
             allowances.Object,
-            Options.Create(new UsageAllowanceOptions()),
+            new TestPlanSettings(),
+            catalog ?? new TestFeatureCatalog(),
+            GrantRepository(grants),
             SubscriptionTestData.CreateTimeProvider());
+    }
+
+    private static IRepository<SubscriptionFeatureGrant> GrantRepository(SubscriptionFeatureGrant[] grants)
+    {
+        var repository = new Mock<IRepository<SubscriptionFeatureGrant>>();
+        repository.Setup(candidate => candidate.Query()).Returns(() => grants.AsQueryable().BuildMock());
+        return repository.Object;
+    }
+
+    private static SubscriptionFeatureGrant Kept(Subscription subscription, string code, bool isEnabled = true, int? limit = null, int daysLeft = 10) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = subscription.Id,
+        PlanId = subscription.PlanId,
+        FeatureCode = code,
+        IsEnabled = isEnabled,
+        LimitValue = limit,
+        ExpiresOn = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime).AddDays(daysLeft),
+        Reason = EntitlementMerge.FeatureRemoved,
+    };
+
+    [TestMethod]
+    public async Task GetAsync_KeepsAFeatureTakenOffThePlanUntilThePeriodEnds()
+    {
+        var subscription = SubscriptionTestData.CreateActiveSubscription(CreatePlan());
+
+        var entitlements = await CreateService(subscription, grants: Kept(subscription, PlanFeatures.AiVideo)).GetAsync(UserId);
+
+        entitlements.IsEnabled(PlanFeatures.AiVideo).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task GetAsync_IgnoresAGrantPastItsPeriodOrForAnotherPlan()
+    {
+        var subscription = SubscriptionTestData.CreateActiveSubscription(CreatePlan());
+        var ended = Kept(subscription, PlanFeatures.AiVideo, daysLeft: 0);
+        var otherPlan = Kept(subscription, PlanFeatures.LifestyleMockup);
+        otherPlan.PlanId = Guid.NewGuid();
+
+        var entitlements = await CreateService(subscription, grants: [ended, otherPlan]).GetAsync(UserId);
+
+        entitlements.IsEnabled(PlanFeatures.AiVideo).Should().BeFalse("the grant ended today");
+        entitlements.IsEnabled(PlanFeatures.LifestyleMockup).Should().BeFalse("the grant was for the plan the Seller left");
+    }
+
+    [TestMethod]
+    public async Task GetAsync_KeepsTheHigherOfTheLoweredLimitAndTheGrant()
+    {
+        var plan = CreatePlan(new PlanFeature { FeatureCode = PlanFeatures.DesignVariations, IsEnabled = true, LimitValue = 2 });
+        var subscription = SubscriptionTestData.CreateActiveSubscription(plan);
+        var grant = Kept(subscription, PlanFeatures.DesignVariations, limit: 4);
+        grant.Reason = EntitlementMerge.LimitLowered;
+
+        var entitlements = await CreateService(subscription, grants: grant).GetAsync(UserId);
+
+        entitlements.Limit(PlanFeatures.DesignVariations).Should().Be(4);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_DuringATrial_AGrantDoesNotBringBackWhatTrialsLeaveOut()
+    {
+        var trial = Trial(CreatePlan());
+
+        var entitlements = await CreateService(trial, grants: Kept(trial, PlanFeatures.AiVideo)).GetAsync(UserId);
+
+        entitlements.IsEnabled(PlanFeatures.AiVideo).Should().BeFalse();
     }
 
     [TestMethod]
@@ -106,6 +178,42 @@ public sealed class PlanEntitlementServiceTests
         entitlements.IsEnabled(PlanFeatures.AllVideoFormats).Should().BeTrue("the trial keeps landscape standard videos");
         entitlements.MaxBatchSize.Should().Be(3);
         entitlements.MaxConcurrentJobs.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_DuringATrial_LeavesOutWhatTheCatalogExcludesFromTrials()
+    {
+        var catalog = new TestFeatureCatalog(FeatureCatalogEntry.Defaults
+            .Select(entry => entry.Code switch
+            {
+                PlanFeatures.AiVideo => entry with { TrialAvailable = true },
+                PlanFeatures.LifestyleMockup => entry with { TrialAvailable = false },
+                _ => entry
+            })
+            .ToList());
+        var plan = CreatePlan(
+            new PlanFeature { FeatureCode = PlanFeatures.AiVideo, IsEnabled = true },
+            new PlanFeature { FeatureCode = PlanFeatures.LifestyleMockup, IsEnabled = true });
+
+        var trial = await CreateService(Trial(plan), catalog: catalog).GetAsync(UserId);
+        var paid = await CreateService(SubscriptionTestData.CreateActiveSubscription(plan), catalog: catalog).GetAsync(UserId);
+
+        trial.IsEnabled(PlanFeatures.AiVideo).Should().BeTrue("the Admin offered AI video to trials");
+        trial.IsEnabled(PlanFeatures.LifestyleMockup).Should().BeFalse("the Admin took lifestyle mockups out of trials");
+        paid.IsEnabled(PlanFeatures.LifestyleMockup).Should().BeTrue("the trial setting does not touch paying Sellers");
+    }
+
+    [TestMethod]
+    public async Task RequireFeatureAsync_UsesTheCatalogLabelInTheMessage()
+    {
+        var catalog = new TestFeatureCatalog(FeatureCatalogEntry.Defaults
+            .Select(entry => entry.Code == PlanFeatures.AiVideo ? entry with { Label = "Veo videos" } : entry)
+            .ToList());
+        var service = CreateService(SubscriptionTestData.CreateActiveSubscription(CreatePlan()), catalog: catalog);
+
+        var result = await service.RequireFeatureAsync(UserId, PlanFeatures.AiVideo);
+
+        result.Error.Message.Should().StartWith("Veo videos is not included");
     }
 
     [TestMethod]

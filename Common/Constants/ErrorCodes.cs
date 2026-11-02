@@ -45,6 +45,8 @@ public static class ErrorCodes
     public const string SubscriptionInvoicePdfGenerationFailed = "subscriptions.invoice_pdf_generation_failed";
     public const string SubscriptionPlanNameOrTierTaken = "subscriptions.plan_name_or_tier_taken";
     public const string SubscriptionPlanHasSubscriptionHistory = "subscriptions.plan_has_subscription_history";
+    public const string PlanFeatureNotFound = "subscriptions.plan_feature_not_found";
+    public const string PlanFeatureInvalidChange = "subscriptions.plan_feature_invalid_change";
     public const string PlanAiReviewNotConfigured = "plan_ai_review.not_configured";
     public const string PlanAiReviewInProgress = "plan_ai_review.in_progress";
     public const string PlanAiReviewCoolingDown = "plan_ai_review.cooling_down";

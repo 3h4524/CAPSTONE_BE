@@ -356,6 +356,8 @@ public sealed class MockupTemplateService(
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupImageResponseDto>(MockupErrors.Unauthenticated("generate"));
 
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.TemplateMockups, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<MockupImageResponseDto>(planCheck.Error);
         // Compositing runs on the platform's Cloudinary account, so it counts toward the daily safety cap.
         var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyMockupCap, cancellationToken: cancellationToken);
         if (capCheck.IsFailure) return Result.Failure<MockupImageResponseDto>(capCheck.Error);
@@ -462,6 +464,8 @@ public sealed class MockupTemplateService(
         if (string.Equals(batch.Status, BatchJobStatuses.Draft, StringComparison.OrdinalIgnoreCase))
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.JobNotReady());
 
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.TemplateMockups, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<GenerateAllMockupsResultDto>(planCheck.Error);
         var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyMockupCap, cancellationToken: cancellationToken);
         if (capCheck.IsFailure) return Result.Failure<GenerateAllMockupsResultDto>(capCheck.Error);
 

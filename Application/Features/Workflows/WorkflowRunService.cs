@@ -48,6 +48,11 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var videoCheck = await CheckVideoPlanAsync(user.UserId!.Value, WorkflowJson.Config<GenerateVideoConfig>(videoNode), ct);
             if (videoCheck.IsFailure) return Result.Failure<RunResponse>(videoCheck.Error);
         }
+        if (definition.Nodes.Any(x => x.Type == "export-zip"))
+        {
+            var exportCheck = await entitlements.RequireFeatureAsync(user.UserId!.Value, PlanFeatures.ZipExport, ct);
+            if (exportCheck.IsFailure) return Result.Failure<RunResponse>(exportCheck.Error);
+        }
         var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
         var product = await products.GetByIdAsync(input.ProductId, ct);
         if (product is null || product.UserId != user.UserId || product.DeletedAt != null || product.BatchId != input.BatchId)
@@ -241,6 +246,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     private async Task<Result> CheckVideoPlanAsync(Guid userId, GenerateVideoConfig config, CancellationToken ct)
     {
         if (config.Mode == "ai_shot") return await entitlements.RequireFeatureAsync(userId, PlanFeatures.AiVideo, ct);
+        var standard = await entitlements.RequireFeatureAsync(userId, PlanFeatures.StandardVideo, ct);
+        if (standard.IsFailure) return standard;
         if (config.OutputFormat == "landscape")
         {
             var format = await entitlements.RequireFeatureAsync(userId, PlanFeatures.AllVideoFormats, ct);

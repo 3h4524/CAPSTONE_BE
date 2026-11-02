@@ -49,7 +49,7 @@ public sealed class ListingContentService(
         if (product is null)
             return Result.Failure<ListingContentResponseDto>(Error.NotFound("ListingContent.ProductNotFound", "The product was not found."));
 
-        // Listing content is a plan feature (not on Starter); writing a listing again is a Pro feature.
+        // Listing content is a plan feature, and so is writing a listing again; the Admin sets which plans have them.
         var listingCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.WorkflowListing, cancellationToken);
         if (listingCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(listingCheck.Error);
         var isRegeneration = seoFeedback is not null
@@ -59,7 +59,8 @@ public sealed class ListingContentService(
             var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.ListingRegenerate, cancellationToken);
             if (planCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(planCheck.Error);
         }
-        // Free and the Pro trial count every listing.
+        // Free, the trial and a plan with a monthly listing limit (such as Starter) count every listing,
+        // regenerations included.
         var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Listings, cancellationToken: cancellationToken);
         if (allowance.IsFailure) return Result.Failure<ListingContentResponseDto>(allowance.Error);
         // Listings run on the platform's Gemini key, so they count toward the daily safety cap.

@@ -162,6 +162,19 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     }
 
     /// <summary>
+    /// Gets every plan feature with the Admin's labels, so plans are listed the way the Admin set them up.
+    /// </summary>
+    [HttpGet("features")]
+    [ProducesResponseType(typeof(IReadOnlyList<FeatureCatalogItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetFeatureCatalog(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.GetFeatureCatalogAsync(cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// Downloads an existing invoice as a PDF. Never creates or edits an
     /// invoice — read/export-only.
     /// </summary>

@@ -177,7 +177,8 @@ internal static class SubscriptionTestData
         Mock<IValidator<CheckoutRequestDto>>? checkoutValidator = null,
         Mock<IValidator<UpgradeRequestDto>>? upgradeValidator = null,
         Mock<IValidator<DowngradeRequestDto>>? downgradeValidator = null,
-        IPlanEntitlementService? entitlements = null) =>
+        IPlanEntitlementService? entitlements = null,
+        IPlanSettings? planSettings = null) =>
         new(
             (subscriptions ?? new Mock<ISubscriptionRepository>()).Object,
             (plans ?? new Mock<IPlanRepository>()).Object,
@@ -192,7 +193,9 @@ internal static class SubscriptionTestData
             (checkoutValidator ?? CreatePassingValidator<CheckoutRequestDto>()).Object,
             (upgradeValidator ?? CreatePassingValidator<UpgradeRequestDto>()).Object,
             (downgradeValidator ?? CreatePassingValidator<DowngradeRequestDto>()).Object,
-            entitlements ?? TestEntitlements.AllowAll());
+            entitlements ?? TestEntitlements.AllowAll(),
+            new TestFeatureCatalog(),
+            planSettings ?? new TestPlanSettings());
 
     private static Mock<IInvoicePdfRenderer> DefaultInvoicePdfRenderer()
     {

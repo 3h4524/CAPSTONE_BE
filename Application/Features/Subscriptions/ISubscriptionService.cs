@@ -96,6 +96,11 @@ public interface ISubscriptionService
     Task<Result<EntitlementsResponseDto>> GetEntitlementsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets every plan feature with the Admin's labels, in display order.
+    /// </summary>
+    Task<Result<IReadOnlyList<FeatureCatalogItemDto>>> GetFeatureCatalogAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Renders an existing invoice as a downloadable PDF. Never creates or edits an
     /// invoice — read/export-only.
     /// </summary>

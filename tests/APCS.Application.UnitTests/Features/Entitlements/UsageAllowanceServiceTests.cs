@@ -33,7 +33,7 @@ public sealed class UsageAllowanceServiceTests
         Repository(records),
         Repository(mockups),
         Repository(videos),
-        Options.Create(new UsageAllowanceOptions()),
+        new TestPlanSettings(),
         SubscriptionTestData.CreateTimeProvider());
 
     private static IRepository<T> Repository<T>(List<T> items) where T : class
@@ -150,5 +150,50 @@ public sealed class UsageAllowanceServiceTests
             (UsageAllowances.Mockups, 1, 6),
             (UsageAllowances.Videos, 1, 2),
             (UsageAllowances.Listings, 0, 5));
+    }
+
+    private static PlanEntitlements Paid(int? monthlyListings) =>
+        new(true, Guid.NewGuid(), "Starter", "starter", false, null, 20, 1, false,
+            monthlyListings is { } limit
+                ? new Dictionary<string, PlanFeatureValue> { [PlanFeatures.MonthlyListings] = new(true, limit) }
+                : new Dictionary<string, PlanFeatureValue>());
+
+    private void AddListing(DateTime at) =>
+        records.Add(new ApiUsageRecord
+        {
+            Id = Guid.NewGuid(), UserId = UserId, Provider = "gemini", Feature = UsageFeatures.Listing, Status = "success",
+            ProductId = product.Id, CreatedAt = at
+        });
+
+    [TestMethod]
+    public async Task RequireAsync_OnAPaidPlanWithAMonthlyListingLimit_CountsOnlyThisMonth()
+    {
+        var starter = Paid(monthlyListings: 10);
+        foreach (var _ in Enumerable.Range(0, 9)) AddListing(ThisMonth);
+        foreach (var _ in Enumerable.Range(0, 5)) AddListing(LastMonth);
+        var service = CreateService();
+
+        (await service.RequireAsync(UserId, starter, UsageAllowances.Listings)).IsSuccess.Should().BeTrue("9 of 10 used this month");
+        AddListing(ThisMonth);
+        var refused = await service.RequireAsync(UserId, starter, UsageAllowances.Listings);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Error.Message.Should().StartWith("Your plan includes 10 listings a month and 0 are left.");
+        (await service.RequireAsync(UserId, starter, UsageAllowances.Mockups)).IsSuccess.Should().BeTrue("only listings are capped per month");
+    }
+
+    [TestMethod]
+    public async Task GetAsync_OnAPaidPlan_ShowsOnlyItsMonthlyLimits()
+    {
+        AddListing(ThisMonth);
+        var service = CreateService();
+
+        var starter = await service.GetAsync(UserId, Paid(monthlyListings: 10));
+        var pro = await service.GetAsync(UserId, Paid(monthlyListings: null));
+
+        starter.Scope.Should().Be(UsageAllowances.ScopePlan);
+        starter.Items.Should().ContainSingle().Which.Should().Match<UsageAllowanceItem>(item => item.Used == 1 && item.Limit == 10);
+        pro.Scope.Should().BeNull("no monthly limit, nothing counted");
+        (await service.RequireAsync(UserId, Paid(monthlyListings: null), UsageAllowances.Listings)).IsSuccess.Should().BeTrue();
     }
 }

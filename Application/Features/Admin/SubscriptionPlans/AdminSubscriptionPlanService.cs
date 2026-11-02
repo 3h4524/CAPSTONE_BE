@@ -25,7 +25,8 @@ public sealed class AdminSubscriptionPlanService(
     IValidator<CreatePlanRequestDto> createValidator,
     IValidator<UpdatePlanRequestDto> updateValidator,
     IValidator<DeletePlanRequestDto> deleteValidator,
-    IOptions<PaymentGatewaySettings> gatewaySettings)
+    IOptions<PaymentGatewaySettings> gatewaySettings,
+    IPlanChangeLog changeLog)
     : IAdminSubscriptionPlanService
 {
     /// <inheritdoc />
@@ -122,6 +123,7 @@ public sealed class AdminSubscriptionPlanService(
         }
 
         await UpsertFeaturesAsync(plan.Id, request.Features, utcNow, cancellationToken);
+        await changeLog.AddAsync(PlanChangeActions.Create, plan.Id, null, PlanSnapshot.Of(plan), cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         // Read back what was stored; the features just written are not on the new plan object.
@@ -154,6 +156,7 @@ public sealed class AdminSubscriptionPlanService(
             return Result.Failure<AdminPlanDto>(AdminSubscriptionPlanErrors.NameOrTierTaken());
         }
 
+        var before = PlanSnapshot.Of(plan);
         var utcNow = timeProvider.GetUtcNow().UtcDateTime;
 
         // BR198/BR199: price, limit, and active-status changes never touch existing subscribers —
@@ -181,6 +184,7 @@ public sealed class AdminSubscriptionPlanService(
         await plans.UpdateAsync(plan, cancellationToken: cancellationToken);
         await UpsertWhiteLabelFeatureAsync(planId, request.WhiteLabelExportEnabled, utcNow, cancellationToken);
         await UpsertFeaturesAsync(planId, request.Features, utcNow, cancellationToken);
+        await changeLog.AddAsync(PlanChangeActions.Update, planId, before, PlanSnapshot.Of(plan), cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         var activeSubscriberCount = await subscriptions.CountActiveByPlanIdAsync(planId, cancellationToken);
@@ -224,6 +228,7 @@ public sealed class AdminSubscriptionPlanService(
         }
 
         await plans.RemoveAsync(plan, cancellationToken: cancellationToken);
+        await changeLog.AddAsync(PlanChangeActions.Delete, planId, PlanSnapshot.Of(plan), new { reason = request.Reason }, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return Result.Success();
     }

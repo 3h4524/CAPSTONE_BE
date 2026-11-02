@@ -40,7 +40,11 @@ public sealed record TrialInsightDto(
     int ReturnedToFree,
     decimal? ConversionRate,
     decimal? PreviousConversionRate,
-    IReadOnlyList<TrialFeatureComparisonDto> FeatureComparison);
+    IReadOnlyList<TrialFeatureComparisonDto> FeatureComparison,
+    IReadOnlyList<TrialConversionByPlanDto>? ConvertedByPlan = null);
+
+/// <summary>How many trials bought a plan, per plan: the breakdown that follows the plans an Admin sets up.</summary>
+public sealed record TrialConversionByPlanDto(string Tier, string Name, int Count);
 
 /// <summary>
 /// How many converted and not-converted trial users used a feature during their trial.
@@ -90,8 +94,9 @@ public sealed record PlanCostDto(
     decimal RevenuePerSubscriberVnd,
     decimal? CostShare);
 
-/// <summary>Products created in the period that reached a pipeline stage.</summary>
-public sealed record PipelineStageDto(string Key, string Label, int Products);
+/// <summary>Products created in the period that reached a workflow step and every step before it.</summary>
+/// <param name="IsAvailable">False for a step on the canvas whose executor does not exist yet, such as publishing.</param>
+public sealed record PipelineStageDto(string Key, string Label, int Products, bool IsAvailable = true);
 
 /// <summary>The thresholds behind <see cref="PlanVerdictDto"/>; see <c>PlanVerdictOptions</c>.</summary>
 public sealed record VerdictRulesDto(

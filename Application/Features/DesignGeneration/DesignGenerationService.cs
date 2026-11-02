@@ -845,6 +845,9 @@ public sealed class DesignGenerationService(
             if (running >= plan.MaxConcurrentJobs) return PlanErrors.TooManyConcurrentJobs(plan.MaxConcurrentJobs);
         }
 
+        var designs = await entitlements.RequireFeatureAsync(userId, PlanFeatures.DesignImages, cancellationToken);
+        if (designs.IsFailure) return designs.Error;
+
         // Free and the Pro trial count design runs, images and products; retrying failed images
         // counts only the images.
         var allowances = new List<(string Code, int Requested)>

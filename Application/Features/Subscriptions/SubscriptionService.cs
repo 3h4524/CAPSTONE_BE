@@ -42,16 +42,13 @@ public sealed class SubscriptionService(
     IValidator<CheckoutRequestDto> checkoutValidator,
     IValidator<UpgradeRequestDto> upgradeValidator,
     IValidator<DowngradeRequestDto> downgradeValidator,
-    IPlanEntitlementService entitlements)
+    IPlanEntitlementService entitlements,
+    IFeatureCatalog featureCatalog,
+    IPlanSettings planSettings)
     : ISubscriptionService
 {
     private const decimal FreeTierMaxPrice = 0m;
 
-    /// <summary>How long the free Pro trial lasts.</summary>
-    internal const int TrialDays = 14;
-
-    /// <summary>The tier slug of the plan the free trial runs on.</summary>
-    internal const string TrialPlanTier = "pro";
 
     /// <inheritdoc />
     public async Task<Result<SubscriptionOverviewResponseDto>> GetOverviewAsync(
@@ -80,13 +77,19 @@ public sealed class SubscriptionService(
             && !await subscriptions.HasUsedTrialAsync(userId, cancellationToken);
 
         var comparisonPlans = await plans.GetComparisonPlansAsync(activeSubscription?.PlanId, cancellationToken);
+        var recommendedTier = await planSettings.GetRecommendedPlanTierAsync(cancellationToken);
         var availablePlans = comparisonPlans
-            .Select(plan => MapToAvailablePlanDto(plan, activeSubscription?.PlanId, gatewaySettings.Value))
+            .Select(plan => MapToAvailablePlanDto(plan, activeSubscription?.PlanId, gatewaySettings.Value) with
+            {
+                IsRecommended = recommendedTier != null && plan.Tier == recommendedTier
+            })
             .ToList();
 
         var recentInvoices = await invoices.GetRecentWithPlanAsync(userId, take: 3, cancellationToken);
         var recentInvoiceDtos = recentInvoices.Select(invoice => MapToRecentInvoiceDto(invoice, gatewaySettings.Value)).ToList();
 
+        var trialTier = await planSettings.GetTrialPlanTierAsync(cancellationToken);
+        var trialAllowances = (await planSettings.GetAllowancesAsync(cancellationToken)).Trial;
         var response = new SubscriptionOverviewResponseDto(
             activeSubscription is null ? null : MapToCurrentSubscriptionDto(activeSubscription, today, gatewaySettings.Value),
             usageQuotas,
@@ -94,7 +97,14 @@ public sealed class SubscriptionService(
             recentInvoiceDtos,
             hasActivePaidPlan,
             trialEligible,
-            TrialDays);
+            await planSettings.GetTrialDaysAsync(cancellationToken),
+            availablePlans.FirstOrDefault(plan => plan.Tier == trialTier)?.Name,
+            [
+                new TrialAllowanceDto(UsageAllowances.Products, UsageAllowances.Label(UsageAllowances.Products), trialAllowances.Products),
+                new TrialAllowanceDto(UsageAllowances.Mockups, UsageAllowances.Label(UsageAllowances.Mockups), trialAllowances.Mockups),
+                new TrialAllowanceDto(UsageAllowances.Videos, UsageAllowances.Label(UsageAllowances.Videos), trialAllowances.Videos),
+                new TrialAllowanceDto(UsageAllowances.Listings, UsageAllowances.Label(UsageAllowances.Listings), trialAllowances.Listings),
+            ]);
 
         return Result.Success(response);
     }
@@ -125,7 +135,8 @@ public sealed class SubscriptionService(
             return Result.Failure<TrialResponseDto>(keyCheck.Error);
         }
 
-        var plan = await plans.GetPurchasableByTierAsync(TrialPlanTier, cancellationToken);
+        // The plan the trial gives is set by an Admin.
+        var plan = await plans.GetPurchasableByTierAsync(await planSettings.GetTrialPlanTierAsync(cancellationToken), cancellationToken);
         if (plan is null)
         {
             return Result.Failure<TrialResponseDto>(SubscriptionErrors.TrialPlanUnavailable());
@@ -133,7 +144,8 @@ public sealed class SubscriptionService(
 
         var utcNow = timeProvider.GetUtcNow().UtcDateTime;
         var today = DateOnly.FromDateTime(utcNow);
-        var trialEndsAt = utcNow.AddDays(TrialDays);
+        // As long as an Admin set it now; a later change leaves this trial's end where it is.
+        var trialEndsAt = utcNow.AddDays(await planSettings.GetTrialDaysAsync(cancellationToken));
 
         // A trial is free: it has no invoice, carries no price, and never renews by itself, so
         // revenue, MRR and churn never count it.
@@ -174,7 +186,7 @@ public sealed class SubscriptionService(
             (current.IsFree || current.IsTrial) && code is PlanFeatures.DailyMockupCap or PlanFeatures.DailyListingCap or PlanFeatures.DailyVideoCap
                 ? null
                 : current.Limit(code);
-        var features = PlanFeatures.All
+        var features = (await featureCatalog.GetAllAsync(cancellationToken))
             .Select(feature => new EntitlementFeatureDto(
                 feature.Code,
                 feature.Label,
@@ -1076,6 +1088,22 @@ public sealed class SubscriptionService(
             RenewalPrice: isPaid ? nextCycle.Price : null,
             PriceVnd: settings.ToVnd(price),
             RenewalPriceVnd: isPaid ? settings.ToVnd(nextCycle.Price) : null);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<FeatureCatalogItemDto>>> GetFeatureCatalogAsync(CancellationToken cancellationToken = default)
+    {
+        var catalog = await featureCatalog.GetAllAsync(cancellationToken);
+        return Result.Success<IReadOnlyList<FeatureCatalogItemDto>>(catalog
+            .Select(feature => new FeatureCatalogItemDto(
+                feature.Code,
+                feature.Label,
+                feature.Description,
+                feature.Group,
+                feature.Kind,
+                feature.Unit,
+                feature.SortOrder))
+            .ToList());
     }
 
     private static AvailablePlanDto MapToAvailablePlanDto(

@@ -14,6 +14,9 @@ public static class UsageAllowances
     public const string ScopeFree = "free";
     public const string ScopeTrial = "trial";
 
+    /// <summary>A paid plan with a monthly limit, such as Starter's listings per month.</summary>
+    public const string ScopePlan = "plan";
+
     public static string Label(string code) => code switch
     {
         FullRuns => "full runs",
@@ -28,8 +31,8 @@ public static class UsageAllowances
 }
 
 /// <summary>What a Seller on Free or the Pro trial has used, and what they may use.</summary>
-/// <param name="Scope">"free", "trial", or null on a paid plan, which has no allowances.</param>
-/// <param name="ResetsOn">Free: the 1st of next month. Trial: the day it ends.</param>
+/// <param name="Scope">"free", "trial", "plan" on a paid plan with a monthly limit, or null when nothing is counted.</param>
+/// <param name="ResetsOn">Free and a paid plan: the 1st of next month. Trial: the day it ends.</param>
 /// <param name="MockupsPerRun">Mockups one run may make; null when there is no such limit.</param>
 public sealed record UsageAllowanceSummary(
     string? Scope,
