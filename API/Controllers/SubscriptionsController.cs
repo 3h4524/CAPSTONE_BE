@@ -75,6 +75,21 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
     }
 
     /// <summary>
+    /// Creates a PayOS payment link for the next cycle of the Seller's paid plan (Renew now). The
+    /// cycle is added once paid — poll <see cref="GetCheckoutStatus"/> as for a checkout.
+    /// </summary>
+    [HttpPost("renew")]
+    [ProducesResponseType(typeof(CheckoutResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Renew(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.RenewAsync(cancellationToken);
+
+        return result.IsSuccess ? Ok(result.Value) : result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// Upgrades the active subscription to a higher-tier plan, applying a prorated credit.
     /// </summary>
     [HttpPost("upgrade")]
@@ -116,6 +131,47 @@ public sealed class SubscriptionsController(ISubscriptionService subscriptionSer
         var result = await subscriptionService.CancelScheduledDowngradeAsync(cancellationToken);
 
         return result.IsSuccess ? NoContent() : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Starts the free 14-day Pro trial. One per account, only without a plan.
+    /// </summary>
+    [HttpPost("trial")]
+    [ProducesResponseType(typeof(TrialResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> StartTrial(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.StartTrialAsync(cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Gets what the Seller's current plan allows, so the client can lock the rest.
+    /// </summary>
+    [HttpGet("entitlements")]
+    [ProducesResponseType(typeof(EntitlementsResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetEntitlements(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.GetEntitlementsAsync(cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Gets every plan feature with the Admin's labels, so plans are listed the way the Admin set them up.
+    /// </summary>
+    [HttpGet("features")]
+    [ProducesResponseType(typeof(IReadOnlyList<FeatureCatalogItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetFeatureCatalog(CancellationToken cancellationToken)
+    {
+        var result = await subscriptionService.GetFeatureCatalogAsync(cancellationToken);
+
+        return result.ToActionResult(this);
     }
 
     /// <summary>

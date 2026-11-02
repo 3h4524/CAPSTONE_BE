@@ -42,6 +42,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<ExportPackageItem> ExportPackageItems { get; set; }
 
+    public virtual DbSet<Feature> Features { get; set; }
+
     public virtual DbSet<Invoice> Invoices { get; set; }
 
     public virtual DbSet<ListingContent> ListingContents { get; set; }
@@ -80,7 +82,11 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Permission> Permissions { get; set; }
 
+    public virtual DbSet<PlanAiReview> PlanAiReviews { get; set; }
+
     public virtual DbSet<PlanFeature> PlanFeatures { get; set; }
+
+    public virtual DbSet<PlanSetting> PlanSettings { get; set; }
 
     public virtual DbSet<PrintifyIntegration> PrintifyIntegrations { get; set; }
 
@@ -118,6 +124,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Subscription> Subscriptions { get; set; }
 
+    public virtual DbSet<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; }
+
     public virtual DbSet<SubscriptionPlan> SubscriptionPlans { get; set; }
 
     public virtual DbSet<SupportTicket> SupportTickets { get; set; }
@@ -127,6 +135,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<TicketAttachment> TicketAttachments { get; set; }
 
     public virtual DbSet<TicketReply> TicketReplies { get; set; }
+
+    public virtual DbSet<UsageAllowance> UsageAllowances { get; set; }
 
     public virtual DbSet<UsageStatistic> UsageStatistics { get; set; }
 
@@ -1059,6 +1069,47 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.PromoVideo).WithMany(p => p.ExportPackageItems)
                 .HasForeignKey(d => d.PromoVideoId)
                 .HasConstraintName("export_package_items_promo_video_id_fkey");
+        });
+
+        modelBuilder.Entity<Feature>(entity =>
+        {
+            entity.HasKey(e => e.Code).HasName("pk_features");
+
+            entity.ToTable("features");
+
+            entity.Property(e => e.Code)
+                .HasMaxLength(100)
+                .HasColumnName("code");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefaultLimit).HasColumnName("default_limit");
+            entity.Property(e => e.Description)
+                .HasDefaultValueSql("''::text")
+                .HasColumnName("description");
+            entity.Property(e => e.GroupName)
+                .HasMaxLength(60)
+                .HasColumnName("group_name");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.Kind)
+                .HasMaxLength(10)
+                .HasColumnName("kind");
+            entity.Property(e => e.Label)
+                .HasMaxLength(120)
+                .HasColumnName("label");
+            entity.Property(e => e.SortOrder)
+                .HasDefaultValue(0)
+                .HasColumnName("sort_order");
+            entity.Property(e => e.TrialAvailable)
+                .HasDefaultValue(true)
+                .HasColumnName("trial_available");
+            entity.Property(e => e.Unit)
+                .HasMaxLength(40)
+                .HasColumnName("unit");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
         });
 
         modelBuilder.Entity<Invoice>(entity =>
@@ -2054,6 +2105,42 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("resource");
         });
 
+        modelBuilder.Entity<PlanAiReview>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_plan_ai_reviews");
+
+            entity.ToTable("plan_ai_reviews");
+
+            entity.HasIndex(e => new { e.Status, e.GeneratedAt }, "idx_plan_ai_reviews_status_generated_at").IsDescending(false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.DroppedParts).HasColumnName("dropped_parts");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.GeneratedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("generated_at");
+            entity.Property(e => e.InputJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("input_json");
+            entity.Property(e => e.RawAnswer).HasColumnName("raw_answer");
+            entity.Property(e => e.InputTokens).HasColumnName("input_tokens");
+            entity.Property(e => e.Model)
+                .HasMaxLength(100)
+                .HasColumnName("model");
+            entity.Property(e => e.OutputTokens).HasColumnName("output_tokens");
+            entity.Property(e => e.PeriodEnd).HasColumnName("period_end");
+            entity.Property(e => e.PeriodStart).HasColumnName("period_start");
+            entity.Property(e => e.ReviewJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("review_json");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasColumnName("status");
+            entity.Property(e => e.TriggeredBy).HasColumnName("triggered_by");
+        });
+
         modelBuilder.Entity<PlanFeature>(entity =>
         {
             entity.HasKey(e => new { e.PlanId, e.FeatureCode }).HasName("plan_features_pkey");
@@ -2075,6 +2162,20 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Plan).WithMany(p => p.PlanFeatures)
                 .HasForeignKey(d => d.PlanId)
                 .HasConstraintName("plan_features_plan_id_fkey");
+        });
+
+        modelBuilder.Entity<PlanSetting>(entity =>
+        {
+            entity.HasKey(e => e.Key).HasName("pk_plan_settings");
+
+            entity.ToTable("plan_settings");
+
+            entity.Property(e => e.Key)
+                .HasMaxLength(50)
+                .HasColumnName("key");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.Value).HasColumnName("value");
         });
 
         modelBuilder.Entity<PrintifyIntegration>(entity =>
@@ -3024,6 +3125,38 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("subscriptions_user_id_fkey");
         });
 
+        modelBuilder.Entity<SubscriptionFeatureGrant>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_subscription_feature_grants");
+
+            entity.ToTable("subscription_feature_grants");
+
+            entity.HasIndex(e => e.ExpiresOn, "idx_subscription_feature_grants_expires_on");
+
+            entity.HasIndex(e => new { e.PlanId, e.FeatureCode }, "idx_subscription_feature_grants_plan_feature");
+
+            entity.HasIndex(e => new { e.SubscriptionId, e.FeatureCode }, "uq_subscription_feature_grants_subscription_feature").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.ExpiresOn).HasColumnName("expires_on");
+            entity.Property(e => e.FeatureCode)
+                .HasMaxLength(100)
+                .HasColumnName("feature_code");
+            entity.Property(e => e.IsEnabled).HasColumnName("is_enabled");
+            entity.Property(e => e.LimitValue).HasColumnName("limit_value");
+            entity.Property(e => e.PlanId).HasColumnName("plan_id");
+            entity.Property(e => e.Reason)
+                .HasMaxLength(30)
+                .HasColumnName("reason");
+            entity.Property(e => e.SubscriptionId).HasColumnName("subscription_id");
+        });
+
         modelBuilder.Entity<SubscriptionPlan>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("subscription_plans_pkey");
@@ -3301,6 +3434,23 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.SupportTicket).WithMany(p => p.TicketReplies)
                 .HasForeignKey(d => d.SupportTicketId)
                 .HasConstraintName("ticket_replies_support_ticket_id_fkey");
+        });
+
+        modelBuilder.Entity<UsageAllowance>(entity =>
+        {
+            entity.HasKey(e => new { e.Scope, e.Code }).HasName("pk_usage_allowances");
+
+            entity.ToTable("usage_allowances");
+
+            entity.Property(e => e.Scope)
+                .HasMaxLength(10)
+                .HasColumnName("scope");
+            entity.Property(e => e.Code)
+                .HasMaxLength(30)
+                .HasColumnName("code");
+            entity.Property(e => e.LimitValue).HasColumnName("limit_value");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
         });
 
         modelBuilder.Entity<UsageStatistic>(entity =>

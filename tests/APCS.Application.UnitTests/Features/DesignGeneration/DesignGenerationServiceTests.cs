@@ -1,4 +1,6 @@
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
@@ -48,7 +50,8 @@ public sealed class DesignGenerationServiceTests
         bool withImage = false,
         int[]? existingPromptVersions = null,
         DesignTemplate? template = null,
-        Action<Product>? editProduct = null)
+        Action<Product>? editProduct = null,
+        TestEntitlements? entitlements = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -171,7 +174,8 @@ public sealed class DesignGenerationServiceTests
             apiKeys.Object, credentials.Object, subscriptions.Object, usageStats.Object,
             [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
-            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)));
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)),
+            entitlements ?? TestEntitlements.AllowAll());
 
         return new Fixture
         {
@@ -272,13 +276,90 @@ public sealed class DesignGenerationServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_NotEnoughQuotaForRequestedVariations_ReturnsMsg34()
+    public async Task StartAsync_OnFreeWithItsDesignRunsUsedUp_ReturnsAllowanceReached()
     {
-        // 1 pending row * 3 variations = 3 images needed, only 2 left in quota (5 - 3 already used).
-        var fixture = CreateFixture(imageGenerationQuota: 5, alreadyUsedImages: 3);
-        var result = await fixture.Service.StartAsync(fixture.Job.Id, new StartGenerationRequestDto(null, null, 3, "1:1"));
+        var free = TestEntitlements.Free();
+        free.AllowancesUsedUp.Add(UsageAllowances.DesignRuns);
+        var fixture = CreateFixture(entitlements: free);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest() with { VariationCount = 1 });
+
         result.IsFailure.Should().BeTrue();
-        result.Error.Code.Should().Be("MSG34");
+        result.Error.Code.Should().Be("Plan.AllowanceReached");
+        fixture.Job.Status.Should().Be(BatchJobStatuses.Draft);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_CountsOneDesignRunAndEveryImageItWillMake()
+    {
+        var entitlements = TestEntitlements.AllowAll();
+        var fixture = CreateFixture(entitlements: entitlements);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest() with { VariationCount = 2 });
+
+        result.IsSuccess.Should().BeTrue();
+        var products = entitlements.AllowancesRequested.Single(item => item.Code == UsageAllowances.Products).Requested;
+        entitlements.AllowancesRequested.Should().Contain((UsageAllowances.DesignRuns, 1));
+        entitlements.AllowancesRequested.Should().Contain((UsageAllowances.DesignImages, products * 2));
+    }
+
+    [TestMethod]
+    public async Task StartAsync_MoreVariationsThanThePlanAllows_ReturnsTooManyVariations()
+    {
+        var plan = TestEntitlements.Plan(features: new Dictionary<string, PlanFeatureValue>
+        {
+            [PlanFeatures.DesignVariations] = new(true, 2)
+        });
+        var fixture = CreateFixture(entitlements: plan);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, new StartGenerationRequestDto(null, null, 3, "1:1"));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Plan.TooManyVariations");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutomaticApprovalOutsideThePlan_ReturnsFeatureLocked()
+    {
+        var fixture = CreateFixture(entitlements: TestEntitlements.Plan());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, new StartGenerationRequestDto(null, null, 1, "1:1", RequireApproval: false));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Plan.FeatureLocked");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_MoreProductsThanThePlanRunsAtOnce_ReturnsBatchTooLarge()
+    {
+        var fixture = CreateFixture(entitlements: TestEntitlements.Plan(maxBatchSize: 0));
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Plan.BatchTooLarge");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WhenThePlanHasNoRoomForAnotherJob_ReturnsTooManyConcurrentJobs()
+    {
+        var fixture = CreateFixture(entitlements: TestEntitlements.Plan(maxConcurrentJobs: 0));
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest());
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Plan.TooManyConcurrentJobs");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithinThePlansLimits_DoesNotCheckAnImageQuota()
+    {
+        // Plans have no monthly image quota any more: a Seller far past the old quota still runs.
+        var fixture = CreateFixture(imageGenerationQuota: 5, alreadyUsedImages: 500);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, new StartGenerationRequestDto(null, null, 3, "1:1"));
+
+        result.IsSuccess.Should().BeTrue();
     }
 
     [TestMethod]

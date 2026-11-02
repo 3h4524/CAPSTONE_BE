@@ -156,38 +156,32 @@ public sealed class DowngradeTests
     }
 
     [TestMethod]
-    public async Task DowngradeAsync_WhenTheScheduledEffectiveDateHasAlreadyArrived_AppliesItFirstBeforeValidating()
+    public async Task DowngradeAsync_WhenTheScheduledDateHasArrivedUnpaid_KeepsTheCurrentPlanAndReschedules()
     {
-        // Lazy-apply: reading the subscription past its scheduled effective date promotes
-        // it to the Target Plan first. This changes what "current plan" means for the *new*
-        // downgrade request being evaluated in the same call.
+        // A scheduled plan only takes over when the renewal carrying it is paid, so reaching its
+        // date does not switch the plan or add a free cycle; a new pick just replaces the schedule.
         var pro = SubscriptionTestData.CreateProPlan();
         var starter = SubscriptionTestData.CreateStarterPlan();
         var free = SubscriptionTestData.CreateFreePlan();
         var current = SubscriptionTestData.CreateActiveSubscription(pro);
+        var today = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime);
+        current.RenewalDate = today; // Past due today.
         current.ScheduledPlanId = starter.Id;
         current.ScheduledPlan = starter;
-        current.ScheduledPlanEffectiveDate = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime); // due today.
+        current.ScheduledPlanEffectiveDate = today;
         var (subscriptions, plans) = CreateRepositories(current, free);
-        // DowngradeAsync mutates the same Subscription instance in place across both the
-        // lazy-apply step and its own scheduling step, so It.Is<> at Verify() time would only
-        // ever see the final state. Capture a snapshot at each UpdateAsync call instead.
-        var updateSnapshots = new List<(Guid? PlanId, Guid? ScheduledPlanId)>();
-        subscriptions
-            .Setup(candidate => candidate.UpdateAsync(It.IsAny<Subscription>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .Callback<Subscription, bool, CancellationToken>((sub, _, _) =>
-                updateSnapshots.Add((sub.PlanId, sub.ScheduledPlanId)))
-            .Returns(Task.CompletedTask);
         var service = SubscriptionTestData.CreateService(subscriptions, plans);
 
-        // Starter is now the effective current plan (Pro's schedule already applied), so
-        // targeting Free (lower than Starter) must succeed rather than being rejected against
-        // the stale Pro price.
         var result = await service.DowngradeAsync(new DowngradeRequestDto(free.Id), CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue();
-        updateSnapshots.Should().HaveCount(2);
-        updateSnapshots[0].Should().Be((starter.Id, (Guid?)null)); // The lazy-apply write.
-        updateSnapshots[1].Should().Be((starter.Id, free.Id)); // The new downgrade schedule written on top.
+        subscriptions.Verify(
+            candidate => candidate.UpdateAsync(
+                It.Is<Subscription>(sub => sub.PlanId == pro.Id
+                    && sub.ScheduledPlanId == free.Id
+                    && sub.RenewalDate == today),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 }

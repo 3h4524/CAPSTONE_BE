@@ -8,6 +8,7 @@ using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Application.Features.DesignGeneration.Common;
+using APCS.Application.Features.Entitlements;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -37,7 +38,8 @@ public sealed class MockupTemplateService(
     IValidator<SaveMockupOverrideRequestDto> overrideValidator,
     IValidator<SaveMockupOverridesRequestDto> overridesValidator,
     TimeProvider timeProvider,
-    ILogger<MockupTemplateService> logger) : IMockupTemplateService
+    ILogger<MockupTemplateService> logger,
+    IPlanEntitlementService entitlements) : IMockupTemplateService
 {
     public async Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListAsync(string? productType, CancellationToken cancellationToken = default)
     {
@@ -124,6 +126,9 @@ public sealed class MockupTemplateService(
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("create"));
+
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
 
         var validation = await createValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -214,6 +219,9 @@ public sealed class MockupTemplateService(
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("update"));
+
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
 
         var validation = await updateValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -348,6 +356,14 @@ public sealed class MockupTemplateService(
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupImageResponseDto>(MockupErrors.Unauthenticated("generate"));
 
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.TemplateMockups, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<MockupImageResponseDto>(planCheck.Error);
+        // Compositing runs on the platform's Cloudinary account, so it counts toward the daily safety cap.
+        var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyMockupCap, cancellationToken: cancellationToken);
+        if (capCheck.IsFailure) return Result.Failure<MockupImageResponseDto>(capCheck.Error);
+        var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Mockups, cancellationToken: cancellationToken);
+        if (allowance.IsFailure) return Result.Failure<MockupImageResponseDto>(allowance.Error);
+
         var validation = await generateValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
         {
@@ -447,6 +463,11 @@ public sealed class MockupTemplateService(
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.BatchNotFound());
         if (string.Equals(batch.Status, BatchJobStatuses.Draft, StringComparison.OrdinalIgnoreCase))
             return Result.Failure<GenerateAllMockupsResultDto>(MockupErrors.JobNotReady());
+
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.TemplateMockups, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<GenerateAllMockupsResultDto>(planCheck.Error);
+        var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyMockupCap, cancellationToken: cancellationToken);
+        if (capCheck.IsFailure) return Result.Failure<GenerateAllMockupsResultDto>(capCheck.Error);
 
         return await GenerateAllCoreAsync(batch, userId, cancellationToken);
     }
@@ -556,6 +577,25 @@ public sealed class MockupTemplateService(
         var existingByKey = existingImages
             .GroupBy(image => (image.DesignImageId, image.MockupTemplateId, image.MockupImageUrl))
             .ToDictionary(group => group.Key, group => group.First());
+
+        if (create)
+        {
+            // Free makes a few mockups per run, and Free and the Pro trial count every new one. At most
+            // this many are made: one per approved design, chosen template and colour.
+            var planned = targetImages.Count * selectedTemplates.Sum(template =>
+            {
+                var palette = colorsByTemplate.TryGetValue(template.Id, out var ownColors) ? ownColors : selectedColors;
+                return template.AllowRecolor && MockupRules.HasCurrentMaps(template) && palette.Count > 0 ? palette.Count : 1;
+            });
+            var plan = await entitlements.GetAsync(userId, cancellationToken);
+            if (plan.MaxMockupsPerRun >= 0 && planned > plan.MaxMockupsPerRun)
+                return Result.Failure<GenerateAllMockupsResultDto>(PlanErrors.MockupsPerRunExceeded(plan.MaxMockupsPerRun, planned));
+            if (planned - existingImages.Count is var newMockups and > 0)
+            {
+                var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Mockups, newMockups, cancellationToken);
+                if (allowance.IsFailure) return Result.Failure<GenerateAllMockupsResultDto>(allowance.Error);
+            }
+        }
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var created = new List<MockupImage>();
@@ -1029,8 +1069,11 @@ public sealed class MockupTemplateService(
 
     public async Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default)
     {
-        if (currentUser.TryGetUserId() is not Guid)
+        if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.Unauthenticated("preview"));
+
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<GarmentMaskPreviewResponseDto>(planCheck.Error);
         if (!MockupImageValidators.IsSupportedImage(photo) || !MockupImageValidators.IsWithinSizeLimit(photo))
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.InvalidPreviewPhoto());
         if (!mapService.IsAvailable)

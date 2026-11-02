@@ -9,6 +9,7 @@ using APCS.Application.Abstractions.Storage;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Features.Admin.SubscriptionPlans;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Features.Subscriptions;
@@ -125,6 +126,7 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddSingleton<IPlanAiReviewQueue, APCS.Infrastructure.BackgroundServices.PlanAiReviewQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
@@ -166,6 +168,9 @@ public static class DependencyInjection
         services.AddRepositories();
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.TrialExpiryJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.PlanAiReviewJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.SubscriptionRenewalJob>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
@@ -222,6 +227,21 @@ public static class DependencyInjection
         services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
         services.AddOptions<MockupOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Mockups));
+        // Optional: without the section Free and the Pro trial use the defaults on UsageAllowanceOptions.
+        services.AddOptions<APCS.Application.Features.Entitlements.UsageAllowanceOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Entitlements.UsageAllowanceOptions.SectionName))
+            .Validate(options => options.IsValid(), "UsageAllowances must not be negative.")
+            .ValidateOnStart();
+        // Optional: without the section the verdicts use the defaults on PlanVerdictOptions.
+        services.AddOptions<PlanVerdictOptions>()
+            .Bind(configuration.GetSection(PlanVerdictOptions.SectionName))
+            .Validate(options => options.IsValid(), "PlanInsights thresholds are out of range.")
+            .ValidateOnStart();
+        // Optional too: without the section the review uses the defaults on PlanAiReviewOptions.
+        services.AddOptions<APCS.Application.Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewOptions.SectionName))
+            .Validate(options => options.IsValid(), "PlanAiReview settings are out of range.")
+            .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
@@ -241,8 +261,9 @@ public static class DependencyInjection
         {
             var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
             client.BaseAddress = new Uri(options.Endpoint);
-            // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
-            client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
+            // Each of the three attempts has its own limit (AttemptTimeoutSeconds, or the request's own), so the
+            // client sets none: a fixed one here would cut off a caller that allows its attempts longer.
+            client.Timeout = Timeout.InfiniteTimeSpan;
         });
         services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());

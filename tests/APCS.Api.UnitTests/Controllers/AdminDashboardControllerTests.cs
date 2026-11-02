@@ -24,7 +24,6 @@ public sealed class AdminDashboardControllerTests
     {
         var metrics = new AdminDashboardMetricsDto(
             100, 50, 5000m, 2000m, 10, 5,
-            new List<MonthlyRevenueDto>(),
             new List<SupportTicketDto>(),
             new List<BatchJobDto>()
         );

@@ -1,5 +1,6 @@
 using APCS.Api.Controllers;
 using APCS.Application.Features.Admin.SubscriptionPlans;
+using APCS.Application.Features.Admin.SubscriptionPlans.AiReview;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
 using APCS.Common.Models;
@@ -13,17 +14,40 @@ namespace APCS.Api.UnitTests.Controllers;
 public sealed class AdminSubscriptionPlansControllerTests
 {
     private readonly Mock<IAdminSubscriptionPlanService> _serviceMock = new();
+    private readonly Mock<IPlanAiReviewService> _aiReviewMock = new();
     private readonly AdminSubscriptionPlansController _controller;
 
     public AdminSubscriptionPlansControllerTests()
     {
-        _controller = new AdminSubscriptionPlansController(_serviceMock.Object);
+        _controller = new AdminSubscriptionPlansController(_serviceMock.Object, Mock.Of<IPlanInsightsService>(), _aiReviewMock.Object);
     }
 
     private static AdminPlanDto SamplePlan() => new(
         Guid.NewGuid(), "Creator", "creator", "For growing sellers",
         49m, 490m, 200, 2, 2000, 1000, 100, 20000, 200m,
         true, true, false, true, 0, true, DateTime.UtcNow, DateTime.UtcNow);
+
+    [TestMethod]
+    public async Task RegenerateAiReview_WhenQueued_ReturnsAccepted()
+    {
+        var review = new PlanAiReviewDto(true, true, null, [], null, null, null);
+        _aiReviewMock.Setup(s => s.RequestAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(review));
+
+        var result = await _controller.RegenerateAiReview(CancellationToken.None);
+
+        result.Should().BeOfType<AcceptedResult>().Which.Value.Should().Be(review);
+    }
+
+    [TestMethod]
+    public async Task RegenerateAiReview_WhileOneIsBeingWritten_ReturnsConflict()
+    {
+        _aiReviewMock.Setup(s => s.RequestAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<PlanAiReviewDto>(Error.Conflict("plan_ai_review.in_progress", "Busy.")));
+
+        var result = await _controller.RegenerateAiReview(CancellationToken.None);
+
+        result.Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(409);
+    }
 
     [TestMethod]
     public async Task GetAll_WhenSuccessful_ReturnsOk()

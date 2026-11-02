@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
+using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Application.Features.Subscriptions.Dtos.Request;
 using APCS.Application.Features.Subscriptions.Dtos.Response;
@@ -18,7 +19,11 @@ namespace APCS.Application.Features.Subscriptions;
 /// A narrow Application-owned projection of <c>PayOsOptions</c> (Infrastructure), so Application
 /// never references the Infrastructure options type directly.
 /// </remarks>
-public sealed record PaymentGatewaySettings(decimal UsdToVndRate, int? TestAmountVnd);
+public sealed record PaymentGatewaySettings(decimal UsdToVndRate, int? TestAmountVnd)
+{
+    /// <summary>A stored USD amount in whole đồng, as PayOS charges it.</summary>
+    public decimal ToVnd(decimal usd) => Math.Round(usd * UsdToVndRate);
+}
 
 /// <summary>
 /// Implements the Subscriptions feature's use cases.
@@ -36,10 +41,14 @@ public sealed class SubscriptionService(
     TimeProvider timeProvider,
     IValidator<CheckoutRequestDto> checkoutValidator,
     IValidator<UpgradeRequestDto> upgradeValidator,
-    IValidator<DowngradeRequestDto> downgradeValidator)
+    IValidator<DowngradeRequestDto> downgradeValidator,
+    IPlanEntitlementService entitlements,
+    IFeatureCatalog featureCatalog,
+    IPlanSettings planSettings)
     : ISubscriptionService
 {
     private const decimal FreeTierMaxPrice = 0m;
+
 
     /// <inheritdoc />
     public async Task<Result<SubscriptionOverviewResponseDto>> GetOverviewAsync(
@@ -50,8 +59,8 @@ public sealed class SubscriptionService(
             return Result.Failure<SubscriptionOverviewResponseDto>(SubscriptionErrors.Unauthenticated());
         }
 
-        var activeSubscription = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
-        var hasActivePaidPlan = IsActivePaidPlan(activeSubscription);
+        var activeSubscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+        var hasActivePaidPlan = IsPaidPlan(activeSubscription);
 
         var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
         var usage = activeSubscription is null
@@ -60,24 +69,143 @@ public sealed class SubscriptionService(
 
         var usageQuotas = activeSubscription is null
             ? []
-            : QuotaDefinitions.Build(activeSubscription.Plan, usage);
+            : QuotaDefinitions.Build(usage);
+
+        // One trial per account, and never for a Seller who already pays.
+        var trialEligible = !hasActivePaidPlan
+            && activeSubscription?.TrialEndsAt is null
+            && !await subscriptions.HasUsedTrialAsync(userId, cancellationToken);
 
         var comparisonPlans = await plans.GetComparisonPlansAsync(activeSubscription?.PlanId, cancellationToken);
+        var recommendedTier = await planSettings.GetRecommendedPlanTierAsync(cancellationToken);
         var availablePlans = comparisonPlans
-            .Select(plan => MapToAvailablePlanDto(plan, activeSubscription?.PlanId))
+            .Select(plan => MapToAvailablePlanDto(plan, activeSubscription?.PlanId, gatewaySettings.Value) with
+            {
+                IsRecommended = recommendedTier != null && plan.Tier == recommendedTier
+            })
             .ToList();
 
         var recentInvoices = await invoices.GetRecentWithPlanAsync(userId, take: 3, cancellationToken);
-        var recentInvoiceDtos = recentInvoices.Select(MapToRecentInvoiceDto).ToList();
+        var recentInvoiceDtos = recentInvoices.Select(invoice => MapToRecentInvoiceDto(invoice, gatewaySettings.Value)).ToList();
 
+        var trialTier = await planSettings.GetTrialPlanTierAsync(cancellationToken);
+        var trialAllowances = (await planSettings.GetAllowancesAsync(cancellationToken)).Trial;
         var response = new SubscriptionOverviewResponseDto(
-            activeSubscription is null ? null : MapToCurrentSubscriptionDto(activeSubscription),
+            activeSubscription is null ? null : MapToCurrentSubscriptionDto(activeSubscription, today, gatewaySettings.Value),
             usageQuotas,
             availablePlans,
             recentInvoiceDtos,
-            hasActivePaidPlan);
+            hasActivePaidPlan,
+            trialEligible,
+            await planSettings.GetTrialDaysAsync(cancellationToken),
+            availablePlans.FirstOrDefault(plan => plan.Tier == trialTier)?.Name,
+            [
+                new TrialAllowanceDto(UsageAllowances.Products, UsageAllowances.Label(UsageAllowances.Products), trialAllowances.Products),
+                new TrialAllowanceDto(UsageAllowances.Mockups, UsageAllowances.Label(UsageAllowances.Mockups), trialAllowances.Mockups),
+                new TrialAllowanceDto(UsageAllowances.Videos, UsageAllowances.Label(UsageAllowances.Videos), trialAllowances.Videos),
+                new TrialAllowanceDto(UsageAllowances.Listings, UsageAllowances.Label(UsageAllowances.Listings), trialAllowances.Listings),
+            ]);
 
         return Result.Success(response);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TrialResponseDto>> StartTrialAsync(CancellationToken cancellationToken = default)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Result.Failure<TrialResponseDto>(SubscriptionErrors.Unauthenticated());
+        }
+
+        var activeSubscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+        if (activeSubscription is not null)
+        {
+            return Result.Failure<TrialResponseDto>(SubscriptionErrors.TrialNotAvailableWithPlan());
+        }
+
+        if (await subscriptions.HasUsedTrialAsync(userId, cancellationToken))
+        {
+            return Result.Failure<TrialResponseDto>(SubscriptionErrors.TrialAlreadyUsed());
+        }
+
+        // Design images run on the Seller's own Gemini key, so a trial without one cannot make anything.
+        var keyCheck = await entitlements.RequireGeminiKeyAsync(userId, cancellationToken);
+        if (keyCheck.IsFailure)
+        {
+            return Result.Failure<TrialResponseDto>(keyCheck.Error);
+        }
+
+        // The plan the trial gives is set by an Admin.
+        var plan = await plans.GetPurchasableByTierAsync(await planSettings.GetTrialPlanTierAsync(cancellationToken), cancellationToken);
+        if (plan is null)
+        {
+            return Result.Failure<TrialResponseDto>(SubscriptionErrors.TrialPlanUnavailable());
+        }
+
+        var utcNow = timeProvider.GetUtcNow().UtcDateTime;
+        var today = DateOnly.FromDateTime(utcNow);
+        // As long as an Admin set it now; a later change leaves this trial's end where it is.
+        var trialEndsAt = utcNow.AddDays(await planSettings.GetTrialDaysAsync(cancellationToken));
+
+        // A trial is free: it has no invoice, carries no price, and never renews by itself, so
+        // revenue, MRR and churn never count it.
+        var trial = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            PlanId = plan.Id,
+            BillingCycle = "monthly",
+            MonthlyPriceUsd = 0m,
+            AnnualPriceUsd = null,
+            Status = SubscriptionStatuses.Active,
+            StartDate = today,
+            RenewalDate = DateOnly.FromDateTime(trialEndsAt),
+            TrialEndsAt = trialEndsAt,
+            AutoRenew = false,
+            CreatedAt = utcNow,
+            UpdatedAt = utcNow
+        };
+
+        await subscriptions.AddAsync(trial, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success(new TrialResponseDto(trial.Id, plan.Name, trialEndsAt));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<EntitlementsResponseDto>> GetEntitlementsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Result.Failure<EntitlementsResponseDto>(SubscriptionErrors.Unauthenticated());
+        }
+
+        var current = await entitlements.GetAsync(userId, cancellationToken);
+        // Free and the Pro trial have allowances instead of daily caps, so no cap applies to them.
+        int? LimitOf(string code) =>
+            (current.IsFree || current.IsTrial) && code is PlanFeatures.DailyMockupCap or PlanFeatures.DailyListingCap or PlanFeatures.DailyVideoCap
+                ? null
+                : current.Limit(code);
+        var features = (await featureCatalog.GetAllAsync(cancellationToken))
+            .Select(feature => new EntitlementFeatureDto(
+                feature.Code,
+                feature.Label,
+                feature.Kind,
+                feature.Group,
+                feature.Kind == PlanFeatureKinds.Flag ? current.IsEnabled(feature.Code) : LimitOf(feature.Code) != 0,
+                feature.Kind == PlanFeatureKinds.Limit ? LimitOf(feature.Code) : null))
+            .ToList();
+
+        return Result.Success(new EntitlementsResponseDto(
+            current.HasPlan,
+            current.PlanName,
+            current.Tier,
+            current.IsTrial,
+            current.TrialEndsAt,
+            current.MaxBatchSize,
+            current.MaxConcurrentJobs,
+            current.PrioritySupport,
+            features));
     }
 
     /// <inheritdoc />
@@ -99,8 +227,9 @@ public sealed class SubscriptionService(
         var activeSubscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
 
         // BR190: Buy is only for a Seller with no active plan or one on the $0/Free tier; a
-        // Seller already on a paid plan must use Upgrade/Downgrade (out of this scope).
-        if (IsActivePaidPlan(activeSubscription))
+        // Seller already on a paid plan must use Upgrade/Downgrade (out of this scope), or Renew
+        // when it is past due.
+        if (IsPaidPlan(activeSubscription))
         {
             return Result.Failure<CheckoutResponseDto>(SubscriptionErrors.AlreadySubscribed());
         }
@@ -143,7 +272,9 @@ public sealed class SubscriptionService(
         await using var transaction = await unitOfWork.BeginTransactionAsync(cancellationToken);
         try
         {
-            if (activeSubscription is not null)
+            // A trial keeps running until this checkout is paid (FinalizeCheckoutAsync retires
+            // it then), so abandoning the payment does not cost the Seller the rest of the trial.
+            if (activeSubscription is not null && activeSubscription.TrialEndsAt is null)
             {
                 activeSubscription.Status = SubscriptionStatuses.Cancelled;
                 activeSubscription.CancelledAt = utcNow.UtcDateTime;
@@ -321,6 +452,73 @@ public sealed class SubscriptionService(
     }
 
     /// <inheritdoc />
+    public async Task<Result<CheckoutResponseDto>> RenewAsync(CancellationToken cancellationToken = default)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Result.Failure<CheckoutResponseDto>(SubscriptionErrors.Unauthenticated());
+        }
+
+        var current = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
+        if (!IsPaidPlan(current))
+        {
+            return Result.Failure<CheckoutResponseDto>(SubscriptionErrors.NothingToRenew());
+        }
+
+        var utcNow = timeProvider.GetUtcNow();
+        var today = DateOnly.FromDateTime(utcNow.UtcDateTime);
+        if (!RenewalRules.CanRenew(current!.RenewalDate, today))
+        {
+            return Result.Failure<CheckoutResponseDto>(
+                SubscriptionErrors.RenewalNotDue(current.RenewalDate.AddDays(-RenewalRules.RenewWindowDays)));
+        }
+
+        var (plan, billingCycle, priceUsd) = PriceNextCycle(current);
+        var settings = gatewaySettings.Value;
+        var amountVnd = settings.TestAmountVnd ?? (int)Math.Round(priceUsd * settings.UsdToVndRate);
+        var orderCode = utcNow.ToUnixTimeMilliseconds();
+        var description = $"Renew {plan.Tier}".Length > 25 ? plan.Tier[..Math.Min(plan.Tier.Length, 20)] : $"Renew {plan.Tier}";
+
+        PaymentLinkResult paymentLink;
+        try
+        {
+            paymentLink = await paymentGateway.CreatePaymentLinkAsync(orderCode, amountVnd, description, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return Result.Failure<CheckoutResponseDto>(SubscriptionErrors.GatewayUnavailable());
+        }
+
+        // The renewal is billed on the subscription itself, so revenue counts it as a renewal and
+        // nothing about the current plan changes until it is paid.
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = current.Id,
+            UserId = userId,
+            InvoiceNumber = GenerateInvoiceNumber(utcNow),
+            InvoiceDate = today,
+            DueDate = current.RenewalDate,
+            AmountUsd = priceUsd,
+            TaxAmount = 0m,
+            TotalAmount = priceUsd,
+            Status = InvoiceStatuses.AwaitingPayment,
+            PayosOrderCode = orderCode,
+            PayosPaymentLinkId = paymentLink.PaymentLinkId,
+            PayosQrCode = paymentLink.QrCode,
+            Items = new RenewalInvoiceItem(
+                $"{plan.Name} plan renewal ({billingCycle} billing)", amountVnd, plan.Id, billingCycle,
+                current.PlanId, current.BillingCycle).ToItemsJson(),
+            CreatedAt = utcNow.UtcDateTime
+        };
+        await invoices.AddAsync(invoice, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success(new CheckoutResponseDto(
+            invoice.Id, paymentLink.QrCode, paymentLink.CheckoutUrl, amountVnd));
+    }
+
+    /// <inheritdoc />
     public async Task<Result<UpgradeResponseDto>> UpgradeAsync(
         UpgradeRequestDto request,
         CancellationToken cancellationToken = default)
@@ -336,12 +534,18 @@ public sealed class SubscriptionService(
             return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.Unauthenticated());
         }
 
-        var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
+        var current = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
 
         // Upgrading requires an active paid plan.
-        if (!IsActivePaidPlan(current))
+        if (!IsPaidPlan(current))
         {
             return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.NoActivePlanToChange());
+        }
+
+        // Proration credits the unused rest of the paid cycle; a past-due plan has none left.
+        if (RenewalRules.IsPastDue(current!.RenewalDate, DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime)))
+        {
+            return Result.Failure<UpgradeResponseDto>(SubscriptionErrors.RenewBeforeUpgrade());
         }
 
         var targetPlan = await plans.GetPurchasableByIdAsync(request.PlanId, cancellationToken);
@@ -428,7 +632,10 @@ public sealed class SubscriptionService(
                 InvoiceId: freeInvoice.Id,
                 QrCode: null,
                 CheckoutUrl: null,
-                AmountVnd: null));
+                AmountVnd: null,
+                DueTodayVnd: 0m,
+                ProratedCreditVnd: settings.ToVnd(creditApplied),
+                MonthlyRateVnd: settings.ToVnd(newPlanPrice)));
         }
 
         // An amount is due — proceed through the payment flow before activating. The current
@@ -505,7 +712,10 @@ public sealed class SubscriptionService(
                 InvoiceId: invoice.Id,
                 QrCode: paymentLink.QrCode,
                 CheckoutUrl: paymentLink.CheckoutUrl,
-                AmountVnd: amountVnd));
+                AmountVnd: amountVnd,
+                DueTodayVnd: settings.ToVnd(dueToday),
+                ProratedCreditVnd: settings.ToVnd(creditApplied),
+                MonthlyRateVnd: settings.ToVnd(newPlanPrice)));
         }
         catch
         {
@@ -530,10 +740,11 @@ public sealed class SubscriptionService(
             return Result.Failure<DowngradeResponseDto>(SubscriptionErrors.Unauthenticated());
         }
 
-        var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
+        var current = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
 
-        // Downgrading requires an active paid plan.
-        if (!IsActivePaidPlan(current))
+        // Downgrading requires an active paid plan. A past-due Seller can still pick a cheaper
+        // plan: the renewal they pay next is then priced at it.
+        if (!IsPaidPlan(current))
         {
             return Result.Failure<DowngradeResponseDto>(SubscriptionErrors.NoActivePlanToChange());
         }
@@ -572,10 +783,10 @@ public sealed class SubscriptionService(
             return Result.Failure(SubscriptionErrors.Unauthenticated());
         }
 
-        var current = await GetActiveSubscriptionApplyingDueDowngradeAsync(userId, cancellationToken);
+        var current = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
 
-        // Nothing to cancel once the effective date already passed and the lazy-apply already
-        // promoted the scheduled plan (ScheduledPlanId is cleared).
+        // Nothing to cancel once the renewal that applied the scheduled plan was paid
+        // (ScheduledPlanId is cleared then).
         if (current is null || current.ScheduledPlanId is null)
         {
             return Result.Failure(SubscriptionErrors.NoScheduledDowngrade());
@@ -619,8 +830,8 @@ public sealed class SubscriptionService(
             invoice.User.FullName,
             invoice.User.Email,
             invoice.Subscription.Plan.Name,
-            invoice.AmountUsd,
-            invoice.TotalAmount,
+            gatewaySettings.Value.ToVnd(invoice.AmountUsd),
+            gatewaySettings.Value.ToVnd(invoice.TotalAmount),
             ToCheckoutStatusValue(invoice));
 
         byte[] pdfBytes;
@@ -638,49 +849,21 @@ public sealed class SubscriptionService(
     }
 
     /// <summary>
-    /// Gets the Seller's active subscription, applying a scheduled downgrade in place first if
-    /// its effective date has already arrived. There is no background job scheduler in
-    /// this project, so the transition is applied lazily the next time anything reads the
-    /// subscription instead of exactly at midnight on the effective date.
+    /// The plan, billing cycle and price of the Seller's next cycle. A scheduled change (a
+    /// downgrade, or a retired plan's move) takes effect with it; staying on the same plan keeps
+    /// the price the Seller signed up at.
     /// </summary>
-    private async Task<Subscription?> GetActiveSubscriptionApplyingDueDowngradeAsync(
-        Guid userId,
-        CancellationToken cancellationToken)
+    private static (SubscriptionPlan Plan, string BillingCycle, decimal Price) PriceNextCycle(Subscription current)
     {
-        var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
-        if (subscription?.ScheduledPlanId is null)
-        {
-            return subscription;
-        }
+        var plan = current.ScheduledPlan ?? current.Plan;
+        var samePlan = plan.Id == current.PlanId;
+        var monthly = samePlan && current.MonthlyPriceUsd > 0m ? current.MonthlyPriceUsd : plan.MonthlyPriceUsd;
+        var annual = samePlan && current.AnnualPriceUsd > 0m ? current.AnnualPriceUsd : plan.AnnualPriceUsd;
 
-        var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
-        if (subscription.ScheduledPlanEffectiveDate > today)
-        {
-            return subscription;
-        }
-
-        var newPlan = subscription.ScheduledPlan
-            ?? await plans.GetPurchasableByIdAsync(subscription.ScheduledPlanId.Value, cancellationToken)
-            ?? subscription.Plan;
-        var utcNow = timeProvider.GetUtcNow();
-
-        subscription.StartDate = subscription.RenewalDate;
-        subscription.RenewalDate = subscription.BillingCycle == "annual"
-            ? subscription.RenewalDate.AddYears(1)
-            : subscription.RenewalDate.AddMonths(1);
-        subscription.PlanId = newPlan.Id;
-        subscription.Plan = newPlan;
-        subscription.MonthlyPriceUsd = newPlan.MonthlyPriceUsd;
-        subscription.AnnualPriceUsd = newPlan.AnnualPriceUsd;
-        subscription.ScheduledPlanId = null;
-        subscription.ScheduledPlan = null;
-        subscription.ScheduledPlanEffectiveDate = null;
-        subscription.UpdatedAt = utcNow.UtcDateTime;
-
-        await subscriptions.UpdateAsync(subscription, cancellationToken: cancellationToken);
-        await unitOfWork.SaveChangesAsync(cancellationToken);
-
-        return subscription;
+        // A plan with no annual price renews monthly.
+        return current.BillingCycle == "annual" && annual is { } annualPrice
+            ? (plan, "annual", annualPrice)
+            : (plan, "monthly", monthly);
     }
 
     /// <summary>
@@ -692,6 +875,12 @@ public sealed class SubscriptionService(
     {
         var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
         var succeeded = outcome == CheckoutOutcome.Paid;
+
+        if (RenewalInvoiceItem.TryRead(invoice.Items) is { } renewal)
+        {
+            await FinalizeRenewalAsync(invoice, renewal, succeeded, today, cancellationToken);
+            return;
+        }
 
         if (succeeded)
         {
@@ -735,6 +924,72 @@ public sealed class SubscriptionService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Settles a renewal invoice. Paid: the subscription gets one more cycle of the plan that was
+    /// priced. Not paid: only the invoice is voided; the subscription keeps whatever time it has.
+    /// </summary>
+    private async Task FinalizeRenewalAsync(
+        Invoice invoice,
+        RenewalInvoiceItem renewal,
+        bool succeeded,
+        DateOnly today,
+        CancellationToken cancellationToken)
+    {
+        invoice.Status = succeeded ? InvoiceStatuses.Paid : InvoiceStatuses.Void;
+        if (succeeded)
+        {
+            invoice.PaymentDate = today;
+            var subscription = invoice.Subscription;
+            var stillUsable = subscription.Status is SubscriptionStatuses.Active or SubscriptionStatuses.PastDue
+                && subscription.RenewalDate >= RenewalRules.OldestUsableRenewalDate(today);
+
+            // Paid after the grace period ended: the plan comes back from today, unless the Seller
+            // already bought another one meanwhile, which a second live plan would contradict.
+            var other = stillUsable ? null : await subscriptions.GetActiveWithPlanAsync(invoice.UserId, cancellationToken);
+            if (other is null || other.Id == subscription.Id)
+            {
+                await ApplyRenewalAsync(subscription, renewal, stillUsable ? subscription.RenewalDate : today, cancellationToken);
+            }
+        }
+
+        await invoices.UpdateAsync(invoice, cancellationToken: cancellationToken);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task ApplyRenewalAsync(
+        Subscription subscription,
+        RenewalInvoiceItem renewal,
+        DateOnly periodStart,
+        CancellationToken cancellationToken)
+    {
+        if (renewal.PlanId != subscription.PlanId)
+        {
+            var plan = await plans.GetByIdForAdminAsync(renewal.PlanId, cancellationToken) ?? subscription.Plan;
+            subscription.PlanId = plan.Id;
+            subscription.Plan = plan;
+            subscription.MonthlyPriceUsd = plan.MonthlyPriceUsd;
+            subscription.AnnualPriceUsd = plan.AnnualPriceUsd;
+        }
+
+        // The scheduled change is used up once the renewal that carried it is paid. One picked
+        // while the payment was open still waits for the next renewal.
+        if (subscription.ScheduledPlanId == renewal.PlanId)
+        {
+            subscription.ScheduledPlanId = null;
+            subscription.ScheduledPlan = null;
+            subscription.ScheduledPlanEffectiveDate = null;
+        }
+
+        subscription.BillingCycle = renewal.BillingCycle;
+        subscription.StartDate = periodStart;
+        subscription.RenewalDate = RenewalRules.NextRenewalDate(periodStart, renewal.BillingCycle);
+        subscription.Status = SubscriptionStatuses.Active;
+        subscription.CancelledAt = null;
+        subscription.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
+
+        await subscriptions.UpdateAsync(subscription, cancellationToken: cancellationToken);
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         if (currentUser.IsAuthenticated && currentUser.UserId is { } id)
@@ -747,9 +1002,12 @@ public sealed class SubscriptionService(
         return false;
     }
 
-    private static bool IsActivePaidPlan(Subscription? subscription) =>
+    // A trial runs on a paid plan's features but was never paid for, so the Seller buys rather
+    // than upgrades out of it. A past-due plan is still the Seller's plan: they renew it.
+    private static bool IsPaidPlan(Subscription? subscription) =>
         subscription is not null
-        && subscription.Status == SubscriptionStatuses.Active
+        && subscription.Status is SubscriptionStatuses.Active or SubscriptionStatuses.PastDue
+        && subscription.TrialEndsAt is null
         && subscription.Plan.MonthlyPriceUsd > FreeTierMaxPrice;
 
     private static string GenerateInvoiceNumber(DateTimeOffset utcNow) =>
@@ -771,6 +1029,13 @@ public sealed class SubscriptionService(
 
         if (invoice.Status == InvoiceStatuses.Void)
         {
+            // An unpaid renewal never touches its subscription, so its status cannot tell a decline
+            // from a cancel; either way the Seller simply did not renew.
+            if (RenewalInvoiceItem.TryRead(invoice.Items) is not null)
+            {
+                return CheckoutStatusValues.Cancelled;
+            }
+
             return invoice.Subscription.Status == SubscriptionStatuses.Cancelled
                 ? CheckoutStatusValues.Cancelled
                 : CheckoutStatusValues.Failed;
@@ -789,23 +1054,62 @@ public sealed class SubscriptionService(
             status == CheckoutStatusValues.Paid ? invoice.Subscription.RenewalDate : null);
     }
 
-    private static CurrentSubscriptionDto MapToCurrentSubscriptionDto(Subscription subscription) =>
-        new(
+    private static CurrentSubscriptionDto MapToCurrentSubscriptionDto(
+        Subscription subscription,
+        DateOnly today,
+        PaymentGatewaySettings settings)
+    {
+        var isTrial = subscription.TrialEndsAt is not null;
+        var isPaid = IsPaidPlan(subscription);
+        var pastDue = isPaid && RenewalRules.IsPastDue(subscription.RenewalDate, today);
+        var nextCycle = isPaid ? PriceNextCycle(subscription) : default;
+        var price = subscription.BillingCycle == "annual" && subscription.AnnualPriceUsd is { } annualPrice
+            ? annualPrice
+            : subscription.MonthlyPriceUsd;
+
+        return new(
             subscription.Id,
             subscription.PlanId,
             subscription.Plan.Name,
             subscription.Plan.Description,
-            subscription.Status,
+            // The hourly job may not have stored it yet.
+            pastDue ? SubscriptionStatuses.PastDue : subscription.Status,
             subscription.BillingCycle,
-            subscription.BillingCycle == "annual" && subscription.AnnualPriceUsd is { } annualPrice
-                ? annualPrice
-                : subscription.MonthlyPriceUsd,
+            price,
             subscription.StartDate,
             subscription.RenewalDate,
             subscription.ScheduledPlan?.Name,
-            subscription.ScheduledPlanEffectiveDate);
+            subscription.ScheduledPlanEffectiveDate,
+            isTrial,
+            subscription.TrialEndsAt,
+            CanRenew: isPaid && RenewalRules.CanRenew(subscription.RenewalDate, today),
+            LastGraceDay: pastDue ? RenewalRules.LastGraceDay(subscription.RenewalDate) : null,
+            RenewalPlanName: isPaid ? nextCycle.Plan.Name : null,
+            RenewalPrice: isPaid ? nextCycle.Price : null,
+            PriceVnd: settings.ToVnd(price),
+            RenewalPriceVnd: isPaid ? settings.ToVnd(nextCycle.Price) : null);
+    }
 
-    private static AvailablePlanDto MapToAvailablePlanDto(SubscriptionPlan plan, Guid? currentPlanId) =>
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<FeatureCatalogItemDto>>> GetFeatureCatalogAsync(CancellationToken cancellationToken = default)
+    {
+        var catalog = await featureCatalog.GetAllAsync(cancellationToken);
+        return Result.Success<IReadOnlyList<FeatureCatalogItemDto>>(catalog
+            .Select(feature => new FeatureCatalogItemDto(
+                feature.Code,
+                feature.Label,
+                feature.Description,
+                feature.Group,
+                feature.Kind,
+                feature.Unit,
+                feature.SortOrder))
+            .ToList());
+    }
+
+    private static AvailablePlanDto MapToAvailablePlanDto(
+        SubscriptionPlan plan,
+        Guid? currentPlanId,
+        PaymentGatewaySettings settings) =>
         new(
             plan.Id,
             plan.Name,
@@ -827,14 +1131,17 @@ public sealed class SubscriptionService(
                 plan.StorageQuotaGb,
                 plan.MaxBatchSize,
                 plan.MaxProductsPerMonth,
-                plan.MaxConcurrentJobs));
+                plan.MaxConcurrentJobs),
+            settings.ToVnd(plan.MonthlyPriceUsd),
+            plan.AnnualPriceUsd is { } annual ? settings.ToVnd(annual) : null);
 
-    private static RecentInvoiceDto MapToRecentInvoiceDto(Invoice invoice) =>
+    private static RecentInvoiceDto MapToRecentInvoiceDto(Invoice invoice, PaymentGatewaySettings settings) =>
         new(
             invoice.Id,
             invoice.InvoiceNumber,
             invoice.InvoiceDate,
             invoice.Subscription.Plan.Name,
             invoice.TotalAmount,
-            ToCheckoutStatusValue(invoice));
+            ToCheckoutStatusValue(invoice),
+            settings.ToVnd(invoice.TotalAmount));
 }
