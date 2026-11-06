@@ -69,11 +69,11 @@ public sealed class QuestPdfInvoiceRenderer : IInvoicePdfRenderer
                     content.Item().PaddingTop(6).Row(row =>
                     {
                         row.RelativeItem(3).Text($"{model.PlanName} plan — {model.BillingPeriodLabel}");
-                        row.RelativeItem(1).AlignRight().Text($"${model.PlanPrice:0.00}");
+                        row.RelativeItem(1).AlignRight().Text(Vnd(model.PlanPriceVnd));
                     });
 
                     content.Item().PaddingTop(16).AlignRight()
-                        .Text($"Total Paid: ${model.TotalPaid:0.00}").FontSize(13).Bold();
+                        .Text($"Total Paid: {Vnd(model.TotalPaidVnd)}").FontSize(13).Bold();
                 });
 
                 page.Footer().AlignCenter()
@@ -82,4 +82,8 @@ public sealed class QuestPdfInvoiceRenderer : IInvoicePdfRenderer
             });
         }).GeneratePdf();
     }
+
+    // "VND" rather than "₫", which the default PDF font may not carry.
+    private static string Vnd(decimal amount) =>
+        $"{amount.ToString("#,0", System.Globalization.CultureInfo.GetCultureInfo("vi-VN"))} VND";
 }

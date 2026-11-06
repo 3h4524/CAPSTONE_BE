@@ -32,4 +32,5 @@ public sealed record CreatePlanRequestDto(
     bool CustomApiKeysAllowed,
     bool WhiteLabelExportEnabled,
     bool PrioritySupport,
-    bool IsActive);
+    bool IsActive,
+    IReadOnlyList<PlanFeatureInputDto>? Features = null);

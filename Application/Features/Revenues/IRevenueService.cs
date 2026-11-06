@@ -12,4 +12,7 @@ public interface IRevenueService
     Task<Result<RevenueChartDto>> GetChartsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
     Task<Result<PagedResult<RevenueInvoiceDto>>> GetInvoicesAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
     Task<Result<RevenueInsightsDto>> GetInsightsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default);
+
+    /// <summary>Splits each plan's customers at <paramref name="from"/> into those who stayed and those who left by <paramref name="to"/>.</summary>
+    Task<Result<IReadOnlyList<PlanCohortDto>>> GetPlanCohortsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken = default);
 }

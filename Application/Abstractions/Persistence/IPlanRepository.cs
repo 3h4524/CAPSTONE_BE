@@ -21,6 +21,11 @@ public interface IPlanRepository : IRepository<SubscriptionPlan>
     Task<SubscriptionPlan?> GetPurchasableByIdAsync(Guid planId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Finds an active plan by its tier slug, such as <c>pro</c> for the free trial.
+    /// </summary>
+    Task<SubscriptionPlan?> GetPurchasableByTierAsync(string tier, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets every plan tier for the Admin Portal (ADM-03), regardless of <c>IsActive</c>, ordered
     /// by monthly price then name (the same ascending-price order Sellers see, BR93).
     /// </summary>

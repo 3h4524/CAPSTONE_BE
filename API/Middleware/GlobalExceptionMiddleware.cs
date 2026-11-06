@@ -29,7 +29,6 @@ public sealed class GlobalExceptionMiddleware(
         catch (HttpRequestException exception) when (!context.Response.HasStarted)
         {
             logger.LogError(exception, "External service request failed.");
-            System.IO.File.WriteAllText("exception_dump.log", exception.ToString());
 
             context.Response.Clear();
             context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
@@ -51,7 +50,6 @@ public sealed class GlobalExceptionMiddleware(
         catch (Exception exception)
         {
             logger.LogError(exception, "Unhandled API exception.");
-            System.IO.File.WriteAllText("exception_dump.log", exception.ToString());
 
             if (context.Response.HasStarted)
             {
