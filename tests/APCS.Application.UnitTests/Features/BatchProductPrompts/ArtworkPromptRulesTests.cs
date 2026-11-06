@@ -13,12 +13,12 @@ public sealed class ArtworkPromptRulesTests
         new(subject, "bold typography", "", "", "", basePrompt, Keywords: keywords, Description: description);
 
     [TestMethod]
-    public void MotifKeywords_TakesListingWordsOutAndKeepsTheFirstFive()
+    public void MotifKeywords_TakesProductAndListingWordsOut_AndKeepsEverythingElseAsWritten()
     {
         var motifs = ArtworkPromptRules.MotifKeywords(
             "vintage camping, hiking shirt, camping gift, unisex apparel, t-shirt, coffee lover, national park, nature, forest");
 
-        motifs.Should().Be("camping, hiking, coffee, national park, nature");
+        motifs.Should().Be("vintage camping, hiking, camping, coffee lover, national park, nature, forest");
     }
 
     [TestMethod]
@@ -36,41 +36,24 @@ public sealed class ArtworkPromptRulesTests
     }
 
     [TestMethod]
-    public void SplitKeywords_DropsWordsForAPerson_ButKeepsJobs()
+    public void SplitKeywords_GuessesAtNothingElse_TheFeelPeopleSlogansAndLetteringWordsStay()
     {
-        var parts = ArtworkPromptRules.SplitKeywords("dog mom, best friends, nurse life, developer");
+        // Sent as written, none of these was printed or drawn as a stranger in the A/B/C test of 31/10/2026: the
+        // lettering instruction keeps them out of the text.
+        var parts = ArtworkPromptRules.SplitKeywords(
+            "dog mom, plant lady, good things take time, positive quote, funny, geometric, est 1985, 123, kindness");
 
-        parts.Motifs.Should().Be("dog, nurse life, developer");
-        parts.Mood.Should().BeEmpty("\"best\" names no feel a picture could show");
+        parts.Motifs.Should().Be("dog mom, plant lady, good things take time, positive quote, funny, geometric, est 1985, 123, kindness");
+        parts.Ignored.Should().BeEmpty();
     }
 
     [TestMethod]
-    public void SplitKeywords_WordsAboutTheFeel_BecomeTheMoodInsteadOfMotifs()
+    public void SplitKeywords_ListsTheProductWordsTakenOut_InTheSellersOrder()
     {
-        var parts = ArtworkPromptRules.SplitKeywords("funny cat, cute, vintage, retro camper, cool, hilarious");
+        var parts = ArtworkPromptRules.SplitKeywords("market tote, ocean lover gift, botanical mug, granddaughter gift");
 
-        parts.Motifs.Should().Be("cat, camper");
-        parts.Mood.Should().Be("playful, cute, vintage, retro feel");
-    }
-
-    [TestMethod]
-    public void SplitKeywords_KnowsEveryRelative_NotJustAList_ButKeepsFiguresToDraw()
-    {
-        // From WordNet: no list names "granddaughter", "nephews" or "stepson"; a possessive is the word itself.
-        var parts = ArtworkPromptRules.SplitKeywords("granddaughter gift, unicorn, nephews, stepson's fishing rod, astronaut, hiker");
-
-        parts.Motifs.Should().Be("unicorn, fishing rod, astronaut, hiker");
-        parts.Ignored.Should().Equal("granddaughter", "gift", "nephews", "stepson's");
-    }
-
-    [TestMethod]
-    public void SplitKeywords_AKeywordAskingForLettering_IsLeftOutWhole_KeepingOnlyItsFeel()
-    {
-        var parts = ArtworkPromptRules.SplitKeywords("kindness, positive quote, oversized typography, funny saying, est 1985, flowers");
-
-        parts.Motifs.Should().Be("kindness, flowers");
-        parts.Mood.Should().Be("playful feel");
-        parts.Ignored.Should().Equal("positive quote", "oversized typography", "funny saying", "est 1985");
+        parts.Motifs.Should().Be("market, ocean lover, botanical, granddaughter");
+        parts.Ignored.Should().Equal("tote", "gift", "mug");
     }
 
     [TestMethod]
@@ -78,27 +61,15 @@ public sealed class ArtworkPromptRulesTests
     {
         var parts = ArtworkPromptRules.SplitKeywords("southwest wall art, phone case, beach house decor, lighthouse t-shirt, cozy home decor");
 
-        parts.Motifs.Should().Be("southwest, beach house, lighthouse");
-        parts.Mood.Should().Be("cozy feel");
+        parts.Motifs.Should().Be("southwest, beach house, lighthouse, cozy");
         parts.Ignored.Should().Equal("wall art", "phone case", "decor", "t-shirt", "home decor");
     }
 
     [TestMethod]
-    public void SplitKeywords_DescribingWordsAlone_BecomeTheMood_ButDescribeAThingTheyComeWith()
+    public void SplitKeywords_KeepsEveryKeyword_HoweverMany()
     {
-        var parts = ArtworkPromptRules.SplitKeywords("geometric, coastal, whimsical, stormy sea, national park, rainy day");
-
-        parts.Motifs.Should().Be("stormy sea, national park, rainy day");
-        parts.Mood.Should().Be("geometric, coastal, whimsical feel");
-    }
-
-    [TestMethod]
-    public void SplitKeywords_BareNumbersAndMotifsPastTheFifth_AreLeftOut()
-    {
-        var parts = ArtworkPromptRules.SplitKeywords("123, mountain, tent, campfire, forest, lake, river");
-
-        parts.Motifs.Should().Be("mountain, tent, campfire, forest, lake");
-        parts.Ignored.Should().Equal("123", "river");
+        ArtworkPromptRules.MotifKeywords("mountain, tent, campfire, forest, lake, river")
+            .Should().Be("mountain, tent, campfire, forest, lake, river");
     }
 
     [TestMethod]
@@ -152,9 +123,9 @@ public sealed class ArtworkPromptRulesTests
     [TestMethod]
     public void Fit_NoMotifLeft_AsksForIconsThatSuitTheNiche_ForTheModelToPick()
     {
-        // "gift, funny" leaves nothing to draw once listing words and the feel are taken out.
+        // "gift, unisex t shirt" leaves nothing to draw once listing words are taken out.
         var fitted = ArtworkPromptRules.Fit(
-            Components("Dink Responsibly", ArtworkPromptRules.MotifKeywords("gift, funny")) with { Niche = "Pickleball players" });
+            Components("Dink Responsibly", ArtworkPromptRules.MotifKeywords("gift, unisex t shirt")) with { Niche = "Pickleball players" });
 
         fitted.Keywords.Should().Be("simple icons that suit Pickleball players");
     }
@@ -169,8 +140,8 @@ public sealed class ArtworkPromptRulesTests
     [TestMethod]
     public void IsThin_NothingToDraw_AFewWordsOfDescription_AndNoInstructions()
     {
-        // "coffee shirt, gift for mom" once listing words and persons are out: only a word the phrase already says.
-        var keywords = ArtworkPromptRules.MotifKeywords("coffee shirt, gift for mom");
+        // "coffee shirt, gift for her" once listing words are out: only a word the phrase already says.
+        var keywords = ArtworkPromptRules.MotifKeywords("coffee shirt, gift for her");
         ArtworkPromptRules.IsThin(Components("Coffee Then Code", keywords, "Cute design.")).Should().BeTrue();
     }
 

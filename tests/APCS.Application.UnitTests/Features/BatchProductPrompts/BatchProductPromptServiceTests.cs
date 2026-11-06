@@ -71,14 +71,14 @@ public sealed class BatchProductPromptServiceTests
             products: MockProducts(new Product
             {
                 Id = ids.ProductId, UserId = ids.UserId, Name = "Tee", ProductType = "tshirt", InputDescription = "d", ProcessingStatus = "pending",
-                DesignTemplateId = templateId, DesiredDesignText = "Coffee Then Code", MainKeywords = "coffee, coding, mug, gift for mom, laptop"
+                DesignTemplateId = templateId, DesiredDesignText = "Coffee Then Code", MainKeywords = "coffee, coding, mug, gift for her, laptop"
             }),
             templates: templates);
 
         var result = await service.GetEffectiveAsync(ids.RowId);
 
         result.Value.Motifs.Should().Be("coding, laptop");
-        result.Value.IgnoredKeywords.Should().Equal(["mug", "gift", "mom", "coffee"], "\"coffee\" is already in the phrase");
+        result.Value.IgnoredKeywords.Should().Equal(["mug", "gift", "coffee"], "\"coffee\" is already in the phrase");
     }
 
     [TestMethod]

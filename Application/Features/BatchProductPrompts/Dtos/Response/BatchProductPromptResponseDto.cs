@@ -40,8 +40,8 @@ public sealed record BatchProductPromptResponseDto(
     public string? Motifs { get; init; }
 
     /// <summary>
-    /// What of the product's keywords the design leaves out (product words, who it is for, keywords asking for lettering,
-    /// motifs the phrase already says or past the first five); null when the product has its own image prompt.
+    /// What of the product's keywords the design leaves out (words for the product or its listing, and motifs the phrase
+    /// already says); null when the product has its own image prompt.
     /// </summary>
     public IReadOnlyList<string>? IgnoredKeywords { get; init; }
 }

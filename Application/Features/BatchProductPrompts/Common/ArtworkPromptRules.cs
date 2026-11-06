@@ -3,17 +3,14 @@ using System.Text.RegularExpressions;
 namespace APCS.Application.Features.BatchProductPrompts.Common;
 
 /// <summary>
-/// Keeps an image model from spoiling a design with stray lettering. Keywords written for the listing
-/// ("hiking shirt", "funny camping gift") are cut down to what can be drawn, words about the feel of the design go to
-/// its mood instead, and every image request says which text, if any, belongs in the artwork: a model asked for
-/// "motifs" otherwise often writes them out as small, misspelled words. The words keywords are sorted by are data, not
+/// Keeps an image model from spoiling a design with stray lettering. The Seller's keywords are used as written, less
+/// the words for the product and its listing ("hiking shirt", "camping gift"), which would get the product drawn; every
+/// image request says which text, if any, belongs in the artwork, which is what keeps keywords from being written out
+/// (an A/B/C test on 31/10/2026 found no stray text with keywords sent as written). The listing words are data, not
 /// code: see <see cref="ArtworkVocabulary"/>.
 /// </summary>
 public static partial class ArtworkPromptRules
 {
-    /// <summary>The most keywords handed to a template as motifs; more crowd the design.</summary>
-    public const int MaximumMotifKeywords = 5;
-
     /// <summary>Stands in for the motifs when a template asks for some and none can be drawn, so its sentence still reads.</summary>
     public const string FallbackMotifs = "simple themed shapes";
 
@@ -88,45 +85,32 @@ public static partial class ArtworkPromptRules
     public const string UnbrandedInstruction =
         "Draw every vehicle, product and object as a generic, unbranded one, with no logos, emblems or brand marks on it.";
 
-    /// <summary>A product's keywords sorted into what a template can draw and the feel they ask for.</summary>
-    /// <param name="Motifs">Comma-separated things to draw, at most <see cref="MaximumMotifKeywords"/>, in the Seller's order.</param>
-    /// <param name="Mood">The feel the keywords name ("playful, vintage feel"), or empty.</param>
-    public sealed record KeywordParts(string Motifs, string Mood)
+    /// <summary>A product's keywords as a template uses them.</summary>
+    /// <param name="Motifs">The keywords, comma-separated in the Seller's order, less product and listing words and repeats.</param>
+    public sealed record KeywordParts(string Motifs)
     {
         /// <summary>
-        /// What of the keywords is not drawn, in the Seller's order: words about the product or who it is for, praise,
-        /// keywords that ask for lettering (whole), and motifs past the first <see cref="MaximumMotifKeywords"/>. Shown to
-        /// the Seller, who can then put a keyword another way.
+        /// The product and listing words taken out ("t-shirt", "gift", "wall art"), in the Seller's order. Shown to the
+        /// Seller, who can then put a keyword another way.
         /// </summary>
         public IReadOnlyList<string> Ignored { get; init; } = [];
     }
 
     /// <summary>
-    /// Sorts a product's keywords. A keyword asking for lettering ("positive quote") is left out whole; in any other,
-    /// words for the product ("shirt", "wall art"), for who it is for ("mom", "friends"), praise ("best") and bare numbers
-    /// are dropped, and words for the feel ("funny", "vintage") go to the mood. What is left is a motif ("funny dog mom"
-    /// becomes the motif "dog" and the mood "playful"), unless it is describing words only ("geometric", "coastal"), which
-    /// go to the mood too. Repeated motifs are dropped. The words come from <see cref="ArtworkVocabulary"/>.
+    /// The product's keywords as written, less the words for the product and its listing ("shirt", "gift", "wall art"):
+    /// a model asked for "market tote" draws the tote bag. Nothing else is guessed at: words for the feel ("vintage"),
+    /// for who it is for ("plant lady"), slogans and words asking for lettering stay, since the lettering instruction
+    /// sent with every design keeps them from being written out. A keyword left with no words goes, and so do repeats.
+    /// The words come from <see cref="ArtworkVocabulary"/>.
     /// </summary>
     public static KeywordParts SplitKeywords(string? keywords)
     {
-        if (string.IsNullOrWhiteSpace(keywords)) return new(string.Empty, string.Empty);
+        if (string.IsNullOrWhiteSpace(keywords)) return new(string.Empty);
 
         var motifs = new List<string>();
-        var moods = new List<string>();
         var ignored = new List<string>();
         foreach (var keyword in keywords.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
-            // The template decides which words are printed: a model asked for "positive quote" writes one. Only the feel
-            // it names, if any, still counts.
-            if (Tokens(keyword).Any(word => Has(ArtworkVocabulary.TextWords, Key(word))))
-            {
-                foreach (var word in Tokens(keyword))
-                    if (ArtworkVocabulary.MoodWords.TryGetValue(Key(word), out var feel)) AddOnce(moods, feel);
-                AddOnce(ignored, keyword);
-                continue;
-            }
-
             // Product words several words long go first, so none of their words is drawn ("wall art" leaves no wall).
             var text = keyword;
             foreach (var phrase in new[] { TShirt(), ArtworkVocabulary.ProductPhrases })
@@ -139,39 +123,17 @@ public static partial class ArtworkPromptRules
             foreach (var word in Tokens(text))
             {
                 var key = Key(word);
-                if (ArtworkVocabulary.MoodWords.TryGetValue(key, out var mood)) AddOnce(moods, mood);
-                else if (ArtworkVocabulary.FillerWords.Contains(key)) continue;
-                else if (IsNotDrawn(key)) AddOnce(ignored, word);
+                if (ArtworkVocabulary.FillerWords.Contains(key)) continue;
+                if (Has(ArtworkVocabulary.ProductWords, key)) AddOnce(ignored, word);
                 else kept.Add(word);
             }
             if (kept.Count == 0) continue;
 
-            // Describing words alone say how the design feels; with a thing they describe it ("stormy sea", "national park").
-            if (kept.All(word => ArtworkVocabulary.Adjectives.Contains(Key(word))))
-            {
-                foreach (var word in kept) AddOnce(moods, Key(word));
-                continue;
-            }
-
-            var motif = string.Join(' ', kept);
-            if (motifs.Contains(motif, StringComparer.OrdinalIgnoreCase)) continue;
-            if (motifs.Count < MaximumMotifKeywords) motifs.Add(motif);
-            else AddOnce(ignored, motif);
+            AddOnce(motifs, string.Join(' ', kept));
         }
 
-        return new(string.Join(", ", motifs), moods.Count == 0 ? string.Empty : $"{string.Join(", ", moods)} feel")
-        {
-            Ignored = ignored
-        };
+        return new(string.Join(", ", motifs)) { Ignored = ignored };
     }
-
-    // A word that names the product, who it is for, or nothing a picture could show.
-    private static bool IsNotDrawn(string key) =>
-        Has(ArtworkVocabulary.ProductWords, key)
-        || Has(ArtworkVocabulary.PeopleWords, key)
-        || Has(ArtworkVocabulary.FamilyWords, key)
-        || Has(ArtworkVocabulary.EmptyWords, key)
-        || (key.Length > 0 && key.All(char.IsDigit));
 
     private static string[] Tokens(string text) =>
         text.Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
