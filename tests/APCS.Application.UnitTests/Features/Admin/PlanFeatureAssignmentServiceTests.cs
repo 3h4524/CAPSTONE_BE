@@ -1,3 +1,4 @@
+using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin.SubscriptionPlans;
@@ -294,5 +295,81 @@ public sealed class PlanFeatureAssignmentServiceTests
         impact.KeptBy.Should().Be(0);
         impact.Proposed.LimitValue.Should().BeNull();
         impact.UsedRecently.Should().BeNull("not every feature is measured");
+    }
+
+    private void ChangedAgo(string code, TimeSpan ago, bool beforeEnabled, int? beforeLimit, bool afterEnabled, int? afterLimit) =>
+        auditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ActionType = "ChangePlanFeature",
+            ResourceType = "SubscriptionPlan",
+            ResourceId = plan.Id,
+            OldValue = JsonSerializer.Serialize(new { code, isEnabled = beforeEnabled, limitValue = beforeLimit }),
+            NewValue = JsonSerializer.Serialize(new { code, isEnabled = afterEnabled, limitValue = afterLimit, keptBy = 0 }),
+            CreatedAt = SubscriptionTestData.UtcNow.UtcDateTime - ago,
+        });
+
+    [TestMethod]
+    public async Task UpdateLimitAsync_BelowWhatARecentRaiseStartedFrom_KeepsTheValueBeforeTheRaise()
+    {
+        // Subscribers had 10. An Admin raised it to 20 an hour ago and now sets it to 5: the raise
+        // gives nobody anything, but the 10 they paid for is still theirs.
+        Has(PlanFeatures.DesignVariations, limit: 20);
+        ChangedAgo(PlanFeatures.DesignVariations, TimeSpan.FromHours(1), true, 10, true, 20);
+        var subscription = Subscribe(Today.AddDays(12));
+        var service = CreateService();
+
+        var impact = (await service.GetImpactAsync(plan.Id, PlanFeatures.DesignVariations, 5)).Value;
+        await service.UpdateLimitAsync(plan.Id, PlanFeatures.DesignVariations, 5);
+
+        impact.GivenRecently.Should().BeFalse();
+        impact.KeptBy.Should().Be(1);
+        rows.Single().LimitValue.Should().Be(5);
+        grants.Single().Should().Match<SubscriptionFeatureGrant>(grant =>
+            grant.SubscriptionId == subscription.Id && grant.LimitValue == 10);
+    }
+
+    [TestMethod]
+    public async Task UpdateLimitAsync_UndoingARecentRaise_KeepsNothing()
+    {
+        Has(PlanFeatures.DesignVariations, limit: 20);
+        ChangedAgo(PlanFeatures.DesignVariations, TimeSpan.FromHours(1), true, 10, true, 20);
+        Subscribe(Today.AddDays(12));
+        var service = CreateService();
+
+        var impact = (await service.GetImpactAsync(plan.Id, PlanFeatures.DesignVariations, 10)).Value;
+        await service.UpdateLimitAsync(plan.Id, PlanFeatures.DesignVariations, 10);
+
+        impact.GivenRecently.Should().BeTrue();
+        grants.Should().BeEmpty("nobody loses anything they had before the raise");
+    }
+
+    [TestMethod]
+    public async Task RemoveAsync_AgainAfterUndoingARemoval_StillKeepsWhatWasPaidFor()
+    {
+        // A long-standing feature was removed, the Admin undid it, and now removes it again.
+        Has(PlanFeatures.LifestyleMockup);
+        ChangedAgo(PlanFeatures.LifestyleMockup, TimeSpan.FromHours(3), true, null, false, null);
+        ChangedAgo(PlanFeatures.LifestyleMockup, TimeSpan.FromHours(1), false, null, true, null);
+        var subscription = Subscribe(Today.AddDays(12));
+
+        await CreateService().RemoveAsync(plan.Id, PlanFeatures.LifestyleMockup);
+
+        grants.Single().Should().Match<SubscriptionFeatureGrant>(grant =>
+            grant.SubscriptionId == subscription.Id && grant.IsEnabled == true && grant.ExpiresOn == subscription.RenewalDate);
+    }
+
+    [TestMethod]
+    public async Task UpdateLimitAsync_AfterAnOldRaiseOutsideTheWindow_DatesThePaidPeriodFromIt()
+    {
+        // The raise is settled, so a subscriber whose period began before it only keeps the notice days.
+        Has(PlanFeatures.DesignVariations, limit: 20);
+        ChangedAgo(PlanFeatures.DesignVariations, TimeSpan.FromDays(3), true, 10, true, 20);
+        Subscribe(Today.AddDays(300)).BillingCycle = "annual";
+
+        await CreateService().UpdateLimitAsync(plan.Id, PlanFeatures.DesignVariations, 5);
+
+        grants.Single().Should().Match<SubscriptionFeatureGrant>(grant =>
+            grant.LimitValue == 20 && grant.ExpiresOn == Today.AddDays(PlanFeatureAssignmentService.NoticeDays));
     }
 }

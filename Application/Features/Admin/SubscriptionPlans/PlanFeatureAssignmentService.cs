@@ -58,7 +58,10 @@ public sealed class PlanFeatureAssignmentService(
     /// <summary>How long a subscriber keeps what they were given after their period began.</summary>
     public const int NoticeDays = 30;
 
-    /// <summary>A change younger than this is treated as a mistake: undoing it leaves nothing kept.</summary>
+    /// <summary>
+    /// A change younger than this may be a mistake, so it gives nobody anything to keep: subscribers
+    /// keep at most what the plan gave before the changes made in this window.
+    /// </summary>
     public static readonly TimeSpan MistakeWindow = TimeSpan.FromHours(24);
 
     private const int MaxLimit = 10_000;
@@ -132,8 +135,8 @@ public sealed class PlanFeatureAssignmentService(
         var isReduction = EntitlementMerge.Reach(proposed) < EntitlementMerge.Reach(current);
 
         var onPlan = await OnPlan(planId).ToListAsync(cancellationToken);
-        var givenAt = isReduction ? await GivenAtAsync(planId, code, cancellationToken) : null;
-        var holders = isReduction ? Holders(onPlan, feature, givenAt) : [];
+        var history = isReduction ? await HistoryAsync(planId, code, current, cancellationToken) : null;
+        List<Holder> holders = history is null ? [] : Holders(onPlan, feature, proposed, history);
         var paidFor = holders.Where(holder => holder.PaidFor).ToList();
         var notice = holders.Where(holder => !holder.PaidFor).ToList();
 
@@ -157,7 +160,7 @@ public sealed class PlanFeatureAssignmentService(
             paidFor.Count > 0 ? paidFor.Max(holder => holder.KeptUntil) : null,
             notice.Count,
             notice.Count > 0 ? notice.Max(holder => holder.KeptUntil) : null,
-            isReduction && IsMistake(givenAt),
+            history is not null && !TakesAway(proposed, history),
             NoticeDays));
     }
 
@@ -187,12 +190,13 @@ public sealed class PlanFeatureAssignmentService(
             var featureGrants = existingGrants.Where(grant => grant.FeatureCode == feature.Code).ToList();
 
             // Taking something away: who paid for it keeps it to the end of their period, who was
-            // given it since keeps it for the notice days, and a change made by mistake leaves nothing.
-            var holders = EntitlementMerge.Reach(after) < EntitlementMerge.Reach(before)
-                ? Holders(onPlan, feature, await GivenAtAsync(planId, feature.Code, cancellationToken))
-                : [];
+            // given it since keeps it for the notice days, and undoing a recent mistake leaves nothing.
+            var history = EntitlementMerge.Reach(after) < EntitlementMerge.Reach(before)
+                ? await HistoryAsync(planId, feature.Code, before, cancellationToken)
+                : null;
+            List<Holder> holders = history is null ? [] : Holders(onPlan, feature, after, history);
             foreach (var holder in holders)
-                await KeepAsync(holder, planId, feature, before, featureGrants, utcNow, cancellationToken);
+                await KeepAsync(holder, planId, feature, history!.Settled, featureGrants, utcNow, cancellationToken);
 
             // A grant the plan now matches or beats no longer gives anything.
             foreach (var grant in featureGrants.Where(grant => EntitlementMerge.Reach(new PlanFeatureValue(grant.IsEnabled, grant.LimitValue)) <= EntitlementMerge.Reach(after)).ToList())
@@ -246,13 +250,14 @@ public sealed class PlanFeatureAssignmentService(
     // Who keeps the old setting, and until when. A subscriber whose period began with the plan
     // already giving it paid for it and keeps it to the end of the period: a paid period ends on its
     // renewal date, a trial the day after it ends. One given it after their period began keeps it
-    // for the notice days, never past the period. A change younger than the mistake window leaves
-    // nothing kept. A trial never had what trials leave out, and a period already over has nothing
-    // left to keep.
-    private List<Holder> Holders(IEnumerable<Subscription> onPlan, FeatureCatalogEntry feature, DateTime? givenAt)
+    // for the notice days, never past the period. A change that only undoes what the mistake window
+    // gave leaves nothing kept. A trial never had what trials leave out, and a period already over
+    // has nothing left to keep.
+    private List<Holder> Holders(IEnumerable<Subscription> onPlan, FeatureCatalogEntry feature, PlanFeatureValue after, FeatureHistory history)
     {
-        if (IsMistake(givenAt)) return [];
+        if (!TakesAway(after, history)) return [];
 
+        var givenAt = history.GivenAt;
         var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
         var noticeEnds = today.AddDays(NoticeDays);
         return onPlan
@@ -275,12 +280,16 @@ public sealed class PlanFeatureAssignmentService(
             : (subscription.BillingCycle == "annual" ? subscription.RenewalDate.AddYears(-1) : subscription.RenewalDate.AddMonths(-1),
                 subscription.RenewalDate);
 
-    private bool IsMistake(DateTime? givenAt) =>
-        givenAt is { } at && timeProvider.GetUtcNow().UtcDateTime - at < MistakeWindow;
+    private static bool TakesAway(PlanFeatureValue after, FeatureHistory history) =>
+        EntitlementMerge.Reach(after) < EntitlementMerge.Reach(history.Settled);
 
-    // When the plan last started giving more of a feature (added, or a limit raised), from the change
-    // log; null when it has given it since before changes were logged.
-    private async Task<DateTime?> GivenAtAsync(Guid planId, string code, CancellationToken cancellationToken)
+    // Settled is what the plan gave before any change younger than the mistake window. GivenAt is when
+    // it last started giving more before that window; null when it has given it since before changes
+    // were logged.
+    private sealed record FeatureHistory(PlanFeatureValue Settled, DateTime? GivenAt);
+
+    // The change log, newest first, so each change in the window moves Settled further back.
+    private async Task<FeatureHistory> HistoryAsync(Guid planId, string code, PlanFeatureValue current, CancellationToken cancellationToken)
     {
         var logged = await auditLogs.Query()
             .Where(log => log.ActionType == ChangeAction && log.ResourceId == planId)
@@ -288,15 +297,24 @@ public sealed class PlanFeatureAssignmentService(
             .Select(log => new { log.OldValue, log.NewValue, log.CreatedAt })
             .ToListAsync(cancellationToken);
 
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var settled = current;
         foreach (var log in logged)
         {
             var before = ReadSetting(log.OldValue);
             var after = ReadSetting(log.NewValue);
             if (after?.Code != code || before is null) continue;
-            if (EntitlementMerge.Reach(after.Value) > EntitlementMerge.Reach(before.Value)) return log.CreatedAt;
+            if (log.CreatedAt is { } at && now - at < MistakeWindow)
+            {
+                settled = before.Value;
+                continue;
+            }
+
+            if (EntitlementMerge.Reach(after.Value) > EntitlementMerge.Reach(before.Value))
+                return new FeatureHistory(settled, log.CreatedAt);
         }
 
-        return null;
+        return new FeatureHistory(settled, null);
     }
 
     private sealed record LoggedSetting(string Code, PlanFeatureValue Value);
