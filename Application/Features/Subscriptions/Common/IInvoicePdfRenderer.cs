@@ -20,6 +20,8 @@ public interface IInvoicePdfRenderer
 /// The invoice detail needed to render an Invoice Detail PDF: invoice number, issued
 /// date, billing period, plan line item, total paid, status, and who it was billed to.
 /// </summary>
+/// <param name="PlanPriceVnd">The plan line item in whole đồng, as PayOS charged it.</param>
+/// <param name="TotalPaidVnd">The invoice total in whole đồng.</param>
 public sealed record InvoicePdfModel(
     string InvoiceNumber,
     DateOnly IssuedDate,
@@ -27,6 +29,6 @@ public sealed record InvoicePdfModel(
     string BilledToName,
     string BilledToEmail,
     string PlanName,
-    decimal PlanPrice,
-    decimal TotalPaid,
+    decimal PlanPriceVnd,
+    decimal TotalPaidVnd,
     string Status);

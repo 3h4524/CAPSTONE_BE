@@ -1,3 +1,5 @@
+using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
+
 namespace APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
 
 /// <summary>
@@ -8,7 +10,14 @@ namespace APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
 /// <param name="WhiteLabelExportEnabled">
 /// Backed by a <c>plan_features</c> row (<c>white_label_export</c>), not a dedicated column.
 /// </param>
-/// <param name="ActiveSubscriberCount">Shown to the Admin as context, not a delete gate.</param>
+/// <param name="ActiveSubscriberCount">
+/// Paid subscribers, shown to the Admin as context, not a delete gate. Matches the Active
+/// Subscribers figure on the Revenue page.
+/// </param>
+/// <param name="TrialSubscriberCount">Sellers trying this plan for free right now.</param>
+/// <param name="MonthlyPriceVnd">The monthly price in whole đồng, as PayOS charges it.</param>
+/// <param name="AnnualPriceVnd">The annual price in whole đồng; null when there is none.</param>
+/// <param name="UsdToVndRate">The PayOS rate, so the plan form can preview a price as it is typed.</param>
 /// <param name="CanDelete">
 /// True only when no subscription (active or historical) ever referenced this plan — the exact
 /// condition the Delete action itself checks (BR200). The client uses this to disable the trash
@@ -35,4 +44,9 @@ public sealed record AdminPlanDto(
     int ActiveSubscriberCount,
     bool CanDelete,
     DateTime? CreatedAt,
-    DateTime? UpdatedAt);
+    DateTime? UpdatedAt,
+    IReadOnlyList<PlanFeatureInputDto>? Features = null,
+    int TrialSubscriberCount = 0,
+    decimal MonthlyPriceVnd = 0m,
+    decimal? AnnualPriceVnd = null,
+    decimal UsdToVndRate = 0m);

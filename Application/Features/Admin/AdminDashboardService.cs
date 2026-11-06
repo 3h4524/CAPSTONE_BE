@@ -1,5 +1,7 @@
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin.Dtos.Response;
+using APCS.Application.Features.Revenues;
+using APCS.Application.Features.Revenues.Dtos;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -12,10 +14,9 @@ namespace APCS.Application.Features.Admin;
 /// </summary>
 public sealed class AdminDashboardService(
     IRepository<User> userRepository,
-    IRepository<Subscription> subscriptionRepository,
-    IRepository<Invoice> invoiceRepository,
     IRepository<BatchJob> batchJobRepository,
     IRepository<SupportTicket> ticketRepository,
+    IRevenueService revenueService,
     TimeProvider timeProvider,
     ILogger<AdminDashboardService> logger)
     : IAdminDashboardService
@@ -34,6 +35,16 @@ public sealed class AdminDashboardService(
                 startDate = referenceDate;
                 endDate = referenceDate;
             }
+            else if (timeRange.ToLower() == "week")
+            {
+                startDate = referenceDate.AddDays(-6);
+                endDate = referenceDate;
+            }
+            else if (timeRange.ToLower() == "halfyear")
+            {
+                startDate = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-5);
+                endDate = referenceDate;
+            }
             else if (timeRange.ToLower() == "year")
             {
                 startDate = new DateOnly(referenceDate.Year, 1, 1);
@@ -48,22 +59,20 @@ public sealed class AdminDashboardService(
             // 1. Total Users
             var totalUsers = await userRepository.Query().CountAsync(cancellationToken);
 
-            // 2. Active Paid Users (distinct users with active subscriptions)
-            var activePaidUsers = await subscriptionRepository.Query()
-                .Where(s => s.Status.ToLower() == "active")
-                .Select(s => s.UserId)
-                .Distinct()
-                .CountAsync(cancellationToken);
+            // 2-4. Paying customers, revenue and MRR come from the Revenue page's figures, in VND, so
+            // both pages always agree. The period stops at today: MRR is read at its end, and a
+            // future end would drop every subscription renewing before it.
+            var revenue = await revenueService.GetMetricsAsync(
+                new RevenueFilterDto { StartDate = startDate, EndDate = endDate < referenceDate ? endDate : referenceDate },
+                cancellationToken);
+            if (revenue.IsFailure)
+            {
+                return Result.Failure<AdminDashboardMetricsDto>(revenue.Error);
+            }
 
-            // 3. Total Revenue
-            var totalRevenue = await invoiceRepository.Query()
-                .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= startDate && i.InvoiceDate <= endDate)
-                .SumAsync(i => i.TotalAmount, cancellationToken);
-
-            // 4. Monthly Recurring Revenue (MRR)
-            var monthlyRecurringRevenue = await subscriptionRepository.Query()
-                .Where(s => s.Status.ToLower() == "active")
-                .SumAsync(s => s.MonthlyPriceUsd, cancellationToken);
+            var activePaidUsers = (int)revenue.Value.ActiveSubscribers.Value;
+            var totalRevenue = revenue.Value.TotalRevenue.Value;
+            var monthlyRecurringRevenue = revenue.Value.SubscriptionMrr.Value;
 
             // 5. Total and Active Batch Jobs
             var totalBatchJobs = await batchJobRepository.Query()
@@ -79,56 +88,7 @@ public sealed class AdminDashboardService(
                 .Where(t => t.Status.ToLower() == "open" || t.Status.ToLower() == "pending")
                 .CountAsync(cancellationToken);
 
-            // 7. Revenue Chart
-            var revenueChart = new List<MonthlyRevenueDto>();
-            if (timeRange.ToLower() == "day")
-            {
-                var sevenDaysAgo = referenceDate.AddDays(-6);
-                var invoicesLast7Days = await invoiceRepository.Query()
-                    .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= sevenDaysAgo && i.InvoiceDate <= referenceDate)
-                    .ToListAsync(cancellationToken);
-
-                for (int i = 6; i >= 0; i--)
-                {
-                    var dayDate = referenceDate.AddDays(-i);
-                    var dayStr = dayDate.ToString("ddd");
-                    var dayInvoices = invoicesLast7Days.Where(inv => inv.InvoiceDate == dayDate).ToList();
-                    revenueChart.Add(new MonthlyRevenueDto(dayStr, dayInvoices.Sum(inv => inv.TotalAmount), 0m));
-                }
-            }
-            else if (timeRange.ToLower() == "year")
-            {
-                var fiveYearsAgo = new DateOnly(referenceDate.Year - 4, 1, 1);
-                var invoicesLast5Years = await invoiceRepository.Query()
-                    .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= fiveYearsAgo && i.InvoiceDate <= endDate)
-                    .ToListAsync(cancellationToken);
-
-                for (int i = 4; i >= 0; i--)
-                {
-                    var yearDate = referenceDate.Year - i;
-                    var yearStr = yearDate.ToString();
-                    var yearInvoices = invoicesLast5Years.Where(inv => inv.InvoiceDate.Year == yearDate).ToList();
-                    revenueChart.Add(new MonthlyRevenueDto(yearStr, yearInvoices.Sum(inv => inv.TotalAmount), 0m));
-                }
-            }
-            else
-            {
-                var sixMonthsAgo = startDate.AddMonths(-5);
-                var invoicesLast6Months = await invoiceRepository.Query()
-                    .Where(i => i.Status.ToLower() == "paid" && i.InvoiceDate >= sixMonthsAgo && i.InvoiceDate <= endDate)
-                    .ToListAsync(cancellationToken);
-
-                for (int i = 5; i >= 0; i--)
-                {
-                    var monthDate = startDate.AddMonths(-i);
-                    var monthStr = monthDate.ToString("MMM");
-                    var monthInvoices = invoicesLast6Months.Where(inv => inv.InvoiceDate.Year == monthDate.Year && inv.InvoiceDate.Month == monthDate.Month).ToList();
-
-                    revenueChart.Add(new MonthlyRevenueDto(monthStr, monthInvoices.Sum(inv => inv.TotalAmount), 0m));
-                }
-            }
-
-            // 8. Latest Tickets (Top 5)
+            // 7. Latest Tickets (Top 5); the revenue trend is the Revenue page's, read by the client directly.
             var latestTickets = await ticketRepository.Query()
                 .Include(t => t.User)
                 .OrderByDescending(t => t.CreatedAt)
@@ -143,20 +103,28 @@ public sealed class AdminDashboardService(
                 ))
                 .ToListAsync(cancellationToken);
 
-            // 9. Recent Batch Jobs (Top 5)
+            // 8. Recent Batch Jobs (Top 5)
+            // A job's own counters can be empty (imported or older jobs), so its batch and AI calls fill in.
             var recentBatchJobs = await batchJobRepository.Query()
                 .Include(b => b.User)
                 .OrderByDescending(b => b.CreatedAt)
                 .Take(5)
                 .Select(b => new BatchJobDto(
                     b.Name,
-                    b.TotalProducts ?? 0,
+                    b.TotalProducts > 0
+                        ? b.TotalProducts.Value
+                        : b.Batch != null ? b.Batch.Products.Count(p => p.DeletedAt == null) : 0,
                     b.Status,
-                    b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
+                    b.Status.ToLower() == "completed"
+                        ? "100%"
+                        : b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
                     b.User.FullName,
                     b.Status.ToLower() == "completed" ? "emerald" :
                         b.Status.ToLower() == "running" ? "amber" :
-                        b.Status.ToLower() == "queued" ? "orange" : "rose"
+                        b.Status.ToLower() == "queued" ? "orange" : "rose",
+                    b.Batch != null ? b.Batch.Name : null,
+                    b.CreatedAt,
+                    b.ApiUsageRecords.Sum(a => a.CostUsd)
                 ))
                 .ToListAsync(cancellationToken);
 
@@ -167,7 +135,6 @@ public sealed class AdminDashboardService(
                 monthlyRecurringRevenue,
                 activeBatchJobs,
                 pendingTickets,
-                revenueChart,
                 latestTickets,
                 recentBatchJobs,
                 totalBatchJobs
