@@ -10,6 +10,7 @@ using APCS.Application.Abstractions.Storage;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Abstractions.Translation;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Features.Subscriptions;
@@ -162,6 +163,15 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(MarketResearchOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddOptions<TranslationOptions>()
+            .Bind(configuration.GetSection(TranslationOptions.SectionName));
+        services.AddHttpClient<GoogleTranslationProvider>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Translation/1.0");
+        });
+        services.AddScoped<ITranslationProvider>(provider =>
+            provider.GetRequiredService<GoogleTranslationProvider>());
         services.AddHttpClient(EtsyMarketDataConnector.HttpClientName, (provider, client) =>
         {
             var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;

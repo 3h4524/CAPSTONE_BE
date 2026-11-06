@@ -134,6 +134,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<TicketReply> TicketReplies { get; set; }
 
+    public virtual DbSet<TranslationEntry> TranslationEntries { get; set; }
+
     public virtual DbSet<UsageStatistic> UsageStatistics { get; set; }
 
     public virtual DbSet<User> Users { get; set; }
@@ -3421,6 +3423,43 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.SupportTicket).WithMany(p => p.TicketReplies)
                 .HasForeignKey(d => d.SupportTicketId)
                 .HasConstraintName("ticket_replies_support_ticket_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_entries_pkey");
+
+            entity.ToTable("translation_entries");
+
+            entity.HasIndex(e => new { e.SourceLocale, e.TargetLocale }, "idx_translation_entries_locale");
+
+            entity.HasIndex(e => new { e.SourceHash, e.SourceLocale, e.TargetLocale, e.Provider }, "translation_entries_lookup_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Provider)
+                .HasMaxLength(40)
+                .HasColumnName("provider");
+            entity.Property(e => e.SourceHash)
+                .HasMaxLength(64)
+                .HasColumnName("source_hash");
+            entity.Property(e => e.SourceLocale)
+                .HasMaxLength(10)
+                .HasColumnName("source_locale");
+            entity.Property(e => e.SourceText).HasColumnName("source_text");
+            entity.Property(e => e.TargetLocale)
+                .HasMaxLength(10)
+                .HasColumnName("target_locale");
+            entity.Property(e => e.TranslatedText).HasColumnName("translated_text");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<UsageStatistic>(entity =>

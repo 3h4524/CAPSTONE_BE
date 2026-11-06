@@ -21,6 +21,7 @@ using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Features.Translations;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -111,6 +112,7 @@ public static class DependencyInjection
         services.AddScoped<IMarketResearchService, MarketResearchService>();
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
+        services.AddScoped<ITranslationService, TranslationService>();
 
         return services;
     }
