@@ -129,6 +129,7 @@ public static class DependencyInjection
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
+        services.AddSingleton<IMarketResearchQueue, APCS.Infrastructure.BackgroundServices.MarketResearchQueueChannel>();
         services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
@@ -183,6 +184,7 @@ public static class DependencyInjection
         });
         services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
         services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
+        services.AddScoped<IMarketInsightScheduleService, MarketInsightScheduleService>();
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
@@ -195,9 +197,11 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
 
         return services;
     }
