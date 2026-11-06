@@ -44,9 +44,10 @@ public sealed partial class PlanToolsService(
     private const string ChangeFeature = "ChangePlanFeature";
     private const string EditCatalog = "UpdatePlanFeature";
     private const string EditSettings = "UpdatePlanSettings";
+    private const string SetRecommended = "SetRecommendedPlan";
 
     private static readonly string[] Logged =
-        [Duplicate, Reorder, ChangeFeature, EditCatalog, EditSettings, PlanChangeActions.Create, PlanChangeActions.Update, PlanChangeActions.Delete];
+        [Duplicate, Reorder, ChangeFeature, EditCatalog, EditSettings, SetRecommended, PlanChangeActions.Create, PlanChangeActions.Update, PlanChangeActions.Delete];
 
     [GeneratedRegex("^[a-z0-9-]+$")]
     private static partial Regex TierSlug();
@@ -241,6 +242,8 @@ public sealed partial class PlanToolsService(
                 var changes = new List<string>();
                 if (Text(before, "trialPlanTier") != Text(after, "trialPlanTier"))
                     changes.Add($"the trial now gives {(Text(after, "trialPlanTier") is { } tier && tierNames.TryGetValue(tier, out var tierName) ? tierName : Text(after, "trialPlanTier"))}");
+                if (Int(before, "trialDays") is { } oldDays && Int(after, "trialDays") is { } newDays && oldDays != newDays)
+                    changes.Add($"the trial now lasts {newDays} days instead of {oldDays}");
                 if (before?.TryGetProperty("allowances", out var oldAllowances) == true
                     && after?.TryGetProperty("allowances", out var newAllowances) == true)
                 {
@@ -252,6 +255,12 @@ public sealed partial class PlanToolsService(
                     }
                 }
                 return ("settings", changes.Count > 0 ? $"Changed Free and trial: {string.Join(", ", changes)}." : "Saved Free and trial with no change.");
+            }
+            case SetRecommended:
+            {
+                var recommended = Text(after, "recommendedPlanTier");
+                if (recommended is null) return ("settings", "Stopped recommending a plan.");
+                return ("settings", $"Set {tierNames.GetValueOrDefault(recommended, recommended)} as the recommended plan.");
             }
             case Duplicate:
                 return ("duplicate", $"Duplicated {Text(before, "name")} as {Text(after, "name")} (not on sale).");

@@ -177,4 +177,43 @@ public sealed class PlanToolsServiceTests
         history[1].ActorName.Should().Be("Ada Admin");
         history[1].PlanName.Should().Be("Pro");
     }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_DescribesAChangedRecommendedPlan()
+    {
+        var at = SubscriptionTestData.UtcNow.UtcDateTime;
+        auditLogs.AddRange(
+        [
+            new AuditLog
+            {
+                Id = Guid.NewGuid(), ActionType = "SetRecommendedPlan", ResourceType = "PlanSettings",
+                OldValue = """{"recommendedPlanTier": "pro"}""", NewValue = """{"recommendedPlanTier": null}""", CreatedAt = at,
+            },
+            new AuditLog
+            {
+                Id = Guid.NewGuid(), ActionType = "SetRecommendedPlan", ResourceType = "PlanSettings",
+                OldValue = """{"recommendedPlanTier": null}""", NewValue = """{"recommendedPlanTier": "pro"}""", CreatedAt = at.AddMinutes(-1),
+            },
+        ]);
+
+        var history = (await CreateService().GetHistoryAsync(1, 50)).Value.Items;
+
+        history.Select(entry => entry.Summary).Should().Equal("Stopped recommending a plan.", "Set Pro as the recommended plan.");
+    }
+
+    [TestMethod]
+    public async Task GetHistoryAsync_DescribesAChangedTrialLength()
+    {
+        auditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(), ActionType = "UpdatePlanSettings", ResourceType = "PlanSettings",
+            OldValue = """{"trialPlanTier": "pro", "trialDays": 14}""",
+            NewValue = """{"trialPlanTier": "pro", "trialDays": 30}""",
+            CreatedAt = SubscriptionTestData.UtcNow.UtcDateTime,
+        });
+
+        var history = (await CreateService().GetHistoryAsync(1, 50)).Value.Items;
+
+        history.Single().Summary.Should().Be("Changed Free and trial: the trial now lasts 30 days instead of 14.");
+    }
 }

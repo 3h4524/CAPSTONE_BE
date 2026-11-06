@@ -170,6 +170,7 @@ public sealed class SellerDashboardService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var items = new List<ActionItemDto>();
+        var deletedBatches = await DeletedBatchesAsync(userId, cancellationToken);
 
         void Add(string type, string severity, int count, DateTime? oldestAt, IEnumerable<ActionTargetDto> targets, string fallbackUrl)
         {
@@ -191,11 +192,14 @@ public sealed class SellerDashboardService(
         Add(ActionItemTypes.EtsyReconnect, ActionItemSeverities.Critical, expired.Count, expired.Min(shop => shop.OauthExpiresAt),
             expired.Select(shop => new ActionTargetDto(shop.ShopName, 1, "/profile")), "/profile");
 
-        // A product counts once it failed and has not been uploaded since.
+        // A product counts once it failed and has not been uploaded since. An upload before the
+        // failure does not clear it.
         var allUploads = etsyUploads.Query();
         var failedUploads = await allUploads
             .Where(upload => upload.EtsyIntegration.UserId == userId && upload.UploadStatus == UploadFailed
-                && !allUploads.Any(later => later.ProductId == upload.ProductId && later.UploadStatus == UploadSucceeded))
+                && upload.Product.DeletedAt == null && !deletedBatches.Contains(upload.Product.BatchId)
+                && !allUploads.Any(later => later.ProductId == upload.ProductId && later.UploadStatus == UploadSucceeded
+                    && later.CreatedAt > upload.CreatedAt))
             .GroupBy(upload => new { upload.ProductId, upload.Product.BatchId })
             .Select(product => new { product.Key.BatchId, At = product.Min(upload => upload.CreatedAt) })
             .ToListAsync(cancellationToken);
@@ -207,7 +211,8 @@ public sealed class SellerDashboardService(
 
         var recentFailure = now.AddDays(-RecentFailureDays);
         var failedJobs = await batchJobs.Query()
-            .Where(job => job.UserId == userId && job.DeletedAt == null && FailedJobStatuses.Contains(job.Status)
+            .Where(job => job.UserId == userId && job.DeletedAt == null && !deletedBatches.Contains(job.BatchId)
+                && FailedJobStatuses.Contains(job.Status)
                 && (job.CompletedAt ?? job.UpdatedAt) >= recentFailure)
             .Select(job => new { job.Id, job.Name, job.Config, job.FailedProducts, At = job.CompletedAt ?? job.UpdatedAt })
             .ToListAsync(cancellationToken);
@@ -216,10 +221,12 @@ public sealed class SellerDashboardService(
             "/batches");
 
         // A failed render that a later render of the same product replaced is history, not work.
-        var ownVideos = promoVideos.Query().Where(video => video.Product.UserId == userId && video.DeletedAt == null);
+        var ownVideos = promoVideos.Query().Where(video => video.Product.UserId == userId && video.DeletedAt == null
+            && video.Product.DeletedAt == null && !deletedBatches.Contains(video.Product.BatchId));
         var failedVideos = await VideoRowsAsync(ownVideos
             .Where(video => video.Status == Failed
-                && !ownVideos.Any(other => other.ProductId == video.ProductId && other.Status == VideoCompleted)), cancellationToken);
+                && !ownVideos.Any(other => other.ProductId == video.ProductId && other.Status == VideoCompleted
+                    && other.CreatedAt > video.CreatedAt)), cancellationToken);
         Add(ActionItemTypes.VideoFailed, ActionItemSeverities.Error, failedVideos.Count, failedVideos.Min(video => video.At),
             await WorkflowTargetsAsync(failedVideos, null, cancellationToken), "/workflows");
 
@@ -230,7 +237,10 @@ public sealed class SellerDashboardService(
             "/batches");
 
         var designReviews = await batchJobProducts.Query()
-            .Where(item => item.BatchJob.UserId == userId && DesignReviewStatuses.Contains(item.Status))
+            .Where(item => item.BatchJob.UserId == userId && item.BatchJob.DeletedAt == null
+                && !deletedBatches.Contains(item.BatchJob.BatchId)
+                && (item.Product == null || item.Product.DeletedAt == null)
+                && DesignReviewStatuses.Contains(item.Status))
             .Select(item => new { item.BatchJobId, JobName = item.BatchJob.Name, JobConfig = item.BatchJob.Config, At = item.CompletedAt ?? item.UpdatedAt })
             .ToListAsync(cancellationToken);
         Add(ActionItemTypes.DesignReview, ActionItemSeverities.Warning, designReviews.Count, designReviews.Min(item => item.At),
@@ -240,7 +250,8 @@ public sealed class SellerDashboardService(
 
         // A listing and its SEO score are reviewed on the Generate Listing step of the product's workflow run.
         var listingReviews = await WithLatestRunAsync(await listingContents.Query()
-            .Where(listing => listing.Product.UserId == userId && listing.Product.DeletedAt == null && listing.ApprovalStatus == PendingApproval)
+            .Where(listing => listing.Product.UserId == userId && listing.Product.DeletedAt == null
+                && !deletedBatches.Contains(listing.Product.BatchId) && listing.ApprovalStatus == PendingApproval)
             .Select(listing => new ProductMoment(listing.ProductId, listing.Product.BatchId, listing.CreatedAt))
             .ToListAsync(cancellationToken), cancellationToken);
         Add(ActionItemTypes.ListingReview, ActionItemSeverities.Warning, listingReviews.Count, listingReviews.Min(listing => listing.At),
@@ -253,6 +264,7 @@ public sealed class SellerDashboardService(
 
         var lowSeo = await WithLatestRunAsync(await seoScores.Query()
             .Where(score => score.ListingContent.Product.UserId == userId && score.ListingContent.Product.DeletedAt == null
+                && !deletedBatches.Contains(score.ListingContent.Product.BatchId)
                 && score.OverallSeoScore < LowSeoScore)
             .Select(score => new ProductMoment(score.ListingContent.ProductId, score.ListingContent.Product.BatchId, score.CalculatedAt))
             .ToListAsync(cancellationToken), cancellationToken);
@@ -411,6 +423,13 @@ public sealed class SellerDashboardService(
             .ToList();
     }
 
+    // Deleting a batch marks only the batch, so what it holds has to be left out through it.
+    private Task<List<Guid>> DeletedBatchesAsync(Guid userId, CancellationToken cancellationToken) =>
+        batches.Query()
+            .Where(batch => batch.UserId == userId && batch.DeletedAt != null)
+            .Select(batch => batch.Id)
+            .ToListAsync(cancellationToken);
+
     private async Task<Dictionary<Guid, string>> BatchNamesAsync(IEnumerable<Guid> batchIds, CancellationToken cancellationToken)
     {
         var ids = batchIds.Distinct().ToList();
@@ -424,11 +443,14 @@ public sealed class SellerDashboardService(
     /// <summary>Each product that has been processing longer than <see cref="StuckProductRule"/> allows, with its batch job.</summary>
     private async Task<List<StuckProduct>> StuckProductsAsync(Guid userId, DateTime now, CancellationToken cancellationToken)
     {
-        var ownJobProducts = batchJobProducts.Query().Where(item => item.BatchJob.UserId == userId);
+        var deletedBatches = await DeletedBatchesAsync(userId, cancellationToken);
+        var ownJobProducts = batchJobProducts.Query().Where(item => item.BatchJob.UserId == userId
+            && item.BatchJob.DeletedAt == null && !deletedBatches.Contains(item.BatchJob.BatchId));
 
-        // duration_seconds is not written by the workers, so the average comes from the start and end times.
+        // duration_seconds is not written by the workers, so the average comes from the start and end
+        // times. A failure can end in seconds, which says nothing about how long the work takes.
         var recent = await ownJobProducts
-            .Where(item => item.StartedAt != null && item.CompletedAt != null)
+            .Where(item => item.StartedAt != null && item.CompletedAt != null && item.Status != Failed)
             .OrderByDescending(item => item.CompletedAt)
             .Take(DurationSampleSize)
             .Select(item => new { Started = item.StartedAt!.Value, Completed = item.CompletedAt!.Value })
@@ -438,6 +460,7 @@ public sealed class SellerDashboardService(
 
         var running = await ownJobProducts
             .Where(item => item.StartedAt != null && item.CompletedAt == null && item.Product != null
+                && item.Product.DeletedAt == null
                 && PipelineStages.ProcessingStatuses.Contains(item.Product.ProcessingStatus))
             .Select(item => new
             {

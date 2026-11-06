@@ -565,4 +565,36 @@ public sealed class DesignGenerationServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().ContainSingle(j => j.Id == fixture.Job.Id);
     }
+
+    [TestMethod]
+    public async Task RetryFailedAsync_CountsOnlyTheImages()
+    {
+        var entitlements = TestEntitlements.AllowAll();
+        var fixture = CreateFixture(
+            jobStatus: BatchJobStatuses.Failed,
+            rowStatus: BatchJobProductStatuses.Failed,
+            editProduct: product => product.ProcessingStatus = "failed",
+            entitlements: entitlements);
+
+        var result = await fixture.Service.RetryFailedAsync(fixture.Job.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        entitlements.AllowancesRequested.Select(item => item.Code).Should().Equal(UsageAllowances.DesignImages);
+    }
+
+    [TestMethod]
+    public async Task RetryFailedAsync_WhenTheProductsAreUsedUp_StillRetries()
+    {
+        var entitlements = TestEntitlements.Free();
+        entitlements.AllowancesUsedUp.Add(UsageAllowances.Products);
+        var fixture = CreateFixture(
+            jobStatus: BatchJobStatuses.Failed,
+            rowStatus: BatchJobProductStatuses.Failed,
+            editProduct: product => product.ProcessingStatus = "failed",
+            entitlements: entitlements);
+
+        var result = await fixture.Service.RetryFailedAsync(fixture.Job.Id);
+
+        result.IsSuccess.Should().BeTrue("the product is already counted, only its images are new");
+    }
 }

@@ -221,10 +221,10 @@ public sealed class SystemStatisticsServiceTests
 
         var batchJobs = new List<BatchJob>
         {
-            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(30), ActualCostUsd = 1.25m },
-            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(90), ActualCostUsd = 2.50m },
-            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "partially_completed", StartedAt = day, CompletedAt = day.AddMinutes(60), ActualCostUsd = 0.75m },
-            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "failed", StartedAt = day, CompletedAt = day.AddMinutes(5), ActualCostUsd = 0.10m },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(30), ApiUsageRecords = { new ApiUsageRecord { CostUsd = 1.25m } } },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(90), ApiUsageRecords = { new ApiUsageRecord { CostUsd = 2.50m } } },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "partially_completed", StartedAt = day, CompletedAt = day.AddMinutes(60), ApiUsageRecords = { new ApiUsageRecord { CostUsd = 0.75m } } },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "failed", StartedAt = day, CompletedAt = day.AddMinutes(5), ApiUsageRecords = { new ApiUsageRecord { CostUsd = 0.10m } } },
             new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "running", StartedAt = day }
         }.AsQueryable().BuildMock();
         _batchJobRepo.Setup(r => r.Query()).Returns(batchJobs);
@@ -250,7 +250,7 @@ public sealed class SystemStatisticsServiceTests
         reliability.FailedJobs.Should().Be(1);
         reliability.SuccessRate.Should().Be(50m); // 2 completed / 4 finished
         reliability.AvgProcessingMinutes.Should().Be(60m); // (30 + 90 + 60) / 3, failed job excluded
-        reliability.TotalCostUsd.Should().Be(4.60m); // running job's null cost counts as 0
+        reliability.TotalCostUsd.Should().Be(4.60m); // a job with no AI calls yet adds nothing
     }
 
     [TestMethod]

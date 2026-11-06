@@ -1220,9 +1220,12 @@ public sealed class DesignGenerationService(
         var allowances = new List<(string Code, int Requested)>
         {
             (UsageAllowances.DesignImages, productCount * variationCount),
-            (UsageAllowances.Products, productCount),
         };
-        if (newRun) allowances.Add((UsageAllowances.DesignRuns, 1));
+        if (newRun)
+        {
+            allowances.Add((UsageAllowances.Products, productCount));
+            allowances.Add((UsageAllowances.DesignRuns, 1));
+        }
         foreach (var (code, requested) in allowances)
         {
             var allowance = await entitlements.RequireAllowanceAsync(userId, code, requested, cancellationToken);

@@ -438,4 +438,134 @@ public sealed class SellerDashboardServiceTests
         DashboardLinks.BatchJob(jobId, "not json").Should().Be($"/batch-jobs/{jobId}");
         DashboardLinks.BatchJob(jobId, null).Should().Be($"/batch-jobs/{jobId}");
     }
+
+    private static EtsyUploadLog Upload(Product product, string status, double hoursAgo) => new()
+    {
+        ProductId = product.Id,
+        Product = product,
+        EtsyIntegration = new EtsyIntegration { UserId = Seller },
+        UploadStatus = status,
+        CreatedAt = HoursAgo(hoursAgo),
+    };
+
+    [TestMethod]
+    public async Task GetActionItemsAsync_UploadFailingAfterAnEarlierSuccess_IsReported()
+    {
+        var data = new Data();
+        var product = Product("approved");
+        data.Uploads.AddRange([Upload(product, "success", 48), Upload(product, "failed", 1)]);
+
+        var items = (await CreateService(data).GetActionItemsAsync()).Value.Items;
+
+        items.Single(item => item.Type == ActionItemTypes.EtsyUploadFailed).Count.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task GetActionItemsAsync_UploadSucceedingAfterTheFailure_IsNotReported()
+    {
+        var data = new Data();
+        var product = Product("approved");
+        data.Uploads.AddRange([Upload(product, "failed", 48), Upload(product, "success", 1)]);
+
+        var items = (await CreateService(data).GetActionItemsAsync()).Value.Items;
+
+        items.Should().NotContain(item => item.Type == ActionItemTypes.EtsyUploadFailed);
+    }
+
+    [TestMethod]
+    public async Task GetActionItemsAsync_RenderFailingAfterAnEarlierOne_IsReported()
+    {
+        var data = new Data();
+        var product = Product("approved");
+        data.Products.Add(product);
+        data.Videos.AddRange([
+            new PromoVideo { ProductId = product.Id, Product = product, Status = "completed", ApprovalStatus = "approved", CreatedAt = HoursAgo(48) },
+            new PromoVideo { ProductId = product.Id, Product = product, Status = "failed", ApprovalStatus = "pending", CreatedAt = HoursAgo(1) },
+        ]);
+
+        var items = (await CreateService(data).GetActionItemsAsync()).Value.Items;
+
+        items.Single(item => item.Type == ActionItemTypes.VideoFailed).Count.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task GetActionItemsAsync_WorkInADeletedBatch_IsNotReported()
+    {
+        var data = new Data();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = Seller, Name = "Gone", DeletedAt = HoursAgo(1) };
+        data.Batches.Add(batch);
+        var job = Job("completed");
+        job.BatchId = batch.Id;
+        var failed = Job("failed");
+        failed.BatchId = batch.Id;
+        failed.CompletedAt = HoursAgo(2);
+        var product = Product("approved");
+        product.BatchId = batch.Id;
+        data.Jobs.AddRange([job, failed]);
+        data.Products.Add(product);
+        data.JobProducts.Add(JobProduct(job, "image_review_required", completed: HoursAgo(2)));
+        data.Uploads.Add(Upload(product, "failed", 1));
+        data.Videos.Add(new PromoVideo { ProductId = product.Id, Product = product, Status = "failed", ApprovalStatus = "pending", CreatedAt = HoursAgo(1) });
+
+        var items = (await CreateService(data).GetActionItemsAsync()).Value.Items;
+
+        items.Should().BeEmpty("the Seller cannot act on what they deleted");
+    }
+
+    [TestMethod]
+    public async Task GetActionItemsAsync_WorkOnADeletedProductOrJob_IsNotReported()
+    {
+        var data = new Data();
+        var deletedProduct = Product("approved");
+        deletedProduct.DeletedAt = HoursAgo(1);
+        var deletedJob = Job("completed");
+        deletedJob.DeletedAt = HoursAgo(1);
+        var liveJob = Job("completed");
+        data.Jobs.AddRange([deletedJob, liveJob]);
+        data.JobProducts.AddRange([
+            JobProduct(deletedJob, "image_review_required", completed: HoursAgo(2)),
+            JobProduct(liveJob, "image_review_required", deletedProduct, completed: HoursAgo(2)),
+        ]);
+        data.Uploads.Add(Upload(deletedProduct, "failed", 1));
+
+        var items = (await CreateService(data).GetActionItemsAsync()).Value.Items;
+
+        items.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task GetSummaryAsync_FastFailures_DoNotShortenTheStuckThreshold()
+    {
+        var data = new Data();
+        var job = Job("running");
+        var working = Product("generating_video");
+        data.Products.Add(working);
+        data.Jobs.Add(job);
+        // A bad API key failed these in seconds. Averaged in, anything past 6 seconds would look stuck.
+        data.JobProducts.AddRange(Enumerable.Range(0, 5).Select(_ =>
+            JobProduct(job, "failed", started: HoursAgo(1), completed: HoursAgo(1).AddSeconds(2))));
+        data.JobProducts.Add(JobProduct(job, "running", working, started: HoursAgo(0.1)));
+
+        var summary = (await CreateService(data).GetSummaryAsync(30)).Value;
+
+        summary.Pipeline.Single(stage => stage.Stage == PipelineStages.Video).StuckCount.Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task GetSummaryAsync_ProductInADeletedBatch_IsNotStuck()
+    {
+        var data = new Data();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = Seller, Name = "Gone", DeletedAt = HoursAgo(1) };
+        data.Batches.Add(batch);
+        var job = Job("running");
+        job.BatchId = batch.Id;
+        var product = Product("generating_video");
+        data.Products.Add(product);
+        data.Jobs.Add(job);
+        data.JobProducts.Add(JobProduct(job, "running", product, started: HoursAgo(5)));
+
+        var summary = (await CreateService(data).GetSummaryAsync(30)).Value;
+
+        summary.Pipeline.Sum(stage => stage.StuckCount).Should().Be(0);
+    }
 }

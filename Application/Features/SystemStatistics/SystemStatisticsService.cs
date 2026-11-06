@@ -182,9 +182,11 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
             .Select(x => new { x.Status, x.StartedAt, x.CompletedAt })
             .ToListAsync(cancellationToken);
 
+        // From the AI calls themselves: nothing writes batch_jobs.actual_cost_usd after a job is created.
         var totalCostUsd = await _batchJobRepo.Query()
             .Where(x => x.CreatedAt >= startDate && x.CreatedAt <= endDate)
-            .SumAsync(x => x.ActualCostUsd ?? 0m, cancellationToken);
+            .SelectMany(x => x.ApiUsageRecords)
+            .SumAsync(x => x.CostUsd, cancellationToken);
 
         var completedJobs = finishedJobs.Count(x => x.Status == BatchJobStatuses.Completed);
         var processingMinutes = finishedJobs
