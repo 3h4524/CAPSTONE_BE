@@ -12,8 +12,31 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Route("api/admin/dashboard")]
 [Authorize(Roles = AuthConstants.AdminRole)]
-public sealed class AdminDashboardController(IAdminDashboardService dashboardService) : ControllerBase
+public sealed class AdminDashboardController(
+    IAdminDashboardService dashboardService,
+    IAdminOperationsService operationsService) : ControllerBase
 {
+    /// <summary>
+    /// Gets how production went over a Dashboard period: throughput, the pipeline funnel and AI usage.
+    /// </summary>
+    /// <param name="timeRange">The period: week (7 days), month (30 days), halfyear (6 months) or year (12 months).</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>The period's production figures.</returns>
+    [HttpGet("operations")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetOperationsAsync(
+        [FromQuery] string timeRange = "month",
+        CancellationToken cancellationToken = default)
+    {
+        var result = await operationsService.GetOperationsAsync(timeRange, cancellationToken);
+
+        return result.IsSuccess
+            ? Ok(result.Value)
+            : result.ToActionResult(this);
+    }
+
     /// <summary>
     /// Gets the key metrics for the admin dashboard.
     /// </summary>

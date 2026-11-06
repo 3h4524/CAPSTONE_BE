@@ -86,6 +86,7 @@ public sealed class AuthorizationMatrixTests
         ["POST", $"/api/admin/users/{PlaceholderId}/send-reset-password"],
         ["GET", "/api/admin/dashboard/metrics"],
         ["GET", "/api/admin/dashboard/export"],
+        ["GET", "/api/admin/dashboard/operations"],
         ["GET", "/api/admin/subscription-plans"],
         ["GET", $"/api/admin/subscription-plans/{PlaceholderId}"],
         ["POST", "/api/admin/subscription-plans"],
@@ -150,7 +151,9 @@ public sealed class AuthorizationMatrixTests
         ["GET", $"/api/support-tickets/{PlaceholderId}"],
         ["POST", $"/api/support-tickets/{PlaceholderId}/replies"],
         ["PUT", $"/api/support-tickets/{PlaceholderId}/satisfaction-rating"],
-        ["GET", "/api/usage"]
+        ["GET", "/api/usage"],
+        ["GET", "/api/dashboard/summary"],
+        ["GET", "/api/dashboard/action-items"]
     ];
 
     /// <summary>Gets the endpoints that require an identity but name no role.</summary>

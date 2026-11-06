@@ -1,4 +1,5 @@
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
+using APCS.Application.Features.Entitlements;
 using FluentValidation;
 
 namespace APCS.Application.Features.Admin.SubscriptionPlans.Validators;
@@ -38,6 +39,20 @@ public sealed class CreatePlanRequestDtoValidator : AbstractValidator<CreatePlan
         RuleFor(request => request.StorageQuotaGb)
             .Must(value => value >= 0m || value == -1m)
             .WithMessage("Value must be greater than or equal to 0, or -1 for unlimited.");
+
+        RuleFor(request => request.Features)
+            .Must(features => features is null || features.Select(feature => feature.Code).Distinct().Count() == features.Count)
+            .WithMessage("Each plan feature can appear only once.");
+
+        RuleForEach(request => request.Features).ChildRules(feature =>
+        {
+            feature.RuleFor(item => item.Code)
+                .Must(PlanFeatures.IsKnown)
+                .WithMessage("Unknown plan feature.");
+            feature.RuleFor(item => item.LimitValue)
+                .GreaterThanOrEqualTo(0)
+                .When(item => item.LimitValue is not null);
+        });
     }
 }
 

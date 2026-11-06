@@ -2,8 +2,10 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin.SubscriptionPlans;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
 using APCS.Application.Features.Admin.SubscriptionPlans.Validators;
+using APCS.Application.Features.Subscriptions;
 using APCS.Domain.Entities;
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using MockQueryable.Moq;
 using Moq;
 
@@ -17,7 +19,8 @@ public sealed class AdminSubscriptionPlanServiceTests
         Mock<ISubscriptionRepository>? subscriptions = null,
         Mock<IRepository<PlanFeature>>? planFeatures = null,
         Mock<IUnitOfWork>? unitOfWork = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IPlanChangeLog? changeLog = null)
     {
         var planFeaturesMock = planFeatures ?? CreateEmptyPlanFeaturesMock();
         var unitOfWorkMock = unitOfWork ?? new Mock<IUnitOfWork>();
@@ -30,7 +33,9 @@ public sealed class AdminSubscriptionPlanServiceTests
             timeProvider ?? TimeProvider.System,
             new CreatePlanRequestDtoValidator(),
             new UpdatePlanRequestDtoValidator(),
-            new DeletePlanRequestDtoValidator());
+            new DeletePlanRequestDtoValidator(),
+            Options.Create(new PaymentGatewaySettings(25_000m, null)),
+            changeLog ?? Mock.Of<IPlanChangeLog>());
     }
 
     private static Mock<IRepository<PlanFeature>> CreateEmptyPlanFeaturesMock()
@@ -92,6 +97,10 @@ public sealed class AdminSubscriptionPlanServiceTests
         result.Value.Tier.Should().Be("creator");
         result.Value.WhiteLabelExportEnabled.Should().BeTrue();
         result.Value.CanDelete.Should().BeTrue();
+        // $49 and $490 at the PayOS rate of 25,000.
+        result.Value.MonthlyPriceVnd.Should().Be(1_225_000m);
+        result.Value.AnnualPriceVnd.Should().Be(12_250_000m);
+        result.Value.UsdToVndRate.Should().Be(25_000m);
         plansRepo.Verify(r => r.AddAsync(
             It.Is<SubscriptionPlan>(plan => plan.Name == "Creator" && plan.Tier == "creator"),
             false,
