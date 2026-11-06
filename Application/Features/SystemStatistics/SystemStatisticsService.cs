@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.SystemStatistics.Dtos;
+using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -97,14 +98,20 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
             .Select(g => new { Date = g.Key, Count = g.Count() })
             .ToListAsync(cancellationToken);
 
-        var dailyJobs = dailyJobCounts
-            .OrderBy(x => x.Date)
-            .Select(x => new DailyJobsPointDto
+        // Emit every calendar day in the window (zero-filled) so gaps and the true daily average are visible
+        var dailyJobs = new List<DailyJobsPointDto>();
+        if (dailyJobCounts.Count > 0)
+        {
+            var countsByDate = dailyJobCounts.ToDictionary(x => x.Date, x => x.Count);
+            for (var day = startDate.Date; day <= endDate.Date; day = day.AddDays(1))
             {
-                DateLabel = x.Date.ToString("yyyy-MM-dd"),
-                Count = x.Count
-            })
-            .ToList();
+                dailyJobs.Add(new DailyJobsPointDto
+                {
+                    DateLabel = day.ToString("yyyy-MM-dd"),
+                    Count = countsByDate.GetValueOrDefault(day)
+                });
+            }
+        }
 
         // 3. Pipeline Stage Breakdown
         var mockupsCount = await _mockupImageRepo.Query()
@@ -166,13 +173,46 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
             })
             .ToListAsync(cancellationToken);
 
+        // 6. Job Reliability (finished jobs only: completed, partially completed, failed)
+        var finishedJobs = await _batchJobRepo.Query()
+            .Where(x => x.CreatedAt >= startDate && x.CreatedAt <= endDate
+                && (x.Status == BatchJobStatuses.Completed
+                    || x.Status == BatchJobStatuses.PartiallyCompleted
+                    || x.Status == BatchJobStatuses.Failed))
+            .Select(x => new { x.Status, x.StartedAt, x.CompletedAt })
+            .ToListAsync(cancellationToken);
+
+        var totalCostUsd = await _batchJobRepo.Query()
+            .Where(x => x.CreatedAt >= startDate && x.CreatedAt <= endDate)
+            .SumAsync(x => x.ActualCostUsd ?? 0m, cancellationToken);
+
+        var completedJobs = finishedJobs.Count(x => x.Status == BatchJobStatuses.Completed);
+        var processingMinutes = finishedJobs
+            .Where(x => x.Status != BatchJobStatuses.Failed && x.StartedAt.HasValue && x.CompletedAt.HasValue)
+            .Select(x => (x.CompletedAt!.Value - x.StartedAt!.Value).TotalMinutes)
+            .ToList();
+
+        var reliability = new JobReliabilityDto
+        {
+            FinishedJobs = finishedJobs.Count,
+            CompletedJobs = completedJobs,
+            PartiallyCompletedJobs = finishedJobs.Count(x => x.Status == BatchJobStatuses.PartiallyCompleted),
+            FailedJobs = finishedJobs.Count(x => x.Status == BatchJobStatuses.Failed),
+            SuccessRate = CalculatePercentage(completedJobs, finishedJobs.Count),
+            AvgProcessingMinutes = processingMinutes.Count > 0 ? Math.Round((decimal)processingMinutes.Average(), 1) : null,
+            TotalCostUsd = Math.Round(totalCostUsd, 2)
+        };
+
         var result = new SystemStatisticsOverviewDto
         {
             Metrics = metrics,
             DailyJobs = dailyJobs,
             PipelineStages = pipelineStages,
             IntegrationStatus = integrationStatus,
-            RecentErrors = recentErrors
+            RecentErrors = recentErrors,
+            Reliability = reliability,
+            PeriodStart = startDate.ToString("yyyy-MM-dd"),
+            PeriodEnd = endDate.ToString("yyyy-MM-dd")
         };
 
         return Result.Success(result);
@@ -214,6 +254,12 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
         csv.AppendLine($"Printify Products,{data.IntegrationStatus.PrintifyTotal},{data.IntegrationStatus.PrintifySuccessRate}%,{data.IntegrationStatus.PrintifyGrowthPercentage}%");
         csv.AppendLine($"Social Media Shares,{data.IntegrationStatus.SocialMediaTotal},{data.IntegrationStatus.SocialMediaSuccessRate}%,{data.IntegrationStatus.SocialMediaGrowthPercentage}%");
         csv.AppendLine($"Total Failed Integrations,{data.IntegrationStatus.FailedIntegrationsCount},-, -");
+        csv.AppendLine();
+
+        // Section 3b: Job Reliability
+        csv.AppendLine("=== JOB RELIABILITY ===");
+        csv.AppendLine("Finished Jobs,Completed,Partially Completed,Failed,Success Rate (%),Avg Processing (min),Total Cost (USD)");
+        csv.AppendLine($"{data.Reliability.FinishedJobs},{data.Reliability.CompletedJobs},{data.Reliability.PartiallyCompletedJobs},{data.Reliability.FailedJobs},{data.Reliability.SuccessRate}%,{data.Reliability.AvgProcessingMinutes?.ToString() ?? "-"},{data.Reliability.TotalCostUsd}");
         csv.AppendLine();
 
         // Section 4: Daily Jobs Volume
@@ -263,10 +309,12 @@ public sealed class SystemStatisticsService : ISystemStatisticsService
             {
                 "7d" => 7,
                 "90d" => 90,
+                "180d" => 180,
                 "year" => 365,
                 _ => 30
             };
-            startDate = endDate.AddDays(-days);
+            // Align to whole calendar days (today inclusive) so the first day is never a partial bucket
+            startDate = endDate.Date.AddDays(-(days - 1));
         }
 
         var previousStartDate = startDate.AddDays(-days);

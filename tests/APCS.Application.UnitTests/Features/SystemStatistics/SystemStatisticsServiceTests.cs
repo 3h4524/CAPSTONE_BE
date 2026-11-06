@@ -53,7 +53,7 @@ public sealed class SystemStatisticsServiceTests
     [TestMethod]
     public async Task GetOverviewAsync_WhenDataExists_ReturnsAggregatedMetricsAndBreakdowns()
     {
-        // Arrange (Default 30d: 2026-09-15 to 2026-10-15; previous: 2026-08-16 to 2026-09-15)
+        // Arrange (Default 30d: 2026-09-16 00:00 to 2026-10-15 12:00; previous: 2026-08-17 to 2026-09-16)
         var filter = new StatisticsFilterDto { TimeRange = "30d" };
 
         // 1. Batch jobs
@@ -153,9 +153,14 @@ public sealed class SystemStatisticsServiceTests
         data.Metrics.VideosRendered.Value.Should().Be(1);
         data.Metrics.ListingsGenerated.Value.Should().Be(1);
 
-        // Daily Jobs verification (grouped by date)
-        data.DailyJobs.Should().HaveCount(2);
+        // Daily Jobs verification (one zero-filled point per calendar day: 2026-09-16 .. 2026-10-15)
+        data.DailyJobs.Should().HaveCount(30);
+        data.DailyJobs.First().DateLabel.Should().Be("2026-09-16");
+        data.DailyJobs.Last().DateLabel.Should().Be("2026-10-15");
         data.DailyJobs.First(x => x.DateLabel == "2026-10-10").Count.Should().Be(2);
+        data.DailyJobs.Sum(x => x.Count).Should().Be(3);
+        data.PeriodStart.Should().Be("2026-09-16");
+        data.PeriodEnd.Should().Be("2026-10-15");
 
         // Pipeline Stages verification (Images: 2, Mockups: 1, Videos: 1, Listings: 1 -> Total = 5)
         data.PipelineStages.Should().HaveCount(4);
@@ -202,6 +207,50 @@ public sealed class SystemStatisticsServiceTests
         data.PipelineStages.All(x => x.Count == 0 && x.Percentage == 0m).Should().BeTrue();
         data.IntegrationStatus.FailedIntegrationsCount.Should().Be(0);
         data.RecentErrors.Should().BeEmpty();
+        data.Reliability.FinishedJobs.Should().Be(0);
+        data.Reliability.SuccessRate.Should().Be(0m);
+        data.Reliability.AvgProcessingMinutes.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task GetOverviewAsync_WhenJobsFinished_ReturnsReliabilityMetrics()
+    {
+        // Arrange: 2 completed (30 and 90 min), 1 partially completed (60 min), 1 failed, 1 still running
+        var filter = new StatisticsFilterDto { TimeRange = "30d" };
+        var day = new DateTime(2026, 10, 10, 8, 0, 0);
+
+        var batchJobs = new List<BatchJob>
+        {
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(30), ActualCostUsd = 1.25m },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "completed", StartedAt = day, CompletedAt = day.AddMinutes(90), ActualCostUsd = 2.50m },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "partially_completed", StartedAt = day, CompletedAt = day.AddMinutes(60), ActualCostUsd = 0.75m },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "failed", StartedAt = day, CompletedAt = day.AddMinutes(5), ActualCostUsd = 0.10m },
+            new() { Id = Guid.NewGuid(), CreatedAt = day, Status = "running", StartedAt = day }
+        }.AsQueryable().BuildMock();
+        _batchJobRepo.Setup(r => r.Query()).Returns(batchJobs);
+
+        _designImageRepo.Setup(r => r.Query()).Returns(new List<DesignImage>().AsQueryable().BuildMock());
+        _mockupImageRepo.Setup(r => r.Query()).Returns(new List<MockupImage>().AsQueryable().BuildMock());
+        _promoVideoRepo.Setup(r => r.Query()).Returns(new List<PromoVideo>().AsQueryable().BuildMock());
+        _listingContentRepo.Setup(r => r.Query()).Returns(new List<ListingContent>().AsQueryable().BuildMock());
+        _etsyLogRepo.Setup(r => r.Query()).Returns(new List<EtsyUploadLog>().AsQueryable().BuildMock());
+        _printifyLogRepo.Setup(r => r.Query()).Returns(new List<PrintifyUploadLog>().AsQueryable().BuildMock());
+        _socialMediaRepo.Setup(r => r.Query()).Returns(new List<SocialMediaShare>().AsQueryable().BuildMock());
+        _batchJobLogRepo.Setup(r => r.Query()).Returns(new List<BatchJobLog>().AsQueryable().BuildMock());
+
+        // Act
+        var result = await _sut.GetOverviewAsync(filter, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var reliability = result.Value.Reliability;
+        reliability.FinishedJobs.Should().Be(4);
+        reliability.CompletedJobs.Should().Be(2);
+        reliability.PartiallyCompletedJobs.Should().Be(1);
+        reliability.FailedJobs.Should().Be(1);
+        reliability.SuccessRate.Should().Be(50m); // 2 completed / 4 finished
+        reliability.AvgProcessingMinutes.Should().Be(60m); // (30 + 90 + 60) / 3, failed job excluded
+        reliability.TotalCostUsd.Should().Be(4.60m); // running job's null cost counts as 0
     }
 
     [TestMethod]
@@ -230,8 +279,8 @@ public sealed class SystemStatisticsServiceTests
         // Assert
         result.IsSuccess.Should().BeTrue();
 
-        // Also test 7d, 90d, year branches
-        foreach (var range in new[] { "7d", "90d", "year" })
+        // Also test 7d, 90d, 180d, year branches
+        foreach (var range in new[] { "7d", "90d", "180d", "year" })
         {
             var res = await _sut.GetOverviewAsync(new StatisticsFilterDto { TimeRange = range }, CancellationToken.None);
             res.IsSuccess.Should().BeTrue();
@@ -277,6 +326,7 @@ public sealed class SystemStatisticsServiceTests
         csvText.Should().Contain("PIPELINE STAGE BREAKDOWN");
         csvText.Should().Contain("INTEGRATION HEALTH");
         csvText.Should().Contain("JOBS PROCESSED PER DAY");
+        csvText.Should().Contain("JOB RELIABILITY");
         csvText.Should().Contain("RECENT OPERATIONAL ERRORS");
         csvText.Should().Contain("Timeout");
     }

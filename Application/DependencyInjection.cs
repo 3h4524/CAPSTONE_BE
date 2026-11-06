@@ -42,6 +42,7 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ISubscriptionService, SubscriptionService>();
         services.AddScoped<IUsageStatisticsService, UsageStatisticsService>();
+        services.AddScoped<Features.SellerDashboard.ISellerDashboardService, Features.SellerDashboard.SellerDashboardService>();
         services.AddSingleton<Features.Entitlements.FeatureCatalogCache>();
         services.AddSingleton<Features.Entitlements.PlanSettingsCache>();
         services.AddScoped<Features.Entitlements.IPlanSettings, Features.Entitlements.PlanSettings>();
@@ -59,6 +60,7 @@ public static class DependencyInjection
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
+        services.AddScoped<IAdminOperationsService, AdminOperationsService>();
         services.AddScoped<IBatchService, BatchService>();
         services.AddScoped<IDesignTemplateService, DesignTemplateService>();
         services.AddScoped<IAdminSubscriptionPlanService, AdminSubscriptionPlanService>();

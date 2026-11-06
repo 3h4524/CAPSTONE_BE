@@ -35,6 +35,16 @@ public sealed class AdminDashboardService(
                 startDate = referenceDate;
                 endDate = referenceDate;
             }
+            else if (timeRange.ToLower() == "week")
+            {
+                startDate = referenceDate.AddDays(-6);
+                endDate = referenceDate;
+            }
+            else if (timeRange.ToLower() == "halfyear")
+            {
+                startDate = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-5);
+                endDate = referenceDate;
+            }
             else if (timeRange.ToLower() == "year")
             {
                 startDate = new DateOnly(referenceDate.Year, 1, 1);
@@ -94,19 +104,27 @@ public sealed class AdminDashboardService(
                 .ToListAsync(cancellationToken);
 
             // 8. Recent Batch Jobs (Top 5)
+            // A job's own counters can be empty (imported or older jobs), so its batch and AI calls fill in.
             var recentBatchJobs = await batchJobRepository.Query()
                 .Include(b => b.User)
                 .OrderByDescending(b => b.CreatedAt)
                 .Take(5)
                 .Select(b => new BatchJobDto(
                     b.Name,
-                    b.TotalProducts ?? 0,
+                    b.TotalProducts > 0
+                        ? b.TotalProducts.Value
+                        : b.Batch != null ? b.Batch.Products.Count(p => p.DeletedAt == null) : 0,
                     b.Status,
-                    b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
+                    b.Status.ToLower() == "completed"
+                        ? "100%"
+                        : b.ProgressPercentage.HasValue ? $"{b.ProgressPercentage.Value:0}%" : "0%",
                     b.User.FullName,
                     b.Status.ToLower() == "completed" ? "emerald" :
                         b.Status.ToLower() == "running" ? "amber" :
-                        b.Status.ToLower() == "queued" ? "orange" : "rose"
+                        b.Status.ToLower() == "queued" ? "orange" : "rose",
+                    b.Batch != null ? b.Batch.Name : null,
+                    b.CreatedAt,
+                    b.ApiUsageRecords.Sum(a => a.CostUsd)
                 ))
                 .ToListAsync(cancellationToken);
 

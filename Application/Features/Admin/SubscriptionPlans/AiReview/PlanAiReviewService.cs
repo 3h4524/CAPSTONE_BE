@@ -47,21 +47,53 @@ public sealed class PlanAiReviewService(
             .Take(2)
             .ToListAsync(cancellationToken);
         var latest = successes.FirstOrDefault();
-        // Npgsql rejects an unspecified-kind DateTime against timestamptz.
-        var latestAt = latest?.GeneratedAt ?? DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
-        var lastFailure = await reviews.Query()
-            .Where(review => review.Status == Failed && review.GeneratedAt > latestAt)
+
+        var lastFailureQuery = reviews.Query().Where(review => review.Status == Failed);
+        if (latest is not null)
+        {
+            var latestUtc = DateTime.SpecifyKind(latest.GeneratedAt, DateTimeKind.Utc);
+            lastFailureQuery = lastFailureQuery.Where(review => review.GeneratedAt > latestUtc);
+        }
+
+        var lastFailure = await lastFailureQuery
             .OrderByDescending(review => review.GeneratedAt)
             .Select(review => (DateTime?)review.GeneratedAt)
             .FirstOrDefaultAsync(cancellationToken);
         var lastRequest = await LastRequestAsync(cancellationToken);
 
         var regenerateAt = lastRequest?.AddHours(Settings.ManualRegenerateCooldownHours);
+
+        PlanAiReviewSnapshotDto? snapshot = null;
+        if (latest is not null)
+        {
+            try
+            {
+                snapshot = Snapshot(latest);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to deserialize plan AI review snapshot {ReviewId}.", latest.Id);
+            }
+        }
+
+        IReadOnlyList<PlanAiScoreDto> previousScores = [];
+        if (successes.Count > 1)
+        {
+            try
+            {
+                previousScores = Scores(successes[1]);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to deserialize previous plan AI review score {ReviewId}.", successes[1].Id);
+            }
+        }
+
         return Result.Success(new PlanAiReviewDto(
             generator.IsConfigured,
             queue.IsBusy,
-            latest is null ? null : Snapshot(latest),
-            successes.Count > 1 ? Scores(successes[1]) : [],
+            snapshot,
+            previousScores,
             latest?.GeneratedAt.AddDays(Settings.RefreshIntervalDays),
             lastFailure,
             regenerateAt > Now ? regenerateAt : null));
@@ -239,59 +271,72 @@ public sealed class PlanAiReviewService(
 
     private static PlanAiReviewSnapshotDto Snapshot(PlanAiReview review)
     {
-        var input = JsonSerializer.Deserialize<PlanAiReviewInput>(review.InputJson, PlanAiReviewInputBuilder.Json)!;
+        if (string.IsNullOrWhiteSpace(review.InputJson))
+            throw new InvalidOperationException("InputJson is empty.");
+        if (string.IsNullOrWhiteSpace(review.ReviewJson))
+            throw new InvalidOperationException("ReviewJson is empty.");
+
+        var input = JsonSerializer.Deserialize<PlanAiReviewInput>(review.InputJson, PlanAiReviewInputBuilder.Json)
+            ?? throw new InvalidOperationException("InputJson could not be deserialized.");
+        var output = JsonSerializer.Deserialize<PlanAiReviewOutput>(review.ReviewJson, PlanAiReviewInputBuilder.Json)
+            ?? throw new InvalidOperationException("ReviewJson could not be deserialized.");
+
         return new PlanAiReviewSnapshotDto(
             review.Id,
             review.GeneratedAt,
             review.PeriodStart,
             review.PeriodEnd,
             review.Model,
-            input.Plans
+            (input.Plans ?? [])
                 .Select(plan => new PlanAiReviewPlanNameDto(
                     plan.Key,
                     plan.Name,
-                    plan.Features.Select(feature => new PlanAiReviewFeatureNameDto(feature.Key, feature.Name)).ToList()))
+                    (plan.Features ?? []).Select(feature => new PlanAiReviewFeatureNameDto(feature.Key, feature.Name)).ToList()))
                 .ToList(),
-            JsonSerializer.Deserialize<PlanAiReviewOutput>(review.ReviewJson!, PlanAiReviewInputBuilder.Json)!,
+            output,
             MrrBridges(input));
     }
 
     // All plans together only have the net of moves between plans, shown as expansion or contraction.
     private static IReadOnlyList<MrrBridgeDto> MrrBridges(PlanAiReviewInput input)
     {
-        var planChanges = input.Totals.MrrPlanChangesVnd ?? 0m;
+        var totals = input.Totals;
+        var planChanges = totals?.MrrPlanChangesVnd ?? 0m;
         var all = new MrrBridgeDto
         {
-            Start = input.Totals.MrrStartVnd ?? 0m,
-            New = input.Totals.MrrNewVnd ?? 0m,
+            Start = totals?.MrrStartVnd ?? 0m,
+            New = totals?.MrrNewVnd ?? 0m,
             Expansion = Math.Max(planChanges, 0m),
             Contraction = Math.Max(-planChanges, 0m),
-            Churn = input.Totals.MrrChurnVnd ?? 0m,
-            End = input.Totals.MrrEndVnd ?? 0m
+            Churn = totals?.MrrChurnVnd ?? 0m,
+            End = totals?.MrrEndVnd ?? 0m
         };
-        return input.Plans
-            .Where(plan => plan.Metrics.MrrStartVnd is not null || plan.Metrics.MrrEndVnd is not null)
+        return (input.Plans ?? [])
+            .Where(plan => plan.Metrics?.MrrStartVnd is not null || plan.Metrics?.MrrEndVnd is not null)
             .Select(plan => new MrrBridgeDto
             {
                 PlanName = plan.Name,
-                Start = plan.Metrics.MrrStartVnd ?? 0m,
-                New = plan.Metrics.MrrNewVnd ?? 0m,
-                MovedIn = plan.Metrics.MrrMovedInVnd ?? 0m,
-                Expansion = plan.Metrics.MrrExpansionVnd ?? 0m,
-                Contraction = plan.Metrics.MrrContractionVnd ?? 0m,
-                MovedOut = plan.Metrics.MrrMovedOutVnd ?? 0m,
-                Churn = plan.Metrics.MrrChurnVnd ?? 0m,
-                End = plan.Metrics.MrrEndVnd ?? 0m
+                Start = plan.Metrics?.MrrStartVnd ?? 0m,
+                New = plan.Metrics?.MrrNewVnd ?? 0m,
+                MovedIn = plan.Metrics?.MrrMovedInVnd ?? 0m,
+                Expansion = plan.Metrics?.MrrExpansionVnd ?? 0m,
+                Contraction = plan.Metrics?.MrrContractionVnd ?? 0m,
+                MovedOut = plan.Metrics?.MrrMovedOutVnd ?? 0m,
+                Churn = plan.Metrics?.MrrChurnVnd ?? 0m,
+                End = plan.Metrics?.MrrEndVnd ?? 0m
             })
             .Prepend(all)
             .ToList();
     }
 
-    private static IReadOnlyList<PlanAiScoreDto> Scores(PlanAiReview review) =>
-        JsonSerializer.Deserialize<PlanAiReviewOutput>(review.ReviewJson!, PlanAiReviewInputBuilder.Json)!
-            .Plans
+    private static IReadOnlyList<PlanAiScoreDto> Scores(PlanAiReview review)
+    {
+        if (string.IsNullOrWhiteSpace(review.ReviewJson)) return [];
+        var output = JsonSerializer.Deserialize<PlanAiReviewOutput>(review.ReviewJson, PlanAiReviewInputBuilder.Json);
+        return output?.Plans?
             .Select(plan => new PlanAiScoreDto(plan.Plan, plan.Status, plan.Score))
-            .ToList();
+            .ToList() ?? [];
+    }
 
     private DateTime Now => timeProvider.GetUtcNow().UtcDateTime;
 }

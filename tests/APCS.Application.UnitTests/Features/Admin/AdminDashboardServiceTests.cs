@@ -79,7 +79,49 @@ public sealed class AdminDashboardServiceTests
     }
 
     [TestMethod]
+    public async Task GetMetricsAsync_FillsAnEmptyJobFromItsBatchAndAiCalls()
+    {
+        var batch = new Batch
+        {
+            Name = "Shop catalog",
+            Products = [new Product(), new Product(), new Product { DeletedAt = Oct15.UtcDateTime }],
+        };
+        var jobs = new List<BatchJob>
+        {
+            new()
+            {
+                Name = "Design run", Status = "Completed", TotalProducts = 0, ProgressPercentage = 0,
+                CreatedAt = Oct15.UtcDateTime, Batch = batch, User = new User { FullName = "Lan" },
+                ApiUsageRecords = [new ApiUsageRecord { CostUsd = 0.04m }, new ApiUsageRecord { CostUsd = 0.08m }],
+            },
+            new()
+            {
+                Name = "Design run", Status = "running", TotalProducts = 10, ProgressPercentage = 40,
+                User = new User { FullName = "Minh" },
+            },
+        }.AsQueryable().BuildMock();
+        var jobRepo = new Mock<IRepository<BatchJob>>();
+        jobRepo.Setup(r => r.Query()).Returns(jobs);
+
+        var result = await CreateService(batchJobRepository: jobRepo).GetMetricsAsync();
+
+        var completed = result.Value.RecentBatchJobs.Single(job => job.UserName == "Lan");
+        completed.ItemCount.Should().Be(2);
+        completed.ProgressPercentage.Should().Be("100%");
+        completed.BatchName.Should().Be("Shop catalog");
+        completed.CreatedAt.Should().Be(Oct15.UtcDateTime);
+        completed.AiCostUsd.Should().Be(0.12m);
+
+        var running = result.Value.RecentBatchJobs.Single(job => job.UserName == "Minh");
+        running.ItemCount.Should().Be(10);
+        running.ProgressPercentage.Should().Be("40%");
+        running.BatchName.Should().BeNull();
+    }
+
+    [TestMethod]
     [DataRow("day", "2023-10-15")]
+    [DataRow("week", "2023-10-09")]
+    [DataRow("halfyear", "2023-05-01")]
     [DataRow("month", "2023-10-01")]
     [DataRow("year", "2023-01-01")]
     public async Task GetMetricsAsync_ReadsTheRevenuePageFiguresFromTheStartOfTheRangeToToday(string timeRange, string start)
