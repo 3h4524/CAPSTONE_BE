@@ -45,6 +45,30 @@ public sealed class DatabaseFirstModelTests
     }
 
     [TestMethod]
+    public void Model_ImageEvalRun_KeepsTheScoresAsJson()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(ImageEvalRun))!;
+        entityType.GetTableName().Should().Be("image_eval_runs");
+        entityType.FindProperty(nameof(ImageEvalRun.Report))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(ImageEvalRun.Name))!.GetMaxLength().Should().Be(200);
+        entityType.FindProperty(nameof(ImageEvalRun.Notes))!.IsNullable.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void Model_PlanAiReview_KeepsTheInputAndReviewAsJson()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(PlanAiReview))!;
+        entityType.GetTableName().Should().Be("plan_ai_reviews");
+        entityType.FindProperty(nameof(PlanAiReview.InputJson))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.IsNullable.Should().BeTrue();
+    }
+
+    [TestMethod]
     public void Model_TestReportRun_KeepsTheReportAsJson()
     {
         using var context = CreateContext();

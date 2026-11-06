@@ -62,6 +62,42 @@ public sealed class CloudinaryMockupCompositorTests
     private const string Base = "https://res.cloudinary.com/demo/image/upload/v1700000000/apcs/mockup-templates/t.webp";
 
     [TestMethod]
+    public void BuildCompositeUrl_WithDesignCorners_WarpsTheDesignOntoThemThenBendsAndCutsIt()
+    {
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(90, 180, 330, 340),
+            new MockupLayers(1024, 1024, "mockup-templates/t-displace", "mockup-templates/t-mask", null,
+                DesignCorners: [new(100, 200), new(400, 180), new(420, 500), new(90, 520)]));
+
+        url.Should().Be(
+            "https://res.cloudinary.com/demo/image/upload/"
+            + "l_apcs:design-images:d/c_scale,w_330,h_340/e_distort:10:20:310:0:330:320:0:340/c_crop,g_north_west,x_0,y_0,w_330,h_340/"
+            + "l_apcs:mockup-templates:t-displace/c_crop,g_north_west,x_90,y_180,w_330,h_340/e_displace,fl_layer_apply,x_7,y_7/"
+            + "l_apcs:mockup-templates:t-mask/c_crop,g_north_west,x_90,y_180,w_330,h_340/fl_cutter,fl_layer_apply,g_north_west/"
+            + "fl_layer_apply,g_north_west,x_90,y_180/"
+            + "v1700000000/apcs/mockup-templates/t.webp");
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_WithMorePlacements_PrintsTheDesignOnEachAndRecolorsOnce()
+    {
+        var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(100, 200, 300, 300),
+            new MockupLayers(1024, 1024, "mockup-templates/t-displace", "mockup-templates/t-mask", "#1F2A44",
+                MorePlacements: [new MockupPosition(600, 260, 200, 200)]));
+
+        CountOf(url, "l_apcs:design-images:d/").Should().Be(2);
+        url.Should().Contain("c_scale,w_300,h_300/").And.Contain("fl_layer_apply,g_north_west,x_100,y_200/")
+            .And.Contain("c_scale,w_200,h_200/").And.Contain("fl_layer_apply,g_north_west,x_600,y_260/");
+        CountOf(url, "e_colorize:100,co_rgb:1F2A44").Should().Be(1);
+        CountOf(url, "fl_layer_apply,e_multiply,g_north_west,x_0,y_0").Should().Be(1);
+        // The design goes on each shirt before the fabric's shading is multiplied over all of them.
+        url.LastIndexOf("l_apcs:design-images:d/", StringComparison.Ordinal)
+            .Should().BeLessThan(url.IndexOf("fl_layer_apply,e_multiply,g_north_west,x_0,y_0", StringComparison.Ordinal));
+    }
+
+    private static int CountOf(string text, string part) =>
+        (text.Length - text.Replace(part, "", StringComparison.Ordinal).Length) / part.Length;
+
+    [TestMethod]
     public void BuildCompositeUrl_WithDesignSizeAndDisplacement_CentersTheDesignAndBendsIt()
     {
         var url = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(1418, 1475, 1152, 1039),

@@ -11,6 +11,11 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The words ArtworkPromptRules sorts keywords by (ArtworkVocabulary). -->
+    <EmbeddedResource Include="Features\BatchProductPrompts\Common\Vocabulary\*.json" LogicalName="APCS.Vocabulary.%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>APCS.Application</AssemblyName>

@@ -13,12 +13,12 @@ public sealed class ArtworkPromptRulesTests
         new(subject, "bold typography", "", "", "", basePrompt, Keywords: keywords, Description: description);
 
     [TestMethod]
-    public void MotifKeywords_TakesListingWordsOutAndKeepsTheFirstFive()
+    public void MotifKeywords_TakesProductAndListingWordsOut_AndKeepsEverythingElseAsWritten()
     {
         var motifs = ArtworkPromptRules.MotifKeywords(
             "vintage camping, hiking shirt, camping gift, unisex apparel, t-shirt, coffee lover, national park, nature, forest");
 
-        motifs.Should().Be("camping, hiking, coffee, national park, nature");
+        motifs.Should().Be("vintage camping, hiking, camping, coffee lover, national park, nature, forest");
     }
 
     [TestMethod]
@@ -36,21 +36,40 @@ public sealed class ArtworkPromptRulesTests
     }
 
     [TestMethod]
-    public void SplitKeywords_DropsWordsForAPerson_ButKeepsJobs()
+    public void SplitKeywords_GuessesAtNothingElse_TheFeelPeopleSlogansAndLetteringWordsStay()
     {
-        var parts = ArtworkPromptRules.SplitKeywords("dog mom, best friends, nurse life, developer");
+        // Sent as written, none of these was printed or drawn as a stranger in the A/B/C test of 31/10/2026: the
+        // lettering instruction keeps them out of the text.
+        var parts = ArtworkPromptRules.SplitKeywords(
+            "dog mom, plant lady, good things take time, positive quote, funny, geometric, est 1985, 123, kindness");
 
-        parts.Motifs.Should().Be("dog, nurse life, developer");
-        parts.Mood.Should().BeEmpty("\"best\" names no feel a picture could show");
+        parts.Motifs.Should().Be("dog mom, plant lady, good things take time, positive quote, funny, geometric, est 1985, 123, kindness");
+        parts.Ignored.Should().BeEmpty();
     }
 
     [TestMethod]
-    public void SplitKeywords_WordsAboutTheFeel_BecomeTheMoodInsteadOfMotifs()
+    public void SplitKeywords_ListsTheProductWordsTakenOut_InTheSellersOrder()
     {
-        var parts = ArtworkPromptRules.SplitKeywords("funny cat, cute, vintage, retro camper, cool, hilarious");
+        var parts = ArtworkPromptRules.SplitKeywords("market tote, ocean lover gift, botanical mug, granddaughter gift");
 
-        parts.Motifs.Should().Be("cat, camper");
-        parts.Mood.Should().Be("playful, cute, vintage, retro feel");
+        parts.Motifs.Should().Be("market, ocean lover, botanical, granddaughter");
+        parts.Ignored.Should().Equal("tote", "gift", "mug");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_ProductWordsSeveralWordsLong_LeaveNoneOfTheirWords()
+    {
+        var parts = ArtworkPromptRules.SplitKeywords("southwest wall art, phone case, beach house decor, lighthouse t-shirt, cozy home decor");
+
+        parts.Motifs.Should().Be("southwest, beach house, lighthouse, cozy");
+        parts.Ignored.Should().Equal("wall art", "phone case", "decor", "t-shirt", "home decor");
+    }
+
+    [TestMethod]
+    public void SplitKeywords_KeepsEveryKeyword_HoweverMany()
+    {
+        ArtworkPromptRules.MotifKeywords("mountain, tent, campfire, forest, lake, river")
+            .Should().Be("mountain, tent, campfire, forest, lake, river");
     }
 
     [TestMethod]
@@ -104,9 +123,9 @@ public sealed class ArtworkPromptRulesTests
     [TestMethod]
     public void Fit_NoMotifLeft_AsksForIconsThatSuitTheNiche_ForTheModelToPick()
     {
-        // "gift, funny" leaves nothing to draw once listing words and the feel are taken out.
+        // "gift, unisex t shirt" leaves nothing to draw once listing words are taken out.
         var fitted = ArtworkPromptRules.Fit(
-            Components("Dink Responsibly", ArtworkPromptRules.MotifKeywords("gift, funny")) with { Niche = "Pickleball players" });
+            Components("Dink Responsibly", ArtworkPromptRules.MotifKeywords("gift, unisex t shirt")) with { Niche = "Pickleball players" });
 
         fitted.Keywords.Should().Be("simple icons that suit Pickleball players");
     }
@@ -121,8 +140,8 @@ public sealed class ArtworkPromptRulesTests
     [TestMethod]
     public void IsThin_NothingToDraw_AFewWordsOfDescription_AndNoInstructions()
     {
-        // "coffee shirt, gift for mom" once listing words and persons are out: only a word the phrase already says.
-        var keywords = ArtworkPromptRules.MotifKeywords("coffee shirt, gift for mom");
+        // "coffee shirt, gift for her" once listing words are out: only a word the phrase already says.
+        var keywords = ArtworkPromptRules.MotifKeywords("coffee shirt, gift for her");
         ArtworkPromptRules.IsThin(Components("Coffee Then Code", keywords, "Cute design.")).Should().BeTrue();
     }
 
@@ -168,6 +187,38 @@ public sealed class ArtworkPromptRulesTests
             .And.Contain("one richly detailed featured illustration in vivid, saturated full color")
             .And.Contain("without covering any letter")
             .And.Contain("sticker-style double outline");
+    }
+
+    [TestMethod]
+    public void LetteringInstruction_PhraseTemplate_WithoutADesignNumber_LeavesTheIllustrationsPlaceToTheModel()
+    {
+        ArtworkPromptRules.LetteringInstruction("Use the exact phrase \"{subject}\".")
+            .Should().Contain("set around the lettering (above it, below it or framing it), without covering any letter");
+    }
+
+    [TestMethod]
+    [DataRow(0, "placed above the lettering", "above")]
+    [DataRow(1, "placed below the lettering", "below")]
+    [DataRow(2, "placed above the lettering", "above")]
+    [DataRow(5, "placed below the lettering", "below")]
+    public void LetteringInstruction_PhraseTemplate_GivesEachDesignTheNextPlaceForTheIllustration(int design, string wording, string name)
+    {
+        const string template = "Use the exact phrase \"{subject}\".";
+
+        ArtworkPromptRules.LetteringInstruction(template, design: design)
+            .Should().Contain($"that fits the theme, {wording}").And.Contain("without covering any letter")
+            .And.NotContain("above it, below it or framing it");
+        ArtworkPromptRules.IllustrationPlacement(template, ownPrompt: false, design).Should().Be(name);
+    }
+
+    [TestMethod]
+    public void IllustrationPlacement_IsLeftOpen_ForAPictureTemplate_TheSellersOwnPrompt_OrNoDesignNumber()
+    {
+        ArtworkPromptRules.IllustrationPlacement("A watercolor of {subject}.", ownPrompt: false, 0).Should().BeNull();
+        ArtworkPromptRules.IllustrationPlacement("A badge. " + PromptDefaultsResolver.CustomPhraseSentence, ownPrompt: true, 0).Should().BeNull();
+        ArtworkPromptRules.IllustrationPlacement("Use the exact phrase \"{subject}\".", ownPrompt: false, null).Should().BeNull();
+        ArtworkPromptRules.LetteringInstruction("A badge. " + PromptDefaultsResolver.CustomPhraseSentence, ownPrompt: true, design: 1)
+            .Should().NotContain("placed below");
     }
 
     [TestMethod]

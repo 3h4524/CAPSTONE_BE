@@ -71,7 +71,7 @@ public sealed class ApiKeyService(
             // which showed the user the same choice twice and stored the same id twice.
             new("gemini", "Google Gemini", true, ["Read models (connection check)", "List models (connection check)", "Model inference for listing content", "Generate design images (Nano Banana)"]),
             new("replicate", "Replicate", true, ["Read account (connection check)", "Run predictions for image generation"]),
-            new("ideogram", "Ideogram", true, ["Price a request without generating (connection check)", "Generate design images (Ideogram 4.0)", "Needs a payment method and credits"]),
+            new("ideogram", "Ideogram", true, ["Price a request without generating (connection check)", "Generate design images (Ideogram 4.0)", "Edit lifestyle images (Ideogram 4.5)", "Needs a payment method and credits"]),
             new("printify", "Printify", true, ["Read shops (connection check)", "Manage and publish products", "No order or payment access needed"]),
             new("etsy", "Etsy", false, ["Etsy requires an OAuth account connection; API key entry is not supported."])
         });

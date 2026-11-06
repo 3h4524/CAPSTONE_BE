@@ -301,7 +301,7 @@ public static class AiVideoPromptCompiler
             productContextPrompt = $"The same {productType} remains on the same model as in the opening image, with its visible design, colors, construction and proportions preserved.";
         var sceneGuidance = isProductOnModel ? null : SceneGuidance(template, productType, stableSingleImage);
         var personGuidance = template.RequiresLifestyle && !isProductOnModel
-            ? "Keep any adult already visible in the source recognizable and let them move naturally. Do not introduce additional people."
+            ? "Keep any person already visible in the source recognizable and let them move naturally. Do not introduce additional people."
             : null;
         var commonPrompt = isProductOnModel
             ? ProductOnModelGuardrail
@@ -723,13 +723,13 @@ public static class AiVideoPromptCompiler
 
         var ugc = new AiVideoTemplateDefinition("creator_pov_ugc", "Creator POV / UGC",
             "An authentic creator-style product demonstration with a phone-camera feel.", 3,
-            "Create an authentic creator-style product demonstration featuring the adult already visible in the approved source image. Use a realistic phone-camera aesthetic in {{FRAMING}}, {{CAMERA_ANGLE}} composition. The camera uses {{CAMERA_MOVEMENT}} with controlled micro-movement. The creator naturally presents the exact product toward the camera and avoids deliberately hiding its main design; natural hand overlap, folds, and perspective are allowed when product identity remains stable. {{LIGHTING}} Maintain candid UGC realism, accurate anatomy and stable product details. There is no dialogue, lip-sync or exaggerated performance. Create a {{DURATION}}-second shot.",
+            "Create an authentic creator-style product demonstration featuring the person already visible in the approved source image. Use a realistic phone-camera aesthetic in {{FRAMING}}, {{CAMERA_ANGLE}} composition. The camera uses {{CAMERA_MOVEMENT}} with controlled micro-movement. The creator naturally presents the exact product toward the camera and avoids deliberately hiding its main design; natural hand overlap, folds, and perspective are allowed when product identity remains stable. {{LIGHTING}} Maintain candid UGC realism, accurate anatomy and stable product details. There is no dialogue, lip-sync or exaggerated performance. Create a {{DURATION}}-second shot.",
             true, false, Settings(["medium_close", "close_up"], ["eye_level", "three_quarter"], ["locked", "push_in", "subtle_handheld"], ["minimal", "natural"], ["bright_clean", "warm_natural"]),
             new(TemplateCode: "creator_pov_ugc", DurationSeconds: 4, Framing: "close_up", CameraAngle: "eye_level", CameraMovement: "subtle_handheld", SubjectMotion: "natural", MotionIntensity: "subtle", Lighting: "bright_clean"));
 
         var story = new AiVideoTemplateDefinition("everyday_story_moment", "Everyday Story Moment",
             "A warm, grounded everyday scene centered on the product.", 3,
-            "Create a warm, emotionally grounded everyday moment centered on the adult already visible in the approved source image and the exact product. The person performs {{PRODUCT_ACTION}} while the camera observes with {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use a natural expression, restrained movement and intimate commercial storytelling. Keep product identity stable and recognizable whenever it is naturally visible; do not require artificial full visibility in every frame. Create a {{DURATION}}-second shot.",
+            "Create a warm, emotionally grounded everyday moment centered on the person or people already visible in the approved source image and the exact product. The person performs {{PRODUCT_ACTION}} while the camera observes with {{CAMERA_MOVEMENT}} from {{CAMERA_ANGLE}}, using {{FRAMING}}. {{LIGHTING}} Use a natural expression, restrained movement and intimate commercial storytelling. Keep product identity stable and recognizable whenever it is naturally visible; do not require artificial full visibility in every frame. Create a {{DURATION}}-second shot.",
             true, false, Settings(["wide", "medium", "medium_close"], ["eye_level", "three_quarter"], ["locked", "gentle_tracking", "push_in"], ["minimal", "natural"], ["warm_natural", "golden_hour", "moody_cinematic"]),
             new(TemplateCode: "everyday_story_moment", DurationSeconds: 4, Framing: "medium", CameraAngle: "eye_level", CameraMovement: "gentle_tracking", SubjectMotion: "natural", MotionIntensity: "subtle", Lighting: "golden_hour"));
 

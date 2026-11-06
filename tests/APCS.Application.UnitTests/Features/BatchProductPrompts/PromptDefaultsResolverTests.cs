@@ -37,9 +37,10 @@ public sealed class PromptDefaultsResolverTests
         return PromptDefaultsResolver.ResolveAsync(product, templates.Object, styles.Object, CancellationToken.None);
     }
 
-    private static Product Product(string? designText = null, string? keywords = "mountain, hiking shirt", string? niche = "Hikers") => new()
+    private static Product Product(string? designText = null, string? keywords = "mountain, hiking shirt", string? niche = "Hikers",
+        string name = "Minimalist Mountain Sunrise T-Shirt") => new()
     {
-        Id = Guid.NewGuid(), Name = "Minimalist Mountain Sunrise T-Shirt", ProductType = "tshirt",
+        Id = Guid.NewGuid(), Name = name, ProductType = "tshirt",
         DesiredDesignText = designText, MainKeywords = keywords, NicheCategory = niche
     };
 
@@ -161,11 +162,26 @@ public sealed class PromptDefaultsResolverTests
     }
 
     [TestMethod]
-    public async Task ResolveAsync_KeywordsAboutTheFeel_BecomeTheDefaultMood()
+    public async Task ResolveAsync_KeywordsAreUsedAsWritten_LessProductWords_AndSetNoMood()
     {
         var components = await ResolveAsync(Product(keywords: "funny camping, vintage hiking shirt, dog mom"), PictureTemplate);
 
-        components.Keywords.Should().Be("camping, hiking, dog");
-        components.MoodTone.Should().Be("playful, vintage feel");
+        components.Keywords.Should().Be("funny camping, vintage hiking, dog mom");
+        components.MoodTone.Should().BeEmpty("the feel stays in the keywords; the mood is the Seller's to add");
+    }
+
+    [TestMethod]
+    [DataRow("Plant Lady Market Tote", "Plant Lady Market")]
+    [DataRow("Vintage Camping Adventure T-Shirt 2", "Vintage Camping Adventure")]
+    [DataRow("White Classic Tee", "White Classic")]
+    [DataRow("Coffee Mug - Retro Diner", "Coffee - Retro Diner")]
+    [DataRow("Lighthouse Hoodie, Navy", "Lighthouse, Navy")]
+    [DataRow("Sunset Tote Bag", "Sunset")]
+    [DataRow("Route 66 Road Trip", "Route 66 Road Trip")]
+    [DataRow("Teeth Whitening Club", "Teeth Whitening Club")]
+    [DataRow("T-Shirt", "T-Shirt")]
+    public async Task ResolveAsync_ProductWordsAnywhereInTheName_AreLeftOutOfTheSubject(string name, string subject)
+    {
+        (await ResolveAsync(Product(name: name), PhraseTemplate)).Subject.Should().Be(subject);
     }
 }

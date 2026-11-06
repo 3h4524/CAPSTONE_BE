@@ -119,7 +119,7 @@ public static class DependencyInjection
         services.AddHttpClient("Ideogram", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "Api-Key" });
         // Every service takes all the image providers and picks one by name: design generation the one its job names,
-        // lifestyle mock-ups and AI Studio frames Gemini, the only provider that can combine images.
+        // lifestyle mock-ups Ideogram (precise edit) and AI Studio frames Gemini.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
@@ -154,6 +154,16 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddOptions<VideoQualityOptions>()
             .Bind(configuration.GetSection(VideoQualityOptions.SectionName));
+        services.AddOptions<DesignTextCheckOptions>()
+            .Bind(configuration.GetSection(DesignTextCheckOptions.SectionName));
+        // Wired in only when on: without the queue, design generation skips the text check and its lookups entirely.
+        if (configuration.GetValue<bool>($"{DesignTextCheckOptions.SectionName}:{nameof(DesignTextCheckOptions.Enabled)}"))
+        {
+            services.AddSingleton<IDesignTextReader, PaddleOcrDesignTextReader>();
+            services.AddSingleton<IDesignTextCheckQueue, APCS.Infrastructure.BackgroundServices.DesignTextCheckQueueChannel>();
+            services.AddScoped<APCS.Application.Features.DesignGeneration.DesignTextCheckService>();
+            services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignTextCheckWorker>();
+        }
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
         services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
@@ -295,6 +305,7 @@ public static class DependencyInjection
             .Validate(options => options.IsValid(), "PlanAiReview settings are out of range.")
             .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
+        services.AddSingleton<IClothesSegmenter, SegFormerClothesSegmenter>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();

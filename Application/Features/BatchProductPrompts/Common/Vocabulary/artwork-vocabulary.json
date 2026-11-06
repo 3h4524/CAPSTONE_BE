@@ -1,0 +1,18 @@
+{
+ "about": "The words ArtworkPromptRules.SplitKeywords takes out of a product's keywords: the product and its listing, which an image model would otherwise draw (a tote bag for \"market tote\"). Everything else in a keyword is sent as written. Words are matched case-insensitively, singular or plural.",
+ "productPhrases": {
+  "about": "Several words that together name the product or where it goes, one of which would be drawn on its own (the phone, the wall); taken out of a keyword before its words are looked at.",
+  "words": ["wall art", "phone case", "home decor"]
+ },
+ "productWords": {
+  "about": "The product, its sale or its listing rather than anything to draw.",
+  "words": [
+   "shirt", "tshirt", "tee", "hoodie", "sweatshirt", "sweater", "mug", "poster", "tote", "bag", "apparel", "clothing", "outfit",
+   "merch", "merchandise", "unisex", "streetwear", "decor", "gift", "present", "idea", "graphic", "design", "print"
+  ]
+ },
+ "fillerWords": {
+  "about": "Words that only join listing words (\"gift for her\"); dropped without being listed as left out.",
+  "words": ["for", "her", "him"]
+ }
+}

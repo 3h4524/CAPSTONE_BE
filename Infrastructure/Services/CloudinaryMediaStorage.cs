@@ -35,6 +35,14 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
     }
     public Task<byte[]> ReadImageAsync(string key, string? version, CancellationToken ct) =>
         clients.CreateClient("PrivateMedia").GetByteArrayAsync(SignRead(key, "image", version), ct);
+    public Task<byte[]> ReadPublicImageAsync(string key, CancellationToken ct) =>
+        clients.CreateClient("PrivateMedia").GetByteArrayAsync(Client.Api.UrlImgUp.Secure(true).Format("png").BuildUrl(PublicId(key)), ct);
+    // Only this account's images are fetched: the URL comes from a stored mock-up, never straight from a request.
+    public Task<byte[]> ReadCompositeAsync(string url, CancellationToken ct) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.Host == "res.cloudinary.com"
+            && uri.AbsolutePath.StartsWith($"/{options.Value.CloudName}/image/", StringComparison.Ordinal)
+            ? clients.CreateClient("PrivateMedia").GetByteArrayAsync(uri, ct)
+            : throw new InvalidOperationException("Not an image of this Cloudinary account.");
     public string SignRead(string key, string type, string? version = null, bool attachment = false) => Client.DownloadPrivate(
         PublicId(key), attachment: attachment, format: type == "image" ? "png" : type == "video" ? "mp4" : null,
         type: "authenticated", expiresAt: time.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds(), resourceType: type,
