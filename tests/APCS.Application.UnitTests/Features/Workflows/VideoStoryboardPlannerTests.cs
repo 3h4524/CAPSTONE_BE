@@ -49,7 +49,7 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    [DataRow(3)]
+    [DataRow(5)]
     [DataRow(13)]
     [DataRow(15)]
     public void Plan_FourScenes_DistributesAllFramesWithoutChangingDuration(int duration)
@@ -554,7 +554,8 @@ public sealed class VideoStoryboardPlannerTests
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
         var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 12,
-            AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id), new(MockupId: source.Id)], StandardOptions: new(Transition: transition));
+            AiScenes: [new(MockupId: source.Id, DurationSeconds: 4), new(MockupId: source.Id, DurationSeconds: 4),
+                new(MockupId: source.Id, DurationSeconds: 4)], StandardOptions: new(Transition: transition));
 
         var result = _planner.Plan(product, [source], config);
 
@@ -572,7 +573,8 @@ public sealed class VideoStoryboardPlannerTests
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8, AiScenes: [new(MockupId: source.Id), new(MockupId: source.Id)],
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
+            AiScenes: [new(MockupId: source.Id, DurationSeconds: 4), new(MockupId: source.Id, DurationSeconds: 4)],
             StandardOptions: new(Transition: "fade"));
 
         var withFade = _planner.Plan(product, [source], config).Value;

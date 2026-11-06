@@ -21,12 +21,14 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(66);
+        mappedTables.Should().HaveCount(77);
         mappedTables.Should().BeEquivalentTo(new[]
         {
-            "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
+            "ai_character_models", "ai_prompts", "api_keys", "api_usage_records", "assistant_conversations",
+            "assistant_messages", "assistant_pending_actions", "audit_logs", "auth_tokens", "batches",
             "batch_jobs", "batch_job_logs", "batch_job_products", "design_images", "design_templates",
             "etsy_integrations", "etsy_upload_logs", "export_packages", "export_package_items", "invoices",
+            "features", "image_eval_runs",
             "listing_contents", "listing_descriptions", "listing_generation_history", "listing_tags",
             "listing_tag_items", "listing_titles", "market_listing_snapshots", "market_opportunities",
             "market_opportunity_evidence", "media_jobs", "mockup_images", "mockup_templates",
@@ -37,6 +39,7 @@ public sealed class DatabaseFirstModelTests
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
             "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
+            "plan_ai_reviews", "plan_settings", "subscription_feature_grants", "translation_entries", "usage_allowances",
             "rag_documents", "rag_chunks", "rag_embeddings"
         });
     }
