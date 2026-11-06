@@ -107,13 +107,13 @@ jobs:
         run: dotnet build Capstone.sln -c Release
 
       - name: Run integration tests
-        run: dotnet test Capstone.sln -c Release --no-build
+        run: dotnet test Capstone.sln -c Release --no-build -- --results-directory "$GITHUB_WORKSPACE/TestResults"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: backend-integration-results
-          path: "**/TestResults"
+          path: TestResults/**
           if-no-files-found: warn
           retention-days: 14
