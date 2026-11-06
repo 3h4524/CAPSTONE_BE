@@ -50,6 +50,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+builder.Services.AddAssistantRateLimiting();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
@@ -169,6 +170,7 @@ app.UseHttpsRedirection();
 app.UseCors("Frontend");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapHub<SupportHub>("/hubs/support");
 app.MapHub<NotificationHub>("/hubs/notification");

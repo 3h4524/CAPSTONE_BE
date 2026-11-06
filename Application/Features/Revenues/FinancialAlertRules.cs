@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using APCS.Application.Features.Revenues.Dtos;
+using APCS.Application.Features.Subscriptions.Common;
 
 namespace APCS.Application.Features.Revenues;
 
@@ -38,7 +39,14 @@ internal sealed record FinancialAlertInputs
     public string ForecastStatus { get; init; } = LinearRevenueForecast.StatusInsufficient;
     public decimal ForecastWeeklyTrend { get; init; }
     public decimal ForecastRSquared { get; init; }
+
+    // Per plan, over the selected period
+    public IReadOnlyList<PlanMrrInput> PlanMrr { get; init; } = [];
+    public IReadOnlyList<(string PlanName, PlanUsageGap Gap)> UsageGaps { get; init; } = [];
 }
+
+/// <summary>A plan's MRR at the start and end of the period, and how many of its customers stopped paying.</summary>
+internal sealed record PlanMrrInput(string PlanName, decimal Start, decimal End, int Left);
 
 /// <summary>
 /// Turns revenue figures into the alerts shown on the dashboard. An alert appears only when its
@@ -64,6 +72,9 @@ internal static class FinancialAlertRules
     /// <summary>A falling forecast is flagged only when the trend explains at least this much variance.</summary>
     public const decimal ForecastMinRSquared = 0.3m;
 
+    /// <summary>A plan's MRR falling by at least this percentage over the period is flagged.</summary>
+    public const decimal PlanMrrDropPercent = 3m;
+
     /// <summary>A checkout still awaiting payment after this long is considered stuck.</summary>
     public static readonly TimeSpan StuckCheckoutAge = TimeSpan.FromHours(24);
 
@@ -82,8 +93,8 @@ internal static class FinancialAlertRules
     {
         var alerts = new List<FinancialAlertDto>();
 
-        // Nothing bills a renewal automatically and nothing expires an unpaid plan, so an active
-        // subscription past its renewal date keeps its features without paying.
+        // Nothing bills a renewal automatically: a Seller pays each cycle with Renew now. A plan
+        // past its renewal date keeps working through the grace period, then expires.
         if (inputs.LapsedCount > 0)
         {
             alerts.Add(new FinancialAlertDto
@@ -92,7 +103,7 @@ internal static class FinancialAlertRules
                 Count = inputs.LapsedCount,
                 Type = "danger",
                 Title = "Unpaid renewals",
-                Description = $"{Plural(inputs.LapsedCount, "active subscription")} passed the renewal date without a new payment (oldest {Plural(inputs.LapsedOldestDays, "day")} ago).",
+                Description = $"{Plural(inputs.LapsedCount, "subscription")} passed the renewal date without a new payment (oldest {Plural(inputs.LapsedOldestDays, "day")} ago). Each expires {Plural(RenewalRules.GraceDays, "day")} after its renewal date unless renewed.",
                 Amount = inputs.LapsedMonthlyValue,
                 AmountLabel = "per month at risk",
                 Scope = ScopeNow
@@ -108,11 +119,32 @@ internal static class FinancialAlertRules
                 Id = "revenue-drop",
                 Type = "danger",
                 Title = "Revenue dropped",
-                Description = $"Revenue is down {Math.Round(-change, 1)}% vs. the previous period.",
+                Description = FormattableString.Invariant($"Revenue is down {Math.Round(-change, 1)}% vs. the previous period."),
                 Amount = inputs.PreviousRevenue - inputs.CurrentRevenue,
                 AmountLabel = "less than before",
                 Scope = ScopePeriod
             });
+        }
+
+        // A plan can shrink while the total still grows, so each plan is checked on its own.
+        foreach (var plan in inputs.PlanMrr)
+        {
+            if (plan.Start > 0
+                && RevenueMath.PercentageChange(plan.End, plan.Start) is { } planChange
+                && planChange <= -PlanMrrDropPercent)
+            {
+                alerts.Add(new FinancialAlertDto
+                {
+                    Id = $"plan-mrr-falling-{Slug(plan.PlanName)}",
+                    Count = plan.Left,
+                    Type = "warning",
+                    Title = $"{plan.PlanName} MRR is falling",
+                    Description = FormattableString.Invariant($"{plan.PlanName} lost {Math.Round(-planChange, 1)}% of its MRR in the period; {Plural(plan.Left, "customer")} stopped paying."),
+                    Amount = plan.Start - plan.End,
+                    AmountLabel = "less per month",
+                    Scope = ScopePeriod
+                });
+            }
         }
 
         if (inputs.CurrentChurn is { } churn && inputs.PreviousChurn is { } previousChurn
@@ -123,7 +155,7 @@ internal static class FinancialAlertRules
                 Id = "churn-rising",
                 Type = "warning",
                 Title = "Churn rising",
-                Description = $"Monthly churn rose from {previousChurn}% to {churn}% (+{churn - previousChurn} pp).",
+                Description = FormattableString.Invariant($"Monthly churn rose from {previousChurn}% to {churn}% (+{churn - previousChurn} pp)."),
                 Scope = ScopePeriod
             });
         }
@@ -137,7 +169,7 @@ internal static class FinancialAlertRules
                 Count = inputs.FailedPaymentCount,
                 Type = "warning",
                 Title = "Failed payments",
-                Description = $"{Plural(inputs.FailedPaymentCount, "payment")} declined or expired unpaid — {Math.Round(inputs.FailedPaymentCount * 100m / attempts, 1)}% of attempts.",
+                Description = FormattableString.Invariant($"{Plural(inputs.FailedPaymentCount, "payment")} declined or expired unpaid — {Math.Round(inputs.FailedPaymentCount * 100m / attempts, 1)}% of attempts."),
                 Scope = ScopePeriod,
                 ActionStatus = "cancelled"
             });
@@ -168,7 +200,7 @@ internal static class FinancialAlertRules
                 Id = "refunds-high",
                 Type = "warning",
                 Title = "High refunds",
-                Description = $"Refunds equal {Math.Round(inputs.RefundedAmount * 100m / inputs.CurrentRevenue, 1)}% of revenue.",
+                Description = FormattableString.Invariant($"Refunds equal {Math.Round(inputs.RefundedAmount * 100m / inputs.CurrentRevenue, 1)}% of revenue."),
                 Amount = inputs.RefundedAmount,
                 AmountLabel = "refunded",
                 Scope = ScopePeriod,
@@ -200,7 +232,7 @@ internal static class FinancialAlertRules
                 Id = "forecast-down",
                 Type = "warning",
                 Title = "Forecast trending down",
-                Description = $"Weekly revenue is falling over the last 26 weeks (R² = {inputs.ForecastRSquared:0.00}).",
+                Description = FormattableString.Invariant($"Weekly revenue is falling over the last 26 weeks (R² = {inputs.ForecastRSquared:0.00})."),
                 Amount = -inputs.ForecastWeeklyTrend,
                 AmountLabel = "less each week",
                 Scope = "Last 26 weeks"
@@ -215,9 +247,24 @@ internal static class FinancialAlertRules
                 Id = "plan-concentration",
                 Type = "purple",
                 Title = "Revenue depends on one plan",
-                Description = $"{inputs.TopPlanName} earns {Math.Round(inputs.TopPlanRevenue * 100m / inputs.CurrentRevenue, 1)}% of revenue.",
+                Description = FormattableString.Invariant($"{inputs.TopPlanName} earns {Math.Round(inputs.TopPlanRevenue * 100m / inputs.CurrentRevenue, 1)}% of revenue."),
                 Scope = ScopePeriod
             });
+        }
+
+        foreach (var (planName, gap) in inputs.UsageGaps)
+        {
+            if (gap.StayedRate - gap.LeftRate >= PlanUsageSignals.AlertGapPoints)
+            {
+                alerts.Add(new FinancialAlertDto
+                {
+                    Id = $"plan-usage-gap-{Slug(planName)}",
+                    Type = "purple",
+                    Title = $"{planName} leavers skipped a feature",
+                    Description = FormattableString.Invariant($"Only {gap.LeftRate}% of the {planName} customers who left used {gap.Label}, against {gap.StayedRate}% of those who stayed."),
+                    Scope = ScopePeriod
+                });
+            }
         }
 
         if (inputs.RenewalsDueCount > 0)
@@ -253,4 +300,8 @@ internal static class FinancialAlertRules
     }
 
     private static string Plural(int count, string noun) => $"{count} {noun}{(count == 1 ? "" : "s")}";
+
+    // A plan's name made safe for an alert id, which the client keeps to know what it has seen.
+    private static string Slug(string planName) =>
+        System.Text.RegularExpressions.Regex.Replace(planName.Trim().ToLowerInvariant(), "[^a-z0-9]+", "-").Trim('-');
 }

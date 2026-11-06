@@ -12,11 +12,12 @@ namespace APCS.Api.UnitTests.Controllers;
 public sealed class AdminDashboardControllerTests
 {
     private readonly Mock<IAdminDashboardService> _serviceMock = new();
+    private readonly Mock<IAdminOperationsService> _operationsServiceMock = new();
     private readonly AdminDashboardController _controller;
 
     public AdminDashboardControllerTests()
     {
-        _controller = new AdminDashboardController(_serviceMock.Object);
+        _controller = new AdminDashboardController(_serviceMock.Object, _operationsServiceMock.Object);
     }
 
     [TestMethod]
@@ -24,7 +25,6 @@ public sealed class AdminDashboardControllerTests
     {
         var metrics = new AdminDashboardMetricsDto(
             100, 50, 5000m, 2000m, 10, 5,
-            new List<MonthlyRevenueDto>(),
             new List<SupportTicketDto>(),
             new List<BatchJobDto>()
         );

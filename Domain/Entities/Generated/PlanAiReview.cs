@@ -25,6 +25,10 @@ public partial class PlanAiReview
 
     public string? ErrorMessage { get; set; }
 
+    public string? RawAnswer { get; set; }
+
+    public string? DroppedParts { get; set; }
+
     public Guid? TriggeredBy { get; set; }
 
     public DateTime GeneratedAt { get; set; }

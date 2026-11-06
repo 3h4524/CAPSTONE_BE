@@ -13,7 +13,14 @@ public sealed class GeminiTextGenerationProvider(
 {
     private static readonly TimeSpan OverloadRetryDelay = TimeSpan.FromSeconds(3);
 
+    private static readonly JsonSerializerOptions RequestJson = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
     private readonly GeminiTextGenerationOptions settings = options.Value;
+
+    public bool IsConfigured => settings.IsConfigured;
 
     public async Task<GeminiTextGenerationResult> GenerateAsync(
         GeminiTextGenerationRequest request,
@@ -35,10 +42,13 @@ public sealed class GeminiTextGenerationProvider(
 
         // Google answers 503, or does not answer at all, while a model is overloaded. Nothing is generated or
         // charged then, so the request moves on: once to the fallback model, then one more try after a pause.
-        var fallback = string.IsNullOrWhiteSpace(settings.FallbackModel) ? settings.Model : settings.FallbackModel;
-        string[] models = [settings.Model, fallback, fallback];
+        var primary = request.Model ?? settings.Model;
+        var configuredFallback = request.FallbackModel ?? settings.FallbackModel;
+        var fallback = string.IsNullOrWhiteSpace(configuredFallback) ? primary : configuredFallback;
+        string[] models = [primary, fallback, fallback];
         GenerateContentResponse? payload = null;
-        var model = settings.Model;
+        var model = primary;
+        var attemptTimeoutSeconds = request.AttemptTimeout ?? TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds);
         for (var attempt = 0; ; attempt++)
         {
             model = models[attempt];
@@ -55,12 +65,13 @@ public sealed class GeminiTextGenerationProvider(
                 generationConfig = new
                 {
                     temperature = request.Temperature ?? settings.Temperature,
-                    responseMimeType = "application/json"
+                    responseMimeType = "application/json",
+                    responseSchema = request.ResponseSchema
                 }
-            });
+            }, options: RequestJson);
 
             using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            attemptTimeout.CancelAfter(TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds));
+            attemptTimeout.CancelAfter(attemptTimeoutSeconds);
             try
             {
                 using var response = await httpClient.SendAsync(httpRequest, attemptTimeout.Token);

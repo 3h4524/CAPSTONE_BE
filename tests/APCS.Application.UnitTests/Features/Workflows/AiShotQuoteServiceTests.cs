@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.AI;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.BatchMockups.Common;
@@ -283,7 +284,7 @@ public sealed class AiShotQuoteServiceTests
             .Callback<AiShotQuoteClaims>(claims => context.Claims = claims).Returns("signed-quote");
         signer.Setup(x => x.Read("signed-quote")).Returns(() => context.Claims);
         context.Service = new AiShotQuoteService(user.Object, fixture.Runs.Object, fixture.Nodes.Object, fixture.Jobs.Object,
-            videoCredentials.Object, fixture.Runtime, signer.Object, fixture.Time);
+            videoCredentials.Object, fixture.Runtime, signer.Object, fixture.Time, TestEntitlements.AllowAll());
         return context;
     }
 

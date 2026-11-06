@@ -4,8 +4,10 @@ using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.ListingContent.Common;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -30,7 +32,8 @@ public sealed class ListingContentService(
     IGeminiTextGenerationProvider generator,
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
-    ILogger<ListingContentService> logger) : IListingContentService
+    ILogger<ListingContentService> logger,
+    IPlanEntitlementService entitlements) : IListingContentService
 {
     public async Task<Result<ListingContentResponseDto>> GenerateAsync(
         Guid productId,
@@ -45,6 +48,24 @@ public sealed class ListingContentService(
             .SingleOrDefaultAsync(cancellationToken);
         if (product is null)
             return Result.Failure<ListingContentResponseDto>(Error.NotFound("ListingContent.ProductNotFound", "The product was not found."));
+
+        // Listing content is a plan feature, and so is writing a listing again; the Admin sets which plans have them.
+        var listingCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.WorkflowListing, cancellationToken);
+        if (listingCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(listingCheck.Error);
+        var isRegeneration = seoFeedback is not null
+            || await listings.Query().AnyAsync(item => item.ProductId == productId, cancellationToken);
+        if (isRegeneration)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.ListingRegenerate, cancellationToken);
+            if (planCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(planCheck.Error);
+        }
+        // Free, the trial and a plan with a monthly listing limit (such as Starter) count every listing,
+        // regenerations included.
+        var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Listings, cancellationToken: cancellationToken);
+        if (allowance.IsFailure) return Result.Failure<ListingContentResponseDto>(allowance.Error);
+        // Listings run on the platform's Gemini key, so they count toward the daily safety cap.
+        var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyListingCap, cancellationToken: cancellationToken);
+        if (capCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(capCheck.Error);
 
         var input = new ListingContentInput(
             product.Id,
@@ -100,7 +121,7 @@ public sealed class ListingContentService(
         var usageRecord = new ApiUsageRecord
         {
             Id = Guid.NewGuid(), UserId = userId, ProductId = productId,
-            Provider = "gemini", Feature = "listing",
+            Provider = "gemini", Feature = UsageFeatures.Listing,
             ModelName = generated.Model, ProviderRequestId = generated.ProviderRequestId,
             RequestUnits = 1, TokensInput = generated.InputTokens,
             TokensOutput = generated.OutputTokens, CostUsd = 0,
@@ -265,6 +286,9 @@ Regeneration rules:
             .SingleOrDefaultAsync(cancellationToken);
         if (product is null)
             return Result.Failure<ListingSeoScoreResponseDto>(Error.NotFound("ListingContent.ProductNotFound", "The product was not found."));
+
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.ListingRegenerate, cancellationToken);
+        if (planCheck.IsFailure) return Result.Failure<ListingSeoScoreResponseDto>(planCheck.Error);
 
         var listing = await listings.Query().Where(item => item.ProductId == productId).SingleOrDefaultAsync(cancellationToken);
         if (listing is null)

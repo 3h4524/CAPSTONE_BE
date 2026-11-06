@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -21,7 +22,7 @@ public interface IAiShotQuoteService
 
 public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<WorkflowNodeRun> nodes,
     IRepository<MediaJob> jobs, IAiVideoCredentialResolver videoCredentials, WorkflowRuntime runtime, IAiShotQuoteSigner signer,
-    TimeProvider time) : IAiShotQuoteService
+    TimeProvider time, IPlanEntitlementService entitlements) : IAiShotQuoteService
 {
     public async Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct)
     {
@@ -98,6 +99,8 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
     private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("Choose AI Shot to request a quote."));
+        var planCheck = await entitlements.RequireFeatureAsync(run.UserId, PlanFeatures.AiVideo, ct);
+        if (planCheck.IsFailure) return Result.Failure<(Storyboard, decimal, int)>(planCheck.Error);
         var planned = await runtime.PlanAsync(run, config, ct);
         if (planned.IsFailure) return Result.Failure<(Storyboard, decimal, int)>(planned.Error);
         var board = planned.Value;

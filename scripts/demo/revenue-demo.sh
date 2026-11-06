@@ -1,30 +1,34 @@
 #!/usr/bin/env bash
-# Starts a throwaway PostgreSQL in Docker and fills it with revenue demo data.
+# Starts a throwaway PostgreSQL in Docker and fills it with revenue demo data: 14 weeks of
+# customers, trials, subscriptions, invoices and what the customers made.
 #
 #   ./scripts/demo/revenue-demo.sh up       start the database, load schema + demo data (idempotent)
 #   ./scripts/demo/revenue-demo.sh reseed   delete the demo customers and generate them again
 #   ./scripts/demo/revenue-demo.sh down     stop the container and delete its data
 #
 # Safety: every write goes through `docker exec` into the demo container, so this script cannot
-# write to the team database. The team database is only read, inside a read-only transaction, to
-# copy the plans, the roles and the admin accounts, so admins can sign in with their usual password
-# and the plan names and prices match production.
+# write to the team database. The team database is only read: its schema (pg_dump --schema-only),
+# and, inside a read-only transaction, the plans, the roles, the admin accounts and the system
+# mockup and video templates, so admins can sign in with their usual password and the plan names
+# and prices match production. The plan scripts of this branch are then applied to the demo copy.
 #
 # Run it from Git Bash on Windows.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCHEMA_SQL="${REPO_ROOT}/scripts/sql/000-bootstrap-schema.sql"
-SEED_SQL="${REPO_ROOT}/scripts/demo/seed-revenue-demo.sql"
+# Plan changes not yet on the team database, applied in this order; each is safe to run again.
+PLAN_SQLS=(subscription-entitlements plan-access-update plan-ai-reviews plan-feature-catalog subscription-feature-grants plan-base-features plan-settings)
+SEED_SQLS=(seed-revenue-demo seed-plan-insights-demo)
 
 CONTAINER="apcs-revenue-demo"
-VOLUME="apcs_revenue_demo_data"
+VOLUME="apcs_revenue_demo_data_v2"
 PORT="${DEMO_PG_PORT:-55460}"
 DB="apcs"
 DB_USER="apcs"
 DB_PASSWORD="apcs"
-IMAGE="postgres:18-alpine"
+# The RAG tables use the vector type.
+IMAGE="pgvector/pgvector:pg18"
 DEMO_CONNECTION="Host=localhost;Port=${PORT};Database=${DB};Username=${DB_USER};Password=${DB_PASSWORD}"
 
 say() { printf '\033[1;34m[demo]\033[0m %s\n' "$*"; }
@@ -71,10 +75,14 @@ load_schema() {
     ok "schema already loaded (${tables} tables)"
     return
   fi
-  say "loading schema"
-  # pg_dump 18 wraps the dump in \restrict/\unrestrict, which the server cannot parse.
-  grep -v '^\\' "${SCHEMA_SQL}" | demo_psql >/dev/null
-  ok "schema loaded"
+  [ -f "${REPO_ROOT}/.env" ] || die "no .env found: the schema is copied from the team database."
+  say "copying the schema from the team database"
+  demo_psql -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+  # pg_dump 18 wraps the dump in \restrict/\unrestrict, which the server cannot parse, and the
+  # public schema already exists.
+  team_db_docker pg_dump --schema-only --no-owner --no-privileges --schema=public \
+    | grep -v '^[\]' | grep -v '^CREATE SCHEMA public;' | demo_psql >/dev/null
+  ok "schema loaded ($(demo_scalar "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'") tables)"
 }
 
 # Reads ConnectionStrings__DefaultConnection from .env without ever printing it.
@@ -84,15 +92,21 @@ team_db_part() {
   printf '%s' "${cs}" | tr ';' '\n' | grep -i "^$1=" | head -n1 | cut -d= -f2-
 }
 
-copy_from_team_db() {
-  local query="$1" target="$2"
+# Runs a PostgreSQL client tool (psql, pg_dump) against the team database.
+team_db_docker() {
+  local tool="$1"; shift
   local host db user password
   host="$(team_db_part Host)"; db="$(team_db_part Database)"
   user="$(team_db_part Username)"; [ -n "${user}" ] || user="$(team_db_part 'User Id')"
   password="$(team_db_part Password)"
 
   docker run --rm -i -e PGPASSWORD="${password}" -e PGSSLMODE=require "${IMAGE}" \
-    psql -v ON_ERROR_STOP=1 -q -h "${host}" -U "${user}" -d "${db}" \
+    "${tool}" -h "${host}" -U "${user}" -d "${db}" "$@"
+}
+
+copy_from_team_db() {
+  local query="$1" target="$2"
+  team_db_docker psql -v ON_ERROR_STOP=1 -q \
       -c "SET default_transaction_read_only = on" \
       -c "\\copy (${query}) TO STDOUT" \
     | demo_psql -c "\\copy ${target} FROM STDIN"
@@ -121,29 +135,31 @@ copy_reference_data() {
   copy_from_team_db \
     "SELECT ur.user_id, ur.role_id, ur.granted_at FROM user_roles ur JOIN roles r ON r.id = ur.role_id JOIN users u ON u.id = ur.user_id WHERE r.code = 'Admin' AND ur.revoked_at IS NULL AND u.deleted_at IS NULL" \
     "user_roles (user_id, role_id, granted_at)"
-  ok "copied $(demo_scalar "SELECT count(*) FROM subscription_plans") plans and $(demo_scalar "SELECT count(*) FROM users") admin accounts"
+  # The demo products need a system mockup template and a video template.
+  copy_from_team_db "SELECT * FROM mockup_templates WHERE user_id IS NULL" "mockup_templates"
+  copy_from_team_db "SELECT * FROM video_templates" "video_templates"
+  ok "copied $(demo_scalar "SELECT count(*) FROM subscription_plans") plans, $(demo_scalar "SELECT count(*) FROM users") admin accounts and $(demo_scalar "SELECT count(*) FROM mockup_templates") mockup templates"
 }
 
-delete_demo_customers() {
-  say "deleting demo customers"
-  demo_psql <<'SQL'
-BEGIN;
-DELETE FROM invoices WHERE user_id IN (SELECT id FROM users WHERE email LIKE '%@apcs-demo.local');
-DELETE FROM subscriptions WHERE user_id IN (SELECT id FROM users WHERE email LIKE '%@apcs-demo.local');
-DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email LIKE '%@apcs-demo.local');
-DELETE FROM users WHERE email LIKE '%@apcs-demo.local';
-COMMIT;
-SQL
+apply_plan_scripts() {
+  say "applying the plan scripts"
+  for name in "${PLAN_SQLS[@]}"; do
+    demo_psql < "${REPO_ROOT}/scripts/sql/${name}.sql" >/dev/null
+    ok "${name}.sql"
+  done
 }
 
+# seed-revenue-demo.sql removes the demo customers of an earlier run and everything they own.
 seed() {
-  if [ "$(demo_scalar "SELECT count(*) FROM users WHERE email LIKE '%@apcs-demo.local'")" -gt 0 ]; then
+  if [ "${1:-}" != "force" ] && [ "$(demo_scalar "SELECT count(*) FROM users WHERE email LIKE '%@apcs-demo.local'")" -gt 0 ]; then
     ok "demo customers already present (use 'reseed' to regenerate)"
     return
   fi
-  say "generating demo customers, subscriptions and invoices"
-  demo_psql < "${SEED_SQL}"
-  ok "$(demo_scalar "SELECT count(*) FROM users WHERE email LIKE '%@apcs-demo.local'") customers, $(demo_scalar "SELECT count(*) FROM invoices") invoices"
+  say "generating 14 weeks of demo customers, trials, subscriptions, invoices and usage"
+  for name in "${SEED_SQLS[@]}"; do
+    demo_psql < "${REPO_ROOT}/scripts/demo/${name}.sql"
+  done
+  ok "$(demo_scalar "SELECT count(*) FROM users WHERE email LIKE '%@apcs-demo.local'") customers, $(demo_scalar "SELECT count(*) FROM invoices") invoices, $(demo_scalar "SELECT count(*) FROM products") products"
 }
 
 print_usage_hint() {
@@ -165,13 +181,13 @@ case "${1:-up}" in
     start_container
     load_schema
     copy_reference_data
+    apply_plan_scripts
     seed
     print_usage_hint
     ;;
   reseed)
     start_container
-    delete_demo_customers
-    seed
+    seed force
     ;;
   down)
     say "removing ${CONTAINER} and its data"

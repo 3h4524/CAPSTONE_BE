@@ -58,6 +58,39 @@ internal static class SubscriptionErrors
             "You do not have an active paid plan to change. Please choose a plan to buy instead.",
             ErrorType.Validation);
 
+    public static Error TrialAlreadyUsed() =>
+        new(
+            ErrorCodes.SubscriptionTrialAlreadyUsed,
+            "Your account already used its free Pro trial. Choose a plan to continue.",
+            ErrorType.Validation);
+
+    public static Error TrialNotAvailableWithPlan() =>
+        new(
+            ErrorCodes.SubscriptionTrialNotAvailableWithPlan,
+            "The free trial is only for accounts without a plan.",
+            ErrorType.Validation);
+
+    public static Error TrialPlanUnavailable() =>
+        Error.NotFound(ErrorCodes.SubscriptionTrialPlanUnavailable, "The Pro plan is not available for a trial right now.");
+
+    public static Error NothingToRenew() =>
+        new(
+            ErrorCodes.SubscriptionNothingToRenew,
+            "You do not have a paid plan to renew. Please choose a plan to buy instead.",
+            ErrorType.Validation);
+
+    public static Error RenewalNotDue(DateOnly opensOn) =>
+        new(
+            ErrorCodes.SubscriptionRenewalNotDue,
+            $"Your plan is paid until later. You can renew from {opensOn:MMM d, yyyy}.",
+            ErrorType.Validation);
+
+    public static Error RenewBeforeUpgrade() =>
+        new(
+            ErrorCodes.SubscriptionRenewBeforeUpgrade,
+            "Your plan's renewal payment is overdue. Renew it first, then upgrade.",
+            ErrorType.Validation);
+
     public static Error TargetNotHigherTier() =>
         new(
             ErrorCodes.SubscriptionTargetNotHigherTier,

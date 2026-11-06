@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
@@ -10,6 +11,7 @@ using APCS.Application.Abstractions.VideoQuality;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Features.Admin.SubscriptionPlans;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Features.Subscriptions;
@@ -138,7 +140,9 @@ public static class DependencyInjection
             provider.GetRequiredService<IHttpClientFactory>(), provider.GetRequiredService<ILogger<MiniMaxVideoProvider>>(), true));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
+        services.AddSingleton<IPlanAiReviewQueue, APCS.Infrastructure.BackgroundServices.PlanAiReviewQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
+        services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -158,6 +162,19 @@ public static class DependencyInjection
             if (string.IsNullOrWhiteSpace(options.ApiKey))
                 options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
         });
+        services.AddOptions<AssistantOptions>()
+            .Bind(configuration.GetSection(AssistantOptions.SectionName))
+            .ValidateDataAnnotations();
+        services.PostConfigure<AssistantOptions>(options =>
+        {
+            if (!options.HasApiKeys)
+                options.ApiKeys = configuration.GetOptionalStringArray($"{AssistantOptions.SectionName}:{nameof(AssistantOptions.ApiKeys)}");
+            if (string.IsNullOrWhiteSpace(options.ApiKey) && !options.HasApiKeys)
+                options.ApiKey = FirstConfigured(
+                    configuration[$"{GeminiTextGenerationOptions.SectionName}:ApiKey"],
+                    configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
+        });
+        services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
@@ -184,10 +201,14 @@ public static class DependencyInjection
         services.AddRepositories();
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.TrialExpiryJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.PlanAiReviewJob>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.SubscriptionRenewalJob>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
 
@@ -209,6 +230,8 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
+        services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 
@@ -241,6 +264,21 @@ public static class DependencyInjection
         services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
         services.AddOptions<MockupOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Mockups));
+        // Optional: without the section Free and the Pro trial use the defaults on UsageAllowanceOptions.
+        services.AddOptions<APCS.Application.Features.Entitlements.UsageAllowanceOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Entitlements.UsageAllowanceOptions.SectionName))
+            .Validate(options => options.IsValid(), "UsageAllowances must not be negative.")
+            .ValidateOnStart();
+        // Optional: without the section the verdicts use the defaults on PlanVerdictOptions.
+        services.AddOptions<PlanVerdictOptions>()
+            .Bind(configuration.GetSection(PlanVerdictOptions.SectionName))
+            .Validate(options => options.IsValid(), "PlanInsights thresholds are out of range.")
+            .ValidateOnStart();
+        // Optional too: without the section the review uses the defaults on PlanAiReviewOptions.
+        services.AddOptions<APCS.Application.Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewOptions.SectionName))
+            .Validate(options => options.IsValid(), "PlanAiReview settings are out of range.")
+            .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
@@ -264,12 +302,26 @@ public static class DependencyInjection
         {
             var options = provider.GetRequiredService<IOptions<GeminiTextGenerationOptions>>().Value;
             client.BaseAddress = new Uri(options.Endpoint);
-            // Each attempt has its own, shorter limit (AttemptTimeoutSeconds); this only bounds the three of them together.
-            client.Timeout = TimeSpan.FromSeconds(3 * options.AttemptTimeoutSeconds + 30);
+            // Each of the three attempts has its own limit (AttemptTimeoutSeconds, or the request's own), so the
+            // client sets none: a fixed one here would cut off a caller that allows its attempts longer.
+            client.Timeout = Timeout.InfiniteTimeSpan;
         });
-        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddOptions<RagCacheOptions>()
+            .Bind(configuration.GetSection(RagCacheOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IRagEmbeddingProvider>(provider => new MemoizedEmbeddingProvider(
+            provider.GetRequiredService<GeminiEmbeddingProvider>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<MemoizedEmbeddingProvider>>()));
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
-        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<RagService>();
+        services.AddScoped<IRagService>(provider => new CachedRagSearchService(
+            provider.GetRequiredService<RagService>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<CachedRagSearchService>>()));
         services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
         services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
         services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();
@@ -300,4 +352,7 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static string FirstConfigured(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 }

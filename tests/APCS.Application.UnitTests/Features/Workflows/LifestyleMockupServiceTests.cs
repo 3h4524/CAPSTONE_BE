@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.AI;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
@@ -130,7 +131,7 @@ public sealed class LifestyleMockupServiceTests
         ideogram.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
         var service = new LifestyleMockupService(current.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object, keys.Object,
             credentials.Object, [ideogram.Object, provider.Object], fixture.Storage.Object, fixture.MockupService, fixture.Unit.Object,
-            fixture.Time, NullLogger<LifestyleMockupService>.Instance);
+            fixture.Time, NullLogger<LifestyleMockupService>.Instance, TestEntitlements.AllowAll());
         // Picking Gemini reads its name; checked here, so a test can still verify nothing else was asked of it.
         provider.VerifyGet(x => x.Provider);
         return service;

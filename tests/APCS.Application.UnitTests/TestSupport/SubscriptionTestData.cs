@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Features.Entitlements;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Subscriptions;
 using APCS.Application.Features.Subscriptions.Common;
@@ -6,6 +7,7 @@ using APCS.Application.Features.Subscriptions.Dtos.Request;
 using APCS.Domain.Entities;
 using FluentValidation;
 using FluentValidation.Results;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
@@ -175,7 +177,9 @@ internal static class SubscriptionTestData
         TimeProvider? timeProvider = null,
         Mock<IValidator<CheckoutRequestDto>>? checkoutValidator = null,
         Mock<IValidator<UpgradeRequestDto>>? upgradeValidator = null,
-        Mock<IValidator<DowngradeRequestDto>>? downgradeValidator = null) =>
+        Mock<IValidator<DowngradeRequestDto>>? downgradeValidator = null,
+        IPlanEntitlementService? entitlements = null,
+        IPlanSettings? planSettings = null) =>
         new(
             (subscriptions ?? new Mock<ISubscriptionRepository>()).Object,
             (plans ?? new Mock<IPlanRepository>()).Object,
@@ -189,7 +193,11 @@ internal static class SubscriptionTestData
             timeProvider ?? CreateTimeProvider(),
             (checkoutValidator ?? CreatePassingValidator<CheckoutRequestDto>()).Object,
             (upgradeValidator ?? CreatePassingValidator<UpgradeRequestDto>()).Object,
-            (downgradeValidator ?? CreatePassingValidator<DowngradeRequestDto>()).Object);
+            (downgradeValidator ?? CreatePassingValidator<DowngradeRequestDto>()).Object,
+            entitlements ?? TestEntitlements.AllowAll(),
+            new TestFeatureCatalog(),
+            planSettings ?? new TestPlanSettings(),
+            NullLogger<SubscriptionService>.Instance);
 
     private static Mock<IInvoicePdfRenderer> DefaultInvoicePdfRenderer()
     {

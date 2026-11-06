@@ -2348,6 +2348,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
+            entity.Property(e => e.DroppedParts).HasColumnName("dropped_parts");
             entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
             entity.Property(e => e.GeneratedAt)
                 .HasDefaultValueSql("now()")
@@ -2355,6 +2356,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.InputJson)
                 .HasColumnType("jsonb")
                 .HasColumnName("input_json");
+            entity.Property(e => e.RawAnswer).HasColumnName("raw_answer");
             entity.Property(e => e.InputTokens).HasColumnName("input_tokens");
             entity.Property(e => e.Model)
                 .HasMaxLength(100)
