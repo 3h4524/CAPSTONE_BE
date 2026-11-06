@@ -161,7 +161,7 @@ public sealed class VideoMediaControllerTests
         var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
             Mock.Of<IVideoPlanningService>(), service.Object, Mock.Of<IAiStudioFrameService>());
 
-        var result = (await controller.GenerateLifestyle(productId, garmentId, file, cancellation.Token))
+        var result = (await controller.GenerateLifestyle(productId, garmentId, file, null, cancellation.Token))
             .Should().BeOfType<ObjectResult>().Subject;
 
         result.StatusCode.Should().Be(StatusCodes.Status201Created);
@@ -180,11 +180,41 @@ public sealed class VideoMediaControllerTests
         var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
             Mock.Of<IVideoPlanningService>(), service.Object, Mock.Of<IAiStudioFrameService>());
 
-        var result = (await controller.GenerateLifestyle(Guid.NewGuid(), Guid.NewGuid(), file, CancellationToken.None))
+        var result = (await controller.GenerateLifestyle(Guid.NewGuid(), Guid.NewGuid(), file, null, CancellationToken.None))
             .Should().BeOfType<ObjectResult>().Subject;
 
         result.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
         result.Value.Should().BeOfType<ProblemDetails>().Which.Title.Should().Be("Use a static image.");
+    }
+
+    [TestMethod]
+    public async Task GenerateLifestyle_ModelPhotoInsteadOfAFile_DressesTheLibraryPhoto()
+    {
+        var productId = Guid.NewGuid(); var garmentId = Guid.NewGuid(); var modelPhotoId = Guid.NewGuid();
+        var generated = VideoWorkflowTestData.Mockup();
+        var service = new Mock<ILifestyleMockupService>(MockBehavior.Strict);
+        service.Setup(x => x.GenerateFromModelPhotoAsync(productId, garmentId, modelPhotoId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(generated));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), service.Object, Mock.Of<IAiStudioFrameService>());
+
+        var result = (await controller.GenerateLifestyle(productId, garmentId, null, modelPhotoId, CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Subject;
+
+        result.StatusCode.Should().Be(StatusCodes.Status201Created);
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task GenerateLifestyle_NeitherAFileNorAModelPhoto_IsABadRequest()
+    {
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(MockBehavior.Strict), Mock.Of<IAiStudioFrameService>());
+
+        var result = (await controller.GenerateLifestyle(Guid.NewGuid(), Guid.NewGuid(), null, null, CancellationToken.None))
+            .Should().BeOfType<ObjectResult>().Subject;
+
+        result.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
     }
 
     [TestMethod]

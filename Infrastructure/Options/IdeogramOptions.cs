@@ -43,11 +43,34 @@ public sealed class IdeogramOptions
         _ => 0.06m
     };
 
+    /// <summary>Where an image is edited with reference images (the lifestyle image); the edit model is appended.</summary>
+    public string EditEndpoint { get; set; } = "https://api.ideogram.ai/v2/image/precise-edit/";
+
+    /// <summary>The model that edits an image with reference images.</summary>
+    public string EditModel { get; set; } = "ideogram-4-5";
+
+    /// <summary>
+    /// "very_low", "low", "medium" or "high": the quality of an edit, and what it costs ($0.008, $0.03, $0.06, $0.22).
+    /// Low costs half of medium; medium keeps the cut of the garment on a lifestyle image a little closer to its mock-up.
+    /// </summary>
+    public string EditQuality { get; set; } = "low";
+
+    /// <summary>The price recorded for one edit when Ideogram does not report what it charged.</summary>
+    public decimal EditCostPerImageUsd => EditQuality.Trim().ToLowerInvariant() switch
+    {
+        "very_low" => 0.008m,
+        "low" => 0.03m,
+        "high" => 0.22m,
+        _ => 0.06m
+    };
+
     /// <summary>
     /// How many images of one job are requested from Ideogram at the same time. Ideogram allows 10 in flight per
-    /// account; images also download and upload alongside, which a slow connection does not keep up with.
+    /// account; two are left for anything else running on the same key (a request over the limit is retried after a
+    /// pause, so an overlap only slows things down). Images also download and upload alongside, which a slow
+    /// connection may not keep up with; lower it there.
     /// </summary>
-    public int MaxConcurrentImages { get; set; } = 4;
+    public int MaxConcurrentImages { get; set; } = 8;
 
     /// <summary>How often an image being made is asked about.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(2);
