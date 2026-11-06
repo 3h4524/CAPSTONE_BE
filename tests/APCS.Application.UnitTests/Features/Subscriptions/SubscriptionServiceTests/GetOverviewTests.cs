@@ -85,7 +85,7 @@ public sealed class GetOverviewTests
     }
 
     [TestMethod]
-    public async Task GetOverviewAsync_WhenAQuotaReaches100Percent_MarksItAsWarning()
+    public async Task GetOverviewAsync_WithUsageAtTheOldQuota_ReportsUsageWithoutAWarning()
     {
         var starter = SubscriptionTestData.CreateStarterPlan();
         var activeSubscription = SubscriptionTestData.CreateActiveSubscription(starter);
@@ -122,9 +122,11 @@ public sealed class GetOverviewTests
 
         var result = await service.GetOverviewAsync(CancellationToken.None);
 
+        // Plans have no monthly quotas: usage is reported, never warned about.
         var imageQuota = result.Value.UsageQuotas.Single(quota => quota.QuotaCode == "image_generation");
-        imageQuota.PercentUsed.Should().Be(100);
-        imageQuota.IsWarning.Should().BeTrue();
+        imageQuota.Used.Should().Be(starter.ImageGenerationQuota);
+        imageQuota.PercentUsed.Should().Be(0);
+        imageQuota.IsWarning.Should().BeFalse();
     }
 
     [TestMethod]
@@ -153,6 +155,40 @@ public sealed class GetOverviewTests
         result.Value.HasActivePaidPlan.Should().BeTrue();
         result.Value.AvailablePlans.Single(plan => plan.PlanId == starter.Id).IsCurrentPlan.Should().BeTrue();
         result.Value.AvailablePlans.Single(plan => plan.PlanId == pro.Id).IsCurrentPlan.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GetOverviewAsync_PricesPlansSubscriptionAndInvoicesInVndAtThePayOsRate()
+    {
+        var starter = SubscriptionTestData.CreateStarterPlan();
+        var pro = SubscriptionTestData.CreateProPlan();
+        var activeSubscription = SubscriptionTestData.CreateActiveSubscription(starter, "annual");
+        var invoice = SubscriptionTestData.CreatePendingInvoice(activeSubscription, orderCode: 1);
+
+        var subscriptions = new Mock<ISubscriptionRepository>();
+        subscriptions.Setup(candidate => candidate.GetActiveWithPlanAsync(SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(activeSubscription);
+
+        var plans = new Mock<IPlanRepository>();
+        plans.Setup(candidate => candidate.GetComparisonPlansAsync(starter.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([starter, pro]);
+
+        var invoices = new Mock<IInvoiceRepository>();
+        invoices.Setup(candidate => candidate.GetRecentWithPlanAsync(SubscriptionTestData.UserId, 3, It.IsAny<CancellationToken>()))
+            .ReturnsAsync([invoice]);
+
+        var service = SubscriptionTestData.CreateService(subscriptions, plans, invoices: invoices);
+
+        var result = await service.GetOverviewAsync(CancellationToken.None);
+
+        // Starter is $9.99 a month and $99.99 a year; Pro is $29.99 with no annual price.
+        var starterCard = result.Value.AvailablePlans.Single(plan => plan.PlanId == starter.Id);
+        starterCard.MonthlyPriceVnd.Should().Be(249_750m);
+        starterCard.AnnualPriceVnd.Should().Be(2_499_750m);
+        result.Value.AvailablePlans.Single(plan => plan.PlanId == pro.Id).AnnualPriceVnd.Should().BeNull();
+        result.Value.CurrentSubscription!.PriceVnd.Should().Be(2_499_750m);
+        result.Value.CurrentSubscription.RenewalPriceVnd.Should().Be(2_499_750m);
+        result.Value.RecentInvoices.Single().TotalAmountVnd.Should().Be(249_750m);
     }
 
     [TestMethod]

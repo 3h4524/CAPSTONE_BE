@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using APCS.Application.UnitTests.TestSupport;
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
@@ -85,7 +86,7 @@ internal sealed class WorkflowTestData
             Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time);
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
-            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time);
+            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll());
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);

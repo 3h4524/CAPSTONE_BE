@@ -1,8 +1,10 @@
 using System.Net;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.ListingContent;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -88,7 +90,29 @@ public sealed class ListingContentServiceTests
         generator.Setup(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeminiTextGenerationResult(text, "text-model", 10, 20, "request-1"));
 
-    private ListingContentService Service()
+    [TestMethod]
+    public async Task GenerateAsync_OnAPlanWithoutListingContent_IsLockedBeforeGeminiIsCalled()
+    {
+        var starter = TestEntitlements.Plan(features: new Dictionary<string, PlanFeatureValue> { [PlanFeatures.WorkflowListing] = new(false, null) });
+
+        var result = await Service(starter).GenerateAsync(product.Id);
+
+        result.Error.Code.Should().Be("Plan.FeatureLocked");
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_OnFreeWithItsListingsUsedUp_ReturnsAllowanceReached()
+    {
+        var free = TestEntitlements.Free();
+        free.AllowancesUsedUp.Add(UsageAllowances.Listings);
+
+        var result = await Service(free).GenerateAsync(product.Id);
+
+        result.Error.Code.Should().Be("Plan.AllowanceReached");
+    }
+
+    private ListingContentService Service(TestEntitlements? entitlements = null)
     {
         var user = new Mock<ICurrentUser>();
         user.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -99,9 +123,13 @@ public sealed class ListingContentServiceTests
         policy.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
         var listing = new Mock<IListingContextRetriever>();
         listing.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<string?>())).ReturnsAsync([]);
-        return new(user.Object, products.Object, Mock.Of<IRepository<ListingContentEntity>>(), Mock.Of<IRepository<ListingTitle>>(),
+        // No listing yet, so generating is a first listing rather than a regeneration.
+        var listings = new Mock<IRepository<ListingContentEntity>>();
+        listings.Setup(x => x.Query()).Returns(Array.Empty<ListingContentEntity>().AsQueryable().BuildMock());
+        return new(user.Object, products.Object, listings.Object, Mock.Of<IRepository<ListingTitle>>(),
             Mock.Of<IRepository<ListingDescription>>(), Mock.Of<IRepository<ListingTag>>(), Mock.Of<IRepository<ListingTagItem>>(),
             Mock.Of<IRepository<ListingGenerationHistory>>(), Mock.Of<IRepository<SeoScore>>(), Mock.Of<IRepository<ApiUsageRecord>>(),
-            policy.Object, listing.Object, generator.Object, unitOfWork.Object, TimeProvider.System, NullLogger<ListingContentService>.Instance);
+            Mock.Of<IRagService>(), policy.Object, listing.Object, generator.Object, unitOfWork.Object, TimeProvider.System, NullLogger<ListingContentService>.Instance,
+            entitlements ?? TestEntitlements.AllowAll());
     }
 }

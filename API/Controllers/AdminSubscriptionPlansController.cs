@@ -1,5 +1,6 @@
 using APCS.Api.Extensions;
 using APCS.Application.Features.Admin.SubscriptionPlans;
+using APCS.Application.Features.Admin.SubscriptionPlans.AiReview;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Request;
 using APCS.Application.Features.Admin.SubscriptionPlans.Dtos.Response;
 using APCS.Common.Constants;
@@ -15,8 +16,54 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Route("api/admin/subscription-plans")]
 [Authorize(Roles = AuthConstants.AdminRole)]
-public sealed class AdminSubscriptionPlansController(IAdminSubscriptionPlanService planService) : ControllerBase
+public sealed class AdminSubscriptionPlansController(
+    IAdminSubscriptionPlanService planService,
+    IPlanInsightsService insightsService,
+    IPlanAiReviewService aiReviewService) : ControllerBase
 {
+    /// <summary>
+    /// Gets the newest AI review of the paid plans, and when the next one is due.
+    /// </summary>
+    [HttpGet("ai-review")]
+    [ProducesResponseType(typeof(PlanAiReviewDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetAiReview(CancellationToken cancellationToken)
+    {
+        var result = await aiReviewService.GetAsync(cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Asks for a new AI review. It takes minutes, so this returns at once; poll GET ai-review
+    /// until isGenerating is false.
+    /// </summary>
+    [HttpPost("ai-review/regenerate")]
+    [ProducesResponseType(typeof(PlanAiReviewDto), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    public async Task<IActionResult> RegenerateAiReview(CancellationToken cancellationToken)
+    {
+        var result = await aiReviewService.RequestAsync(cancellationToken);
+
+        return result.IsSuccess ? Accepted(result.Value) : result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Gets the Plan Insights tab: feature adoption, usage, cost, trials and alerts per plan.
+    /// </summary>
+    [HttpGet("insights")]
+    [ProducesResponseType(typeof(PlanInsightsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<IActionResult> GetInsights(CancellationToken cancellationToken)
+    {
+        var result = await insightsService.GetAsync(cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
     /// <summary>
     /// Gets every plan tier for the Subscription Plans list (ADM-03).
     /// </summary>

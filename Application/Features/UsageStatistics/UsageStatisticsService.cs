@@ -41,7 +41,8 @@ public sealed class UsageStatisticsService(
         var costs = grouped.OrderByDescending(x => x.Cost).Select(x => new UsageCostRowDto(x.Provider, x.Service, x.Requests, x.Cost, total == 0 ? 0 : Math.Round(x.Cost / total * 100, 2))).ToArray();
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
         var period = await statistics.GetCurrentPeriodAsync(userId, today, cancellationToken);
-        var limit = subscription?.Plan.ApiCallQuota ?? 0;
+        // Plans differ by feature and have no monthly quota, so the allowance reports usage only.
+        var limit = 0;
         var used = period?.TotalApiCalls ?? usage.Sum(x => x.RequestUnits);
         var reset = subscription?.RenewalDate ?? today.AddMonths(1);
         var allowance = new UsageAllowanceDto(subscription?.Plan.Name ?? "No active plan", used, limit, limit == 0 ? 0 : Math.Round((decimal)used / limit * 100, 1), reset, Math.Max(0, reset.DayNumber - today.DayNumber), limit > 0 && used > limit);
@@ -49,5 +50,5 @@ public sealed class UsageStatisticsService(
     }
 
     private static int Count(IEnumerable<ApiUsageRecord> source, string term) => source.Count(x => x.Feature.Contains(term, StringComparison.OrdinalIgnoreCase));
-    private static string ServiceName(string feature) => feature.Contains("image", StringComparison.OrdinalIgnoreCase) ? "Image generation" : feature.Contains("video", StringComparison.OrdinalIgnoreCase) ? "Video rendering" : feature.Contains("list", StringComparison.OrdinalIgnoreCase) ? "Listing content" : feature;
+    private static string ServiceName(string feature) => feature == UsageFeatures.Mockup ? "Lifestyle mockups" : feature.Contains("image", StringComparison.OrdinalIgnoreCase) ? "Image generation" : feature.Contains("video", StringComparison.OrdinalIgnoreCase) ? "Video rendering" : feature.Contains("list", StringComparison.OrdinalIgnoreCase) ? "Listing content" : feature;
 }

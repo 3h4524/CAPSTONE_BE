@@ -150,7 +150,8 @@ public sealed class MockupTemplateProcessingTests
             new ApplyMockupTemplatesValidator(), new CreateMockupTemplateValidator(),
             new UpdateMockupTemplateValidator(), new GenerateMockupImageValidator(), new SaveMockupOverrideValidator(), new SaveMockupOverridesValidator(),
             new FakeTimeProvider(UtcNow),
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<MockupTemplateService>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MockupTemplateService>.Instance,
+            new AllowAllEntitlements());
     }
 
     private static (Guid BatchJobId, Guid TeeTemplateId, Guid MugTemplateId) SeedBatchJob(AppDbContext db)
