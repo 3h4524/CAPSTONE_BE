@@ -10,9 +10,21 @@ public sealed class OpportunityService(
     ICurrentUser currentUser,
     IRepository<SellerResearchProfile> profiles,
     IRepository<MarketOpportunity> opportunities,
+    IRepository<MarketListingSnapshot> snapshots,
+    IRepository<MarketOpportunityEvidence> evidence,
     IRepository<SellerOpportunity> sellerOpportunities,
+    IRepository<MarketQueryObservation> queryObservations,
     IUnitOfWork unitOfWork) : IOpportunityService
 {
+    /// <summary>
+    /// History read for the radar's market signals: long enough for the 28-day seasonality
+    /// check and several weekly trend comparisons, without loading every snapshot ever taken.
+    /// </summary>
+    private const int MarketHistoryDays = 90;
+
+    /// <summary>An opportunity card uses its niche's latest collection only if it is this recent.</summary>
+    private const int NicheSignalDays = 7;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> AllowedStates = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -54,12 +66,122 @@ public sealed class OpportunityService(
         return MapProfile(existing);
     }
 
+    public async Task<IReadOnlyList<SellerNicheMarketInsightResponse>> GetMarketInsightsAsync(
+        int limit = 12,
+        CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        limit = Math.Clamp(limit, 1, 50);
+        var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
+        var profileTerms = profile is null
+            ? []
+            : SellerMarketInsightCalculator.Tokenize(
+                Read(profile.PreferredCategories)
+                    .Concat(Read(profile.PreferredKeywords))
+                    .Concat(Read(profile.TargetAudiences)));
+
+        var historyStart = DbNow().AddDays(-MarketHistoryDays);
+        var rows = await snapshots.Query()
+            .Where(item => item.Platform == "etsy" && item.MatchedQuery != null && item.ObservedAt >= historyStart)
+            .ToListAsync(cancellationToken);
+        var supplyByQuery = await LoadSupplyAsync(DateOnly.FromDateTime(historyStart), cancellationToken);
+        MarketSupplySignal SupplyFor(string query) =>
+            supplyByQuery.GetValueOrDefault(MarketQueryKey.Normalize(query), MarketSupplySignal.Unknown);
+        var marketScoreRows = await opportunities.Query()
+            .Where(item => item.Platform == "etsy" && item.Status == "active")
+            .Select(item => new { item.Niche, item.MarketOpportunityScore })
+            .ToListAsync(cancellationToken);
+        var marketScores = marketScoreRows
+            .Where(item => !string.IsNullOrWhiteSpace(item.Niche))
+            .GroupBy(item => item.Niche.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => (double)group.Max(item => item.MarketOpportunityScore), StringComparer.OrdinalIgnoreCase);
+        var matchedGroups = rows
+            .GroupBy(item => item.MatchedQuery!.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .Select(group =>
+            {
+                var groupRows = group.ToArray();
+                return new
+                {
+                    Query = group.Key,
+                    Rows = groupRows,
+                    Metrics = SellerMarketInsightCalculator.Calculate(group.Key, groupRows, profileTerms, SupplyFor(group.Key))
+                };
+            })
+            .Where(item => profileTerms.Count == 0 || item.Metrics.RelevanceScore > 0)
+            .OrderByDescending(item => item.Metrics.RelevanceScore)
+            .ThenByDescending(item => item.Metrics.DistinctListingCount)
+            .Take(limit)
+            .ToArray();
+
+        if (matchedGroups.Length == 0)
+            return [];
+
+        var matchedQueries = matchedGroups.Select(item => item.Query).ToArray();
+        var matchedRows = matchedGroups
+            .SelectMany(item => item.Rows)
+            .GroupBy(item => new { ListingId = item.ExternalListingId.Trim(), item.ObservedAt })
+            .Select(group => group
+                .OrderByDescending(item => item.CollectedAt)
+                .ThenByDescending(item => item.Id)
+                .First())
+            .ToArray();
+        var relevanceScore = matchedGroups.Average(item => item.Metrics.RelevanceScore);
+        var niche = BuildNicheLabel(profile, matchedQueries);
+        var keywordInsights = matchedGroups
+            .Select(item => SellerNicheInsightCalculator.CalculateKeyword(
+                item.Query,
+                item.Rows,
+                marketScores.TryGetValue(item.Query, out var marketScore) ? marketScore : null,
+                profileTerms,
+                SupplyFor(item.Query)))
+            .OrderByDescending(item => item.KeywordScore)
+            .ThenBy(item => item.Keyword, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var nicheSupply = MarketSupplyCalculator.Combine(matchedQueries.Select(SupplyFor));
+        return [SellerNicheInsightCalculator.Calculate(niche, matchedQueries, matchedRows, relevanceScore, keywordInsights, nicheSupply)];
+    }
+
     public async Task<IReadOnlyList<SellerOpportunityResponse>> RefreshRankingAsync(CancellationToken cancellationToken = default)
     {
         var userId = RequireUserId();
         var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
         var snapshot = profile is null ? new SellerResearchProfileSnapshot([], [], [], []) : ToSnapshot(profile);
         var marketRows = await opportunities.FindAsync(x => x.Status == "active", cancellationToken);
+        var marketOpportunityIds = marketRows.Select(x => x.Id).ToArray();
+        var latestPrices = await evidence.Query()
+            .Where(x => marketOpportunityIds.Contains(x.OpportunityId))
+            .OrderByDescending(x => x.CreatedAt)
+            .Select(x => new { x.OpportunityId, x.Snapshot.Price })
+            .ToListAsync(cancellationToken);
+        var priceByOpportunity = latestPrices
+            .GroupBy(x => x.OpportunityId)
+            .ToDictionary(group => group.Key, group => group.First().Price);
+        var evidenceRows = await evidence.Query()
+            .Where(x => marketOpportunityIds.Contains(x.OpportunityId))
+            .Select(x => new
+            {
+                x.OpportunityId,
+                x.Snapshot.ExternalListingId,
+                x.Snapshot.ExternalSellerId,
+                x.Snapshot.ObservedAt,
+                x.Snapshot.IsSynthetic
+            })
+            .ToListAsync(cancellationToken);
+        var evidenceStats = evidenceRows
+            .GroupBy(x => x.OpportunityId)
+            .ToDictionary(
+                group => group.Key,
+                group => new
+                {
+                    EvidenceCount = group.Count(),
+                    DistinctListingCount = group.Select(x => x.ExternalListingId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                    DistinctSellerCount = group.Select(x => x.ExternalSellerId).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                    ObservationPeriodCount = group.Select(x => x.ObservedAt.Date).Distinct().Count(),
+                    RealEvidenceCount = group.Count(x => !x.IsSynthetic),
+                    SyntheticEvidenceCount = group.Count(x => x.IsSynthetic)
+                });
         var existingRows = await sellerOpportunities.FindAsync(x => x.UserId == userId, cancellationToken);
         var ranked = new List<SellerOpportunity>(marketRows.Count);
 
@@ -67,7 +189,15 @@ public sealed class OpportunityService(
         {
             var score = SellerOpportunityScorer.Score(
                 new MarketOpportunityCandidate((double)market.MarketOpportunityScore, (double)market.Confidence,
-                    market.Category, ExtractKeywords(market), null), snapshot);
+                    market.Category, ExtractKeywords(market),
+                    priceByOpportunity.GetValueOrDefault(market.Id),
+                    evidenceStats.GetValueOrDefault(market.Id)?.EvidenceCount,
+                    evidenceStats.GetValueOrDefault(market.Id)?.DistinctListingCount,
+                    evidenceStats.GetValueOrDefault(market.Id)?.DistinctSellerCount,
+                    evidenceStats.GetValueOrDefault(market.Id)?.ObservationPeriodCount,
+                    evidenceStats.GetValueOrDefault(market.Id)?.RealEvidenceCount,
+                    evidenceStats.GetValueOrDefault(market.Id)?.SyntheticEvidenceCount,
+                    market.LastObservedAt), snapshot);
             var row = existingRows.SingleOrDefault(x => x.OpportunityId == market.Id);
             if (row is null)
             {
@@ -87,9 +217,11 @@ public sealed class OpportunityService(
             row.FitExplanation = score.Explanation;
             row.FitBreakdown = JsonSerializer.Serialize(score.Breakdown, JsonOptions);
             row.LastEvaluatedAt = DbNow();
+            row.Rank = null;
             if (existingRows.Contains(row))
                 await sellerOpportunities.UpdateAsync(row, cancellationToken: cancellationToken);
-            ranked.Add(row);
+            if (SellerOpportunityThresholds.IsQualified(score))
+                ranked.Add(row);
         }
 
         foreach (var item in ranked.OrderByDescending(x => x.FinalScore).ThenBy(x => x.OpportunityId).Select((row, index) => (row, index)))
@@ -107,6 +239,9 @@ public sealed class OpportunityService(
         var userId = RequireUserId();
         limit = Math.Clamp(limit, 1, 100);
         var query = sellerOpportunities.Query().Where(x => x.UserId == userId);
+        query = query.Where(x =>
+            x.SellerFitScore >= (decimal)SellerOpportunityThresholds.MinimumSellerFitScore
+            && x.FinalScore >= (decimal)SellerOpportunityThresholds.MinimumFinalScore);
         if (!string.IsNullOrWhiteSpace(state))
             query = query.Where(x => x.State == state.Trim().ToLowerInvariant());
 
@@ -116,7 +251,51 @@ public sealed class OpportunityService(
             .Include(x => x.Opportunity)
             .Take(limit)
             .ToListAsync(cancellationToken);
-        return rows.Select(MapOpportunity).ToArray();
+        if (rows.Count == 0) return [];
+
+        var opportunityIds = rows.Select(row => row.OpportunityId).ToArray();
+        var evidenceRows = await evidence.Query()
+            .Where(item => opportunityIds.Contains(item.OpportunityId))
+            .Select(item => new
+            {
+                item.OpportunityId,
+                item.Snapshot.ExternalListingId,
+                item.Snapshot.ExternalSellerId,
+                item.Snapshot.Title,
+                item.Snapshot.SourceUrl,
+                item.Snapshot.Price,
+                item.Snapshot.Currency,
+                item.Snapshot.Favorites,
+                item.Snapshot.Views,
+                item.Snapshot.ObservedAt,
+                item.Snapshot.IsSynthetic
+            })
+            .ToListAsync(cancellationToken);
+        var insightsByOpportunity = evidenceRows
+            .GroupBy(item => item.OpportunityId)
+            .ToDictionary(
+                group => group.Key,
+                group => MarketOpportunityInsightCalculator.Calculate(
+                    rows.Single(row => row.OpportunityId == group.Key).Opportunity,
+                    group.Select(item => new MarketOpportunityEvidenceInput(
+                        item.ExternalListingId,
+                        item.ExternalSellerId,
+                        item.Title,
+                        item.SourceUrl,
+                        item.Price,
+                        item.Currency,
+                        item.Favorites,
+                        item.Views,
+                        item.ObservedAt,
+                        item.IsSynthetic)).ToArray()));
+
+        var nicheMarkets = await LoadNicheMarketsAsync(rows.Select(row => row.Opportunity.Niche), cancellationToken);
+        return rows.Select(row => MapOpportunity(
+            row,
+            insightsByOpportunity.GetValueOrDefault(
+                row.OpportunityId,
+                MarketOpportunityInsightCalculator.Calculate(row.Opportunity, [])),
+            nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche)))).ToArray();
     }
 
     public async Task<SellerOpportunityResponse?> GetAsync(Guid id, CancellationToken cancellationToken = default)
@@ -126,7 +305,39 @@ public sealed class OpportunityService(
             .Where(x => x.Id == id && x.UserId == userId)
             .Include(x => x.Opportunity)
             .SingleOrDefaultAsync(cancellationToken);
-        return row is null ? null : MapOpportunity(row);
+        if (row is null) return null;
+
+        var evidenceRows = await evidence.Query()
+            .Where(item => item.OpportunityId == row.OpportunityId)
+            .Select(item => new
+            {
+                item.Snapshot.ExternalListingId,
+                item.Snapshot.ExternalSellerId,
+                item.Snapshot.Title,
+                item.Snapshot.SourceUrl,
+                item.Snapshot.Price,
+                item.Snapshot.Currency,
+                item.Snapshot.Favorites,
+                item.Snapshot.Views,
+                item.Snapshot.ObservedAt,
+                item.Snapshot.IsSynthetic
+            })
+            .ToListAsync(cancellationToken);
+        var insight = MarketOpportunityInsightCalculator.Calculate(
+            row.Opportunity,
+            evidenceRows.Select(item => new MarketOpportunityEvidenceInput(
+                item.ExternalListingId,
+                item.ExternalSellerId,
+                item.Title,
+                item.SourceUrl,
+                item.Price,
+                item.Currency,
+                item.Favorites,
+                item.Views,
+                item.ObservedAt,
+                item.IsSynthetic)).ToArray());
+        var nicheMarkets = await LoadNicheMarketsAsync([row.Opportunity.Niche], cancellationToken);
+        return MapOpportunity(row, insight, nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche)));
     }
 
     public async Task<SellerOpportunityResponse?> UpdateStateAsync(
@@ -179,17 +390,108 @@ public sealed class OpportunityService(
     private static SellerResearchProfileResponse EmptyProfile(Guid userId) =>
         new(userId, null, [], [], [], [], null, null, 0, DbNow());
 
-    private static SellerOpportunityResponse MapOpportunity(SellerOpportunity row)
+    /// <summary>Supply of every tracked query, ranked by size so competition is relative to the other niches.</summary>
+    private async Task<IReadOnlyDictionary<string, MarketSupplySignal>> LoadSupplyAsync(
+        DateOnly since,
+        CancellationToken cancellationToken)
+    {
+        var observationRows = await queryObservations.Query()
+            .Where(item => item.Platform == "etsy" && item.ObservedOn >= since)
+            .ToListAsync(cancellationToken);
+        var supplyByQuery = observationRows
+            .GroupBy(item => item.Query, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => MarketSupplyCalculator.Calculate(group.ToArray()),
+                StringComparer.Ordinal);
+        return MarketSupplyCalculator.RankSizes(supplyByQuery);
+    }
+
+    /// <summary>
+    /// Market signals of the niches behind the given opportunities, from each niche's latest
+    /// collection within <see cref="NicheSignalDays"/> days. A niche without any data is left out.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, OpportunityNicheMarket>> LoadNicheMarketsAsync(
+        IEnumerable<string?> niches,
+        CancellationToken cancellationToken)
+    {
+        var keys = niches
+            .Select(MarketQueryKey.Normalize)
+            .Where(key => key.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (keys.Length == 0)
+            return new Dictionary<string, OpportunityNicheMarket>(StringComparer.Ordinal);
+
+        var now = DbNow();
+        var supplyByQuery = await LoadSupplyAsync(DateOnly.FromDateTime(now.AddDays(-MarketHistoryDays)), cancellationToken);
+        var since = now.AddDays(-NicheSignalDays);
+        var rows = await snapshots.Query()
+            .Where(item => item.Platform == "etsy"
+                && item.MatchedQuery != null
+                && item.ObservedAt >= since
+                && keys.Contains(item.MatchedQuery.ToLower()))
+            .ToListAsync(cancellationToken);
+        var signalsByKey = rows
+            .GroupBy(item => MarketQueryKey.Normalize(item.MatchedQuery), StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => MarketListingSignalsCalculator.Calculate(MarketListingFilter.Apply(group.ToArray()).Eligible),
+                StringComparer.Ordinal);
+
+        var result = new Dictionary<string, OpportunityNicheMarket>(StringComparer.Ordinal);
+        foreach (var key in keys)
+        {
+            var supply = supplyByQuery.GetValueOrDefault(key, MarketSupplySignal.Unknown);
+            var signals = signalsByKey.GetValueOrDefault(key, MarketListingSignals.Empty);
+            if (supply.ActiveListingCount is null && signals.SampleListingCount == 0)
+                continue;
+
+            result[key] = new OpportunityNicheMarket(
+                key,
+                supply.ActiveListingCount,
+                supply.SizePercentile,
+                MarketSupplyCalculator.Competition(supply.SizePercentile),
+                SellerMarketInsightCalculator.DemandProxy(signals),
+                signals.MedianFavoritesPer30Days,
+                signals.SellerCount,
+                signals.StrongSellerCount,
+                signals.RisingNewListingCount,
+                supply.LatestObservedOn ?? signals.LatestCollectedOn);
+        }
+
+        return result;
+    }
+
+    private static SellerOpportunityResponse MapOpportunity(
+        SellerOpportunity row,
+        MarketOpportunityInsights insights,
+        OpportunityNicheMarket? nicheMarket)
     {
         var opportunity = row.Opportunity;
         var breakdown = JsonSerializer.Deserialize<Dictionary<string, double>>(row.FitBreakdown, JsonOptions) ?? [];
         return new(row.Id, row.OpportunityId, opportunity.Platform, opportunity.Title, opportunity.Niche,
             opportunity.Category, opportunity.Summary, opportunity.MarketOpportunityScore, opportunity.Confidence,
-            row.SellerFitScore, row.FinalScore, row.Rank, row.State, row.FitExplanation, breakdown, row.LastEvaluatedAt);
+            row.SellerFitScore, row.FinalScore, row.Rank, row.State, row.FitExplanation, breakdown, row.LastEvaluatedAt, insights, nicheMarket);
     }
 
     private static IReadOnlyCollection<string> ExtractKeywords(MarketOpportunity opportunity) =>
         $"{opportunity.Niche} {opportunity.Title} {opportunity.Category}".Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static string BuildNicheLabel(SellerResearchProfile? profile, IReadOnlyList<string> matchedQueries)
+    {
+        var profileLabels = profile is null
+            ? []
+            : Read(profile.PreferredCategories)
+                .Concat(Read(profile.PreferredKeywords))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Take(3)
+                .ToArray();
+
+        return profileLabels.Length > 0
+            ? string.Join(" · ", profileLabels)
+            : matchedQueries.FirstOrDefault() ?? "Seller niche";
+    }
 
     private static string Serialize(IEnumerable<string>? values) =>
         JsonSerializer.Serialize((values ?? []).Where(x => !string.IsNullOrWhiteSpace(x))
