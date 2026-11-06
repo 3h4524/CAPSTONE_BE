@@ -3,17 +3,36 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Revenues.Dtos;
+using APCS.Application.Features.Subscriptions;
+using APCS.Application.Features.Subscriptions.Common;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Revenues;
 
+/// <remarks>
+/// Invoices and plan prices are stored in USD and PayOS charges them in VND at
+/// <see cref="PaymentGatewaySettings.UsdToVndRate"/>, so every money figure leaves this service in
+/// VND at that same rate, matching what customers actually paid.
+/// </remarks>
 public sealed class RevenueService(
     IRepository<Invoice> invoiceRepository,
-    IRepository<Subscription> subscriptionRepository) : IRevenueService
+    IRepository<Subscription> subscriptionRepository,
+    IRepository<SubscriptionPlan> planRepository,
+    IRepository<ApiUsageRecord> usageRecordRepository,
+    IRepository<DesignImage> designImageRepository,
+    IRepository<MockupImage> mockupRepository,
+    IRepository<PromoVideo> videoRepository,
+    IOptions<PaymentGatewaySettings> gatewaySettings) : IRevenueService
 {
+    /// <summary>Months the MRR Movement chart shows, ending with the period's month.</summary>
+    private const int MovementMonths = 6;
+
     public async Task<Result<RevenueMetricsDto>> GetMetricsAsync(RevenueFilterDto filter, CancellationToken cancellationToken = default)
     {
         int days = (filter.EndDate.ToDateTime(TimeOnly.MinValue) - filter.StartDate.ToDateTime(TimeOnly.MinValue)).Days + 1;
@@ -37,44 +56,39 @@ public sealed class RevenueService(
             .ToListAsync(cancellationToken);
 
         // 1. Refund Amount
-        decimal currentRefundAmount = currentRefundedInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
-        decimal previousRefundAmount = previousRefundedInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
+        decimal currentRefundAmount = currentRefundedInvoices.Sum(Paid);
+        decimal previousRefundAmount = previousRefundedInvoices.Sum(Paid);
 
         // 2. Total Revenue (Gross). A refund moves an invoice from "paid" to "refunded", so the paid
         // sum alone already excludes it; gross adds refunded invoices back so Net = Gross - Refunds
         // subtracts each refund exactly once.
-        decimal currentTotalRevenue = currentPaidInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd) + currentRefundAmount;
-        decimal previousTotalRevenue = previousPaidInvoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd) + previousRefundAmount;
+        decimal currentTotalRevenue = currentPaidInvoices.Sum(Paid) + currentRefundAmount;
+        decimal previousTotalRevenue = previousPaidInvoices.Sum(Paid) + previousRefundAmount;
 
         // 3. Net Revenue
         decimal currentNetRevenue = currentTotalRevenue - currentRefundAmount;
         decimal previousNetRevenue = previousTotalRevenue - previousRefundAmount;
 
-        // 4. Active Subscribers (from Invoices in period)
-        int currentUsers = currentPaidInvoices.Select(i => i.UserId).Distinct().Count();
-        int previousUsers = previousPaidInvoices.Select(i => i.UserId).Distinct().Count();
+        // 4. ARPU: revenue is spread over the customers who paid in the period, cancelled or not.
+        int currentPayingUsers = currentPaidInvoices.Select(i => i.UserId).Distinct().Count();
+        int previousPayingUsers = previousPaidInvoices.Select(i => i.UserId).Distinct().Count();
+        decimal currentArpu = currentPayingUsers > 0 ? currentNetRevenue / currentPayingUsers : 0;
+        decimal previousArpu = previousPayingUsers > 0 ? previousNetRevenue / previousPayingUsers : 0;
 
-        // 5. ARPU
-        decimal currentArpu = currentUsers > 0 ? currentNetRevenue / currentUsers : 0;
-        decimal previousArpu = previousUsers > 0 ? previousNetRevenue / previousUsers : 0;
+        // 5. MRR and Active Subscribers at the end of each period, rebuilt from paid subscriptions
+        // (see MrrLedger), so the previous period keeps the customers who have left since. With the
+        // period ending today they match the paid plan counts on the Subscription Plans page.
+        var mrrSubscriptions = await LoadMrrSubscriptionsAsync(cancellationToken);
+        decimal currentMrr = MrrLedger.TotalAt(mrrSubscriptions, filter.EndDate);
+        decimal previousMrr = MrrLedger.TotalAt(mrrSubscriptions, previousEndDate);
+        int currentUsers = MrrLedger.CustomersAt(mrrSubscriptions, filter.EndDate);
+        int previousUsers = MrrLedger.CustomersAt(mrrSubscriptions, previousEndDate);
 
-        // 6. Subscription MRR (Snapshot of currently active subscriptions)
-        var activeSubscriptions = await subscriptionRepository.Query()
-            .Include(s => s.Plan)
-            .Where(s => s.Status == "active")
-            .ToListAsync(cancellationToken);
-
-        decimal currentMrr = activeSubscriptions.Sum(s => s.Plan.MonthlyPriceUsd);
-        decimal previousMrr = activeSubscriptions
-            .Where(s => s.CreatedAt <= previousEndDate.ToDateTime(TimeOnly.MaxValue))
-            .Sum(s => s.Plan.MonthlyPriceUsd);
-
-        // 7. ARR = MRR * 12
+        // 6. ARR = MRR * 12
         decimal currentArr = currentMrr * 12m;
         decimal previousArr = previousMrr * 12m;
 
-        // Generate Sparklines (7 data points spread across filter.StartDate to filter.EndDate)
-        var sparklines = GenerateMetricSparklines(filter.StartDate, filter.EndDate, currentPaidInvoices, currentRefundedInvoices, currentMrr, currentUsers);
+        var sparklines = GenerateMetricSparklines(filter.StartDate, filter.EndDate, currentPaidInvoices, currentRefundedInvoices, mrrSubscriptions);
 
         return Result.Success(new RevenueMetricsDto
         {
@@ -124,20 +138,14 @@ public sealed class RevenueService(
                             return (d.Year == g.Key.Year - 1 && d.Month == g.Key.Month)
                                 || (d.Year == prevPointDate.Year && d.Month == prevPointDate.Month);
                         })
-                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+                        .Sum(Paid);
 
                     return new RevenueTrendPointDto
                     {
                         DateLabel = $"{g.Key.Year}-{g.Key.Month:D2}",
-                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        Amount = g.Sum(Paid),
                         PreviousAmount = prevAmount,
-                        PlanBreakdown = g
-                            .Where(i => i.Subscription?.Plan != null)
-                            .GroupBy(i => i.Subscription.Plan.Name)
-                            .ToDictionary(
-                                pg => pg.Key,
-                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                            )
+                        PlanBreakdown = PlanBreakdown(g)
                     };
                 })
                 .OrderBy(x => x.DateLabel)
@@ -151,20 +159,14 @@ public sealed class RevenueService(
                 {
                     var prevAmount = previousInvoices
                         .Where(p => (p.PaymentDate ?? p.InvoiceDate).Year == g.Key - 1)
-                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+                        .Sum(Paid);
 
                     return new RevenueTrendPointDto
                     {
                         DateLabel = g.Key.ToString(),
-                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        Amount = g.Sum(Paid),
                         PreviousAmount = prevAmount,
-                        PlanBreakdown = g
-                            .Where(i => i.Subscription?.Plan != null)
-                            .GroupBy(i => i.Subscription.Plan.Name)
-                            .ToDictionary(
-                                pg => pg.Key,
-                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                            )
+                        PlanBreakdown = PlanBreakdown(g)
                     };
                 })
                 .OrderBy(x => x.DateLabel)
@@ -178,20 +180,14 @@ public sealed class RevenueService(
                 {
                     var prevAmount = previousInvoices
                         .Where(p => (p.PaymentDate ?? p.InvoiceDate) == g.Key.AddDays(-days))
-                        .Sum(p => p.TotalAmount > 0 ? p.TotalAmount : p.AmountUsd);
+                        .Sum(Paid);
 
                     return new RevenueTrendPointDto
                     {
                         DateLabel = g.Key.ToString("yyyy-MM-dd"),
-                        Amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd),
+                        Amount = g.Sum(Paid),
                         PreviousAmount = prevAmount,
-                        PlanBreakdown = g
-                            .Where(i => i.Subscription?.Plan != null)
-                            .GroupBy(i => i.Subscription.Plan.Name)
-                            .ToDictionary(
-                                pg => pg.Key,
-                                pg => pg.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-                            )
+                        PlanBreakdown = PlanBreakdown(g)
                     };
                 })
                 .OrderBy(x => x.DateLabel)
@@ -199,41 +195,71 @@ public sealed class RevenueService(
         }
 
         // 2. By Plan Chart
-        decimal totalRevenue = invoices.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
+        decimal totalRevenue = invoices.Sum(Paid);
+        var revenueByPlan = invoices
+            .Where(i => i.Subscription?.Plan != null)
+            .GroupBy(i => i.Subscription.Plan.Name)
+            .ToDictionary(g => g.Key, g => g.ToList());
         var previousByPlan = previousInvoices
             .Where(i => i.Subscription?.Plan != null)
             .GroupBy(i => i.Subscription.Plan.Name)
-            .ToDictionary(g => g.Key, g => g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd));
+            .ToDictionary(g => g.Key, g => g.Sum(Paid));
 
-        var allSubscriptions = await subscriptionRepository.Query()
-            .Include(s => s.Plan)
-            .ToListAsync(cancellationToken);
-        var (subscriptionRecords, _) = await LoadLifecycleRecordsAsync(allSubscriptions, cancellationToken);
+        // A plan is listed when it earned in the period or carried MRR at either end of it, so a
+        // plan whose customers all left still shows where its MRR went.
+        var mrrSubscriptions = await LoadMrrSubscriptionsAsync(cancellationToken);
+        var mrrAtStart = MrrLedger.ValueAt(mrrSubscriptions, filter.StartDate.AddDays(-1));
+        var mrrAtEnd = MrrLedger.ValueAt(mrrSubscriptions, filter.EndDate);
+        var planNames = revenueByPlan.Keys
+            .Concat(mrrAtStart.Keys.Select(key => key.PlanName))
+            .Concat(mrrAtEnd.Keys.Select(key => key.PlanName))
+            .Distinct()
+            .ToList();
 
-        chartDto.ByPlan = invoices
-            .Where(i => i.Subscription?.Plan != null)
-            .GroupBy(i => i.Subscription.Plan.Name)
-            .Select(g =>
+        var signals = await BuildUsageSignalsAsync(mrrSubscriptions, planNames, filter.StartDate, filter.EndDate, cancellationToken);
+
+        chartDto.ByPlan = planNames
+            .Select(planName =>
             {
-                decimal amount = g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd);
-                decimal previousAmount = previousByPlan.GetValueOrDefault(g.Key);
-                int customers = g.Select(i => i.UserId).Distinct().Count();
-                var retention = PlanMetrics.Retention(subscriptionRecords, g.Key, filter.StartDate, filter.EndDate);
+                var planInvoices = revenueByPlan.GetValueOrDefault(planName) ?? [];
+                decimal amount = planInvoices.Sum(Paid);
+                decimal previousAmount = previousByPlan.GetValueOrDefault(planName);
+                int customers = planInvoices.Select(i => i.UserId).Distinct().Count();
+                // Retention follows the same customers, on the same days, as the MRR above.
+                var flow = MrrLedger.CustomerFlow(mrrSubscriptions, filter.StartDate, filter.EndDate, planName);
+                decimal mrrStart = PlanTotal(mrrAtStart, planName);
+                decimal mrrEnd = PlanTotal(mrrAtEnd, planName);
+                var signal = signals[planName];
+
                 return new RevenueByPlanDto
                 {
-                    PlanName = g.Key,
+                    PlanName = planName,
                     Amount = amount,
                     Percentage = totalRevenue > 0 ? Math.Round(amount / totalRevenue * 100, 2) : 0,
-                    PurchaseCount = g.Count(),
+                    PurchaseCount = planInvoices.Count,
                     UniqueCustomers = customers,
                     Arpu = PlanMetrics.Arpu(amount, customers),
-                    RetentionBase = retention.ActiveAtStart,
-                    RetentionRate = retention.Rate,
+                    Customers = new PlanCustomerFlowDto
+                    {
+                        Start = flow.Start,
+                        Stayed = flow.Stayed,
+                        SwitchedOut = flow.SwitchedOut,
+                        StoppedPaying = flow.StoppedPaying,
+                        New = flow.New,
+                        SwitchedIn = flow.SwitchedIn,
+                        End = flow.End
+                    },
+                    RetentionRate = PlanMetrics.RetentionRate(flow),
                     PreviousAmount = previousAmount,
-                    PercentageChange = RevenueMath.PercentageChange(amount, previousAmount)
+                    PercentageChange = RevenueMath.PercentageChange(amount, previousAmount),
+                    MrrStart = mrrStart,
+                    MrrEnd = mrrEnd,
+                    MrrChangePercent = RevenueMath.PercentageChange(mrrEnd, mrrStart),
+                    UsageSignal = ToSignalDto(signal)
                 };
             })
             .OrderByDescending(x => x.Amount)
+            .ThenByDescending(x => x.MrrEnd)
             .ToList();
 
         // 3. Available Plans
@@ -278,6 +304,182 @@ public sealed class RevenueService(
         return (subscriptionRecords, paidInvoiceRecords);
     }
 
+    /// <summary>
+    /// Builds every paid subscription's MRR history (see <see cref="MrrLedger"/>), in VND.
+    /// </summary>
+    /// <remarks>
+    /// A subscription is worth its stored price, monthly or annual / 12, from its first payment. A
+    /// paid renewal can switch it to its scheduled plan in place, so each paid renewal starts a new
+    /// segment at the price it billed, and the plan before the first one is the one that renewal
+    /// recorded. Renewals billed before that was recorded fall back to the current plan.
+    /// </remarks>
+    private async Task<List<MrrSubscription>> LoadMrrSubscriptionsAsync(CancellationToken cancellationToken)
+    {
+        var subscriptions = await subscriptionRepository.Query()
+            .Include(s => s.Plan)
+            .Where(s => s.TrialEndsAt == null)
+            .ToListAsync(cancellationToken);
+
+        var paidBySubscription = (await invoiceRepository.Query()
+                .Where(i => i.Status.ToLower() == "paid")
+                .Select(i => new { i.SubscriptionId, PaidOn = i.PaymentDate ?? i.InvoiceDate, i.TotalAmount, i.AmountUsd, i.Items })
+                .ToListAsync(cancellationToken))
+            .GroupBy(i => i.SubscriptionId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(i => i.PaidOn).ToList());
+
+        var plans = await planRepository.Query().ToDictionaryAsync(plan => plan.Id, cancellationToken);
+
+        var result = new List<MrrSubscription>();
+        foreach (var subscription in subscriptions)
+        {
+            if (!paidBySubscription.TryGetValue(subscription.Id, out var paid) || subscription.Plan is null)
+            {
+                continue;
+            }
+
+            var renewals = paid
+                .Select(invoice => (invoice.PaidOn, Amount: invoice.TotalAmount > 0 ? invoice.TotalAmount : invoice.AmountUsd,
+                    Item: RenewalInvoiceItem.TryRead(invoice.Items)))
+                .Where(invoice => invoice.Item is not null)
+                .ToList();
+
+            var firstRenewal = renewals.FirstOrDefault().Item;
+            var initialPlanId = firstRenewal?.FromPlanId ?? subscription.PlanId;
+            var initialCycle = firstRenewal?.FromBillingCycle ?? subscription.BillingCycle;
+            var initialPlan = plans.GetValueOrDefault(initialPlanId) ?? subscription.Plan;
+            var initialValue = initialPlanId == subscription.PlanId
+                ? MonthlyValue(subscription.MonthlyPriceUsd, subscription.AnnualPriceUsd, initialCycle)
+                : MonthlyValue(initialPlan.MonthlyPriceUsd, initialPlan.AnnualPriceUsd, initialCycle);
+
+            var segments = new List<MrrSegment> { new(paid[0].PaidOn, initialPlan.Name, Vnd(initialValue)) };
+            foreach (var (paidOn, amount, item) in renewals)
+            {
+                var plan = plans.GetValueOrDefault(item!.PlanId) ?? subscription.Plan;
+                var monthly = IsAnnual(item.BillingCycle) ? amount / 12m : amount;
+                segments.Add(new MrrSegment(paidOn, plan.Name, Vnd(monthly)));
+            }
+
+            var endedAt = subscription.CancelledAt ?? subscription.DeletedAt;
+            result.Add(new MrrSubscription(
+                subscription.UserId,
+                paid[0].PaidOn,
+                endedAt is { } ended ? DateOnly.FromDateTime(ended) : null,
+                subscription.RenewalDate,
+                segments));
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<PlanCohortDto>>> GetPlanCohortsAsync(
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken = default)
+    {
+        var mrrSubscriptions = await LoadMrrSubscriptionsAsync(cancellationToken);
+        var planNames = MrrLedger.ValueAt(mrrSubscriptions, from.AddDays(-1)).Keys
+            .Select(key => key.PlanName)
+            .Distinct();
+
+        IReadOnlyList<PlanCohortDto> cohorts = planNames
+            .Select(planName =>
+            {
+                var (stayed, left) = PlanUsageSignals.Groups(mrrSubscriptions, from, to, planName);
+                var leftCustomers = left
+                    .Select(userId =>
+                    {
+                        var (firstPaidOn, leftOn) = PlanUsageSignals.Tenure(mrrSubscriptions, userId, to);
+                        return new LeftCustomerDto(userId, firstPaidOn, leftOn ?? to);
+                    })
+                    .ToList();
+                return new PlanCohortDto(planName, stayed.ToList(), leftCustomers);
+            })
+            .ToList();
+
+        return Result.Success(cohorts);
+    }
+
+    private sealed record UsageSignal(int Stayed, int Left, PlanUsageGap? Gap);
+
+    /// <summary>Compares, for each plan, what its customers who left used with what those who stayed used.</summary>
+    private async Task<Dictionary<string, UsageSignal>> BuildUsageSignalsAsync(
+        IReadOnlyList<MrrSubscription> mrrSubscriptions,
+        IEnumerable<string> planNames,
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken)
+    {
+        var groups = planNames.ToDictionary(
+            planName => planName,
+            planName => PlanUsageSignals.Groups(mrrSubscriptions, from, to, planName));
+
+        // Usage is only read when some plan has enough customers on both sides to compare.
+        var comparable = groups.Values.Any(group =>
+            group.Stayed.Count >= PlanUsageSignals.MinimumGroup && group.Left.Count >= PlanUsageSignals.MinimumGroup);
+        var usage = comparable
+            ? await LoadFeatureUsersAsync(from.AddDays(-PlanUsageSignals.UsageLookbackDays), to, cancellationToken)
+            : [];
+
+        return groups.ToDictionary(
+            entry => entry.Key,
+            entry => new UsageSignal(
+                entry.Value.Stayed.Count,
+                entry.Value.Left.Count,
+                PlanUsageSignals.LargestGap(entry.Value.Stayed, entry.Value.Left, usage)));
+    }
+
+    /// <summary>The Sellers who used each feature from <paramref name="from"/> to the end of <paramref name="to"/>.</summary>
+    private async Task<List<(string Feature, string Label, IReadOnlySet<Guid> Users)>> LoadFeatureUsersAsync(
+        DateOnly from,
+        DateOnly to,
+        CancellationToken cancellationToken)
+    {
+        var start = from.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var end = to.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+
+        async Task<IReadOnlySet<Guid>> Users(IQueryable<Guid> userIds) =>
+            (await userIds.Distinct().ToListAsync(cancellationToken)).ToHashSet();
+
+        IQueryable<MockupImage> Mockups() => mockupRepository.Query()
+            .Where(mockup => mockup.DeletedAt == null && mockup.CreatedAt >= start && mockup.CreatedAt < end);
+        IQueryable<PromoVideo> Videos(string mode) => videoRepository.Query()
+            .Where(video => video.Mode == mode && video.DeletedAt == null && video.CreatedAt >= start && video.CreatedAt < end);
+
+        return
+        [
+            ("design_generation", "Design generation", await Users(designImageRepository.Query()
+                .Where(image => image.DeletedAt == null && image.CreatedAt >= start && image.CreatedAt < end)
+                .Select(image => image.Product.UserId))),
+            ("listing_generation", "Listing generation", await Users(usageRecordRepository.Query()
+                .Where(record => record.Feature == UsageFeatures.Listing && record.CreatedAt >= start && record.CreatedAt < end)
+                .Select(record => record.UserId))),
+            ("rendered_mockups", "Rendered mockups", await Users(Mockups()
+                .Where(mockup => mockup.SourceType == MockupSources.Generated)
+                .Select(mockup => mockup.Product.UserId))),
+            ("lifestyle_mockups", "Lifestyle mockups", await Users(Mockups()
+                .Where(mockup => mockup.SourceType == MockupSources.Uploaded && mockup.ApiUsageRecordId != null && mockup.Role == "Lifestyle")
+                .Select(mockup => mockup.Product.UserId))),
+            ("studio_keyframes", "AI Studio keyframes", await Users(Mockups()
+                .Where(mockup => mockup.SourceType == MockupSources.AiGenerated)
+                .Select(mockup => mockup.Product.UserId))),
+            ("standard_videos", "Standard videos", await Users(Videos("standard").Select(video => video.Product.UserId))),
+            ("ai_videos", "AI videos", await Users(Videos("ai_shot").Select(video => video.Product.UserId))),
+        ];
+    }
+
+    private static PlanUsageSignalDto ToSignalDto(UsageSignal signal) => new()
+    {
+        Stayed = signal.Stayed,
+        Left = signal.Left,
+        MinimumGroup = PlanUsageSignals.MinimumGroup,
+        HasSignal = signal.Gap is not null,
+        Feature = signal.Gap?.Feature,
+        FeatureLabel = signal.Gap?.Label,
+        StayedRate = signal.Gap?.StayedRate,
+        LeftRate = signal.Gap?.LeftRate
+    };
+
     /// <summary>Weeks of history the forecast regression may look back over.</summary>
     private const int ForecastLookbackWeeks = 26;
 
@@ -300,7 +502,7 @@ public sealed class RevenueService(
 
         var revenueByWeek = paidInvoices
             .GroupBy(i => ((i.PaymentDate ?? i.InvoiceDate).DayNumber - windowStart.DayNumber) / 7)
-            .ToDictionary(g => g.Key, g => g.Sum(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd));
+            .ToDictionary(g => g.Key, g => g.Sum(Paid));
 
         int firstWeek = revenueByWeek.Count > 0 ? revenueByWeek.Keys.Min() : ForecastLookbackWeeks;
         var weekStarts = Enumerable.Range(firstWeek, ForecastLookbackWeeks - firstWeek)
@@ -381,13 +583,12 @@ public sealed class RevenueService(
         List<decimal> ActiveSubscribers,
         List<decimal> RefundAmount);
 
-    private static MetricSparklines GenerateMetricSparklines(
+    private MetricSparklines GenerateMetricSparklines(
         DateOnly startDate,
         DateOnly endDate,
         List<Invoice> paidInvoices,
         List<Invoice> refundedInvoices,
-        decimal currentMrr,
-        int currentUsers)
+        IReadOnlyList<MrrSubscription> mrrSubscriptions)
     {
         const int pointsCount = 7;
         var startDt = startDate.ToDateTime(TimeOnly.MinValue);
@@ -411,11 +612,11 @@ public sealed class RevenueService(
 
             var paidBucket = paidInvoices
                 .Where(x => (x.PaymentDate ?? x.InvoiceDate) >= bucketStart && (x.PaymentDate ?? x.InvoiceDate) <= bucketEnd)
-                .Sum(x => x.TotalAmount > 0 ? x.TotalAmount : x.AmountUsd);
+                .Sum(Paid);
 
             var refundBucket = refundedInvoices
                 .Where(x => (x.PaymentDate ?? x.InvoiceDate) >= bucketStart && (x.PaymentDate ?? x.InvoiceDate) <= bucketEnd)
-                .Sum(x => x.TotalAmount > 0 ? x.TotalAmount : x.AmountUsd);
+                .Sum(Paid);
 
             // Gross = still-paid + refunded (see GetMetricsAsync), so net is the still-paid amount.
             var grossBucket = paidBucket + refundBucket;
@@ -425,12 +626,11 @@ public sealed class RevenueService(
             netRevList.Add(Math.Round(netBucket, 2));
             refundList.Add(Math.Round(refundBucket, 2));
 
-            decimal factor = 0.85m + (0.15m * (i + 1) / pointsCount);
-            mrrList.Add(Math.Round(currentMrr * factor, 2));
-            arrList.Add(Math.Round(currentMrr * 12m * factor, 2));
-
-            decimal userFactor = 0.8m + (0.2m * (i + 1) / pointsCount);
-            usersList.Add(Math.Max(0, Math.Round(currentUsers * userFactor)));
+            // MRR and subscribers are read off the ledger at each bucket's end, so the line is their real history.
+            decimal mrr = MrrLedger.TotalAt(mrrSubscriptions, bucketEnd);
+            mrrList.Add(Math.Round(mrr, 2));
+            arrList.Add(Math.Round(mrr * 12m, 2));
+            usersList.Add(MrrLedger.CustomersAt(mrrSubscriptions, bucketEnd));
         }
 
         return new MetricSparklines(totalRevList, netRevList, mrrList, arrList, usersList, refundList);
@@ -499,7 +699,7 @@ public sealed class RevenueService(
             CustomerName = r.CustomerName,
             CustomerEmail = r.CustomerEmail,
             PlanName = r.PlanName,
-            Amount = r.Amount,
+            Amount = Vnd(r.Amount),
             Status = ToDisplayStatus(r.Status),
             PaymentDate = r.PaymentDate,
             CreatedAt = r.CreatedAt,
@@ -532,9 +732,12 @@ public sealed class RevenueService(
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
 
         // Fetch subscriptions and invoices needed
+        // Free trials are left out of every subscription metric: they were never paid for, and
+        // one ending is not a cancellation.
         var allSubscriptions = await subscriptionRepository.Query()
             .Include(s => s.Plan)
             .Include(s => s.ScheduledPlan)
+            .Where(s => s.TrialEndsAt == null)
             .ToListAsync(cancellationToken);
 
         var currentPaidInvoices = await invoiceRepository.Query()
@@ -556,15 +759,17 @@ public sealed class RevenueService(
                     || (i.Status.ToLower() == "void" && i.Subscription != null && i.Subscription.Status.ToLower() == "expired")))
             .CountAsync(cancellationToken);
 
-        decimal refundedAmount = await invoiceRepository.Query()
+        decimal refundedAmount = Vnd(await invoiceRepository.Query()
             .Where(i => i.Status.ToLower() == "refunded" && (i.PaymentDate ?? i.InvoiceDate) >= filter.StartDate && (i.PaymentDate ?? i.InvoiceDate) <= filter.EndDate)
-            .SumAsync(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd, cancellationToken);
+            .SumAsync(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd, cancellationToken));
 
         var stuckBefore = DateTime.UtcNow - FinancialAlertRules.StuckCheckoutAge;
-        var stuckCheckouts = await invoiceRepository.Query()
-            .Where(i => i.Status.ToLower() == "issued" && i.CreatedAt != null && i.CreatedAt < stuckBefore)
-            .Select(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
-            .ToListAsync(cancellationToken);
+        var stuckCheckouts = (await invoiceRepository.Query()
+                .Where(i => i.Status.ToLower() == "issued" && i.CreatedAt != null && i.CreatedAt < stuckBefore)
+                .Select(i => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd)
+                .ToListAsync(cancellationToken))
+            .Select(Vnd)
+            .ToList();
 
         // 1. Subscription Analytics - see SubscriptionMetrics for what counts as new, renewed and churned
         var (subscriptionRecords, paidInvoiceRecords) = await LoadLifecycleRecordsAsync(allSubscriptions, cancellationToken);
@@ -615,27 +820,31 @@ public sealed class RevenueService(
             ActiveAtPeriodStart = activeAtStart
         };
 
-        // 2. Revenue Forecast
-        decimal currentMrr = allSubscriptions
-            .Where(s => s.Status.ToLower() == "active" && s.Plan != null)
-            .Sum(s => s.Plan.MonthlyPriceUsd);
+        // 2. MRR Movement - see MrrLedger for how a customer's MRR change is classified
+        var mrrSubscriptions = await LoadMrrSubscriptionsAsync(cancellationToken);
+        var mrrMovement = BuildMrrMovement(mrrSubscriptions, filter.StartDate, filter.EndDate);
 
+        // 3. Revenue Forecast
         var forecastDto = await BuildWeeklyForecastAsync(today, cancellationToken);
-        forecastDto.CurrentMrr = currentMrr;
+        forecastDto.CurrentMrr = MrrLedger.TotalAt(mrrSubscriptions, today);
 
-        // 3. Financial Alerts - see FinancialAlertRules for when each one is raised
-        static decimal Paid(Invoice i) => i.TotalAmount > 0 ? i.TotalAmount : i.AmountUsd;
-        static decimal MonthlyValue(Subscription s) =>
-            string.Equals(s.BillingCycle, "annual", StringComparison.OrdinalIgnoreCase) && s.AnnualPriceUsd is { } annual ? annual / 12m : s.MonthlyPriceUsd;
-        static decimal CycleAmount(Subscription s) =>
-            string.Equals(s.BillingCycle, "annual", StringComparison.OrdinalIgnoreCase) && s.AnnualPriceUsd is { } annual ? annual : s.MonthlyPriceUsd;
+        // 4. Financial Alerts - see FinancialAlertRules for when each one is raised
+        decimal MonthlyValueVnd(Subscription s) => Vnd(MonthlyValue(s.MonthlyPriceUsd, s.AnnualPriceUsd, s.BillingCycle));
+        decimal CycleAmountVnd(Subscription s) =>
+            Vnd(IsAnnual(s.BillingCycle) && s.AnnualPriceUsd is { } annual ? annual : s.MonthlyPriceUsd);
 
         var liveSubscriptions = allSubscriptions
             .Where(s => s.Status.ToLower() == "active" && s.DeletedAt == null)
             .ToList();
-        var lapsed = liveSubscriptions.Where(s => s.RenewalDate < today).ToList();
+        // Past due: stored as past_due by SubscriptionRenewalJob, or still "active" until its next run.
+        var lapsed = allSubscriptions
+            .Where(s => s.DeletedAt == null
+                && (s.Status.ToLower() == "past_due" || s.Status.ToLower() == "active")
+                && RenewalRules.IsPastDue(s.RenewalDate, today)
+                && s.RenewalDate >= RenewalRules.OldestUsableRenewalDate(today))
+            .ToList();
         var renewalsDue = liveSubscriptions
-            .Where(s => s.RenewalDate >= today && s.RenewalDate <= today.AddDays(FinancialAlertRules.RenewalWindowDays))
+            .Where(s => s.RenewalDate > today && s.RenewalDate <= today.AddDays(FinancialAlertRules.RenewalWindowDays))
             .ToList();
         var downgrades = liveSubscriptions
             .Where(s => s.ScheduledPlan != null && s.Plan != null
@@ -648,17 +857,21 @@ public sealed class RevenueService(
             .OrderByDescending(x => x.Total)
             .FirstOrDefault();
 
+        var planBridges = mrrMovement.Period.Where(bridge => bridge.PlanName is not null).ToList();
+        var signals = await BuildUsageSignalsAsync(
+            mrrSubscriptions, planBridges.Select(bridge => bridge.PlanName!), filter.StartDate, filter.EndDate, cancellationToken);
+
         var alerts = FinancialAlertRules.Evaluate(new FinancialAlertInputs
         {
             LapsedCount = lapsed.Count,
-            LapsedMonthlyValue = lapsed.Sum(MonthlyValue),
+            LapsedMonthlyValue = lapsed.Sum(MonthlyValueVnd),
             LapsedOldestDays = lapsed.Count > 0 ? today.DayNumber - lapsed.Min(s => s.RenewalDate).DayNumber : 0,
             StuckCheckoutCount = stuckCheckouts.Count,
             StuckCheckoutAmount = stuckCheckouts.Sum(),
             DowngradeCount = downgrades.Count,
-            DowngradeMonthlyLoss = downgrades.Sum(s => Math.Max(0m, s.Plan.MonthlyPriceUsd - s.ScheduledPlan!.MonthlyPriceUsd)),
+            DowngradeMonthlyLoss = downgrades.Sum(s => Vnd(Math.Max(0m, s.Plan.MonthlyPriceUsd - s.ScheduledPlan!.MonthlyPriceUsd))),
             RenewalsDueCount = renewalsDue.Count,
-            RenewalsDueAmount = renewalsDue.Sum(CycleAmount),
+            RenewalsDueAmount = renewalsDue.Sum(CycleAmountVnd),
             CurrentRevenue = currentPaidInvoices.Sum(Paid),
             PreviousRevenue = previousPaidInvoices.Sum(Paid),
             CurrentChurn = currentChurn,
@@ -670,14 +883,96 @@ public sealed class RevenueService(
             TopPlanRevenue = topPlan?.Total ?? 0m,
             ForecastStatus = forecastDto.Status,
             ForecastWeeklyTrend = forecastDto.WeeklyTrend,
-            ForecastRSquared = forecastDto.RSquared
+            ForecastRSquared = forecastDto.RSquared,
+            PlanMrr = planBridges
+                .Select(bridge => new PlanMrrInput(bridge.PlanName!, bridge.Start, bridge.End, signals[bridge.PlanName!].Left))
+                .ToList(),
+            UsageGaps = signals
+                .Where(entry => entry.Value.Gap is not null)
+                .Select(entry => (entry.Key, entry.Value.Gap!))
+                .ToList()
         });
 
         return Result.Success(new RevenueInsightsDto
         {
             SubscriptionAnalytics = subAnalytics,
             Forecast = forecastDto,
-            FinancialAlerts = alerts
+            FinancialAlerts = alerts,
+            MrrMovement = mrrMovement
         });
     }
+
+    /// <summary>
+    /// Builds the MRR Movement card: the calendar months up to the period's end, and the period itself
+    /// for all plans together and for each plan that had MRR at either end of it.
+    /// </summary>
+    private static MrrMovementDto BuildMrrMovement(IReadOnlyList<MrrSubscription> mrrSubscriptions, DateOnly from, DateOnly to)
+    {
+        var lastMonth = new DateOnly(to.Year, to.Month, 1);
+        var months = Enumerable.Range(0, MovementMonths)
+            .Select(offset => lastMonth.AddMonths(offset - (MovementMonths - 1)))
+            .Select(monthStart =>
+            {
+                var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+                var movement = MrrLedger.Movement(mrrSubscriptions, monthStart, monthEnd < to ? monthEnd : to);
+                return new MrrMovementMonthDto
+                {
+                    MonthStart = monthStart.ToString("yyyy-MM-dd"),
+                    New = movement.New,
+                    Expansion = movement.Expansion,
+                    Contraction = movement.Contraction,
+                    Churn = movement.Churn,
+                    Net = movement.New + movement.Expansion - movement.Contraction - movement.Churn
+                };
+            })
+            .ToList();
+
+        var planNames = MrrLedger.ValueAt(mrrSubscriptions, from.AddDays(-1)).Keys
+            .Concat(MrrLedger.ValueAt(mrrSubscriptions, to).Keys)
+            .Select(key => key.PlanName)
+            .Distinct();
+
+        var period = new[] { ToBridge(null, MrrLedger.Movement(mrrSubscriptions, from, to)) }
+            .Concat(planNames
+                .Select(planName => ToBridge(planName, MrrLedger.Movement(mrrSubscriptions, from, to, planName)))
+                .OrderByDescending(bridge => bridge.End)
+                .ThenByDescending(bridge => bridge.Start))
+            .ToList();
+
+        return new MrrMovementDto { Months = months, Period = period };
+    }
+
+    private static MrrBridgeDto ToBridge(string? planName, MrrMovement movement) => new()
+    {
+        PlanName = planName,
+        Start = movement.Start,
+        New = movement.New,
+        MovedIn = movement.MovedIn,
+        Expansion = movement.Expansion,
+        Contraction = movement.Contraction,
+        MovedOut = movement.MovedOut,
+        Churn = movement.Churn,
+        End = movement.End
+    };
+
+    private Dictionary<string, decimal> PlanBreakdown(IEnumerable<Invoice> invoices) =>
+        invoices
+            .Where(i => i.Subscription?.Plan != null)
+            .GroupBy(i => i.Subscription.Plan.Name)
+            .ToDictionary(pg => pg.Key, pg => pg.Sum(Paid));
+
+    private static decimal PlanTotal(Dictionary<(Guid UserId, string PlanName), decimal> values, string planName) =>
+        values.Where(entry => entry.Key.PlanName == planName).Sum(entry => entry.Value);
+
+    private static bool IsAnnual(string? billingCycle) =>
+        string.Equals(billingCycle, "annual", StringComparison.OrdinalIgnoreCase);
+
+    // An annual price is spread over its twelve months; a plan with no annual price bills monthly.
+    private static decimal MonthlyValue(decimal monthlyPrice, decimal? annualPrice, string? billingCycle) =>
+        IsAnnual(billingCycle) && annualPrice is { } annual ? annual / 12m : monthlyPrice;
+
+    // A price in cents times a whole-đồng rate is already whole, so nothing is rounded here.
+    private decimal Vnd(decimal usd) => usd * gatewaySettings.Value.UsdToVndRate;
+
+    private decimal Paid(Invoice invoice) => Vnd(invoice.TotalAmount > 0 ? invoice.TotalAmount : invoice.AmountUsd);
 }

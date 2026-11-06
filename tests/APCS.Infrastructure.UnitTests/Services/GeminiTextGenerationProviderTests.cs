@@ -54,6 +54,39 @@ public sealed class GeminiTextGenerationProviderTests
         calls.Should().Be(1);
     }
 
+    [TestMethod]
+    public async Task GenerateAsync_WithASchemaAndModel_SendsThemInsteadOfTheConfiguredOnes()
+    {
+        string? path = null, body = null;
+        var provider = Provider(request =>
+        {
+            path = request.RequestUri!.AbsolutePath;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return Response(HttpStatusCode.OK, Generated);
+        });
+
+        await provider.GenerateAsync(new GeminiTextGenerationRequest(
+            "Review the plans.", ResponseSchema: new { type = "OBJECT" }, Model: "review-model", Temperature: 0.2m));
+
+        path.Should().Be("/v1beta/models/review-model:generateContent");
+        body.Should().Contain("\"responseSchema\":{\"type\":\"OBJECT\"}").And.Contain("\"temperature\":0.2");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithoutASchema_SendsNoResponseSchema()
+    {
+        string? body = null;
+        var provider = Provider(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return Response(HttpStatusCode.OK, Generated);
+        });
+
+        await provider.GenerateAsync(new GeminiTextGenerationRequest("Write a listing."));
+
+        body.Should().NotContain("responseSchema");
+    }
+
     private static GeminiTextGenerationProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send) =>
         new(new HttpClient(new Handler(send)) { BaseAddress = new Uri("https://example.test/v1beta/") },
             Microsoft.Extensions.Options.Options.Create(new GeminiTextGenerationOptions { ApiKey = "key", Model = "primary-model", FallbackModel = "fallback-model" }));

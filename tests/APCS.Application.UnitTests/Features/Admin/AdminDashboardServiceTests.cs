@@ -1,5 +1,8 @@
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Admin;
+using APCS.Application.Features.Revenues;
+using APCS.Application.Features.Revenues.Dtos;
+using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -11,20 +14,20 @@ namespace APCS.Application.UnitTests.Features.Admin;
 [TestClass]
 public sealed class AdminDashboardServiceTests
 {
+    private static readonly DateTimeOffset Oct15 = new(2023, 10, 15, 0, 0, 0, TimeSpan.Zero);
+
     private static AdminDashboardService CreateService(
         Mock<IRepository<User>>? userRepository = null,
-        Mock<IRepository<Subscription>>? subscriptionRepository = null,
-        Mock<IRepository<Invoice>>? invoiceRepository = null,
         Mock<IRepository<BatchJob>>? batchJobRepository = null,
         Mock<IRepository<SupportTicket>>? ticketRepository = null,
+        Mock<IRevenueService>? revenueService = null,
         TimeProvider? timeProvider = null)
     {
         return new AdminDashboardService(
-            (userRepository ?? new Mock<IRepository<User>>()).Object,
-            (subscriptionRepository ?? new Mock<IRepository<Subscription>>()).Object,
-            (invoiceRepository ?? new Mock<IRepository<Invoice>>()).Object,
-            (batchJobRepository ?? new Mock<IRepository<BatchJob>>()).Object,
-            (ticketRepository ?? new Mock<IRepository<SupportTicket>>()).Object,
+            (userRepository ?? CreateEmptyMock<User>()).Object,
+            (batchJobRepository ?? CreateEmptyMock<BatchJob>()).Object,
+            (ticketRepository ?? CreateEmptyMock<SupportTicket>()).Object,
+            (revenueService ?? RevenueReturning(0m, 0m, 0)).Object,
             timeProvider ?? TimeProvider.System,
             NullLogger<AdminDashboardService>.Instance
         );
@@ -34,33 +37,11 @@ public sealed class AdminDashboardServiceTests
     public async Task GetMetricsAsync_WhenCalled_ReturnsCalculatedMetrics()
     {
         // Arrange
-        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2023, 10, 15, 0, 0, 0, TimeSpan.Zero));
-        var now = timeProvider.GetUtcNow();
-        var firstDayOfMonth = new DateOnly(now.Year, now.Month, 1);
-        var lastDayOfMonth = new DateOnly(now.Year, now.Month, DateTime.DaysInMonth(now.Year, now.Month));
+        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Oct15);
 
         var users = new List<User> { new User(), new User() }.AsQueryable().BuildMock();
         var userRepo = new Mock<IRepository<User>>();
         userRepo.Setup(r => r.Query()).Returns(users);
-
-        var subscriptions = new List<Subscription>
-        {
-            new Subscription { UserId = Guid.NewGuid(), Status = "active", MonthlyPriceUsd = 15.0m },
-            new Subscription { UserId = Guid.NewGuid(), Status = "active", MonthlyPriceUsd = 25.0m },
-            new Subscription { UserId = Guid.NewGuid(), Status = "cancelled", MonthlyPriceUsd = 10.0m }
-        }.AsQueryable().BuildMock();
-        var subRepo = new Mock<IRepository<Subscription>>();
-        subRepo.Setup(r => r.Query()).Returns(subscriptions);
-
-        var invoices = new List<Invoice>
-        {
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 5), TotalAmount = 50.0m },
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 20), TotalAmount = 30.0m },
-            new Invoice { Status = "unpaid", InvoiceDate = new DateOnly(2023, 10, 21), TotalAmount = 100.0m },
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 9, 21), TotalAmount = 100.0m } // Outside month
-        }.AsQueryable().BuildMock();
-        var invRepo = new Mock<IRepository<Invoice>>();
-        invRepo.Setup(r => r.Query()).Returns(invoices);
 
         var jobs = new List<BatchJob>
         {
@@ -80,7 +61,8 @@ public sealed class AdminDashboardServiceTests
         var ticketRepo = new Mock<IRepository<SupportTicket>>();
         ticketRepo.Setup(r => r.Query()).Returns(tickets);
 
-        var service = CreateService(userRepo, subRepo, invRepo, jobRepo, ticketRepo, timeProvider);
+        var revenue = RevenueReturning(totalRevenue: 2_000_000m, mrr: 1_000_000m, payingCustomers: 2);
+        var service = CreateService(userRepo, jobRepo, ticketRepo, revenue, timeProvider);
 
         // Act
         var result = await service.GetMetricsAsync();
@@ -89,11 +71,84 @@ public sealed class AdminDashboardServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.TotalUsers.Should().Be(2);
         result.Value.ActivePaidUsers.Should().Be(2);
-        result.Value.RecurringRevenue.Should().Be(40.0m);
-        result.Value.TotalRevenue.Should().Be(80.0m); // 50 + 30
+        result.Value.RecurringRevenue.Should().Be(1_000_000m);
+        result.Value.TotalRevenue.Should().Be(2_000_000m);
         result.Value.ActiveBatchJobs.Should().Be(2);
         result.Value.TotalBatchJobs.Should().Be(3);
         result.Value.PendingTickets.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task GetMetricsAsync_FillsAnEmptyJobFromItsBatchAndAiCalls()
+    {
+        var batch = new Batch
+        {
+            Name = "Shop catalog",
+            Products = [new Product(), new Product(), new Product { DeletedAt = Oct15.UtcDateTime }],
+        };
+        var jobs = new List<BatchJob>
+        {
+            new()
+            {
+                Name = "Design run", Status = "Completed", TotalProducts = 0, ProgressPercentage = 0,
+                CreatedAt = Oct15.UtcDateTime, Batch = batch, User = new User { FullName = "Lan" },
+                ApiUsageRecords = [new ApiUsageRecord { CostUsd = 0.04m }, new ApiUsageRecord { CostUsd = 0.08m }],
+            },
+            new()
+            {
+                Name = "Design run", Status = "running", TotalProducts = 10, ProgressPercentage = 40,
+                User = new User { FullName = "Minh" },
+            },
+        }.AsQueryable().BuildMock();
+        var jobRepo = new Mock<IRepository<BatchJob>>();
+        jobRepo.Setup(r => r.Query()).Returns(jobs);
+
+        var result = await CreateService(batchJobRepository: jobRepo).GetMetricsAsync();
+
+        var completed = result.Value.RecentBatchJobs.Single(job => job.UserName == "Lan");
+        completed.ItemCount.Should().Be(2);
+        completed.ProgressPercentage.Should().Be("100%");
+        completed.BatchName.Should().Be("Shop catalog");
+        completed.CreatedAt.Should().Be(Oct15.UtcDateTime);
+        completed.AiCostUsd.Should().Be(0.12m);
+
+        var running = result.Value.RecentBatchJobs.Single(job => job.UserName == "Minh");
+        running.ItemCount.Should().Be(10);
+        running.ProgressPercentage.Should().Be("40%");
+        running.BatchName.Should().BeNull();
+    }
+
+    [TestMethod]
+    [DataRow("day", "2023-10-15")]
+    [DataRow("week", "2023-10-09")]
+    [DataRow("halfyear", "2023-05-01")]
+    [DataRow("month", "2023-10-01")]
+    [DataRow("year", "2023-01-01")]
+    public async Task GetMetricsAsync_ReadsTheRevenuePageFiguresFromTheStartOfTheRangeToToday(string timeRange, string start)
+    {
+        var revenue = RevenueReturning(0m, 0m, 0);
+        var service = CreateService(revenueService: revenue, timeProvider: new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Oct15));
+
+        await service.GetMetricsAsync(timeRange);
+
+        // MRR is read at the period's end, so the period never runs past today.
+        revenue.Verify(r => r.GetMetricsAsync(
+            It.Is<RevenueFilterDto>(f => f.StartDate == DateOnly.Parse(start) && f.EndDate == new DateOnly(2023, 10, 15)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GetMetricsAsync_WhenTheRevenueFiguresFail_ReturnsTheirError()
+    {
+        var error = new Error("Revenue.Error", "Failed.", ErrorType.Failure);
+        var revenue = new Mock<IRevenueService>();
+        revenue.Setup(r => r.GetMetricsAsync(It.IsAny<RevenueFilterDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<RevenueMetricsDto>(error));
+
+        var result = await CreateService(revenueService: revenue).GetMetricsAsync();
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("Revenue.Error");
     }
 
     [TestMethod]
@@ -111,76 +166,10 @@ public sealed class AdminDashboardServiceTests
     }
 
     [TestMethod]
-    public async Task GetMetricsAsync_WithDayTimeRange_ReturnsCorrectChartData()
-    {
-        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2023, 10, 15, 0, 0, 0, TimeSpan.Zero));
-        var invoices = new List<Invoice>
-        {
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 15), TotalAmount = 50.0m },
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 10, 14), TotalAmount = 30.0m }
-        }.AsQueryable().BuildMock();
-
-        var invRepo = new Mock<IRepository<Invoice>>();
-        invRepo.Setup(r => r.Query()).Returns(invoices);
-
-        var service = CreateService(
-            userRepository: CreateEmptyMock<User>(),
-            subscriptionRepository: CreateEmptyMock<Subscription>(),
-            invoiceRepository: invRepo,
-            batchJobRepository: CreateEmptyMock<BatchJob>(),
-            ticketRepository: CreateEmptyMock<SupportTicket>(),
-            timeProvider: timeProvider);
-
-        var result = await service.GetMetricsAsync("day");
-
-        result.IsSuccess.Should().BeTrue();
-        result.Value.TotalRevenue.Should().Be(50.0m);
-        result.Value.RevenueChart.Count.Should().Be(7);
-        result.Value.RevenueChart.Last().Subscriptions.Should().Be(50.0m);
-        result.Value.RevenueChart.ElementAt(5).Subscriptions.Should().Be(30.0m);
-    }
-
-    [TestMethod]
-    public async Task GetMetricsAsync_WithYearTimeRange_ReturnsCorrectChartData()
-    {
-        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2023, 10, 15, 0, 0, 0, TimeSpan.Zero));
-        var invoices = new List<Invoice>
-        {
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2023, 5, 15), TotalAmount = 50.0m },
-            new Invoice { Status = "paid", InvoiceDate = new DateOnly(2022, 10, 14), TotalAmount = 30.0m }
-        }.AsQueryable().BuildMock();
-
-        var invRepo = new Mock<IRepository<Invoice>>();
-        invRepo.Setup(r => r.Query()).Returns(invoices);
-
-        var service = CreateService(
-            userRepository: CreateEmptyMock<User>(),
-            subscriptionRepository: CreateEmptyMock<Subscription>(),
-            invoiceRepository: invRepo,
-            batchJobRepository: CreateEmptyMock<BatchJob>(),
-            ticketRepository: CreateEmptyMock<SupportTicket>(),
-            timeProvider: timeProvider);
-
-        var result = await service.GetMetricsAsync("year");
-
-        result.IsSuccess.Should().BeTrue();
-        result.Value.TotalRevenue.Should().Be(50.0m);
-        result.Value.RevenueChart.Count.Should().Be(5);
-        result.Value.RevenueChart.Last().Subscriptions.Should().Be(50.0m);
-        result.Value.RevenueChart.ElementAt(3).Subscriptions.Should().Be(30.0m);
-    }
-
-    [TestMethod]
     public async Task ExportMetricsAsync_WhenCalled_ReturnsCsvData()
     {
-        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(new DateTimeOffset(2023, 10, 15, 0, 0, 0, TimeSpan.Zero));
-        var service = CreateService(
-            userRepository: CreateEmptyMock<User>(),
-            subscriptionRepository: CreateEmptyMock<Subscription>(),
-            invoiceRepository: CreateEmptyMock<Invoice>(),
-            batchJobRepository: CreateEmptyMock<BatchJob>(),
-            ticketRepository: CreateEmptyMock<SupportTicket>(),
-            timeProvider: timeProvider);
+        var timeProvider = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Oct15);
+        var service = CreateService(revenueService: RevenueReturning(2_000_000m, 1_000_000m, 2), timeProvider: timeProvider);
 
         var result = await service.ExportMetricsAsync("month", new DateTime(2023, 10, 15));
 
@@ -191,6 +180,7 @@ public sealed class AdminDashboardServiceTests
         csvContent.Should().Contain("Admin Dashboard Export");
         csvContent.Should().Contain("Time Range,month");
         csvContent.Should().Contain("Date,2023-10-15");
+        csvContent.Should().Contain("Total Revenue,2000000");
     }
 
     [TestMethod]
@@ -204,6 +194,19 @@ public sealed class AdminDashboardServiceTests
 
         result.IsFailure.Should().BeTrue();
         result.Error.Code.Should().Be("AdminDashboard.Error");
+    }
+
+    private static Mock<IRevenueService> RevenueReturning(decimal totalRevenue, decimal mrr, int payingCustomers)
+    {
+        var revenue = new Mock<IRevenueService>();
+        revenue.Setup(r => r.GetMetricsAsync(It.IsAny<RevenueFilterDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new RevenueMetricsDto
+            {
+                TotalRevenue = new MetricDetail { Value = totalRevenue },
+                SubscriptionMrr = new MetricDetail { Value = mrr },
+                ActiveSubscribers = new MetricDetail { Value = payingCustomers }
+            }));
+        return revenue;
     }
 
     private static Mock<IRepository<T>> CreateEmptyMock<T>() where T : class

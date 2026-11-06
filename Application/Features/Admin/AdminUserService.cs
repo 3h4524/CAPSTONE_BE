@@ -4,11 +4,13 @@ using APCS.Application.Features.Admin.Dtos.Request;
 using APCS.Application.Features.Admin.Dtos.Response;
 using APCS.Application.Features.Auth;
 using APCS.Application.Features.Auth.Dtos.Request;
+using APCS.Application.Features.Subscriptions;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Admin;
 
@@ -23,6 +25,7 @@ public sealed class AdminUserService(
     ICurrentUser currentUser,
     IAuthService authService,
     TimeProvider timeProvider,
+    IOptions<PaymentGatewaySettings> gatewaySettings,
     ILogger<AdminUserService> logger)
     : IAdminUserService
 {
@@ -95,7 +98,7 @@ public sealed class AdminUserService(
             Roles: u.UserRoleUsers.Select(ur => ur.Role.Name).ToList(),
             Plan: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: u.BatchJobs.Count,
-            MonthlyApiCost: u.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
+            MonthlyApiCost: MonthlyPriceVnd(u),
             Birthday: u.Birthday,
             CreatedAt: u.CreatedAt
         )).ToList();
@@ -138,7 +141,7 @@ public sealed class AdminUserService(
             Roles: user.UserRoleUsers.Select(ur => ur.Role.Name).ToList(),
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
-            MonthlyApiCost: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
+            MonthlyApiCost: MonthlyPriceVnd(user),
             Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );
@@ -376,11 +379,30 @@ public sealed class AdminUserService(
             Roles: resultRoles,
             Plan: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.Name ?? "Free",
             TotalJobs: user.BatchJobs.Count,
-            MonthlyApiCost: user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active")?.Plan?.MonthlyPriceUsd ?? 0m,
+            MonthlyApiCost: MonthlyPriceVnd(user),
             Birthday: user.Birthday,
             CreatedAt: user.CreatedAt
         );
 
         return Result<AdminUserDto>.Success(dto);
+    }
+
+    /// <summary>
+    /// What the Seller pays a month, counted as the Revenue page counts MRR: the stored price for
+    /// their billing cycle (annual / 12) at the PayOS rate, in VND. A free trial pays nothing.
+    /// </summary>
+    private decimal MonthlyPriceVnd(User user)
+    {
+        var subscription = user.Subscriptions.FirstOrDefault(s => s.Status.ToLower() == "active");
+        if (subscription is null || subscription.TrialEndsAt is not null)
+        {
+            return 0m;
+        }
+
+        var monthly = string.Equals(subscription.BillingCycle, "annual", StringComparison.OrdinalIgnoreCase)
+            && subscription.AnnualPriceUsd is { } annual
+                ? annual / 12m
+                : subscription.MonthlyPriceUsd;
+        return Math.Round(monthly * gatewaySettings.Value.UsdToVndRate, 0);
     }
 }
