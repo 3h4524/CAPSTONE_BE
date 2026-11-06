@@ -72,6 +72,18 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                 { await FailAsync(job.Id, new(token, "Source mockup is no longer approved at the rendered revision."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"mockups/{asset.Id}.png"));
             }
+            // Model photo images ride along as they were when the package was planned, and only while still approved.
+            if (payload.Manifest.TryGetProperty("modelPhotos", out var modelPhotos) && modelPhotos.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var photo in modelPhotos.EnumerateArray())
+                {
+                    var asset = photo.TryGetProperty("mockupId", out var id) && id.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
+                    if (asset == null || asset.DeletedAt != null || asset.ApprovalStatus != "approved"
+                        || !photo.TryGetProperty("sourceHash", out var hash) || asset.ContentHash != hash.GetString())
+                    { await FailAsync(job.Id, new(token, "A model photo image changed after the package was planned. Export again."), ct); return Result.Success<WorkerJob?>(null); }
+                    workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"model-photos/{asset.Id}.png"));
+                }
+            }
             workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey, "video", payload.VideoStorageVersion), "video.mp4"));
             workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
             uploads["zip"] = storage.CreateUploadGrant(OutputKey(job, token, "package.zip"), "raw");

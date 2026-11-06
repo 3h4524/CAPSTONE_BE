@@ -17,6 +17,9 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// <param name="GarmentMaskUrl">The garment mask image, for placing the print area and live recolor previews; null until the photo has been analyzed.</param>
 /// <param name="GarmentColor">The template's own garment color, used when a batch picks no colors; null keeps the photo's color.</param>
 /// <param name="AllowBackground">Whether a batch may put the garment on another background; the photo must have been analyzed.</param>
+/// <param name="Kind">'garment' for a photo of the garment alone, 'model' for a person wearing it.</param>
+/// <param name="Attributes">For a model photo, who is in it; null when not told.</param>
+/// <param name="AiGenerated">Whether the photo was made by AI rather than uploaded.</param>
 public sealed record MockupTemplateResponseDto(
     Guid Id,
     string Name,
@@ -33,4 +36,7 @@ public sealed record MockupTemplateResponseDto(
     bool AllowRecolor,
     string? GarmentMaskUrl,
     string? GarmentColor,
-    bool AllowBackground = false);
+    bool AllowBackground = false,
+    string Kind = "garment",
+    APCS.Application.Features.BatchMockups.Common.ModelAttributesDto? Attributes = null,
+    bool AiGenerated = false);

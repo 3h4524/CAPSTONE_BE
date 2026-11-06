@@ -48,6 +48,7 @@ public sealed class MockupTemplateService(
 
         var items = await templates.Query()
             .Where(template => template.IsActive == true
+                && template.Kind != MockupRules.ModelKind
                 && (template.UserId == null || template.UserId == userId)
                 && (string.IsNullOrEmpty(normalizedType) || template.ProductType.ToLower() == normalizedType))
             .OrderByDescending(template => template.UsageCount)
@@ -90,7 +91,7 @@ public sealed class MockupTemplateService(
             return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.JobGenerating());
 
         var candidates = await templates.Query()
-            .Where(template => request.TemplateIds.Contains(template.Id) && template.IsActive == true)
+            .Where(template => request.TemplateIds.Contains(template.Id) && template.IsActive == true && template.Kind != MockupRules.ModelKind)
             .ToListAsync(cancellationToken);
 
         if (candidates.Count != request.TemplateIds.Count)
@@ -174,6 +175,7 @@ public sealed class MockupTemplateService(
             IsSystemTemplate = false,
             IsActive = true,
             UsageCount = 0,
+            Kind = MockupRules.GarmentKind,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -222,7 +224,8 @@ public sealed class MockupTemplateService(
         }
 
         var template = await templates.GetByIdAsync(id, cancellationToken);
-        if (template is null || template.IsActive != true)
+        // A model photo is changed through its own endpoints: its garment is a selection, not what the model finds.
+        if (template is null || template.IsActive != true || MockupRules.IsModelPhoto(template))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.TemplateNotFoundSingle());
         if (template.UserId is null || template.UserId != userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.UpdateNotOwner());
@@ -328,7 +331,7 @@ public sealed class MockupTemplateService(
             return Result.Failure(MockupErrors.Unauthenticated("delete"));
 
         var template = await templates.GetByIdAsync(id, cancellationToken);
-        if (template is null || template.IsActive != true)
+        if (template is null || template.IsActive != true || MockupRules.IsModelPhoto(template))
             return Result.Failure(MockupErrors.TemplateNotFoundSingle());
         if (template.UserId is null || template.UserId != userId)
             return Result.Failure(MockupErrors.DeleteNotOwner());
@@ -365,7 +368,7 @@ public sealed class MockupTemplateService(
             return Result.Failure<MockupImageResponseDto>(MockupErrors.DesignImageNotFound());
 
         var template = await templates.Query()
-            .SingleOrDefaultAsync(item => item.Id == request.MockupTemplateId && item.IsActive == true
+            .SingleOrDefaultAsync(item => item.Id == request.MockupTemplateId && item.IsActive == true && item.Kind != MockupRules.ModelKind
                 && (item.UserId == null || item.UserId == userId), cancellationToken);
         if (template is null)
             return Result.Failure<MockupImageResponseDto>(MockupErrors.TemplateNotFoundSingle());
@@ -494,13 +497,13 @@ public sealed class MockupTemplateService(
         var overrides = ReadOverrides(batch.Config);
 
         var selectedTemplates = await templates.Query()
-            .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true
+            .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true && template.Kind != MockupRules.ModelKind
                 && (template.UserId == null || template.UserId == userId))
             .ToListAsync(cancellationToken);
         // A mock-up made its own way may use a template the job did not select.
         var otherTemplateIds = overrides.Values.Select(item => item.MockupTemplateId).Where(id => !selectedIds.Contains(id)).Distinct().ToList();
         var otherTemplates = otherTemplateIds.Count == 0 ? [] : await templates.Query()
-            .Where(template => otherTemplateIds.Contains(template.Id) && template.IsActive == true
+            .Where(template => otherTemplateIds.Contains(template.Id) && template.IsActive == true && template.Kind != MockupRules.ModelKind
                 && (template.UserId == null || template.UserId == userId))
             .ToListAsync(cancellationToken);
         var templatesById = selectedTemplates.Concat(otherTemplates).ToDictionary(template => template.Id);
@@ -770,7 +773,7 @@ public sealed class MockupTemplateService(
         if (!templatesById.TryGetValue(requested.MockupTemplateId, out var template))
         {
             template = await templates.Query()
-                .SingleOrDefaultAsync(item => item.Id == requested.MockupTemplateId && item.IsActive == true
+                .SingleOrDefaultAsync(item => item.Id == requested.MockupTemplateId && item.IsActive == true && item.Kind != MockupRules.ModelKind
                     && (item.UserId == null || item.UserId == userId), cancellationToken);
             templatesById[requested.MockupTemplateId] = template;
         }
@@ -1244,34 +1247,7 @@ public sealed class MockupTemplateService(
 
     private static readonly JsonSerializerOptions OverrideJson = new(JsonSerializerDefaults.Web);
 
-    private static IReadOnlyDictionary<string, MockupOverrideDto> ReadOverrides(string config)
-    {
-        var result = new Dictionary<string, MockupOverrideDto>();
-        try
-        {
-            if (JsonNode.Parse(config)?[MockupRules.OverridesConfigKey] is not JsonObject bySlot)
-                return result;
-
-            foreach (var (slotKey, value) in bySlot)
-            {
-                if (!MockupRules.TryReadSlotKey(slotKey, out _, out _) || value is not JsonObject)
-                    continue;
-                // An entry this version can't read is skipped, so one bad entry never stops the job's mock-ups.
-                try
-                {
-                    if (value.Deserialize<MockupOverrideDto>(OverrideJson) is { MockupTemplateId: var templateId } item && templateId != Guid.Empty)
-                        result[slotKey] = item;
-                }
-                catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
-            }
-        }
-        catch (JsonException)
-        {
-            result.Clear();
-        }
-
-        return result;
-    }
+    private static IReadOnlyDictionary<string, MockupOverrideDto> ReadOverrides(string config) => MockupRules.ReadOverrides(config);
 
     private static string WriteOverrides(string config, IReadOnlyDictionary<string, MockupOverrideDto> overrides)
     {

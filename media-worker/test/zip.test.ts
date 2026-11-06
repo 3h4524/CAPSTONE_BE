@@ -28,6 +28,20 @@ test("ZIP contains exact approved media entries and sanitized provenance", async
     assert.deepEqual(extractedManifest, manifest);
   } finally { if (resolve(directory).startsWith(resolve(tmpdir()) + sep)) await rm(directory, { recursive: true, force: true }); }
 });
+test("ZIP carries model photo images beside the video's sources", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apcs-zip-test-"));
+  try {
+    const source = join(directory, "source"); await writeFile(source, "fixture bytes");
+    const zipFile = join(directory, "package.zip");
+    const withPhotos = { ...manifest, modelPhotos: [{ mockupId: id, sourceHash: "c".repeat(64), source: `model-photos/${id}.png` }] };
+    await createZip(zipFile, new Map(["video.mp4", "thumbnail.png", `mockups/${id}.png`, `model-photos/${id}.png`].map(name => [name, { file: source, data: Buffer.from("fixture bytes") }])), withPhotos, AbortSignal.timeout(5000));
+    const zip = await readFile(zipFile);
+    assert.ok(zip.includes(Buffer.from(`model-photos/${id}.png`)));
+  } finally { if (resolve(directory).startsWith(resolve(tmpdir()) + sep)) await rm(directory, { recursive: true, force: true }); }
+});
+test("ZIP refuses a model photo entry outside its folder", async () => {
+  await assert.rejects(createZip("unused.zip", new Map(), { ...manifest, modelPhotos: [{ mockupId: id, sourceHash: "c".repeat(64), source: "../secret.png" }] }, AbortSignal.timeout(5000)));
+});
 test("ZIP refuses path traversal and sensitive manifest fields before creating a file", async () => {
   await assert.rejects(createZip("unused.zip", new Map([["../secret", { file: "unused", data: Buffer.alloc(0) }]]), manifest, AbortSignal.timeout(5000)), /Unsafe ZIP/);
   await assert.rejects(createZip("unused.zip", new Map(), { ...manifest, signedUrl: "secret" }, AbortSignal.timeout(5000)));

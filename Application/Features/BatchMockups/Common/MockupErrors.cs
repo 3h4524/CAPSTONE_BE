@@ -68,6 +68,24 @@ public static class MockupErrors
     public static Error TemplateNotForProduct(string name) =>
         Error.Conflict("BatchMockups.TemplateNotForProduct", $"The template {name} is for another type of product than this one.");
 
+    public static Error ModelPhotoNotFound() =>
+        Error.NotFound("BatchMockups.ModelPhotoNotFound", "This model photo was not found.");
+
+    public static Error ModelPhotoNotOwner() =>
+        Error.Forbidden("BatchMockups.NotOwner", "You can only change your own model photos.");
+
+    public static Error ModelPhotoRequired() =>
+        Error.Validation("Upload a photo of a person wearing a plain, light garment.");
+
+    public static Error GarmentSelectionRequired() =>
+        Error.Validation("Select the garment on the photo.");
+
+    public static Error GarmentNotFound() =>
+        Error.Conflict("BatchMockups.GarmentNotFound", "The garment could not be found on this photo automatically. Select it by hand, or use a photo of a person facing the camera in a plain, light top.");
+
+    public static Error ModelPhotoUnusable(string reason) =>
+        Error.Conflict("BatchMockups.ModelPhotoUnusable", $"This model photo can't be used: {reason}");
+
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
 }

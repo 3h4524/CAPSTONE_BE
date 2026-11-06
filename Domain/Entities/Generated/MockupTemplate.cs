@@ -45,6 +45,18 @@ public partial class MockupTemplate
 
     public bool BackgroundRemoved { get; set; }
 
+    public string Kind { get; set; } = null!;
+
+    public string? People { get; set; }
+
+    public string? AgeGroup { get; set; }
+
+    public string? Gender { get; set; }
+
+    public string? GroupType { get; set; }
+
+    public bool AiGenerated { get; set; }
+
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 
     public virtual ICollection<ProductMockupTemplate> ProductMockupTemplates { get; set; } = new List<ProductMockupTemplate>();
