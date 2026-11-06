@@ -314,6 +314,7 @@ public static class DependencyInjection
         services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
+        services.AddSingleton<ILocalExportStore, LocalExportStore>();
         services.AddHttpClient("VideoQualityWorker", client => client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddScoped<ProcessVideoQualityEvidenceRunner>();
         services.AddScoped<IVideoQualityEvidenceRunner, VideoQualityEvidenceRunner>();

@@ -1,0 +1,13 @@
+@baseUrl = http://localhost:5191
+@accessToken = replace-with-access-token
+@batchId = 00000000-0000-0000-0000-000000000001
+
+### Preview approved assets for a batch
+POST {{baseUrl}}/api/exports/preview
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "batchId": "{{batchId}}",
+  "productIds": []
+}

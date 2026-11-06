@@ -1,6 +1,7 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.ListingContent.Dtos;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -10,7 +11,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
-    IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null)
+    IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
+    IRepository<DesignImage>? designImages = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -141,6 +143,35 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     var approvedVideo = (await videos.GetByIdAsync(pointer.VideoId, ct))!;
                     if (approvedVideo.ApprovalStatus != "approved") { node.Status = "failed"; run.Status = "failed"; run.ErrorMessage = "Export requires the exact approved video."; return; }
                     var videoScenes = (await scenes.FindAsync(x => x.PromoVideoId == approvedVideo.Id, ct)).OrderBy(x => x.SceneOrder).ToArray();
+                    var exportProduct = await products.GetByIdAsync(run.ProductId, ct);
+                    var approvedMockups = (await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null &&
+                        x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct))
+                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, x.StorageVersion, x.ContentHash, x.MetadataRevision)).ToArray();
+                    var approvedDesigns = designImages is null ? [] : (await designImages.FindAsync(x => x.ProductId == run.ProductId &&
+                        x.DeletedAt == null && x.ApprovalStatus == "approved", ct))
+                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex)).ToArray();
+                    ExportListingSnapshot? exportListing = null;
+                    var listingNode = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing" && x.Status == "succeeded");
+                    if (listingNode is not null)
+                    {
+                        try
+                        {
+                            var generatedListing = WorkflowJson.Read<ListingContentResponseDto>(listingNode.OutputSnapshot);
+                            exportListing = new(generatedListing.Title, generatedListing.Description,
+                                generatedListing.Tags.OrderBy(tag => tag.Position).Select(tag => tag.Value).ToArray(), generatedListing.VersionNumber);
+                        }
+                        catch (JsonException) { }
+                    }
+                    VideoExportSourceSnapshot? sceneSnapshot = null;
+                    Storyboard? exportStoryboard = null;
+                    try
+                    {
+                        using var snapshotDocument = JsonDocument.Parse(approvedVideo.ConfigSnapshot);
+                        exportStoryboard = snapshotDocument.RootElement.GetProperty("storyboard").Deserialize<Storyboard>(WorkflowJson.Options);
+                        if (snapshotDocument.RootElement.TryGetProperty("exportSources", out var sourceElement))
+                            sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);
+                    }
+                    catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentNullException) { }
                     var manifest = new { schemaVersion = 1, productId = run.ProductId, videoId = approvedVideo.Id, version = approvedVideo.VersionNumber,
                         mode = approvedVideo.Mode, fingerprint = approvedVideo.Fingerprint, approvedRevision = approvedVideo.ReviewRevision,
                         video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
@@ -153,7 +184,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         IncludePromoVideo = true, IncludeMockupImages = true, IncludeDesignImages = false, IncludeListingContent = false, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
                     node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
                     await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
-                        approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest)), ct); return;
+                        approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
+                        exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot), ct); return;
             }
         }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;

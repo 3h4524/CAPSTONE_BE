@@ -254,7 +254,7 @@ public sealed class VideoQualityJobService(IRepository<WorkflowRun> runs, IRepos
                     item.Fingerprint == shot.Fingerprint && item.Status == "stored");
                 return new VideoQualitySceneJobTarget(shot.SceneOrder, shot.MockupId, shot.Fingerprint,
                     state?.StorageKey, state?.StorageVersion, shot.ProviderKey, shot.SourceHash,
-                    VideoOutputFormats.Resolve(render.Value.Payload.Storyboard.OutputFormat).AspectRatio, shot.SourceCrop);
+                    VideoOutputFormats.AiSourceAspect(render.Value.Payload.Storyboard.OutputFormat), shot.SourceCrop);
             }).ToArray() ?? [];
     }
 

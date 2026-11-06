@@ -12,10 +12,11 @@ public interface IVideoArtifactService
     Task<Result<IReadOnlyList<VideoResponse>>> ListAsync(Guid runId, CancellationToken ct);
     Task<Result<IReadOnlyList<AiSceneVideoResponse>>> ListSceneClipsAsync(Guid runId, CancellationToken ct);
     Task<Result<string>> DownloadAsync(Guid id, bool zip, CancellationToken ct);
+    Task<Result<Stream>> OpenLocalExportAsync(Guid id, CancellationToken ct);
 }
 public sealed class VideoArtifactService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<PromoVideo> videos,
     IRepository<PromoVideoScene> scenes, IRepository<ExportPackage> exports, IRepository<WorkflowNodeRun> nodes,
-    IRepository<MediaJob> jobs, IMediaStorage storage, TimeProvider time) : IVideoArtifactService
+    IRepository<MediaJob> jobs, IMediaStorage storage, TimeProvider time, ILocalExportStore? localExports = null) : IVideoArtifactService
 {
     public async Task<Result<IReadOnlyList<VideoResponse>>> ListAsync(Guid runId, CancellationToken ct)
     {
@@ -80,12 +81,22 @@ public sealed class VideoArtifactService(ICurrentUser user, IRepository<Workflow
             var package = await exports.GetByIdAsync(id, ct);
             if (package == null || package.UserId != user.UserId || package.Status != "ready" || package.ExpiresAt <= time.GetUtcNow().UtcDateTime || package.StorageKey == null)
                 return Result.Failure<string>(Missing());
+            if (package.StorageProvider == "local") return Result.Success("local");
             return Result.Success(storage.SignRead(package.StorageKey, "raw", attachment: true));
         }
         var video = await videos.GetByIdAsync(id, ct);
         var run = video?.WorkflowRunId != null ? await runs.GetByIdAsync(video.WorkflowRunId.Value, ct) : null;
         if (run?.UserId != user.UserId || video?.StorageKey == null || video.Status != "completed") return Result.Failure<string>(Missing());
         return Result.Success(storage.SignRead(video.StorageKey, "video", video.StorageVersion, true));
+    }
+    public async Task<Result<Stream>> OpenLocalExportAsync(Guid id, CancellationToken ct)
+    {
+        var package = await exports.GetByIdAsync(id, ct);
+        if (package is not { StorageProvider: "local", Status: "ready", StorageKey: not null } ||
+            package.UserId != user.UserId || package.ExpiresAt <= time.GetUtcNow().UtcDateTime || localExports is null)
+            return Result.Failure<Stream>(Missing());
+        var stream = await localExports.OpenReadAsync(package.StorageKey, ct);
+        return stream is null ? Result.Failure<Stream>(Missing()) : Result.Success(stream);
     }
     private static Error Missing() => Error.NotFound("MediaNotFound", "Ready media not found.");
 }

@@ -28,20 +28,26 @@ test("Standard custom framing preserves normalized start and end crops and suppo
     assert.equal(storyboardSchema.safeParse(invalid).success, false);
   }
 });
-test("Standard storyboard enforces the two-to-four scene range independently of frame totals", () => {
-  const board = fixtureBoard();
-  const oneScene = { ...board, scenes: [{ ...board.scenes[0]!, durationFrames: 360 }] };
+test("Standard storyboard allows one to four scenes and rejects AI shots", () => {
+  const board = fixtureBoard("tshirt", fixtureImage(), 6);
+  const oneScene = { ...board, outputDurationFrames: 180, scenes: [{ ...board.scenes[0]!, durationFrames: 180 }] };
   const fiveScenes = { ...board, scenes: Array.from({ length: 5 }, (_, index) => ({
-    ...board.scenes[0]!, sceneOrder: index, durationFrames: 72,
+    ...board.scenes[0]!, sceneOrder: index, durationFrames: 36,
   })) };
-  assert.equal(storyboardSchema.safeParse(oneScene).success, false);
+  assert.equal(storyboardSchema.safeParse(oneScene).success, true);
   assert.equal(storyboardSchema.safeParse(fiveScenes).success, false);
+  const aiShot = { sceneOrder: 0, mockupId: board.scenes[0]!.mockupId, sourceHash: board.scenes[0]!.sourceHash, model: "MiniMax-H3", preset: "product_cinematic", prompt: "Motion", durationSeconds: 6, fingerprint: "b".repeat(64) };
+  assert.equal(storyboardSchema.safeParse({ ...oneScene, aiShots: [aiShot] }).success, false);
 });
 test("AI Shot storyboard accepts a mixed 6-second clip and a full 15-second overlap", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);
   const ai = { sceneOrder: 0, mockupId: base.scenes[0]!.mockupId, sourceHash: base.scenes[0]!.sourceHash, model: "MiniMax-H3", preset: "product_cinematic", prompt: "Smooth product motion", durationSeconds: 6, fingerprint: "b".repeat(64), providerKey: "minimax", modelKey: "minimax_h3", resolution: "768P", pricePerSecondUsd: 0.08 };
   const mixed = { ...base, mode: "ai_shot", aiShots: [ai], scenes: [{ ...base.scenes[0], generationStrategy: "ai_shot", durationFrames: 180 }, { ...base.scenes[1], durationFrames: 180 }] };
   assert.equal(storyboardSchema.safeParse(mixed).success, true);
+  const square = { ...mixed, outputFormat: "square", width: 1080, height: 1080, aspectRatio: "1:1",
+    scenes: [{ ...mixed.scenes[0], aiCropPosition: { x: 0.5, y: 0.2 } }, mixed.scenes[1]] };
+  assert.deepEqual(storyboardSchema.parse(square).scenes[0]?.aiCropPosition, { x: 0.5, y: 0.2 });
+  assert.equal(storyboardSchema.safeParse({ ...square, scenes: [{ ...square.scenes[0], aiCropPosition: { x: 1.1, y: 0 } }, square.scenes[1]] }).success, false);
   const queuedWithTemplateCameraMotion = {
     ...mixed,
     scenes: mixed.scenes.map((scene, index) =>
