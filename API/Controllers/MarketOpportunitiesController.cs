@@ -25,6 +25,12 @@ public sealed class MarketOpportunitiesController(
     public async Task<IActionResult> Refresh(CancellationToken cancellationToken) =>
         Ok(await service.RefreshRankingAsync(cancellationToken));
 
+    [HttpGet("insights")]
+    public Task<IReadOnlyList<SellerNicheMarketInsightResponse>> GetInsights(
+        [FromQuery] int limit = 12,
+        CancellationToken cancellationToken = default) =>
+        service.GetMarketInsightsAsync(limit, cancellationToken);
+
     [HttpGet]
     public Task<IReadOnlyList<SellerOpportunityResponse>> List(
         [FromQuery] string? state,
@@ -53,6 +59,13 @@ public sealed class MarketOpportunitiesController(
     public async Task<IActionResult> Analyze(Guid id, CancellationToken cancellationToken)
     {
         var result = await analysisService.AnalyzeAsync(id, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpGet("{id:guid}/analysis/latest")]
+    public async Task<IActionResult> GetLatestAnalysis(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await analysisService.GetLatestAsync(id, cancellationToken);
         return result is null ? NotFound() : Ok(result);
     }
 }

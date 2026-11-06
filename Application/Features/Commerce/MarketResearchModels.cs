@@ -41,7 +41,13 @@ public sealed record MarketResearchSchedule(
     int TopN,
     int IntervalMinutes,
     DateTimeOffset? LastRunAtUtc,
-    DateTimeOffset? NextRunAtUtc);
+    DateTimeOffset? NextRunAtUtc,
+    Guid? LastJobId = null,
+    int BatchSize = 5,
+    int RunWindowMinutes = 120,
+    DateTimeOffset? WindowStartedAtUtc = null,
+    DateTimeOffset? WindowEndsAtUtc = null,
+    int NextQueryOffset = 0);
 
 public sealed record UpdateMarketResearchScheduleRequest(
     bool Enabled,
@@ -50,4 +56,6 @@ public sealed record UpdateMarketResearchScheduleRequest(
     int LimitPerQuery,
     double MinimumViralScore,
     int TopN,
-    int IntervalMinutes);
+    int IntervalMinutes,
+    int BatchSize = 5,
+    int RunWindowMinutes = 120);

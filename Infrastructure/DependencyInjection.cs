@@ -11,6 +11,7 @@ using APCS.Application.Abstractions.VideoQuality;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Abstractions.Translation;
 using APCS.Application.Features.Admin.SubscriptionPlans;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.Commerce;
@@ -142,6 +143,7 @@ public static class DependencyInjection
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IPlanAiReviewQueue, APCS.Infrastructure.BackgroundServices.PlanAiReviewQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
+        services.AddSingleton<IMarketResearchQueue, APCS.Infrastructure.BackgroundServices.MarketResearchQueueChannel>();
         services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
@@ -181,6 +183,15 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(MarketResearchOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddOptions<TranslationOptions>()
+            .Bind(configuration.GetSection(TranslationOptions.SectionName));
+        services.AddHttpClient<GoogleTranslationProvider>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Translation/1.0");
+        });
+        services.AddScoped<ITranslationProvider>(provider =>
+            provider.GetRequiredService<GoogleTranslationProvider>());
         services.AddHttpClient(EtsyMarketDataConnector.HttpClientName, (provider, client) =>
         {
             var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
@@ -192,6 +203,7 @@ public static class DependencyInjection
         });
         services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
         services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
+        services.AddScoped<IMarketInsightScheduleService, MarketInsightScheduleService>();
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
@@ -207,10 +219,12 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
 
         return services;
     }
@@ -243,6 +257,7 @@ public static class DependencyInjection
     /// </summary>
     private static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddMemoryCache();
         services.AddHttpContextAccessor();
         var keyProtection = services.AddDataProtection().SetApplicationName("APCS");
         if (configuration["ApiKeys:KeyRingPath"] is { Length: > 0 } keyRingPath)

@@ -50,6 +50,22 @@ public sealed record CommerceMarketSearchRequest(
     int LimitPerQuery = 25,
     string? Language = null);
 
+/// <summary>
+/// The marketplace's own figures for one search query. <see cref="TotalResults"/> counts every
+/// matching active listing, so it stays comparable across runs whatever the sample size was.
+/// </summary>
+public sealed record CommerceMarketQueryResult(
+    string Query,
+    int? TotalResults,
+    int SampleSize,
+    int LimitUsed,
+    string SortOn);
+
+/// <summary>The sampled listings of a search together with each query's marketplace totals.</summary>
+public sealed record CommerceMarketSearchResult(
+    IReadOnlyList<CommerceMarketListing> Listings,
+    IReadOnlyList<CommerceMarketQueryResult> Queries);
+
 /// <summary>Normalized public listing data used for cross-platform market research.</summary>
 public sealed record CommerceMarketListing(
     CommercePlatform Platform,
@@ -66,4 +82,6 @@ public sealed record CommerceMarketListing(
     DateTimeOffset? CreatedAtUtc,
     DateTimeOffset? UpdatedAtUtc,
     IReadOnlyCollection<string> Tags,
-    string? MatchedQuery = null);
+    string? MatchedQuery = null,
+    int? Rank = null,
+    string? RawPayload = null);

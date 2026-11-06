@@ -23,6 +23,7 @@ public sealed record OpportunityAnalysisResponse(
 public interface IOpportunityAnalysisService
 {
     Task<OpportunityAnalysisResponse?> AnalyzeAsync(Guid sellerOpportunityId, CancellationToken cancellationToken = default);
+    Task<OpportunityAnalysisResponse?> GetLatestAsync(Guid sellerOpportunityId, CancellationToken cancellationToken = default);
 }
 
 public sealed class OpportunityAnalysisService(
@@ -34,8 +35,8 @@ public sealed class OpportunityAnalysisService(
     IGeminiTextGenerationProvider textGeneration) : IOpportunityAnalysisService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-    private const string PromptVersion = "opportunity-analyst-v1";
-    private const string SchemaVersion = "opportunity-analysis-v1";
+    private const string PromptVersion = "opportunity-action-navigator-v2";
+    private const string SchemaVersion = "opportunity-analysis-v2";
 
     public async Task<OpportunityAnalysisResponse?> AnalyzeAsync(
         Guid sellerOpportunityId,
@@ -64,9 +65,30 @@ public sealed class OpportunityAnalysisService(
                 x.Snapshot.Currency,
                 x.Snapshot.Favorites,
                 x.Snapshot.Views,
-                x.Snapshot.MatchedQuery
+                x.Snapshot.MatchedQuery,
+                x.Snapshot.ExternalListingId,
+                x.Snapshot.ObservedAt,
+                x.Snapshot.IsSynthetic
             })
             .ToListAsync(cancellationToken);
+
+        var evidenceAll = await evidence.Query()
+            .Where(x => x.OpportunityId == sellerOpportunity.OpportunityId)
+            .Select(x => new
+            {
+                x.Snapshot.ExternalListingId,
+                x.Snapshot.ObservedAt,
+                x.Snapshot.IsSynthetic
+            })
+            .ToListAsync(cancellationToken);
+        var evidenceSummary = new
+        {
+            totalEvidence = evidenceAll.Count,
+            realEvidence = evidenceAll.Count(x => !x.IsSynthetic),
+            syntheticEvidence = evidenceAll.Count(x => x.IsSynthetic),
+            distinctListings = evidenceAll.Select(x => x.ExternalListingId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            observationPeriods = evidenceAll.Select(x => x.ObservedAt.Date).Distinct().Count()
+        };
 
         var input = new
         {
@@ -81,6 +103,7 @@ public sealed class OpportunityAnalysisService(
             sellerFitScore = sellerOpportunity.SellerFitScore,
             finalScore = sellerOpportunity.FinalScore,
             fitBreakdown = sellerOpportunity.FitBreakdown,
+            evidenceSummary,
             evidence = evidenceRows
         };
         var inputSnapshot = JsonSerializer.Serialize(input, JsonOptions);
@@ -103,10 +126,19 @@ public sealed class OpportunityAnalysisService(
         {
             var generated = await textGeneration.GenerateAsync(
                 new GeminiTextGenerationRequest(
-                    $"Analyze this seller-specific market opportunity. Return ONLY valid JSON matching this schema: " +
+                    $"Act as an action navigator for an Etsy seller. Analyze this seller-specific market opportunity and return ONLY valid JSON matching this schema: " +
                     """{"summary":"string","recommendation":"string","supportingPoints":["string"],"risks":["string"],"actionPlan":["string"],"confidenceNote":"string"}""" +
-                    "\nDo not invent facts. Use only the supplied scores and evidence IDs. Mark uncertainty clearly.\nINPUT:\n" + inputSnapshot,
-                    "You are an evidence-grounded Etsy opportunity analyst. Never copy listing text. Keep the answer concise and actionable."),
+                    "\nRules:\n" +
+                    "- Start with the decision the seller should make now: validate, test, hold, or avoid.\n" +
+                    "- Treat market scores as proxies, not sales. Never claim demand, revenue, or bestseller status unless supplied.\n" +
+                    "- If syntheticEvidence is greater than zero, explicitly state that the signal is simulated. If realEvidence is zero, recommendation must be validation-first and must not recommend scaling.\n" +
+                    "- Use the seller fit breakdown to explain what the seller should change: category, keywords, price, or positioning.\n" +
+                    "- supportingPoints must cite concrete supplied numbers (scores, counts, price, trend, or evidence summary).\n" +
+                    "- risks must be specific and decision-relevant, not generic warnings.\n" +
+                    "- Return exactly 3 actionPlan items: (1) an immediate action within 24 hours, (2) a validation action within 7 days, and (3) a go/no-go gate with a measurable threshold. Each item must state Do -> Why -> Success check.\n" +
+                    "- Do not repeat vague advice such as 'refine keywords'. Name the exact keyword/category/price decision using only the input.\n" +
+                    "- Keep every field concise. Never copy listing text or invent missing Etsy transaction data.\nINPUT:\n" + inputSnapshot,
+                    "You are an evidence-grounded Etsy action navigator. Convert supplied evidence into a concrete next decision while clearly separating synthetic signals from real market evidence."),
                 cancellationToken);
             var parsed = Parse(generated.Text);
 
@@ -128,6 +160,44 @@ public sealed class OpportunityAnalysisService(
             await unitOfWork.SaveChangesAsync(cancellationToken);
             throw;
         }
+    }
+
+    public async Task<OpportunityAnalysisResponse?> GetLatestAsync(
+        Guid sellerOpportunityId,
+        CancellationToken cancellationToken = default)
+    {
+        var userId = currentUser.UserId ?? throw new UnauthorizedAccessException("Authentication is required.");
+        var run = await runs.Query()
+            .Where(x => x.SellerOpportunityId == sellerOpportunityId
+                && x.SellerOpportunity.UserId == userId
+                && x.Status == "succeeded"
+                && x.OutputSnapshot != null)
+            .OrderByDescending(x => x.CompletedAt ?? x.RequestedAt)
+            .Select(x => new
+            {
+                x.Id,
+                x.SellerOpportunityId,
+                x.Status,
+                x.Provider,
+                x.Model,
+                x.OutputSnapshot
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (run is null) return null;
+
+        var parsed = Parse(run.OutputSnapshot!);
+        return new(
+            run.Id,
+            run.SellerOpportunityId,
+            run.Status,
+            run.Provider ?? "unknown",
+            run.Model ?? "unknown",
+            parsed.Summary,
+            parsed.Recommendation,
+            parsed.SupportingPoints,
+            parsed.Risks,
+            parsed.ActionPlan,
+            parsed.ConfidenceNote);
     }
 
     private static ParsedAnalysis Parse(string raw)
