@@ -237,7 +237,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     private static string ReadAspect(string payload)
     {
         var board = WorkflowJson.Read<AiRenderJobPayload>(payload).Storyboard;
-        return VideoOutputFormats.Resolve(board.OutputFormat).AspectRatio;
+        return VideoOutputFormats.AiSourceAspect(board.OutputFormat);
     }
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";

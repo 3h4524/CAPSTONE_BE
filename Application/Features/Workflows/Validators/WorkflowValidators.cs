@@ -17,9 +17,6 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.TemplateVersion).Must(x => x is null or 1 or 2);
         RuleFor(x => x.OutputFormat).Must(VideoOutputFormats.IsSupported).WithMessage("Choose a supported video output format.");
         RuleFor(x => x.AiVideoModelKey).Must(AiVideoModel.IsSupported).WithMessage("Choose a supported AI video option.");
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.OutputFormat != "square" ||
-            x.AiScenes is { Count: > 0 } && x.AiScenes.All(scene => scene.Mode == "standard"))
-            .WithMessage("AI video supports portrait or landscape output.");
         RuleFor(x => x.AiStudioMode).Must(x => x is "direct" or "studio").WithMessage("Choose direct mock-up or a studio keyframe.");
         RuleFor(x => x.AiStudioLayout).Must(AiStudioFrameIdentity.IsSupportedLayout).WithMessage("Choose a supported studio layout.");
         RuleFor(x => x.DurationSeconds).InclusiveBetween(VideoDurationPolicy.MinimumVideoSeconds, VideoDurationPolicy.MaximumVideoSeconds)
@@ -40,6 +37,10 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("Choose a supported AI video option for each scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode is "ai" or "standard"))
             .WithMessage("Choose AI video or Standard motion for every scene.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.AiCropPosition is null ||
+            double.IsFinite(scene.AiCropPosition.X) && double.IsFinite(scene.AiCropPosition.Y) &&
+            scene.AiCropPosition.X is >= 0 and <= 1 && scene.AiCropPosition.Y is >= 0 and <= 1))
+            .WithMessage("AI scene crop position must be between 0 and 1.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
             .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
             .WithMessage("Choose an approved product image or keyframe for every scene.");

@@ -133,7 +133,7 @@ public sealed class VideoPromptPreparationService(IGeminiTextGenerationProvider 
             var key = $"video-prompt:{ownerId:N}:" + WorkflowJson.Hash(WorkflowJson.Write(new
             {
                 Version, source.Id, source.MetadataRevision, source.ContentHash, source.StorageKey, source.StorageVersion,
-                shot.SourceCrop, storyboard.AspectRatio, shot.DurationSeconds, shot.ModelKey, Draft = draft
+                shot.SourceCrop, AspectRatio = VideoOutputFormats.AiSourceAspect(storyboard.OutputFormat), shot.DurationSeconds, shot.ModelKey, Draft = draft
             }));
             var prepared = await ReadCacheAsync(key, cancellationToken);
             if (prepared is null)
@@ -142,7 +142,7 @@ public sealed class VideoPromptPreparationService(IGeminiTextGenerationProvider 
                 timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.Value.TimeoutSeconds, 5, 120)));
                 try
                 {
-                    prepared = await PrepareSceneAsync(source, storyboard.AspectRatio, shot, draft, timeout.Token);
+                    prepared = await PrepareSceneAsync(source, VideoOutputFormats.AiSourceAspect(storyboard.OutputFormat), shot, draft, timeout.Token);
                 }
                 catch (Exception) when (!cancellationToken.IsCancellationRequested)
                 {

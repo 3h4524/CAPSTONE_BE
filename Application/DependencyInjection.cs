@@ -87,6 +87,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
+        services.AddScoped<Features.Workflows.IBatchExportPreviewService, Features.Workflows.BatchExportPreviewService>();
         services.AddScoped<Features.Workflows.IVideoQualityReviewService, Features.Workflows.VideoQualityReviewService>();
         services.AddScoped<Features.Workflows.IVideoQualityJobService, Features.Workflows.VideoQualityJobService>();
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();

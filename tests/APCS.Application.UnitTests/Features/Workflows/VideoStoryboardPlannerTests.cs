@@ -607,6 +607,28 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
+    public void Plan_SquareAiCrop_ChangesCompositionWithoutChangingTheGeneratedClip()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var scene = new AiVideoSceneOptions(MockupId: source.Id, DurationSeconds: 5);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5, AiScenes: [scene]);
+        var portrait = _planner.Plan(product, [source], config).Value;
+        var square = _planner.Plan(product, [source], config with { OutputFormat = "square" }).Value;
+        var moved = _planner.Plan(product, [source], config with { OutputFormat = "square", AiScenes = [scene with { AiCropPosition = new(.5, .2) }] }).Value;
+
+        square.AspectRatio.Should().Be("1:1");
+        square.Width.Should().Be(1080);
+        square.Height.Should().Be(1080);
+        moved.Scenes[0].AiCropPosition.Should().Be(new Point(.5, .2));
+        moved.Fingerprint.Should().NotBe(square.Fingerprint);
+        moved.AiShots![0].Fingerprint.Should().Be(square.AiShots![0].Fingerprint).And.Be(portrait.AiShots![0].Fingerprint);
+        VideoOutputFormats.AiSourceAspect("square").Should().Be("9:16");
+        VideoOutputFormats.AiSourceAspect("landscape").Should().Be("16:9");
+    }
+
+    [TestMethod]
     public void Plan_MaterialDetailOnAMockupWithoutAMarkedDetail_UsesTheChosenMockup()
     {
         var fixture = new WorkflowTestData();

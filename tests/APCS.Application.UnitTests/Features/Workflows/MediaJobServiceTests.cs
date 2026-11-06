@@ -281,6 +281,39 @@ public sealed class MediaJobServiceTests
     }
 
     [TestMethod]
+    public async Task CompleteAsync_AiVideo_SnapshotsOnlyTheStoredClipForThatVideoVersion()
+    {
+        var fixture = RenderFixture();
+        var video = fixture.VideoRows.Single();
+        var asset = fixture.AssetRows.Single();
+        asset.StorageVersion = "image-v1";
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 12,
+            AiScenes: [new AiVideoSceneOptions(MockupId: asset.Id, DurationSeconds: 12)]);
+        var board = new VideoStoryboardPlanner().Plan(fixture.ProductRows.Single(), fixture.AssetRows, config).Value;
+        var shot = board.AiShots!.Single();
+        video.ConfigSnapshot = WorkflowJson.Write(new { config, storyboard = board });
+        var job = fixture.JobRows.Single();
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(video.Id, board,
+            [new AiShotJobState(shot.SceneOrder, shot.Fingerprint, DownloadUri: "https://private.invalid/token",
+                StorageKey: "private/clip-v1", StorageVersion: "7", Status: "stored")]));
+        SetupVerification(fixture);
+
+        var result = await fixture.MediaService.CompleteAsync(job.Id, Completion(job), default);
+
+        result.IsSuccess.Should().BeTrue();
+        using var stored = JsonDocument.Parse(video.ConfigSnapshot);
+        var source = stored.RootElement.GetProperty("exportSources");
+        source.GetProperty("videoId").GetGuid().Should().Be(video.Id);
+        source.GetProperty("storyboardFingerprint").GetString().Should().Be(board.Fingerprint);
+        var scene = source.GetProperty("scenes")[0];
+        scene.GetProperty("imageStorageVersion").GetString().Should().Be("image-v1");
+        scene.GetProperty("clipFingerprint").GetString().Should().Be(shot.Fingerprint);
+        scene.GetProperty("clipStorageKey").GetString().Should().Be("private/clip-v1");
+        scene.GetProperty("clipStorageVersion").GetString().Should().Be("7");
+        source.GetRawText().Should().NotContain("https://").And.NotContain("downloadUri");
+    }
+
+    [TestMethod]
     public async Task CompleteAsync_TransitionedStoryboard_ValidatesQaAgainstOutputDurationFrames()
     {
         static void SetTransitionedPayload(WorkflowTestData fixture)
