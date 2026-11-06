@@ -64,6 +64,15 @@ public sealed class ApiKeyManagementTests
     }
 
     [TestMethod]
+    public async Task ListProviders_DoesNotOfferSystemManagedMiniMaxKey()
+    {
+        var result = await Create().ListProvidersAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotContain(x => x.Id == "minimax");
+    }
+
+    [TestMethod]
     public async Task Add_MissingConfirmationOrKey_DoesNotAccessCredentialsOrWrite()
     {
         var service = Create();

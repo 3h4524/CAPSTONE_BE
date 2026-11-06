@@ -59,6 +59,8 @@ public partial class User
 
     public virtual ICollection<ExportPackage> ExportPackages { get; set; } = new List<ExportPackage>();
 
+    public virtual ICollection<Feature> Features { get; set; } = new List<Feature>();
+
     public virtual ICollection<Invoice> Invoices { get; set; } = new List<Invoice>();
 
     public virtual ICollection<MediaJob> MediaJobs { get; set; } = new List<MediaJob>();
@@ -70,6 +72,10 @@ public partial class User
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
 
     public virtual ICollection<PaymentMethod> PaymentMethods { get; set; } = new List<PaymentMethod>();
+
+    public virtual ICollection<PlanAiReview> PlanAiReviews { get; set; } = new List<PlanAiReview>();
+
+    public virtual ICollection<PlanSetting> PlanSettings { get; set; } = new List<PlanSetting>();
 
     public virtual ICollection<PrintifyIntegration> PrintifyIntegrations { get; set; } = new List<PrintifyIntegration>();
 
@@ -83,6 +89,8 @@ public partial class User
 
     public virtual ICollection<StyleArtPreset> StyleArtPresets { get; set; } = new List<StyleArtPreset>();
 
+    public virtual ICollection<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; } = new List<SubscriptionFeatureGrant>();
+
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
 
     public virtual ICollection<SupportTicket> SupportTicketAssignedToNavigations { get; set; } = new List<SupportTicket>();
@@ -92,6 +100,8 @@ public partial class User
     public virtual ICollection<TicketAttachment> TicketAttachments { get; set; } = new List<TicketAttachment>();
 
     public virtual ICollection<TicketReply> TicketReplies { get; set; } = new List<TicketReply>();
+
+    public virtual ICollection<UsageAllowance> UsageAllowances { get; set; } = new List<UsageAllowance>();
 
     public virtual ICollection<UsageStatistic> UsageStatistics { get; set; } = new List<UsageStatistic>();
 

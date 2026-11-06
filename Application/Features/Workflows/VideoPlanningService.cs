@@ -11,11 +11,15 @@ public interface IVideoPlanningService
 {
     Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct);
     Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct);
+    Task<Result<IReadOnlyList<VideoPackDefinition>>> ListVideoPacksAsync(CancellationToken ct);
     Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct);
+    Task<Result<IReadOnlyList<AiCharacterCatalogItem>>> ListAiCharactersAsync(CancellationToken ct);
 }
 public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
-    IRepository<VideoTemplate> templates, GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
-    VideoStoryboardPlanner planner) : IVideoPlanningService
+    IRepository<VideoTemplate> templates, IRepository<AiCharacterModel> characterModels,
+    GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
+    VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
+    IVideoPromptPreparationService? promptPreparation = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -43,6 +47,7 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
                 if (scene.StudioFrameId is Guid frameId) requestedIds.Add(frameId);
             }
         }
+        if (request.Config.SharedMockupId is Guid sharedMockupId) requestedIds.Add(sharedMockupId);
         if (request.Config.AiStudioMode == "studio")
         {
             if (request.Config.AiStudioSourceMockupId is Guid legacySourceId) requestedIds.Add(legacySourceId);
@@ -57,7 +62,13 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             ? approved.Where(x => requestedIds.Contains(x.Id)).Concat(approved.Take(8)).DistinctBy(x => x.Id).ToList()
             : approved.Where(x => requestedIds.Contains(x.Id)).ToList();
         selected.AddRange(owned.Where(x => requestedIds.Contains(x.Id) && x.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && x.Role == "VideoScene"));
-        return planner.Plan(product, selected.DistinctBy(x => x.Id).ToArray(), request.Config, aiTemplates);
+        var experienceMap = experiences is null
+            ? null
+            : await experiences.RetrieveForScenesAsync(user.UserId!.Value, product, request.Config, ct);
+        var sources = selected.DistinctBy(x => x.Id).ToArray();
+        var planned = planner.Plan(product, sources, request.Config, aiTemplates, experienceMap);
+        if (planned.IsFailure || promptPreparation is null) return planned;
+        return Result.Success(await promptPreparation.PrepareAsync(user.UserId!.Value, planned.Value, sources, ct));
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)
@@ -78,8 +89,33 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         return Result.Success<IReadOnlyList<VideoTemplateCatalogItem>>(result);
     }
 
+    public async Task<Result<IReadOnlyList<VideoPackDefinition>>> ListVideoPacksAsync(CancellationToken ct)
+    {
+        var rows = await templates.FindAsync(template => template.TemplateVersion >= 1 && template.IsActive == true &&
+            template.IsSystemTemplate == true && template.Type == "video_pack" && template.Code != null, ct);
+        var result = rows.OrderBy(template => template.Name, StringComparer.Ordinal).Select(template =>
+        {
+            var pack = SafeReadPackEffects(template.EffectsConfig).VideoPack;
+            return pack is null ? null : new VideoPackDefinition(template.Code!, template.TemplateVersion, template.Name,
+                pack.Description ?? template.Name, template.PreviewVideoUrl, template.DurationSeconds,
+                pack.RequiresCharacter, pack.RequiresSharedMockup, pack.Scenes ?? []);
+        }).Where(pack => pack is not null).Cast<VideoPackDefinition>().ToArray();
+        return Result.Success<IReadOnlyList<VideoPackDefinition>>(result);
+    }
+
     public async Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct) =>
         Result.Success(AiVideoPromptCompiler.Catalog(await LoadAiTemplatesAsync(ct)));
+
+    public async Task<Result<IReadOnlyList<AiCharacterCatalogItem>>> ListAiCharactersAsync(CancellationToken ct)
+    {
+        var rows = await characterModels.FindAsync(model => model.IsActive && model.DeletedAt == null, ct);
+        var result = rows.OrderBy(model => model.SortOrder).ThenBy(model => model.Name)
+            .Select(model => new AiCharacterCatalogItem(model.Id, model.Code, model.Name, model.Continent,
+                model.Gender, model.AgeMin, model.AgeMax, model.BodyType, model.SkinTone, model.Description,
+                model.ImageUrl, model.PreviewUrl, model.IsDefault))
+            .ToArray();
+        return Result.Success<IReadOnlyList<AiCharacterCatalogItem>>(result);
+    }
 
     private async Task<IReadOnlyList<VideoTemplate>> LoadAiTemplatesAsync(CancellationToken ct)
     {
@@ -100,6 +136,19 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         }
     }
 
+    private static VideoPackEffects SafeReadPackEffects(string? effectsConfig)
+    {
+        if (string.IsNullOrWhiteSpace(effectsConfig)) return new(null);
+        try
+        {
+            return WorkflowJson.Read<VideoPackEffects>(effectsConfig);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return new(null);
+        }
+    }
+
     private static VideoTemplateRequirements FallbackRequirements(string? code) => code switch
     {
         "design_detail" => new(1, true, 0),
@@ -109,4 +158,7 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
 
     private sealed record VideoTemplateEffects(string? Description, string? DefaultTransition,
         string? DefaultMotionPreset, VideoTemplateRequirements? Requirements);
+    private sealed record VideoPackEffects(VideoPackPayload? VideoPack);
+    private sealed record VideoPackPayload(string? Description, bool RequiresCharacter, bool RequiresSharedMockup,
+        IReadOnlyList<VideoPackSceneDefinition>? Scenes);
 }

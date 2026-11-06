@@ -1,3 +1,4 @@
+using System.Text.Json;
 using APCS.Application.Features.Workflows;
 using FluentAssertions;
 using Moq;
@@ -267,7 +268,8 @@ public sealed class MediaJobServiceTests
         video.StorageKey.Should().Be(completion.StorageKey);
         video.ThumbnailStorageKey.Should().Be(completion.ThumbnailStorageKey);
         video.ApprovalStatus.Should().Be("pending");
-        WorkflowJson.Read<MediaQa>(video.QaResult).FullDecode.Should().BeTrue();
+        using var qaResult = JsonDocument.Parse(video.QaResult);
+        qaResult.RootElement.GetProperty("technical").GetProperty("fullDecode").GetBoolean().Should().BeTrue();
         job.Status.Should().Be("succeeded");
         job.LeaseToken.Should().BeNull();
         job.LeaseExpiresAt.Should().BeNull();

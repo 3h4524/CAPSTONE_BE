@@ -17,10 +17,16 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
         if (tracked != null) tracked.State = EntityState.Detached;
         return await db.MediaJobs.FromSqlInterpolated($"SELECT * FROM media_jobs WHERE id = {id} FOR UPDATE").FirstOrDefaultAsync(ct);
     }
-    public async Task<MediaJob?> ClaimAsync(DateTime now, Guid token, CancellationToken ct)
+    public Task<MediaJob?> ClaimAsync(DateTime now, Guid token, CancellationToken ct) =>
+        ClaimAsync(now, token, "media", ct);
+
+    public async Task<MediaJob?> ClaimAsync(DateTime now, Guid token, string capability, CancellationToken ct)
     {
         await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE media_jobs SET status = 'failed', error_message = 'Worker lease expired after maximum attempts.', updated_at = {now} WHERE status = 'leased' AND lease_expires_at < {now} AND attempt >= maximum_attempts", ct);
-        var jobs = await db.MediaJobs.FromSqlInterpolated($"WITH candidate AS (SELECT id FROM media_jobs WHERE (status = 'queued' AND available_at <= {now} OR status = 'leased' AND lease_expires_at < {now}) AND attempt < maximum_attempts ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE media_jobs j SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} FROM candidate c WHERE j.id = c.id RETURNING j.*").ToListAsync(ct);
+        var qualityOnly = string.Equals(capability, "video_quality", StringComparison.Ordinal);
+        var jobs = qualityOnly
+            ? await db.MediaJobs.FromSqlInterpolated($"WITH candidate AS (SELECT id FROM media_jobs WHERE kind = 'video_quality' AND (status = 'queued' AND available_at <= {now} OR status = 'leased' AND lease_expires_at < {now}) AND attempt < maximum_attempts ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE media_jobs j SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} FROM candidate c WHERE j.id = c.id RETURNING j.*").ToListAsync(ct)
+            : await db.MediaJobs.FromSqlInterpolated($"WITH candidate AS (SELECT id FROM media_jobs WHERE kind IN ('render', 'export_zip') AND (status = 'queued' AND available_at <= {now} OR status = 'leased' AND lease_expires_at < {now}) AND attempt < maximum_attempts ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE media_jobs j SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} FROM candidate c WHERE j.id = c.id RETURNING j.*").ToListAsync(ct);
         return jobs.SingleOrDefault();
     }
 }

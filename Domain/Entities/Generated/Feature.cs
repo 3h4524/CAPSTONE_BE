@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace APCS.Domain.Entities;
@@ -30,4 +30,8 @@ public partial class Feature
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
+
+    public virtual ICollection<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; } = new List<SubscriptionFeatureGrant>();
+
+    public virtual User? UpdatedByNavigation { get; set; }
 }

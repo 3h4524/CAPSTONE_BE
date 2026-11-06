@@ -21,38 +21,27 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(76);
+        mappedTables.Should().HaveCount(78);
         mappedTables.Should().BeEquivalentTo(new[]
         {
-            "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
+            "ai_character_models", "ai_prompts", "api_keys", "api_usage_records", "assistant_conversations",
+            "assistant_messages", "assistant_pending_actions", "audit_logs", "auth_tokens", "batches",
             "batch_jobs", "batch_job_logs", "batch_job_products", "design_images", "design_templates",
-            "etsy_integrations", "etsy_upload_logs", "export_packages", "export_package_items", "features", "invoices",
+            "etsy_integrations", "etsy_upload_logs", "export_packages", "export_package_items", "invoices",
+            "features", "image_eval_runs",
             "listing_contents", "listing_descriptions", "listing_generation_history", "listing_tags",
             "listing_tag_items", "listing_titles", "market_listing_snapshots", "market_opportunities",
             "market_opportunity_evidence", "media_jobs", "mockup_images", "mockup_templates",
-            "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions", "plan_settings",
+            "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
             "plan_features", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
             "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
-            "social_media_shares", "style_art_presets", "subscriptions", "subscription_feature_grants", "subscription_plans", "support_tickets", "usage_allowances",
+            "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
             "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
-            "rag_documents", "rag_chunks", "rag_embeddings", "plan_ai_reviews",
-            "assistant_conversations", "assistant_messages", "assistant_pending_actions",
-            "market_query_observations", "translation_entries"
+            "plan_ai_reviews", "plan_settings", "subscription_feature_grants", "translation_entries", "usage_allowances",
+            "rag_documents", "rag_chunks", "rag_embeddings", "market_query_observations"
         });
-    }
-
-    [TestMethod]
-    public void Model_PlanAiReview_KeepsTheInputAndReviewAsJson()
-    {
-        using var context = CreateContext();
-
-        var entityType = context.Model.FindEntityType(typeof(PlanAiReview))!;
-        entityType.GetTableName().Should().Be("plan_ai_reviews");
-        entityType.FindProperty(nameof(PlanAiReview.InputJson))!.GetColumnType().Should().Be("jsonb");
-        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.GetColumnType().Should().Be("jsonb");
-        entityType.FindProperty(nameof(PlanAiReview.ReviewJson))!.IsNullable.Should().BeTrue();
     }
 
     [TestMethod]

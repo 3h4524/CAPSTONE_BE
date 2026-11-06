@@ -7,6 +7,7 @@ using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Email;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Abstractions.VideoQuality;
 using APCS.Application.Abstractions;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Abstractions.Commerce;
@@ -124,9 +125,20 @@ public static class DependencyInjection
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddHttpClient("MiniMax", client => client.Timeout = TimeSpan.FromMinutes(3))
+            .RedactLoggedHeaders(new[] { "Authorization" })
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        // The default AI-video model is platform-funded. Keep the API key in environment-backed
+        // configuration rather than asking each Seller to connect a MiniMax account.
+        services.AddOptions<MiniMaxOptions>()
+            .Bind(configuration.GetSection(MiniMaxOptions.SectionName));
+        services.AddScoped<IAiVideoCredentialResolver, AiVideoCredentialResolver>();
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
         services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
             ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
+        services.AddScoped<IAiVideoGenerationStrategy, MiniMaxVideoProvider>();
+        services.AddScoped<IAiVideoGenerationStrategy>(provider => new MiniMaxVideoProvider(
+            provider.GetRequiredService<IHttpClientFactory>(), provider.GetRequiredService<ILogger<MiniMaxVideoProvider>>(), true));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IPlanAiReviewQueue, APCS.Infrastructure.BackgroundServices.PlanAiReviewQueueChannel>();
@@ -140,8 +152,13 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(RagRetrievalOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddOptions<VideoQualityOptions>()
+            .Bind(configuration.GetSection(VideoQualityOptions.SectionName));
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.VideoPromptPreparationOptions.SectionName));
+        services.AddScoped<IVideoFirstFramePreparer, MiniMaxFirstFramePreparer>();
         services.PostConfigure<GeminiTextGenerationOptions>(options =>
         {
             if (string.IsNullOrWhiteSpace(options.ApiKey))
@@ -206,6 +223,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
 
         return services;
@@ -285,6 +303,10 @@ public static class DependencyInjection
         services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
+        services.AddHttpClient("VideoQualityWorker", client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddScoped<ProcessVideoQualityEvidenceRunner>();
+        services.AddScoped<IVideoQualityEvidenceRunner, VideoQualityEvidenceRunner>();
+        services.AddSingleton<IVideoQualityLeaseHeartbeat, VideoQualityLeaseHeartbeat>();
         services.AddHttpClient<GeminiEmbeddingProvider>((provider, client) =>
         {
             var options = provider.GetRequiredService<IOptions<GeminiEmbeddingOptions>>().Value;

@@ -52,12 +52,12 @@ public sealed class WorkflowValidatorTests
         new SaveWorkflowValidator().Validate(new SaveWorkflowRequest("Product video", "", definition)).IsValid.Should().BeTrue();
     }
     [TestMethod]
-    [DataRow(1, true)]
+    [DataRow(5, true)]
     [DataRow(12, true)]
-    [DataRow(30, true)]
-    [DataRow(0, false)]
-    [DataRow(31, false)]
-    public void VideoConfig_DurationBoundary_AcceptsOneToThirty(int duration, bool valid)
+    [DataRow(15, true)]
+    [DataRow(4, false)]
+    [DataRow(16, false)]
+    public void VideoConfig_DurationBoundary_AcceptsFiveToFifteen(int duration, bool valid)
     {
         var result = new GenerateVideoConfigValidator().Validate(new GenerateVideoConfig(DurationSeconds: duration));
         result.IsValid.Should().Be(valid);
@@ -243,6 +243,29 @@ public sealed class WorkflowValidatorTests
             .Errors.Should().Contain(x => x.PropertyName == "AiShotOptions");
         validator.Validate(new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(Concept: "lifestyle_motion")))
             .Errors.Should().Contain(x => x.ErrorMessage.Contains("rights"));
+    }
+
+    [TestMethod]
+    public void VideoConfig_ProductOnModelPack_RequiresThreeStudioFramesFromTheSharedMockup()
+    {
+        var sharedMockupId = Guid.NewGuid();
+        var scenes = new[] { "natural_motion", "brand_focus", "fabric_detail" }
+            .Select(code => new AiVideoSceneOptions(
+                MockupId: sharedMockupId, TemplateCode: "lifestyle_in_use", SubtemplateCode: code,
+                DurationSeconds: 4, RightsConfirmed: true, Mode: "ai", StartFrameMode: "studio",
+                StudioLayout: AiStudioFrameIdentity.None, StudioFrameId: Guid.NewGuid()))
+            .ToArray();
+        var valid = new GenerateVideoConfig(Mode: "ai_shot", Template: "product_on_model_pack", TemplateVersion: 2,
+            DurationSeconds: 12, SharedMockupId: sharedMockupId, AiScenes: scenes);
+
+        new GenerateVideoConfigValidator().Validate(valid).IsValid.Should().BeTrue();
+        new GenerateVideoConfigValidator().Validate(valid with { SharedMockupId = null })
+            .Errors.Should().Contain(error => error.ErrorMessage.Contains("shared mockup"));
+        new GenerateVideoConfigValidator().Validate(valid with
+        {
+            AiScenes = scenes.Take(2).ToArray(),
+            DurationSeconds = 8,
+        }).Errors.Should().Contain(error => error.ErrorMessage.Contains("three AI scenes"));
     }
 
     [TestMethod]

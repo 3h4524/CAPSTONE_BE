@@ -13,7 +13,6 @@ public sealed class GeminiTextGenerationProvider(
 {
     private static readonly TimeSpan OverloadRetryDelay = TimeSpan.FromSeconds(3);
 
-    // Leaves out a null responseSchema, so a request without one is sent as before.
     private static readonly JsonSerializerOptions RequestJson = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
@@ -33,21 +32,13 @@ public sealed class GeminiTextGenerationProvider(
         if (string.IsNullOrWhiteSpace(request.Prompt))
             throw new ArgumentException("Generation prompt cannot be empty.", nameof(request));
 
-        var contents = new List<object>();
-        if (!string.IsNullOrWhiteSpace(request.SystemInstruction))
+        var parts = new List<object> { new { text = request.Prompt } };
+        foreach (var image in request.Images ?? [])
         {
-            contents.Add(new
-            {
-                role = "user",
-                parts = new[] { new { text = request.SystemInstruction } }
-            });
+            if (image.Bytes.Length == 0 || image.MimeType is not ("image/png" or "image/jpeg" or "image/webp"))
+                throw new ArgumentException("Supply a non-empty PNG, JPEG or WebP image.", nameof(request));
+            parts.Add(new { inline_data = new { mime_type = image.MimeType, data = Convert.ToBase64String(image.Bytes) } });
         }
-
-        contents.Add(new
-        {
-            role = "user",
-            parts = new[] { new { text = request.Prompt } }
-        });
 
         // Google answers 503, or does not answer at all, while a model is overloaded. Nothing is generated or
         // charged then, so the request moves on: once to the fallback model, then one more try after a pause.
@@ -55,9 +46,9 @@ public sealed class GeminiTextGenerationProvider(
         var configuredFallback = request.FallbackModel ?? settings.FallbackModel;
         var fallback = string.IsNullOrWhiteSpace(configuredFallback) ? primary : configuredFallback;
         string[] models = [primary, fallback, fallback];
-        var attemptLimit = request.AttemptTimeout ?? TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds);
         GenerateContentResponse? payload = null;
         var model = primary;
+        var attemptTimeoutSeconds = request.AttemptTimeout ?? TimeSpan.FromSeconds(settings.AttemptTimeoutSeconds);
         for (var attempt = 0; ; attempt++)
         {
             model = models[attempt];
@@ -68,7 +59,9 @@ public sealed class GeminiTextGenerationProvider(
             httpRequest.Headers.Add("x-goog-api-key", settings.ApiKey);
             httpRequest.Content = JsonContent.Create(new
             {
-                contents,
+                systemInstruction = string.IsNullOrWhiteSpace(request.SystemInstruction)
+                    ? null : new { parts = new[] { new { text = request.SystemInstruction } } },
+                contents = new[] { new { role = "user", parts } },
                 generationConfig = new
                 {
                     temperature = request.Temperature ?? settings.Temperature,
@@ -78,7 +71,7 @@ public sealed class GeminiTextGenerationProvider(
             }, options: RequestJson);
 
             using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            attemptTimeout.CancelAfter(attemptLimit);
+            attemptTimeout.CancelAfter(attemptTimeoutSeconds);
             try
             {
                 using var response = await httpClient.SendAsync(httpRequest, attemptTimeout.Token);

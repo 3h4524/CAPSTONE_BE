@@ -12,16 +12,18 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         // Standard scenes are configured directly from the chosen image and camera movement.
         // Keep accepting any legacy value there; only the legacy AI fallback requires a known code.
         RuleFor(x => x.Template).NotEmpty();
-        RuleFor(x => x.Template).Must(x => new[] { "auto", "product_showcase", "design_detail", "variant_showcase" }.Contains(x))
+        RuleFor(x => x.Template).Must(x => new[] { "auto", "product_showcase", "design_detail", "variant_showcase", "product_on_model_pack" }.Contains(x))
             .When(x => x.Mode == "ai_shot");
         RuleFor(x => x.TemplateVersion).Must(x => x is null or 1 or 2);
         RuleFor(x => x.OutputFormat).Must(VideoOutputFormats.IsSupported).WithMessage("Choose a supported video output format.");
+        RuleFor(x => x.AiVideoModelKey).Must(AiVideoModel.IsSupported).WithMessage("Choose a supported AI video option.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.OutputFormat != "square" ||
             x.AiScenes is { Count: > 0 } && x.AiScenes.All(scene => scene.Mode == "standard"))
             .WithMessage("AI video supports portrait or landscape output.");
         RuleFor(x => x.AiStudioMode).Must(x => x is "direct" or "studio").WithMessage("Choose direct mock-up or a studio keyframe.");
         RuleFor(x => x.AiStudioLayout).Must(AiStudioFrameIdentity.IsSupportedLayout).WithMessage("Choose a supported studio layout.");
-        RuleFor(x => x.DurationSeconds).InclusiveBetween(1, 30);
+        RuleFor(x => x.DurationSeconds).InclusiveBetween(VideoDurationPolicy.MinimumVideoSeconds, VideoDurationPolicy.MaximumVideoSeconds)
+            .WithMessage("Video duration must be 5–15 seconds.");
         RuleFor(x => x.AssetSelection).Must(x => x is "automatic" or "manual");
         RuleFor(x => x.SelectedMockupIds).Must(x => x is null || x.Count <= 8 && x.Distinct().Count() == x.Count);
         RuleFor(x => x.SceneOrder).Must(x => x is null || x.Count <= 4 && x.Distinct().Count() == x.Count);
@@ -34,15 +36,18 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x.AiShotOptions).NotNull().When(x => x.Mode == "ai_shot" && x.AiScenes is not { Count: > 0 });
         RuleFor(x => x.AiScenes).Must(x => x is null || x.Count is >= 1 and <= 4)
             .WithMessage("Configure between one and four scenes.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => AiVideoModel.IsSupported(scene.AiVideoModelKey)))
+            .WithMessage("Choose a supported AI video option for each scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode is "ai" or "standard"))
             .WithMessage("Choose AI video or Standard motion for every scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
             .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
             .WithMessage("Choose an approved product image or keyframe for every scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode == "standard"
-                ? scene.DurationSeconds is >= 1 and <= 30
-                : scene.DurationSeconds is 4 or 6 or 8) && x.Sum(scene => scene.DurationSeconds) <= 30)
-            .WithMessage("Standard scenes must be 1–30 seconds, AI scenes must be 4, 6 or 8 seconds, and total duration cannot exceed 30 seconds.");
+                ? scene.DurationSeconds is >= 1 and <= VideoDurationPolicy.MaximumVideoSeconds
+                : scene.DurationSeconds is >= VideoDurationPolicy.MinimumAiSceneSeconds and <= VideoDurationPolicy.MaximumVideoSeconds) &&
+            x.Sum(scene => scene.DurationSeconds) is >= VideoDurationPolicy.MinimumVideoSeconds and <= VideoDurationPolicy.MaximumVideoSeconds)
+            .WithMessage("Standard scenes must be 1–15 seconds, AI scenes must be 4–15 seconds, and the total must be 5–15 seconds.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode != "standard" ||
             (scene.StandardMotionPreset is null or "gentle" or "contain_gentle" or "static" or "pan" or "zoom" or "zoom_out" or "pan_left" or "pan_up" or "pan_down" or
                 "diagonal_up_right" or "diagonal_up_left" or "diagonal_down_right" or "diagonal_down_left" or "rotate_cw" or "rotate_ccw" or "rotate_zoom_cw" or "rotate_zoom_ccw" or "custom") &&
@@ -52,12 +57,25 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("Standard camera movement and framing has an invalid crop or transform value.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.ExtraInstructions is null or { Length: <= 500 }))
             .WithMessage("Keep each scene's extra instructions under 500 characters.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.PromptRuleVersion is null or AiVideoPromptRules.CurrentVersion))
+            .WithMessage("Choose a supported prompt-rule version.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => !scene.PromptRuleVersion.HasValue ||
+            ValidP1Text(scene.StartingState) && ValidP1Text(scene.PrimaryAction) && ValidP1Text(scene.EndingState)))
+            .WithMessage("P1 prompt rules require a start state, one primary action, and an end state of 1–240 characters.");
         RuleFor(x => x.AiGlobalInstructions).Must(x => x is null or { Length: <= 500 })
             .WithMessage("Keep shared AI scene directions under 500 characters.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.DurationSeconds == x.AiScenes.Sum(scene => scene.DurationSeconds))
             .WithMessage("Overall video duration must equal the sum of AI scene durations.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.AiShotOptions == null)
             .WithMessage("Use either the scene-based AI settings or legacy AI Shot settings, not both.");
+        RuleFor(x => x.SharedMockupId).Must(id => id is Guid value && value != Guid.Empty)
+            .When(x => x.Template == "product_on_model_pack")
+            .WithMessage("Choose one approved shared mockup for the Product on Model pack.");
+        RuleFor(x => x).Must(x => x.Template != "product_on_model_pack" || x.Mode == "ai_shot" &&
+            x.AiScenes is { Count: 3 } && x.AiScenes.All(scene => scene.Mode == "ai" &&
+                scene.StartFrameMode == "studio" && scene.StudioFrameId is Guid frame && frame != Guid.Empty &&
+                scene.MockupId == x.SharedMockupId && scene.RightsConfirmed))
+            .WithMessage("Product on Model needs three AI scenes with current reviewed start frames from the shared mockup.");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
             new[] { "varied", "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",
@@ -85,6 +103,8 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         region.Width > 0 && region.Height > 0 && region.Width <= 1 && region.Height <= 1;
     private static bool ValidScale(double? scale) => scale is null || double.IsFinite(scale.Value) && scale is >= .01 and <= 5;
     private static bool ValidRotation(double? rotation) => rotation is null || double.IsFinite(rotation.Value) && rotation is >= -9999 and <= 9999;
+    private static bool ValidP1Text(string? value) => !string.IsNullOrWhiteSpace(value) && value.Trim().Length <= 240 &&
+        value.All(character => !char.IsControl(character));
 }
 
 public sealed class SaveWorkflowValidator : AbstractValidator<SaveWorkflowRequest>

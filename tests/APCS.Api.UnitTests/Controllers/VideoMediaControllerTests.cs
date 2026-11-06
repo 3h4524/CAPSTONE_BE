@@ -87,6 +87,23 @@ public sealed class VideoMediaControllerTests
     }
 
     [TestMethod]
+    public async Task AiCharacters_ActiveCatalog_ForwardsCancellationAndReturnsOk()
+    {
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<AiCharacterCatalogItem> characters = [new(Guid.NewGuid(), "mai", "Mai", "Asia",
+            "Female", 18, 24, "Slim", "Tan", "Model", "/mai.png", "/mai-preview.png", true)];
+        var planning = new Mock<IVideoPlanningService>(MockBehavior.Strict);
+        planning.Setup(service => service.ListAiCharactersAsync(cancellation.Token)).ReturnsAsync(Result.Success(characters));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(),
+            planning.Object, Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
+
+        var result = await controller.AiCharacters(cancellation.Token);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(characters);
+        planning.VerifyAll();
+    }
+
+    [TestMethod]
     public async Task Storyboard_ValidPreview_ForwardsProductConfigurationAndCancellation()
     {
         var productId = Guid.NewGuid(); var request = new PreviewStoryboardRequest(new(), [], null); var board = VideoWorkflowTestData.Board();
@@ -214,6 +231,20 @@ public sealed class VideoMediaControllerTests
         var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(), planning.Object, Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
 
         (await controller.AiTemplates(cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(templates);
+        planning.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task VideoPacks_ForwardsCancellationAndReturnsOk()
+    {
+        using var cancellation = new CancellationTokenSource();
+        IReadOnlyList<VideoPackDefinition> packs = [];
+        var planning = new Mock<IVideoPlanningService>(MockBehavior.Strict);
+        planning.Setup(x => x.ListVideoPacksAsync(cancellation.Token)).ReturnsAsync(Result.Success(packs));
+        var controller = new VideoMediaController(Mock.Of<IMockupAssetService>(), Mock.Of<IVideoArtifactService>(), planning.Object,
+            Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
+
+        (await controller.VideoPacks(cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(packs);
         planning.VerifyAll();
     }
 

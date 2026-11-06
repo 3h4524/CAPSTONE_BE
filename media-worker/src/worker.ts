@@ -15,7 +15,7 @@ if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "host.docker.in
 const renderer = new RemotionVideoRenderer();
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort()); process.once("SIGTERM", () => shutdown.abort());
-// Submit one paid Veo request at a time by default. Some accounts/models become unstable when
+// Submit one paid AI video request at a time by default. Some accounts/models become unstable when
 // multiple long-running generations are started together; operators can still opt into 2-4.
 const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "1");
 const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
@@ -27,8 +27,8 @@ const internalApiTimeoutMs = 20_000;
 // two-minute lease can be reclaimed by another worker.
 const heartbeatTimeoutMs = 8_000;
 const heartbeatFailureLimit = 5;
-// Starting a Veo scene waits for the API to submit the paid request and persist its operation name.
-// The API's Veo client timeout is three minutes, so the worker must not cancel that request after 20 seconds.
+// Starting an AI video scene waits for the API to submit the paid request and persist its operation name.
+// The API provider timeout is three minutes, so the worker must not cancel that request after 20 seconds.
 const aiShotStartTimeoutMs = 4 * 60_000;
 async function api(path: string, payload: unknown, signal: AbortSignal, timeoutMs = internalApiTimeoutMs) {
   const response = await fetch(new URL(`/internal/media-jobs/${path}`, baseUrl), { method: "POST", headers: { "Content-Type": "application/json", "X-Media-Worker-Key": key }, body: JSON.stringify(payload), signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) });
@@ -103,11 +103,11 @@ async function execute(job: WorkerJob) {
         } catch (error) {
           // The API may have submitted the paid request before this worker timed out. Never classify that
           // as a normal scene failure, which would make the queue submit it again automatically.
-          if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(409, "VeoSubmissionUncertain");
+          if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(409, "AiVideoSubmissionUncertain");
           throw error;
         }
         for (let check = 0; check < 240 && (state.status === "polling" || state.status === "pending"); check++) {
-          // "pending" again: Google dropped the clip without charging and the API allows one more submission.
+          // "pending" again: the provider dropped the clip without charging and the API allows one more submission.
           if (state.status === "pending") { state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string }; continue; }
           await delay(5_000, undefined, { signal });
           state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/poll`, request, signal) as { status: string };

@@ -22,6 +22,7 @@ public sealed class ApiKeyCredentialsTests
 
     [TestMethod]
     [DataRow("openai", "https://api.openai.com/v1/models")]
+    [DataRow("minimax", "https://api.minimax.io/v1/models")]
     [DataRow("replicate", "https://api.replicate.com/v1/account")]
     [DataRow("printify", "https://api.printify.com/v1/shops.json")]
     public async Task Validation_UsesFixedEndpointAndBearerWithoutRequestBody(string provider, string endpoint)

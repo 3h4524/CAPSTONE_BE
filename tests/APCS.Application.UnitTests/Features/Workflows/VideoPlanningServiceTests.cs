@@ -32,6 +32,67 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
+    public async Task ListAiCharactersAsync_ActiveModels_ReturnsDbOrderedCatalogAndForwardsCancellation()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.CharacterModelRows.AddRange([
+            Character("adrian", "Adrian", sortOrder: 20),
+            Character("mai", "Mai", sortOrder: 10, isDefault: true),
+            Character("deleted", "Deleted", sortOrder: 1, deletedAt: WorkflowTestData.Now.UtcDateTime),
+            Character("inactive", "Inactive", sortOrder: 2, isActive: false),
+        ]);
+        using var cancellation = new CancellationTokenSource();
+
+        var result = await Service(fixture).ListAiCharactersAsync(cancellation.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Select(model => model.Code).Should().Equal("mai", "adrian");
+        result.Value[0].Should().Match<AiCharacterCatalogItem>(model =>
+            model.IsDefault && model.Name == "Mai" && model.ImageUrl == "https://example.test/mai.png");
+        fixture.CharacterModels.Verify(repository => repository.FindAsync(
+            It.IsAny<Expression<Func<AiCharacterModel, bool>>>(), cancellation.Token), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ListVideoPacksAsync_ProductOnModelV2_ReturnsThreeOrderedAiScenes()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.TemplateRows.Add(new()
+        {
+            Id = Guid.NewGuid(), Code = "product_on_model_pack", Name = "Product on Model", Type = "video_pack",
+            Platform = "etsy", DurationSeconds = 12, AspectRatio = "9:16", Resolution = "720p", IsSystemTemplate = true,
+            IsActive = true, TemplateVersion = 2,
+            EffectsConfig = WorkflowJson.Write(new
+            {
+                videoPack = new
+                {
+                    description = "Three product shots.",
+                    requiresCharacter = true,
+                    requiresSharedMockup = true,
+                    scenes = new[]
+                    {
+                        new { id = "natural_motion", mode = "ai", durationSeconds = 4, templateCode = "lifestyle_in_use", subtemplateCode = "natural_motion", transitionIn = "cut", transitionDurationFrames = 0 },
+                        new { id = "brand_focus", mode = "ai", durationSeconds = 4, templateCode = "lifestyle_in_use", subtemplateCode = "brand_focus", transitionIn = "cut", transitionDurationFrames = 0 },
+                        new { id = "fabric_detail", mode = "ai", durationSeconds = 4, templateCode = "lifestyle_in_use", subtemplateCode = "fabric_detail", transitionIn = "cut", transitionDurationFrames = 0 },
+                    },
+                },
+            }),
+        });
+
+        var result = await Service(fixture).ListVideoPacksAsync(default);
+
+        result.IsSuccess.Should().BeTrue();
+        var pack = result.Value.Should().ContainSingle().Which;
+        pack.Should().Match<VideoPackDefinition>(item =>
+            item.Code == "product_on_model_pack" && item.Version == 2 && item.TotalDurationSeconds == 12 &&
+            item.RequiresCharacter && item.RequiresSharedMockup);
+        pack.Scenes.Select(scene => scene.Id).Should().Equal(
+            "natural_motion", "brand_focus", "fabric_detail");
+        pack.Scenes.Should().OnlyContain(scene => scene.Mode == "ai" && scene.DurationSeconds == 4 &&
+            scene.TemplateCode == "lifestyle_in_use" && scene.TransitionIn == "cut");
+    }
+
+    [TestMethod]
     [DataRow("{}")]
     [DataRow("not-json")]
     [DataRow("")]
@@ -127,7 +188,7 @@ public sealed class VideoPlanningServiceTests
             source.ContentHash!, source.MetadataRevision, AiStudioFrameIdentity.HangingWindow, aspect, AiStudioFrameIdentity.PromptVersion,
             TemplateCode: "cinematic_product_showcase"));
         fixture.AssetRows.Add(frame);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4, AiScenes: [new(MockupId: source.Id)],
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5, AiScenes: [new(MockupId: source.Id)],
             AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var result = await Service(fixture).PreviewAsync(product.Id, new(config, [source.Id], source.ArtworkGroupKey), default);
@@ -227,6 +288,17 @@ public sealed class VideoPlanningServiceTests
     private static VideoPlanningService Service(WorkflowTestData fixture)
     {
         var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
-        return new(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object, new(), new(), new());
+        return new(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object,
+            fixture.CharacterModels.Object, new(), new(), new());
     }
+
+    private static AiCharacterModel Character(string code, string name, int sortOrder, bool isDefault = false,
+        bool isActive = true, DateTime? deletedAt = null) => new()
+    {
+        Id = Guid.NewGuid(), Code = code, Name = name, Continent = "Asia", Gender = "Female",
+        AgeMin = 18, AgeMax = 24, BodyType = "Slim", SkinTone = "Tan", Description = "Model",
+        CloudinaryPublicId = $"ai-characters/{code}", ImageUrl = $"https://example.test/{code}.png",
+        PreviewUrl = $"https://example.test/{code}-preview.png", SortOrder = sortOrder,
+        IsDefault = isDefault, IsActive = isActive, DeletedAt = deletedAt
+    };
 }
