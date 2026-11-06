@@ -71,6 +71,7 @@ try {
         "+APCS.Application.Features.Auth.*",
         "+APCS.Application.Features.ApiKeys.*",
         "+APCS.Application.Features.Workflows.*",
+        "+APCS.Application.Features.Assistant.*",
         "+APCS.Common.*",
         "+APCS.Domain.Common.SoftDeletableEntity",
         "+APCS.Domain.Entities.AuthToken",
@@ -79,6 +80,7 @@ try {
         "+APCS.Infrastructure.Services.*",
         "-APCS.Infrastructure.Services.GeminiEmbeddingProvider",
         "-APCS.Infrastructure.Services.GeminiTextGenerationProvider",
+        "-APCS.Infrastructure.Services.GeminiAssistantChatModel",
         "-APCS.Infrastructure.Services.RagContextRetrievers",
         "-APCS.Infrastructure.Services.RagService"
     ) -join ";"

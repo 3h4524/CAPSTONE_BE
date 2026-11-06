@@ -43,6 +43,16 @@ public sealed class InvoiceRepository(AppDbContext dbContext)
             .SingleOrDefaultAsync(cancellationToken);
 
     /// <inheritdoc />
+    public async Task<IEnumerable<Invoice>> GetByStatusForUserAsync(
+        Guid userId,
+        string status,
+        CancellationToken cancellationToken = default) =>
+        await dbContext.Invoices
+            .AsNoTracking()
+            .Where(invoice => invoice.UserId == userId && invoice.Status == status)
+            .ToListAsync(cancellationToken);
+
+    /// <inheritdoc />
     public Task<Invoice?> GetByPayosOrderCodeAsync(
         long orderCode,
         CancellationToken cancellationToken = default) =>

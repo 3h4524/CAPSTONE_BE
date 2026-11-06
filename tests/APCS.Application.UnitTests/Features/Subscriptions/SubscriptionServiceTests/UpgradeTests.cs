@@ -163,6 +163,10 @@ public sealed class UpgradeTests
         result.Value.PaymentRequired.Should().BeTrue();
         result.Value.ProratedCreditUsd.Should().Be(6.66m);
         result.Value.DueTodayUsd.Should().Be(13.33m);
+        // The same amounts at the PayOS rate of 25,000.
+        result.Value.ProratedCreditVnd.Should().Be(166_500m);
+        result.Value.DueTodayVnd.Should().Be(333_250m);
+        result.Value.MonthlyRateVnd.Should().Be(749_750m);
         result.Value.FirstRenewalDate.Should().Be(current.RenewalDate);
     }
 
@@ -195,10 +199,10 @@ public sealed class UpgradeTests
     }
 
     [TestMethod]
-    public async Task UpgradeAsync_OnTheRenewalDateItself_ActivatesImmediatelyWithNoPaymentDue()
+    public async Task UpgradeAsync_OnTheRenewalDateItself_AsksToRenewFirstAndChangesNothing()
     {
-        // remainingDays == 0 on the renewal date itself, so both the prorated charge and the
-        // credit are zero — nothing is due today.
+        // The paid cycle no longer covers its renewal date, so there is no unused time to credit:
+        // a $0 upgrade there would hand out the new plan unpaid.
         var starter = SubscriptionTestData.CreateStarterPlan();
         var pro = SubscriptionTestData.CreateProPlan();
         var current = SubscriptionTestData.CreateActiveSubscription(starter);
@@ -210,21 +214,15 @@ public sealed class UpgradeTests
 
         var result = await service.UpgradeAsync(new UpgradeRequestDto(pro.Id), CancellationToken.None);
 
-        result.IsSuccess.Should().BeTrue();
-        result.Value.PaymentRequired.Should().BeFalse();
-        result.Value.DueTodayUsd.Should().Be(0m);
-        result.Value.ProratedCreditUsd.Should().Be(0m);
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be(ErrorCodes.SubscriptionRenewBeforeUpgrade);
         paymentGateway.Verify(
             candidate => candidate.CreatePaymentLinkAsync(
                 It.IsAny<long>(), It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
-        // The Subscription record is updated to the Target Plan and remains Active.
         subscriptions.Verify(
-            candidate => candidate.UpdateAsync(
-                It.Is<Subscription>(sub => sub.Id == current.Id && sub.PlanId == pro.Id && sub.Status == "active"),
-                It.IsAny<bool>(),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+            candidate => candidate.UpdateAsync(It.IsAny<Subscription>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [TestMethod]

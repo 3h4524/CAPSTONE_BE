@@ -8,6 +8,48 @@ public class RevenueInsightsDto
     public SubscriptionAnalyticsDto SubscriptionAnalytics { get; set; } = new();
     public RevenueForecastDto Forecast { get; set; } = new();
     public List<FinancialAlertDto> FinancialAlerts { get; set; } = new();
+    public MrrMovementDto MrrMovement { get; set; } = new();
+}
+
+/// <summary>Where MRR came from and where it went.</summary>
+public class MrrMovementDto
+{
+    /// <summary>The six calendar months ending with the period's end, oldest first; the last one stops at the period's end.</summary>
+    public List<MrrMovementMonthDto> Months { get; set; } = new();
+    /// <summary>The selected period for all plans together (<see cref="MrrBridgeDto.PlanName"/> null), then each plan.</summary>
+    public List<MrrBridgeDto> Period { get; set; } = new();
+}
+
+public class MrrMovementMonthDto
+{
+    /// <summary>The month's first day (YYYY-MM-DD).</summary>
+    public string MonthStart { get; set; } = null!;
+    public decimal New { get; set; }
+    public decimal Expansion { get; set; }
+    public decimal Contraction { get; set; }
+    public decimal Churn { get; set; }
+    /// <summary>New + Expansion - Contraction - Churn.</summary>
+    public decimal Net { get; set; }
+}
+
+/// <summary>
+/// MRR at the start of the period, each cause of change, and MRR at the end:
+/// <c>End = Start + New + MovedIn + Expansion - Contraction - MovedOut - Churn</c>.
+/// </summary>
+public class MrrBridgeDto
+{
+    /// <summary>The plan, or null for all plans together.</summary>
+    public string? PlanName { get; set; }
+    public decimal Start { get; set; }
+    public decimal New { get; set; }
+    /// <summary>Customers who changed to this plan from another; always 0 for all plans together.</summary>
+    public decimal MovedIn { get; set; }
+    public decimal Expansion { get; set; }
+    public decimal Contraction { get; set; }
+    /// <summary>Customers who changed from this plan to another; always 0 for all plans together.</summary>
+    public decimal MovedOut { get; set; }
+    public decimal Churn { get; set; }
+    public decimal End { get; set; }
 }
 
 public class SubscriptionAnalyticsDto

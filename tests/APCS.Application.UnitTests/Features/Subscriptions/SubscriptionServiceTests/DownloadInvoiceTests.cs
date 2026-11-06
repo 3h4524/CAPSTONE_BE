@@ -82,7 +82,8 @@ public sealed class DownloadInvoiceTests
         capturedModel.BilledToName.Should().Be("Seller Name");
         capturedModel.BilledToEmail.Should().Be("seller@example.com");
         capturedModel.PlanName.Should().Be(invoice.Subscription.Plan.Name);
-        capturedModel.TotalPaid.Should().Be(invoice.TotalAmount);
+        capturedModel.PlanPriceVnd.Should().Be(invoice.AmountUsd * 25_000m);
+        capturedModel.TotalPaidVnd.Should().Be(invoice.TotalAmount * 25_000m);
         capturedModel.Status.Should().Be("paid");
     }
 

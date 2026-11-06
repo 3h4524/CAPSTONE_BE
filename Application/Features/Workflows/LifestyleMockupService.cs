@@ -3,6 +3,8 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Logging;
@@ -25,7 +27,7 @@ public interface ILifestyleMockupService
 public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IEnumerable<IImageGenerationProvider> imageProviders,
     IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
-    ILogger<LifestyleMockupService> logger) : ILifestyleMockupService
+    ILogger<LifestyleMockupService> logger, IPlanEntitlementService entitlements) : ILifestyleMockupService
 {
     // Gemini is the provider that can combine a photo with a mock-up.
     private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Gemini);
@@ -45,6 +47,8 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
     {
         if (user.UserId is not Guid userId || await products.GetByIdAsync(productId, ct) is not { DeletedAt: null } product || product.UserId != userId)
             return Result.Failure<MockupResponse>(Missing());
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.LifestyleMockup, ct);
+        if (planCheck.IsFailure) return Result.Failure<MockupResponse>(planCheck.Error);
         var garment = await assets.GetByIdAsync(garmentMockupId, ct);
         if (garment is null || garment.DeletedAt != null || garment.ProductId != productId || garment.ContentHash == null)
             return Result.Failure<MockupResponse>(Missing());
@@ -93,7 +97,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
 
         await usage.AddAsync(new ApiUsageRecord
         {
-            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = "gemini", Feature = "image_generation",
+            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = "gemini", Feature = UsageFeatures.Mockup,
             ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
         }, cancellationToken: ct);
         await assets.AddAsync(new MockupImage
