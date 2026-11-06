@@ -424,6 +424,34 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    [DataRow("mug", "", true)]
+    [DataRow("poster", "  ", true)]
+    [DataRow("mug", "A watercolor of {subject}.", false)]
+    [DataRow("tshirt", "", false)]
+    public async Task ProcessBatchJobAsync_EdgeToEdgePrintFromNoTemplate_AsksForTheArtworkItself_NotAPhoto(
+        string productType, string systemPrompt, bool asked)
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        (await db.Products.SingleAsync()).ProductType = productType;
+        (await db.AiPrompts.SingleAsync()).SystemPrompt = systemPrompt;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var prompts = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, bool, bool, CancellationToken>((_, prompt, _, _, _, _) => prompts.Add(prompt))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "test-model", 0.04m));
+        var remover = new Mock<IDesignBackgroundRemover>();
+        remover.Setup(x => x.RemoveBackground(It.IsAny<byte[]>())).Returns(Png);
+
+        await CreateService(db, provider: provider, backgroundRemover: remover.Object).ProcessBatchJobAsync(jobId);
+
+        prompts.Should().ContainSingle().Which.Contains("Output only the flat, print-ready artwork, filling the whole image")
+            .Should().Be(asked);
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_PromptFromAPhraseTemplate_AllowsOnlyThatPhraseAsLettering()
     {
         await using var db = CreateContext();
@@ -548,7 +576,7 @@ public sealed class DesignGenerationProcessingTests
     {
         await using var db = CreateContext();
         var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
-        await UseLetteringTemplateAsync(db, keywords: "coffee shirt, gift for mom");
+        await UseLetteringTemplateAsync(db, keywords: "coffee shirt, gift for her");
         var provider = new Mock<IImageGenerationProvider>();
         provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
         provider.SetupGet(x => x.SupportsTransparentBackground).Returns(true);
@@ -1189,6 +1217,24 @@ public sealed class DesignGenerationProcessingTests
     }
 
     [TestMethod]
+    public async Task ProcessBatchJobAsync_ProviderReportsNothing_StillLabelsTheImageWithThePromptVersion()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "gemini-3.1-flash-image", 0.04m));
+
+        await CreateService(db, provider: provider).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        using var metadata = System.Text.Json.JsonDocument.Parse((await db.DesignImages.SingleAsync()).GenerationMetadata!);
+        metadata.RootElement.GetProperty("promptVersion").GetString()
+            .Should().Be(APCS.Application.Features.BatchProductPrompts.Common.DesignPromptVersions.Current);
+        metadata.RootElement.TryGetProperty("seed", out _).Should().BeFalse();
+    }
+
+    [TestMethod]
     public async Task ProcessBatchJobAsync_ProviderRefusesTheAccount_AsksForNoFurtherImage_AndSaysWhyOnEveryProduct()
     {
         await using var db = CreateContext();
@@ -1582,7 +1628,8 @@ public sealed class DesignGenerationProcessingTests
         IDesignBackgroundRemover? backgroundRemover = null,
         Mock<IPublicImageService>? storage = null,
         int maxConcurrentImages = 1,
-        Mock<IApiKeyCredentials>? credentials = null)
+        Mock<IApiKeyCredentials>? credentials = null,
+        IDesignTextCheckQueue? textCheckQueue = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -1617,7 +1664,186 @@ public sealed class DesignGenerationProcessingTests
             [provider.Object], storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(),
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
-            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)));
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)), textCheckQueue);
+    }
+
+    // Keeps what design generation hands to the background text check.
+    private sealed class CapturingTextCheckQueue : IDesignTextCheckQueue
+    {
+        public List<DesignTextCheckRequest> Requests { get; } = [];
+
+        public bool TryEnqueue(DesignTextCheckRequest request)
+        {
+            lock (Requests) Requests.Add(request);
+            return true;
+        }
+
+        public ValueTask<DesignTextCheckRequest> DequeueAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private static Mock<IDesignTextReader> ReaderFinding(params string[] lines)
+    {
+        var reader = new Mock<IDesignTextReader>();
+        reader.Setup(x => x.ReadAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(lines.Select(text => new DesignTextLine(text, 0.95)).ToList());
+        return reader;
+    }
+
+    private static async Task<System.Text.Json.JsonElement?> TextCheckOfTheImageAsync(AppDbContext db)
+    {
+        using var metadata = System.Text.Json.JsonDocument.Parse((await db.DesignImages.SingleAsync()).GenerationMetadata!);
+        return metadata.RootElement.TryGetProperty("textCheck", out var check) ? check.Clone() : null;
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TextCheckOn_HandsEverySavedDesignAndItsPhraseToTheCheck()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, variationCount: 2);
+        await UseLetteringTemplateAsync(db);
+        var queue = new CapturingTextCheckQueue();
+
+        await CreateService(db, textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var imageIds = await db.DesignImages.Select(i => i.Id).ToListAsync();
+        queue.Requests.Select(r => r.DesignImageId).Should().BeEquivalentTo(imageIds);
+        queue.Requests.Should().OnlyContain(r => r.Phrase == "Coffee Then Code");
+        (await db.DesignImages.Select(i => i.GenerationMetadata).ToListAsync())
+            .Should().OnlyContain(metadata => !metadata!.Contains("textCheck"), "the check is added by the background worker, not by the job");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TextCheckOn_DesignThatPrintsNoPhrase_IsCheckedForNoWords()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var queue = new CapturingTextCheckQueue();
+
+        await CreateService(db, textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+
+        queue.Requests.Should().ContainSingle().Which.Phrase.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TextCheckOn_OwnPromptWithDesignText_ChecksTheDesignText()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await UseCustomPromptAsync(db, "A retro surf van at sunset", "Salt Life");
+        var queue = new CapturingTextCheckQueue();
+
+        await CreateService(db, textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+
+        queue.Requests.Should().ContainSingle().Which.Phrase.Should().Be("Salt Life");
+    }
+
+    [TestMethod]
+    public async Task TextCheck_ReadsTheDesign_KeepsTheResultBesideItsOtherMetadata_AndTheJobShowsIt()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await UseLetteringTemplateAsync(db);
+        var queue = new CapturingTextCheckQueue();
+        var service = CreateService(db, textCheckQueue: queue);
+        await service.ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+
+        var saved = await new DesignTextCheckService(ReaderFinding("COFFEE THEN CODE", "EST. 1952").Object, new Repository<DesignImage>(db), db)
+            .CheckAsync(queue.Requests.Single());
+
+        saved.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        var check = (await TextCheckOfTheImageAsync(db))!.Value;
+        check.GetProperty("ok").GetBoolean().Should().BeFalse();
+        check.GetProperty("expected").GetString().Should().Be("Coffee Then Code");
+        using (var metadata = System.Text.Json.JsonDocument.Parse((await db.DesignImages.SingleAsync()).GenerationMetadata!))
+            metadata.RootElement.GetProperty("promptVersion").GetString().Should().Be(DesignPromptVersions.Current);
+
+        var image = (await service.GetJobAsync(jobId)).Value.Products.Single().Images.Single();
+        image.TextCheck!.Ok.Should().BeFalse();
+        image.TextCheck.Extra.Should().Equal("EST", "1952");
+        image.TextCheck.Missing.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_TextCheckOn_ShowsTheCheckIsPendingUntilEveryNewDesignIsChecked()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var queue = new CapturingTextCheckQueue();
+        var service = CreateService(db, textCheckQueue: queue);
+        await service.ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+
+        (await service.GetJobAsync(jobId)).Value.TextCheckPending.Should().BeTrue("the job is done before its designs are read");
+
+        await new DesignTextCheckService(ReaderFinding().Object, new Repository<DesignImage>(db), db).CheckAsync(queue.Requests.Single());
+        db.ChangeTracker.Clear();
+
+        (await service.GetJobAsync(jobId)).Value.TextCheckPending.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_TextCheckOn_DesignNeverCheckedAfterAWhile_IsNoLongerPending()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var service = CreateService(db, textCheckQueue: new CapturingTextCheckQueue());
+        await service.ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var image = await db.DesignImages.SingleAsync();
+        image.CreatedAt = UtcNow.UtcDateTime.AddMinutes(-20);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await service.GetJobAsync(jobId)).Value.TextCheckPending.Should().BeFalse("a lost check (queue full, API restarted) must not keep the page polling");
+    }
+
+    [TestMethod]
+    public async Task GetJobAsync_TextCheckOff_NeverPending()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var service = CreateService(db);
+        await service.ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+
+        (await service.GetJobAsync(jobId)).Value.TextCheckPending.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task TextCheck_TextCouldNotBeRead_LeavesTheDesignAsItWas()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var queue = new CapturingTextCheckQueue();
+        await CreateService(db, textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var before = (await db.DesignImages.SingleAsync()).GenerationMetadata;
+        var reader = new Mock<IDesignTextReader>();
+        reader.Setup(x => x.ReadAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>())).ReturnsAsync((IReadOnlyList<DesignTextLine>?)null);
+
+        var saved = await new DesignTextCheckService(reader.Object, new Repository<DesignImage>(db), db).CheckAsync(queue.Requests.Single());
+
+        saved.Should().BeFalse();
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.SingleAsync()).GenerationMetadata.Should().Be(before);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TextCheckOff_QueuesNothingAndSavesNoCheck()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        await UseLetteringTemplateAsync(db);
+
+        await CreateService(db).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        (await TextCheckOfTheImageAsync(db)).Should().BeNull();
     }
 
     private static Guid Seed(

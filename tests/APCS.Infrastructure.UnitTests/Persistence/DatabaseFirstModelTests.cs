@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(69);
+        mappedTables.Should().HaveCount(70);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
@@ -37,9 +37,21 @@ public sealed class DatabaseFirstModelTests
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
             "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
             "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
-            "rag_documents", "rag_chunks", "rag_embeddings",
+            "rag_documents", "rag_chunks", "rag_embeddings", "image_eval_runs",
             "assistant_conversations", "assistant_messages", "assistant_pending_actions"
         });
+    }
+
+    [TestMethod]
+    public void Model_ImageEvalRun_KeepsTheScoresAsJson()
+    {
+        using var context = CreateContext();
+
+        var entityType = context.Model.FindEntityType(typeof(ImageEvalRun))!;
+        entityType.GetTableName().Should().Be("image_eval_runs");
+        entityType.FindProperty(nameof(ImageEvalRun.Report))!.GetColumnType().Should().Be("jsonb");
+        entityType.FindProperty(nameof(ImageEvalRun.Name))!.GetMaxLength().Should().Be(200);
+        entityType.FindProperty(nameof(ImageEvalRun.Notes))!.IsNullable.Should().BeTrue();
     }
 
     [TestMethod]

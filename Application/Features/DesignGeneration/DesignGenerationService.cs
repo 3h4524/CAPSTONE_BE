@@ -44,7 +44,8 @@ public sealed class DesignGenerationService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<StartGenerationRequestDto> validator,
-    IOptions<DesignGenerationSettings> settings) : IDesignGenerationService
+    IOptions<DesignGenerationSettings> settings,
+    IDesignTextCheckQueue? textCheckQueue = null) : IDesignGenerationService
 {
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
@@ -58,9 +59,17 @@ public sealed class DesignGenerationService(
     private const string TransparentGraphicPrintInstruction =
         "Output only the print-ready artwork, centered. No t-shirt, mockup, fabric, paper or photo backdrop.";
 
+    // Printed edge to edge (a mug, a poster, a phone case) from no template: nothing else says the image is the print
+    // itself, and without this line Ideogram made photos of a vase on a table (test of 31/10/2026). A template, or the
+    // Seller's own prompt, says what the image is.
+    private const string FullBleedArtworkInstruction =
+        "Output only the flat, print-ready artwork, filling the whole image. Not a photo: no mug, frame, mockup, table, wall "
+        + "or room around it.";
+
     private const string CancelRequestedEvent = "cancel_requested";
     private const string CancelHonoredEvent = "cancel_honored";
     private const string CancelledMessage = "Cancelled by the user.";
+    private const int TextCheckWaitMinutes = 15;
     internal const string ImageTimingEvent = "image_timing";
 
     public async Task<Result<StartGenerationResponseDto>> StartAsync(
@@ -517,8 +526,12 @@ public sealed class DesignGenerationService(
             ? await ThinRowsAsync(job, rows, productById, cancellationToken)
             : [];
 
+        // The words each design is asked to print, for the OCR check of its text; read only when that check is on.
+        var printedPhrases = textCheckQueue is null ? null : await PrintedPhrasesAsync(job, rows, productById, promptByRow, cancellationToken);
+
         // Images are mostly waiting on the provider, so several are requested at once, up to what the Seller's key allows.
-        var run = new JobRun(job, imageProvider, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus, new JobStop());
+        var run = new JobRun(job, imageProvider, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus, new JobStop(),
+            printedPhrases);
         var maxImages = settings.Value.MaxConcurrentImagesFor(imageProvider.Provider);
         using var imageSlots = new SemaphoreSlim(maxImages);
         // Just enough products at once to keep every slot busy, so the products shown as being generated are the
@@ -644,9 +657,36 @@ public sealed class DesignGenerationService(
         return thin;
     }
 
-    // What every product of a job being processed shares.
+    /// <summary>
+    /// The phrase each row's designs print (null for a design that prints no words), worked out from the same pieces the
+    /// stored prompt was made of, read again now, as <see cref="ThinRowsAsync"/> does. A row whose product is gone is
+    /// left out, and its designs are not checked.
+    /// </summary>
+    private async Task<Dictionary<Guid, string?>> PrintedPhrasesAsync(BatchJob job, IEnumerable<BatchJobProduct> rows,
+        IReadOnlyDictionary<Guid, Product> productById, IReadOnlyDictionary<Guid, AiPrompt> promptByRow, CancellationToken cancellationToken)
+    {
+        var phrases = new Dictionary<Guid, string?>();
+        var jobInstructions = ReadInstructions(job.Config);
+        foreach (var row in rows)
+        {
+            if (row.ProductId is not Guid productId || !productById.TryGetValue(productId, out var product)
+                || !promptByRow.TryGetValue(row.Id, out var prompt))
+                continue;
+            if (!ArtworkPromptRules.PrintsExactPhrase(prompt.SystemPrompt))
+            {
+                phrases[row.Id] = null;
+                continue;
+            }
+            var defaults = await PromptDefaultsResolver.ResolveAsync(product, designTemplates, styleArtPresets, cancellationToken);
+            var phrase = WithSellerChanges(defaults, row, jobInstructions).Subject.Trim();
+            phrases[row.Id] = phrase.Length > 0 ? phrase : null;
+        }
+        return phrases;
+    }
+
+    // What every product of a job being processed shares. PrintedPhrases is null when the text of designs is not checked.
     private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string ApiKey, string AspectRatio, int VariationCount,
-        bool? RequireApproval, string ReviewedStatus, JobStop Stop);
+        bool? RequireApproval, string ReviewedStatus, JobStop Stop, IReadOnlyDictionary<Guid, string?>? PrintedPhrases = null);
 
     // The designs a product already has in the job when it is generated again: the new ones are numbered after them,
     // and the product keeps them, so it does not fail when none of the new ones can be made.
@@ -738,6 +778,7 @@ public sealed class DesignGenerationService(
             if (row.CustomNegativeTerms is null && avoid.Length > 0)
                 instructions.Add(avoid);
             if (graphicPrint) instructions.Add(transparent ? TransparentGraphicPrintInstruction : GraphicPrintInstruction);
+            else if (string.IsNullOrWhiteSpace(prompt.SystemPrompt)) instructions.Add(FullBleedArtworkInstruction);
             return new(string.Join("\n", instructions), ArtworkPromptRules.IllustrationPlacement(prompt.SystemPrompt, ownPrompt, design));
         }
 
@@ -922,6 +963,11 @@ public sealed class DesignGenerationService(
                     TimeSpan.FromSeconds((double)elapsedSeconds), result, cutOutTime, uploadTime, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }, cancellationToken);
+
+            // Its text is read in the background once it is saved: the result warns the Seller, it never holds the image
+            // back, and a full queue only means this design goes unchecked.
+            if (textCheckQueue is not null && run.PrintedPhrases is { } phrases && phrases.TryGetValue(row.Id, out var phrase))
+                textCheckQueue.TryEnqueue(new DesignTextCheckRequest(designImageId, imageBytes, phrase));
             return VariationOutcome.Made;
         }
         finally
@@ -1034,7 +1080,8 @@ public sealed class DesignGenerationService(
         var imagesByRow = images.Where(i => i.BatchJobProductId.HasValue)
             .GroupBy(i => i.BatchJobProductId!.Value)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<GeneratedImageDto>)g
-                .Select(i => new GeneratedImageDto(i.Id, i.ImageUrl, i.VariationIndex, i.ImageWidthPx, i.ImageHeightPx, i.ApprovalStatus))
+                .Select(i => new GeneratedImageDto(i.Id, i.ImageUrl, i.VariationIndex, i.ImageWidthPx, i.ImageHeightPx, i.ApprovalStatus,
+                    DesignTextCheckDto.From(DesignTextCheck.FromMetadata(i.GenerationMetadata))))
                 .ToList());
 
         var rowDtos = rows.Select(r =>
@@ -1058,7 +1105,17 @@ public sealed class DesignGenerationService(
             job.Id, job.BatchId, batchName, job.Status,
             job.TotalProducts ?? rows.Count, job.ProcessedProducts ?? 0, job.FailedProducts ?? 0,
             job.ProgressPercentage ?? 0, job.StartedAt, job.CompletedAt,
-            variationCount, aspectRatio, counters, rowDtos, ReadRequireApproval(job.Config), ReadWorkflowId(job.Config)));
+            variationCount, aspectRatio, counters, rowDtos, ReadRequireApproval(job.Config), ReadWorkflowId(job.Config),
+            TextCheckPending(images)));
+    }
+
+    // The text check runs after a design is saved, so it can still be going when the job is done. A design not
+    // checked within TextCheckWaitMinutes is taken as never checked (queue full, or the API restarted).
+    private bool TextCheckPending(IEnumerable<DesignImage> images)
+    {
+        if (textCheckQueue is null) return false;
+        var since = timeProvider.GetUtcNow().UtcDateTime.AddMinutes(-TextCheckWaitMinutes);
+        return images.Any(i => i.CreatedAt > since && DesignTextCheck.FromMetadata(i.GenerationMetadata) is null);
     }
 
     public async Task<Result<IReadOnlyList<BatchJobSummaryDto>>> ListJobsForBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
@@ -1199,12 +1256,12 @@ public sealed class DesignGenerationService(
         }, cancellationToken: cancellationToken);
     }
 
-    // What the provider reports about how it made the image (its seed, and the prompt it drew from when it rewrote
-    // the one it was sent), kept with the image so it can be looked into or made again; null when it reports nothing.
-    private static string? GenerationMetadata(ImageGenerationResult result, string? placement)
+    // Which prompt rules made the image, and what the provider reports about how it made it (its seed, and the prompt it
+    // drew from when it rewrote the one it was sent), kept with the image so it can be compared, looked into or made again.
+    // The OCR check of its text is added later, by DesignTextCheckService.
+    private static string GenerationMetadata(ImageGenerationResult result, string? placement)
     {
-        if (result.Seed is null && result.ProviderPrompt is null && placement is null) return null;
-        var metadata = new JsonObject();
+        var metadata = new JsonObject { ["promptVersion"] = DesignPromptVersions.Current };
         if (result.Seed is long seed) metadata["seed"] = seed;
         if (result.ProviderPrompt is { } providerPrompt) metadata["providerPrompt"] = providerPrompt;
         if (placement is not null) metadata["illustrationPlacement"] = placement;
