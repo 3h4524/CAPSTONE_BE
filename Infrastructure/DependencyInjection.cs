@@ -202,6 +202,7 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-MarketResearch/1.0");
         });
         services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
+        services.AddScoped<IMarketListingQueries, MarketListingQueries>();
         services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
         services.AddScoped<IMarketInsightScheduleService, MarketInsightScheduleService>();
 
