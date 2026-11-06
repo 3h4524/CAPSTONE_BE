@@ -27,6 +27,8 @@ public partial class MarketOpportunity
 
     public string Status { get; set; } = null!;
 
+    public bool IsSynthetic { get; set; }
+
     public DateTime FirstObservedAt { get; set; }
 
     public DateTime LastObservedAt { get; set; }

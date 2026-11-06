@@ -66,6 +66,31 @@ public sealed class CachedRagSearchService(
         return results;
     }
 
+    public Task<RagSearchDiagnosticsDto> SearchWithDiagnosticsAsync(
+        RagSearchRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.SearchWithDiagnosticsAsync(request, cancellationToken);
+
+    public Task<RagEvaluationResponse> EvaluateAsync(
+        RagEvaluationRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.EvaluateAsync(request, cancellationToken);
+
+    public Task<RagCorpusHealthResponse> GetCorpusHealthAsync(
+        string? contentType,
+        int staleDays = 30,
+        CancellationToken cancellationToken = default) =>
+        inner.GetCorpusHealthAsync(contentType, staleDays, cancellationToken);
+
+    public async Task<RagReingestResponse> ReingestAsync(
+        RagReingestRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await inner.ReingestAsync(request, cancellationToken);
+        await StartNewGenerationAsync();
+        return response;
+    }
+
     private async Task<string?> CurrentGenerationAsync(CancellationToken cancellationToken)
     {
         try

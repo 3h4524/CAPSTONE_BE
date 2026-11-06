@@ -31,6 +31,8 @@ ALTER TABLE rag_documents DROP CONSTRAINT IF EXISTS uq_rag_documents_source_hash
 CREATE INDEX IF NOT EXISTS idx_rag_documents_source_hash ON rag_documents (source_id, content_hash);
 CREATE INDEX IF NOT EXISTS idx_rag_documents_content_type ON rag_documents (content_type);
 CREATE INDEX IF NOT EXISTS idx_rag_documents_source_status ON rag_documents (source_id, status);
+CREATE INDEX IF NOT EXISTS idx_rag_documents_ingestion_metadata
+    ON rag_documents USING gin (ingestion_metadata jsonb_path_ops);
 
 CREATE TABLE IF NOT EXISTS rag_chunks (
     id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -54,3 +56,10 @@ CREATE TABLE IF NOT EXISTS rag_embeddings (
 
 CREATE INDEX IF NOT EXISTS idx_rag_embeddings_embedding_cosine
     ON rag_embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- Full-text indexes support the lexical half of hybrid retrieval. The application still includes
+-- the document title in the query; these indexes cover the persisted chunk/title text separately.
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_content_fts
+    ON rag_chunks USING gin (to_tsvector('simple', content));
+CREATE INDEX IF NOT EXISTS idx_rag_documents_title_fts
+    ON rag_documents USING gin (to_tsvector('simple', title));

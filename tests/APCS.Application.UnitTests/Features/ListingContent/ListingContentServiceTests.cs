@@ -129,7 +129,7 @@ public sealed class ListingContentServiceTests
         return new(user.Object, products.Object, listings.Object, Mock.Of<IRepository<ListingTitle>>(),
             Mock.Of<IRepository<ListingDescription>>(), Mock.Of<IRepository<ListingTag>>(), Mock.Of<IRepository<ListingTagItem>>(),
             Mock.Of<IRepository<ListingGenerationHistory>>(), Mock.Of<IRepository<SeoScore>>(), Mock.Of<IRepository<ApiUsageRecord>>(),
-            policy.Object, listing.Object, generator.Object, unitOfWork.Object, TimeProvider.System, NullLogger<ListingContentService>.Instance,
+            Mock.Of<IRagService>(), policy.Object, listing.Object, generator.Object, unitOfWork.Object, TimeProvider.System, NullLogger<ListingContentService>.Instance,
             entitlements ?? TestEntitlements.AllowAll());
     }
 }

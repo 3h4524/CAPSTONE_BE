@@ -16,12 +16,13 @@ public sealed class EtsyMarketDataConnector(
 {
     internal const string HttpClientName = "EtsyMarketResearch";
     private const int MaxRequestAttempts = 3;
+    private const string SortOn = "score";
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
     private readonly EtsyOptions settings = options.Value;
 
     public CommercePlatform Platform => CommercePlatform.Etsy;
 
-    public async Task<IReadOnlyList<CommerceMarketListing>> SearchPublicListingsAsync(
+    public async Task<CommerceMarketSearchResult> SearchPublicListingsAsync(
         CommerceMarketSearchRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -30,41 +31,63 @@ public sealed class EtsyMarketDataConnector(
             throw new InvalidOperationException("Etsy public API is not configured. Set Etsy__ApiKey.");
 
         var results = new List<CommerceMarketListing>();
-        foreach (var query in request.Queries.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.OrdinalIgnoreCase))
+        var queryResults = new List<CommerceMarketQueryResult>();
+        var limitPerQuery = Math.Clamp(request.LimitPerQuery, 1, 500);
+        foreach (var query in request.Queries
+                     .Where(item => !string.IsNullOrWhiteSpace(item))
+                     .Select(NormalizeQuery)
+                     .Where(item => item.Length > 0)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var uri = $"listings/active?limit={Math.Clamp(request.LimitPerQuery, 1, 100)}&offset=0&keywords={Uri.EscapeDataString(query)}&sort_on=score&sort_order=down";
-            using var response = await GetWithRetryAsync(uri, query, cancellationToken);
-            if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
-                throw new HttpRequestException("Etsy rejected the API credentials.", null, response.StatusCode);
-            response.EnsureSuccessStatusCode();
-
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (settings.LogRawResponses)
+            var offset = 0;
+            var collected = 0;
+            var sampledBefore = results.Count;
+            int? totalCount = null;
+            while (collected < limitPerQuery)
             {
-                var maxChars = Math.Clamp(settings.RawResponseLogMaxChars, 1000, 100_000);
-                var preview = responseBody.Length > maxChars
-                    ? $"{responseBody[..maxChars]}...[truncated {responseBody.Length - maxChars} chars]"
-                    : responseBody;
-                logger.LogInformation(
-                    "Etsy raw response for query {Query} (HTTP {StatusCode}): {ResponseBody}",
-                    query,
-                    (int)response.StatusCode,
-                    preview);
+                var pageSize = Math.Min(100, limitPerQuery - collected);
+                var uri = $"listings/active?limit={pageSize}&offset={offset}&keywords={Uri.EscapeDataString(query)}&sort_on={SortOn}&sort_order=down";
+                using var response = await GetWithRetryAsync(uri, query, cancellationToken);
+                if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
+                    throw new HttpRequestException("Etsy rejected the API credentials.", null, response.StatusCode);
+                response.EnsureSuccessStatusCode();
+
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                LogRawResponse(query, response.StatusCode, responseBody);
+
+                using var document = JsonDocument.Parse(responseBody);
+                // The first page's count is the marketplace total for the query; later pages repeat it.
+                totalCount ??= GetInt(document.RootElement, "count");
+                if (!document.RootElement.TryGetProperty("results", out var listings) || listings.ValueKind != JsonValueKind.Array)
+                    break;
+
+                var pageCount = listings.GetArrayLength();
+                if (pageCount == 0)
+                    break;
+
+                var rank = offset + 1;
+                foreach (var listing in listings.EnumerateArray())
+                {
+                    var mapped = Map(listing, query, rank++);
+                    if (mapped is not null)
+                        results.Add(mapped);
+                }
+
+                collected += pageCount;
+                offset += pageCount;
+                if (pageCount < pageSize || (totalCount is not null && offset >= totalCount))
+                    break;
             }
 
-            using var document = JsonDocument.Parse(responseBody);
-            if (!document.RootElement.TryGetProperty("results", out var listings) || listings.ValueKind != JsonValueKind.Array)
-                continue;
-
-            foreach (var listing in listings.EnumerateArray())
-            {
-                var mapped = Map(listing, query);
-                if (mapped is not null)
-                    results.Add(mapped);
-            }
+            queryResults.Add(new CommerceMarketQueryResult(
+                query,
+                totalCount,
+                results.Count - sampledBefore,
+                limitPerQuery,
+                SortOn));
         }
 
-        return results;
+        return new CommerceMarketSearchResult(results, queryResults);
     }
 
     private async Task<HttpResponseMessage> GetWithRetryAsync(
@@ -92,7 +115,23 @@ public sealed class EtsyMarketDataConnector(
         }
     }
 
-    private static CommerceMarketListing? Map(JsonElement item, string matchedQuery)
+    private void LogRawResponse(string query, HttpStatusCode statusCode, string responseBody)
+    {
+        if (!settings.LogRawResponses)
+            return;
+
+        var maxChars = Math.Clamp(settings.RawResponseLogMaxChars, 1000, 100_000);
+        var preview = responseBody.Length > maxChars
+            ? $"{responseBody[..maxChars]}...[truncated {responseBody.Length - maxChars} chars]"
+            : responseBody;
+        logger.LogInformation(
+            "Etsy raw response for query {Query} (HTTP {StatusCode}): {ResponseBody}",
+            query,
+            (int)statusCode,
+            preview);
+    }
+
+    private static CommerceMarketListing? Map(JsonElement item, string matchedQuery, int rank)
     {
         var id = GetString(item, "listing_id");
         var title = GetString(item, "title");
@@ -117,7 +156,9 @@ public sealed class EtsyMarketDataConnector(
             UnixTime(GetLong(item, "original_creation_timestamp")),
             UnixTime(GetLong(item, "last_modified_timestamp")),
             tags,
-            matchedQuery);
+            matchedQuery,
+            rank,
+            item.GetRawText());
     }
 
     private static string? GetString(JsonElement item, string name)
@@ -134,6 +175,9 @@ public sealed class EtsyMarketDataConnector(
 
     private static int? GetInt(JsonElement item, string name) =>
         item.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : null;
+
+    private static string NormalizeQuery(string value) =>
+        string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     private static long? GetLong(JsonElement item, string name) =>
         item.TryGetProperty(name, out var value) && value.TryGetInt64(out var result) ? result : null;
