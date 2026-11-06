@@ -6,8 +6,10 @@ using System.Threading.Tasks;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Revenues;
 using APCS.Application.Features.Revenues.Dtos;
+using APCS.Application.Features.Subscriptions;
 using APCS.Domain.Entities;
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using MockQueryable.Moq;
 using Moq;
@@ -19,13 +21,35 @@ public sealed class RevenueServiceTests
 {
     private readonly Mock<IRepository<Invoice>> _invoiceRepoMock = new();
     private readonly Mock<IRepository<Subscription>> _subscriptionRepoMock = new();
+    private readonly Mock<IRepository<SubscriptionPlan>> _planRepoMock = new();
+    private readonly Mock<IRepository<ApiUsageRecord>> _usageRecordRepoMock = new();
     private readonly RevenueService _sut;
 
     public RevenueServiceTests()
     {
-        // Tests that care about subscriptions override this.
+        // Tests that care about subscriptions, plans or usage override these.
         _subscriptionRepoMock.Setup(r => r.Query()).Returns(new List<Subscription>().AsQueryable().BuildMock());
-        _sut = new RevenueService(_invoiceRepoMock.Object, _subscriptionRepoMock.Object);
+        _planRepoMock.Setup(r => r.Query()).Returns(new List<SubscriptionPlan>().AsQueryable().BuildMock());
+        _usageRecordRepoMock.Setup(r => r.Query()).Returns(new List<ApiUsageRecord>().AsQueryable().BuildMock());
+        // A rate of 1 keeps every figure in the units the fixtures are written in.
+        _sut = CreateService(usdToVndRate: 1m);
+    }
+
+    private RevenueService CreateService(decimal usdToVndRate) => new(
+        _invoiceRepoMock.Object,
+        _subscriptionRepoMock.Object,
+        _planRepoMock.Object,
+        _usageRecordRepoMock.Object,
+        EmptyRepository<DesignImage>(),
+        EmptyRepository<MockupImage>(),
+        EmptyRepository<PromoVideo>(),
+        Options.Create(new PaymentGatewaySettings(usdToVndRate, null)));
+
+    private static IRepository<T> EmptyRepository<T>() where T : class
+    {
+        var repository = new Mock<IRepository<T>>();
+        repository.Setup(r => r.Query()).Returns(new List<T>().AsQueryable().BuildMock());
+        return repository.Object;
     }
 
     [TestMethod]
@@ -41,29 +65,42 @@ public sealed class RevenueServiceTests
             EndDate = new DateOnly(2026, 10, 31)
         };
 
-        var plan1 = new SubscriptionPlan { Name = "Pro", MonthlyPriceUsd = 50m };
-        var plan2 = new SubscriptionPlan { Name = "Basic", MonthlyPriceUsd = 30m };
+        var user3Id = Guid.NewGuid();
+        var plan1 = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Pro", MonthlyPriceUsd = 50m };
+        var plan2 = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Basic", MonthlyPriceUsd = 30m };
+
+        var sub1 = Paying(user1Id, plan1, renewalDate: new DateOnly(2026, 11, 5));
+        var sub2 = Paying(user2Id, plan2, renewalDate: new DateOnly(2026, 11, 20));
+        // Paid since January and cancelled in this period: a customer in the previous period.
+        var sub3 = Paying(user3Id, plan1, renewalDate: new DateOnly(2026, 10, 1));
+        sub3.Status = "cancelled";
+        sub3.CancelledAt = new DateTime(2026, 10, 10);
 
         var invoices = new List<Invoice>
         {
             // Current period paid
-            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, Status = "paid", AmountUsd = 100m, PaymentDate = new DateOnly(2026, 10, 5) },
-            new Invoice { Id = Guid.NewGuid(), UserId = user2Id, Status = "paid", AmountUsd = 200m, PaymentDate = new DateOnly(2026, 10, 20) },
+            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, SubscriptionId = sub1.Id, Status = "paid", AmountUsd = 100m, PaymentDate = new DateOnly(2026, 10, 5) },
+            new Invoice { Id = Guid.NewGuid(), UserId = user2Id, SubscriptionId = sub2.Id, Status = "paid", AmountUsd = 200m, PaymentDate = new DateOnly(2026, 10, 20) },
             // Current period pending (ignored)
-            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, Status = "pending", AmountUsd = 500m, PaymentDate = new DateOnly(2026, 10, 10) },
+            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, SubscriptionId = sub1.Id, Status = "pending", AmountUsd = 500m, PaymentDate = new DateOnly(2026, 10, 10) },
             // Previous period paid (31 days prior: 2026-08-31 to 2026-09-30)
-            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, Status = "paid", AmountUsd = 150m, PaymentDate = new DateOnly(2026, 9, 15) },
-            // Far in the past (ignored)
-            new Invoice { Id = Guid.NewGuid(), UserId = user1Id, Status = "paid", AmountUsd = 80m, PaymentDate = new DateOnly(2026, 1, 1) }
+            new Invoice { Id = Guid.NewGuid(), UserId = user2Id, SubscriptionId = sub2.Id, Status = "paid", AmountUsd = 150m, PaymentDate = new DateOnly(2026, 9, 15) },
+            // Far in the past (ignored by revenue)
+            new Invoice { Id = Guid.NewGuid(), UserId = user3Id, SubscriptionId = sub3.Id, Status = "paid", AmountUsd = 80m, PaymentDate = new DateOnly(2026, 1, 1) }
         }.AsQueryable().BuildMock();
 
         _invoiceRepoMock.Setup(r => r.Query()).Returns(invoices);
+        _planRepoMock.Setup(r => r.Query()).Returns(new List<SubscriptionPlan> { plan1, plan2 }.AsQueryable().BuildMock());
 
         var subscriptions = new List<Subscription>
         {
-            new Subscription { Id = Guid.NewGuid(), Status = "active", Plan = plan1, CreatedAt = new DateTime(2026, 10, 2) },
-            new Subscription { Id = Guid.NewGuid(), Status = "active", Plan = plan2, CreatedAt = new DateTime(2026, 8, 1) },
-            new Subscription { Id = Guid.NewGuid(), Status = "cancelled", Plan = plan1, CreatedAt = new DateTime(2026, 5, 1) }
+            sub1,
+            sub2,
+            sub3,
+            // Never paid: not a subscriber.
+            new Subscription { Id = Guid.NewGuid(), UserId = Guid.NewGuid(), Status = "active", PlanId = plan1.Id, Plan = plan1, MonthlyPriceUsd = 50m, RenewalDate = new DateOnly(2026, 12, 1), CreatedAt = new DateTime(2026, 5, 1) },
+            // A free trial is not a paying subscriber.
+            new Subscription { Id = Guid.NewGuid(), UserId = Guid.NewGuid(), Status = "active", PlanId = plan1.Id, Plan = plan1, CreatedAt = new DateTime(2026, 10, 20), TrialEndsAt = new DateTime(2026, 11, 3) }
         }.AsQueryable().BuildMock();
 
         _subscriptionRepoMock.Setup(r => r.Query()).Returns(subscriptions);
@@ -81,20 +118,77 @@ public sealed class RevenueServiceTests
         metrics.TotalNetRevenue.PreviousValue.Should().Be(150m);
         metrics.TotalNetRevenue.PercentageChange.Should().Be(100m); // ((300 - 150) / 150) * 100 = 100%
 
-        // Active subscribers (distinct userIds): current = 2, previous = 1
+        // Active subscribers on Oct 31: user1 and user2. On Sep 30: user2 and user3, who has left
+        // since but was paying then.
         metrics.ActiveSubscribers.Value.Should().Be(2m);
-        metrics.ActiveSubscribers.PreviousValue.Should().Be(1m);
-        metrics.ActiveSubscribers.PercentageChange.Should().Be(100m);
+        metrics.ActiveSubscribers.PreviousValue.Should().Be(2m);
+        metrics.ActiveSubscribers.PercentageChange.Should().Be(0m);
 
         // ARPU: current = 300 / 2 = 150, previous = 150 / 1 = 150
         metrics.Arpu.Value.Should().Be(150m);
         metrics.Arpu.PreviousValue.Should().Be(150m);
         metrics.Arpu.PercentageChange.Should().Be(0m);
 
-        // MRR: active = 50 + 30 = 80, previous active (< previousEndDate): 30
+        // MRR on Oct 31: 50 + 30 = 80. On Sep 30: Basic 30 + the cancelled Pro 50 = 80.
         metrics.SubscriptionMrr.Value.Should().Be(80m);
-        metrics.SubscriptionMrr.PreviousValue.Should().Be(30m);
+        metrics.SubscriptionMrr.PreviousValue.Should().Be(80m);
+        metrics.Arr.Value.Should().Be(960m);
     }
+
+    [TestMethod]
+    public async Task GetMetricsAsync_ConvertsMoneyToVndAtThePaymentGatewayRate()
+    {
+        var plan = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Starter", MonthlyPriceUsd = 9.99m };
+        var subscription = Paying(Guid.NewGuid(), plan, renewalDate: new DateOnly(2026, 11, 15));
+        _invoiceRepoMock.Setup(r => r.Query()).Returns(new List<Invoice>
+        {
+            new() { Id = Guid.NewGuid(), UserId = subscription.UserId, SubscriptionId = subscription.Id, Status = "paid", AmountUsd = 9.99m, PaymentDate = new DateOnly(2026, 10, 15) }
+        }.AsQueryable().BuildMock());
+        _subscriptionRepoMock.Setup(r => r.Query()).Returns(new List<Subscription> { subscription }.AsQueryable().BuildMock());
+        _planRepoMock.Setup(r => r.Query()).Returns(new List<SubscriptionPlan> { plan }.AsQueryable().BuildMock());
+        var sut = CreateService(usdToVndRate: 25_000m);
+
+        var result = await sut.GetMetricsAsync(new RevenueFilterDto { StartDate = new DateOnly(2026, 10, 1), EndDate = new DateOnly(2026, 10, 31) });
+
+        // 9.99 USD x 25,000 = 249,750 VND, what PayOS charged.
+        result.Value.TotalRevenue.Value.Should().Be(249_750m);
+        result.Value.SubscriptionMrr.Value.Should().Be(249_750m);
+    }
+
+    [TestMethod]
+    public async Task GetMetricsAsync_AnAnnualSubscription_AddsATwelfthOfItsStoredPriceToMrr()
+    {
+        var plan = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Pro", MonthlyPriceUsd = 30m, AnnualPriceUsd = 300m };
+        var subscription = Paying(Guid.NewGuid(), plan, renewalDate: new DateOnly(2027, 10, 1));
+        subscription.BillingCycle = "annual";
+        subscription.AnnualPriceUsd = 240m; // bought before a price rise
+        _invoiceRepoMock.Setup(r => r.Query()).Returns(new List<Invoice>
+        {
+            new() { Id = Guid.NewGuid(), UserId = subscription.UserId, SubscriptionId = subscription.Id, Status = "paid", AmountUsd = 240m, PaymentDate = new DateOnly(2026, 10, 1) }
+        }.AsQueryable().BuildMock());
+        _subscriptionRepoMock.Setup(r => r.Query()).Returns(new List<Subscription> { subscription }.AsQueryable().BuildMock());
+        _planRepoMock.Setup(r => r.Query()).Returns(new List<SubscriptionPlan> { plan }.AsQueryable().BuildMock());
+
+        var result = await _sut.GetMetricsAsync(new RevenueFilterDto { StartDate = new DateOnly(2026, 10, 1), EndDate = new DateOnly(2026, 10, 31) });
+
+        result.Value.SubscriptionMrr.Value.Should().Be(20m);
+    }
+
+    /// <summary>A monthly subscription first paid on Jan 1 2026 (its invoice is added by the test).</summary>
+    private static Subscription Paying(Guid userId, SubscriptionPlan plan, DateOnly renewalDate) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = userId,
+        PlanId = plan.Id,
+        Plan = plan,
+        Status = "active",
+        BillingCycle = "monthly",
+        MonthlyPriceUsd = plan.MonthlyPriceUsd,
+        AnnualPriceUsd = plan.AnnualPriceUsd,
+        StartDate = new DateOnly(2026, 1, 1),
+        RenewalDate = renewalDate,
+        CreatedAt = new DateTime(2026, 1, 1)
+    };
 
     [TestMethod]
     public async Task GetMetricsAsync_WhenNoDataExists_HandlesZeroDivisionGracefully()
@@ -259,7 +353,8 @@ public sealed class RevenueServiceTests
         Subscription Sub(SubscriptionPlan plan, DateTime createdAt, DateTime? cancelledAt = null) => new()
         {
             Id = Guid.NewGuid(), UserId = Guid.NewGuid(), Plan = plan, Status = cancelledAt is null ? "active" : "cancelled",
-            StartDate = DateOnly.FromDateTime(createdAt), CreatedAt = createdAt, CancelledAt = cancelledAt
+            StartDate = DateOnly.FromDateTime(createdAt), CreatedAt = createdAt, CancelledAt = cancelledAt,
+            MonthlyPriceUsd = plan.MonthlyPriceUsd, RenewalDate = new DateOnly(2026, 12, 1)
         };
         Invoice Paid(Subscription s, DateOnly on, decimal amount) => new()
         {
@@ -290,13 +385,13 @@ public sealed class RevenueServiceTests
         proRow.PurchaseCount.Should().Be(4);
         proRow.UniqueCustomers.Should().Be(3);
         proRow.Arpu.Should().Be(66.67m);
-        proRow.RetentionBase.Should().Be(6);
-        proRow.RetentionRate.Should().Be(83.3m, "5 of the 6 Pro customers live on Oct 1 are still paying after Oct 31");
+        proRow.Customers.Should().BeEquivalentTo(new PlanCustomerFlowDto { Start = 6, Stayed = 5, StoppedPaying = 1, End = 5 });
+        proRow.RetentionRate.Should().Be(83.3m, "5 of the 6 Pro customers paying on Sep 30 are still paying on Oct 31");
 
         var basicRow = chart.ByPlan.Single(p => p.PlanName == "Basic");
         basicRow.UniqueCustomers.Should().Be(2);
         basicRow.Arpu.Should().Be(20m);
-        basicRow.RetentionBase.Should().Be(0);
+        basicRow.Customers.Should().BeEquivalentTo(new PlanCustomerFlowDto { New = 2, End = 2 });
         basicRow.RetentionRate.Should().BeNull("Basic had no customers at the start of the period");
         basicRow.PercentageChange.Should().BeNull();
 
@@ -724,4 +819,101 @@ public sealed class RevenueServiceTests
         future[0].ForecastBase.Should().Be(17_000m);
         future[0].Actual.Should().BeNull();
     }
+
+    [TestMethod]
+    public async Task GetChartsAsync_ByPlan_ReportsMrrChangeAndCustomersAndListsAPlanThatOnlyLostMrr()
+    {
+        var starter = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Starter", MonthlyPriceUsd = 10m };
+        var pro = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Pro", MonthlyPriceUsd = 30m };
+        var staying = Paying(Guid.NewGuid(), starter, renewalDate: new DateOnly(2026, 11, 1));
+        var leaving = Paying(Guid.NewGuid(), pro, renewalDate: new DateOnly(2026, 10, 1));
+        leaving.Status = "cancelled";
+        leaving.CancelledAt = new DateTime(2026, 9, 20);
+        SetUp(
+            [starter, pro],
+            [staying, leaving],
+            [
+                PaidInvoice(staying, 10m, new DateOnly(2026, 8, 1)),
+                PaidInvoice(staying, 10m, new DateOnly(2026, 9, 1)),
+                PaidInvoice(leaving, 30m, new DateOnly(2026, 8, 1))
+            ]);
+
+        var result = await _sut.GetChartsAsync(new RevenueFilterDto
+        {
+            StartDate = new DateOnly(2026, 9, 1),
+            EndDate = new DateOnly(2026, 9, 30),
+            Granularity = "Month"
+        });
+
+        var byPlan = result.Value.ByPlan.ToDictionary(p => p.PlanName);
+        byPlan["Starter"].MrrStart.Should().Be(10m);
+        byPlan["Starter"].MrrEnd.Should().Be(10m);
+        byPlan["Starter"].Customers.Should().BeEquivalentTo(new PlanCustomerFlowDto { Start = 1, Stayed = 1, End = 1 });
+        byPlan["Pro"].Amount.Should().Be(0m, "Pro collected nothing in September");
+        byPlan["Pro"].MrrStart.Should().Be(30m);
+        byPlan["Pro"].MrrEnd.Should().Be(0m);
+        byPlan["Pro"].MrrChangePercent.Should().Be(-100m);
+        byPlan["Pro"].Customers.Should().BeEquivalentTo(new PlanCustomerFlowDto { Start = 1, StoppedPaying = 1, End = 0 });
+        byPlan["Pro"].UsageSignal.Left.Should().Be(1);
+        byPlan["Pro"].UsageSignal.HasSignal.Should().BeFalse("one leaver is too few to compare");
+    }
+
+    [TestMethod]
+    public async Task GetInsightsAsync_MrrMovement_BridgesThePeriodPerPlanAndListsSixMonths()
+    {
+        var starter = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Starter", MonthlyPriceUsd = 10m };
+        var pro = new SubscriptionPlan { Id = Guid.NewGuid(), Name = "Pro", MonthlyPriceUsd = 30m };
+        var upgradedFrom = Paying(Guid.NewGuid(), starter, renewalDate: new DateOnly(2026, 10, 1));
+        upgradedFrom.Status = "cancelled";
+        upgradedFrom.CancelledAt = new DateTime(2026, 9, 10);
+        var upgradedTo = Paying(upgradedFrom.UserId, pro, renewalDate: new DateOnly(2026, 10, 10));
+        var newcomer = Paying(Guid.NewGuid(), starter, renewalDate: new DateOnly(2026, 10, 15));
+        SetUp(
+            [starter, pro],
+            [upgradedFrom, upgradedTo, newcomer],
+            [
+                PaidInvoice(upgradedFrom, 10m, new DateOnly(2026, 8, 1)),
+                PaidInvoice(upgradedTo, 20m, new DateOnly(2026, 9, 10)),
+                PaidInvoice(newcomer, 10m, new DateOnly(2026, 9, 15))
+            ]);
+
+        var result = await _sut.GetInsightsAsync(new RevenueFilterDto { StartDate = new DateOnly(2026, 9, 1), EndDate = new DateOnly(2026, 9, 30) });
+
+        var movement = result.Value.MrrMovement;
+        movement.Months.Select(m => m.MonthStart).Should().Equal("2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01", "2026-09-01");
+        movement.Months[^1].New.Should().Be(10m);
+        movement.Months[^1].Expansion.Should().Be(20m);
+        movement.Months[^1].Net.Should().Be(30m);
+
+        var all = movement.Period.Single(p => p.PlanName == null);
+        all.Start.Should().Be(10m);
+        all.End.Should().Be(40m);
+        var proBridge = movement.Period.Single(p => p.PlanName == "Pro");
+        proBridge.MovedIn.Should().Be(30m);
+        proBridge.New.Should().Be(0m);
+        var starterBridge = movement.Period.Single(p => p.PlanName == "Starter");
+        starterBridge.MovedOut.Should().Be(10m);
+        starterBridge.New.Should().Be(10m);
+        starterBridge.End.Should().Be(10m);
+    }
+
+    private void SetUp(List<SubscriptionPlan> plans, List<Subscription> subscriptions, List<Invoice> invoices)
+    {
+        _planRepoMock.Setup(r => r.Query()).Returns(plans.AsQueryable().BuildMock());
+        _subscriptionRepoMock.Setup(r => r.Query()).Returns(subscriptions.AsQueryable().BuildMock());
+        _invoiceRepoMock.Setup(r => r.Query()).Returns(invoices.AsQueryable().BuildMock());
+    }
+
+    private static Invoice PaidInvoice(Subscription subscription, decimal amount, DateOnly paidOn) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = subscription.UserId,
+        SubscriptionId = subscription.Id,
+        Subscription = subscription,
+        Status = "paid",
+        AmountUsd = amount,
+        TotalAmount = amount,
+        InvoiceDate = paidOn,
+        PaymentDate = paidOn
+    };
 }

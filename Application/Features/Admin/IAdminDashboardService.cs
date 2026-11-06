@@ -11,7 +11,7 @@ public interface IAdminDashboardService
     /// <summary>
     /// Gets the key metrics for the admin dashboard based on a timeframe.
     /// </summary>
-    /// <param name="timeRange">The time range filter ("day", "month", "year"). Default is "month".</param>
+    /// <param name="timeRange">The time range filter ("day", "week", "month", "halfyear", "year"). Default is "month".</param>
     /// <param name="date">The reference date. Defaults to UTC now.</param>
     /// <param name="cancellationToken">A cancellation token.</param>
     /// <returns>A summary of platform metrics.</returns>

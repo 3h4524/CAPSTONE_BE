@@ -10,6 +10,7 @@ using APCS.Application.Features.Batches.Validators;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Dtos.Response;
+using APCS.Application.Features.Entitlements;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -43,7 +44,8 @@ public sealed class DesignGenerationService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<StartGenerationRequestDto> validator,
-    IOptions<DesignGenerationSettings> settings) : IDesignGenerationService
+    IOptions<DesignGenerationSettings> settings,
+    IPlanEntitlementService entitlements) : IDesignGenerationService
 {
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
@@ -99,15 +101,9 @@ public sealed class DesignGenerationService(
         if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
             return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
 
-        // BR50: enough image-generation quota left this billing period.
-        var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
-        if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
-        var today = DateOnly.FromDateTime(now);
-        var usage = await usageStatistics.GetCurrentPeriodAsync(userId, today, cancellationToken);
-        var imagesToGenerate = rows.Count * request.VariationCount;
-        var remainingQuota = subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0);
-        if (imagesToGenerate > remainingQuota)
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
+        // The plan sets how many products, variations and parallel jobs a run may use.
+        var planError = await CheckPlanAsync(userId, job.Id, rows.Count, request.VariationCount, request.RequireApproval, cancellationToken);
+        if (planError is not null) return Result.Failure<StartGenerationResponseDto>(planError);
 
         var productIds = rows.Where(row => row.ProductId.HasValue).Select(row => row.ProductId!.Value).ToList();
         var productList = await products.Query().Where(p => productIds.Contains(p.Id)).ToListAsync(cancellationToken);
@@ -229,14 +225,10 @@ public sealed class DesignGenerationService(
         if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
             return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
 
-        // BR50: a retry consumes quota again.
-        var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
-        if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
+        // A retry is held to the plan in effect now, which may have changed since the first run.
         var (variationCount, _) = ReadConfig(job.Config);
-        var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
-        var remainingQuota = subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0);
-        if (failedRows.Count * variationCount > remainingQuota)
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
+        var planError = await CheckPlanAsync(userId, job.Id, failedRows.Count, variationCount, ReadRequireApproval(job.Config), cancellationToken, newRun: false);
+        if (planError is not null) return Result.Failure<StartGenerationResponseDto>(planError);
 
         var productIds = failedRows.Where(row => row.ProductId.HasValue).Select(row => row.ProductId!.Value).ToList();
         var productList = await products.Query().Where(p => productIds.Contains(p.Id)).ToListAsync(cancellationToken);
@@ -1191,6 +1183,57 @@ public sealed class DesignGenerationService(
         string.Equals(key.ServiceProvider, provider, StringComparison.OrdinalIgnoreCase)
         && key.IsActive == true && key.LastCheckSucceeded == true
         && (!key.ExpiresAt.HasValue || key.ExpiresAt > now);
+
+    /// <summary>
+    /// Checks a design run against the Seller's plan: a plan must be in effect, the run must fit
+    /// the plan's batch size and variation limit, automatic approval must be included when
+    /// asked for, and the Seller's other running jobs must leave room under the concurrency limit.
+    /// </summary>
+    private async Task<Error?> CheckPlanAsync(
+        Guid userId,
+        Guid jobId,
+        int productCount,
+        int variationCount,
+        bool? requireApproval,
+        CancellationToken cancellationToken,
+        bool newRun = true)
+    {
+        var plan = await entitlements.GetAsync(userId, cancellationToken);
+        if (plan.MaxBatchSize >= 0 && productCount > plan.MaxBatchSize) return PlanErrors.BatchTooLarge(plan.MaxBatchSize);
+        if (plan.Limit(PlanFeatures.DesignVariations) is int maxVariations && variationCount > maxVariations)
+            return PlanErrors.TooManyVariations(maxVariations);
+        if (requireApproval == false && !plan.IsEnabled(PlanFeatures.AutoApproval))
+            return PlanErrors.FeatureLocked(PlanFeatures.AutoApproval);
+
+        if (plan.MaxConcurrentJobs >= 0)
+        {
+            var running = await batchJobs.Query().CountAsync(x => x.UserId == userId && x.Id != jobId
+                && x.DeletedAt == null && BatchJobStatuses.Active.Contains(x.Status.ToLower()), cancellationToken);
+            if (running >= plan.MaxConcurrentJobs) return PlanErrors.TooManyConcurrentJobs(plan.MaxConcurrentJobs);
+        }
+
+        var designs = await entitlements.RequireFeatureAsync(userId, PlanFeatures.DesignImages, cancellationToken);
+        if (designs.IsFailure) return designs.Error;
+
+        // Free and the Pro trial count design runs, images and products; retrying failed images
+        // counts only the images.
+        var allowances = new List<(string Code, int Requested)>
+        {
+            (UsageAllowances.DesignImages, productCount * variationCount),
+        };
+        if (newRun)
+        {
+            allowances.Add((UsageAllowances.Products, productCount));
+            allowances.Add((UsageAllowances.DesignRuns, 1));
+        }
+        foreach (var (code, requested) in allowances)
+        {
+            var allowance = await entitlements.RequireAllowanceAsync(userId, code, requested, cancellationToken);
+            if (allowance.IsFailure) return allowance.Error;
+        }
+
+        return null;
+    }
 
     private static string WriteConfig(string config, int variationCount, string aspectRatio, string? instructions, bool? requireApproval,
         Guid? workflowId, string imageProvider)

@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
@@ -247,7 +248,7 @@ public sealed class AiStudioFrameServiceTests
         unit.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
         var service = new AiStudioFrameService(user.Object, fixture.Products.Object, fixture.Assets.Object, usage.Object,
             apiKeys.Object, credentials.Object, [images.Object], storage.Object, mockupService.Object, unit.Object,
-            fixture.Time, NullLogger<AiStudioFrameService>.Instance);
+            fixture.Time, NullLogger<AiStudioFrameService>.Instance, TestEntitlements.AllowAll());
 
         return new Context(fixture, product, service, images, unit, usageRows);
     }

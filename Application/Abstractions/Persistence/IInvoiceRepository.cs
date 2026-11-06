@@ -30,4 +30,12 @@ public interface IInvoiceRepository : IRepository<Invoice>
     Task<Invoice?> GetByPayosOrderCodeAsync(
         long orderCode,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds a user's invoices in the given status.
+    /// </summary>
+    Task<IEnumerable<Invoice>> GetByStatusForUserAsync(
+        Guid userId,
+        string status,
+        CancellationToken cancellationToken = default);
 }

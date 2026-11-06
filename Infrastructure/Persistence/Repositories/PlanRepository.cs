@@ -24,7 +24,9 @@ public sealed class PlanRepository(AppDbContext dbContext)
             .AsNoTracking()
             .Include(plan => plan.PlanFeatures)
             .Where(plan => plan.IsActive == true || plan.Id == currentPlanId)
-            .OrderBy(plan => plan.MonthlyPriceUsd)
+            // The Admin's order first; plans never ordered (0 or empty) follow by price.
+            .OrderBy(plan => plan.SortOrder > 0 ? plan.SortOrder : int.MaxValue)
+            .ThenBy(plan => plan.MonthlyPriceUsd)
             .ToListAsync(cancellationToken);
 
         return plans;
@@ -40,6 +42,15 @@ public sealed class PlanRepository(AppDbContext dbContext)
             .SingleOrDefaultAsync(cancellationToken);
 
     /// <inheritdoc />
+    public Task<SubscriptionPlan?> GetPurchasableByTierAsync(
+        string tier,
+        CancellationToken cancellationToken = default) =>
+        dbContext.SubscriptionPlans
+            .AsNoTracking()
+            .Where(plan => plan.Tier == tier && plan.IsActive == true)
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<SubscriptionPlan>> GetAllForAdminAsync(CancellationToken cancellationToken = default) =>
         QueryAllForAdminAsync(cancellationToken);
 
@@ -48,7 +59,8 @@ public sealed class PlanRepository(AppDbContext dbContext)
         var plans = await dbContext.SubscriptionPlans
             .AsNoTracking()
             .Include(plan => plan.PlanFeatures)
-            .OrderBy(plan => plan.MonthlyPriceUsd)
+            .OrderBy(plan => plan.SortOrder > 0 ? plan.SortOrder : int.MaxValue)
+            .ThenBy(plan => plan.MonthlyPriceUsd)
             .ThenBy(plan => plan.Name)
             .ToListAsync(cancellationToken);
 
