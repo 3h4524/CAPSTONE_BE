@@ -125,6 +125,7 @@ public static class DependencyInjection
         services.AddScoped<ICommerceConnectorFactory, CommerceConnectorFactory>();
         services.AddScoped<ICommerceMarketDataConnectorFactory, CommerceMarketDataConnectorFactory>();
         services.AddScoped<IMarketResearchService, MarketResearchService>();
+        services.AddScoped<IMarketInsightsService, MarketInsightsService>();
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
         services.AddScoped<ITranslationService, TranslationService>();
