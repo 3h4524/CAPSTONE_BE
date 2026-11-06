@@ -68,6 +68,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<MarketOpportunityEvidence> MarketOpportunityEvidences { get; set; }
 
+    public virtual DbSet<MarketQueryObservation> MarketQueryObservations { get; set; }
+
     public virtual DbSet<MediaJob> MediaJobs { get; set; }
 
     public virtual DbSet<MockupImage> MockupImages { get; set; }
@@ -1560,6 +1562,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.RawPayload)
                 .HasColumnType("jsonb")
                 .HasColumnName("raw_payload");
+            entity.Property(e => e.IsSynthetic)
+                .HasColumnName("is_synthetic")
+                .HasDefaultValue(false);
             entity.Property(e => e.SourceUrl).HasColumnName("source_url");
             entity.Property(e => e.Tags)
                 .HasDefaultValueSql("'[]'::jsonb")
@@ -1621,6 +1626,9 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
                 .HasColumnName("score_breakdown");
+            entity.Property(e => e.IsSynthetic)
+                .HasColumnName("is_synthetic")
+                .HasDefaultValue(false);
             entity.Property(e => e.Status)
                 .HasMaxLength(24)
                 .HasDefaultValueSql("'active'::character varying")
@@ -1670,6 +1678,35 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Snapshot).WithMany(p => p.MarketOpportunityEvidences)
                 .HasForeignKey(d => d.SnapshotId)
                 .HasConstraintName("market_opportunity_evidence_snapshot_id_fkey");
+        });
+
+        modelBuilder.Entity<MarketQueryObservation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("market_query_observations_pkey");
+
+            entity.ToTable("market_query_observations");
+
+            entity.HasIndex(e => new { e.Platform, e.Query, e.ObservedOn }, "ux_market_query_observation_day").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.LimitUsed).HasColumnName("limit_used");
+            entity.Property(e => e.ObservedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("observed_at");
+            entity.Property(e => e.ObservedOn).HasColumnName("observed_on");
+            entity.Property(e => e.Platform)
+                .HasMaxLength(40)
+                .HasColumnName("platform");
+            entity.Property(e => e.Query)
+                .HasMaxLength(300)
+                .HasColumnName("query");
+            entity.Property(e => e.SampleSize).HasColumnName("sample_size");
+            entity.Property(e => e.SortOn)
+                .HasMaxLength(40)
+                .HasColumnName("sort_on");
+            entity.Property(e => e.TotalResults).HasColumnName("total_results");
         });
 
         modelBuilder.Entity<MediaJob>(entity =>

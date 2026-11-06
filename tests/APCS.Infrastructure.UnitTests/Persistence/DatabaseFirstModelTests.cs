@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(70);
+        mappedTables.Should().HaveCount(71);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_prompts", "api_keys", "api_usage_records", "audit_logs", "auth_tokens", "batches",
@@ -39,7 +39,7 @@ public sealed class DatabaseFirstModelTests
             "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
             "rag_documents", "rag_chunks", "rag_embeddings",
             "assistant_conversations", "assistant_messages", "assistant_pending_actions",
-            "translation_entries"
+            "market_query_observations", "translation_entries"
         });
     }
 
