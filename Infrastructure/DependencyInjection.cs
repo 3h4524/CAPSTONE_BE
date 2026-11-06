@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
@@ -27,6 +28,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pgvector.EntityFrameworkCore;
 
@@ -128,6 +130,7 @@ public static class DependencyInjection
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IPlanAiReviewQueue, APCS.Infrastructure.BackgroundServices.PlanAiReviewQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
+        services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -142,6 +145,19 @@ public static class DependencyInjection
             if (string.IsNullOrWhiteSpace(options.ApiKey))
                 options.ApiKey = configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"] ?? string.Empty;
         });
+        services.AddOptions<AssistantOptions>()
+            .Bind(configuration.GetSection(AssistantOptions.SectionName))
+            .ValidateDataAnnotations();
+        services.PostConfigure<AssistantOptions>(options =>
+        {
+            if (!options.HasApiKeys)
+                options.ApiKeys = configuration.GetOptionalStringArray($"{AssistantOptions.SectionName}:{nameof(AssistantOptions.ApiKeys)}");
+            if (string.IsNullOrWhiteSpace(options.ApiKey) && !options.HasApiKeys)
+                options.ApiKey = FirstConfigured(
+                    configuration[$"{GeminiTextGenerationOptions.SectionName}:ApiKey"],
+                    configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
+        });
+        services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
@@ -175,6 +191,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignGenerationRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
 
         return services;
@@ -195,6 +212,8 @@ public static class DependencyInjection
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
+        services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
+        services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
 
@@ -265,9 +284,22 @@ public static class DependencyInjection
             // client sets none: a fixed one here would cut off a caller that allows its attempts longer.
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
-        services.AddScoped<IRagEmbeddingProvider>(provider => provider.GetRequiredService<GeminiEmbeddingProvider>());
+        services.AddOptions<RagCacheOptions>()
+            .Bind(configuration.GetSection(RagCacheOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IRagEmbeddingProvider>(provider => new MemoizedEmbeddingProvider(
+            provider.GetRequiredService<GeminiEmbeddingProvider>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<MemoizedEmbeddingProvider>>()));
         services.AddScoped<APCS.Application.Abstractions.Ai.IGeminiTextGenerationProvider>(provider => provider.GetRequiredService<GeminiTextGenerationProvider>());
-        services.AddScoped<IRagService, RagService>();
+        services.AddScoped<RagService>();
+        services.AddScoped<IRagService>(provider => new CachedRagSearchService(
+            provider.GetRequiredService<RagService>(),
+            provider.GetRequiredService<ICacheService>(),
+            provider.GetRequiredService<IOptions<RagCacheOptions>>(),
+            provider.GetRequiredService<ILogger<CachedRagSearchService>>()));
         services.AddScoped<IListingContextRetriever, ListingContextRetriever>();
         services.AddScoped<IImageContextRetriever, ImageContextRetriever>();
         services.AddScoped<IVideoContextRetriever, VideoContextRetriever>();
@@ -298,4 +330,7 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static string FirstConfigured(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 }
