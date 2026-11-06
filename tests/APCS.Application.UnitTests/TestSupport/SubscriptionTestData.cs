@@ -7,6 +7,7 @@ using APCS.Application.Features.Subscriptions.Dtos.Request;
 using APCS.Domain.Entities;
 using FluentValidation;
 using FluentValidation.Results;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
@@ -195,7 +196,8 @@ internal static class SubscriptionTestData
             (downgradeValidator ?? CreatePassingValidator<DowngradeRequestDto>()).Object,
             entitlements ?? TestEntitlements.AllowAll(),
             new TestFeatureCatalog(),
-            planSettings ?? new TestPlanSettings());
+            planSettings ?? new TestPlanSettings(),
+            NullLogger<SubscriptionService>.Instance);
 
     private static Mock<IInvoicePdfRenderer> DefaultInvoicePdfRenderer()
     {

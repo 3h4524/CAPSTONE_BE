@@ -8,6 +8,7 @@ using APCS.Application.Features.Subscriptions.Dtos.Response;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Subscriptions;
@@ -44,7 +45,8 @@ public sealed class SubscriptionService(
     IValidator<DowngradeRequestDto> downgradeValidator,
     IPlanEntitlementService entitlements,
     IFeatureCatalog featureCatalog,
-    IPlanSettings planSettings)
+    IPlanSettings planSettings,
+    ILogger<SubscriptionService> logger)
     : ISubscriptionService
 {
     private const decimal FreeTierMaxPrice = 0m;
@@ -433,21 +435,20 @@ public sealed class SubscriptionService(
             return Result.Success();
         }
 
-        if (invoice.PayosOrderCode is not null)
+        // Closing the page does not stop a payment: a Seller can pay and close it before the poll
+        // sees the money, so the invoice is voided only once the link can no longer be paid.
+        var closure = invoice.PayosOrderCode is { } orderCode
+            ? await ClosePaymentLinkAsync(orderCode, "Seller cancelled checkout", cancellationToken)
+            : PaymentLinkClosure.Closed;
+        if (closure == PaymentLinkClosure.Paid)
         {
-            try
-            {
-                await paymentGateway.CancelPaymentLinkAsync(
-                    invoice.PayosOrderCode.Value, "Seller cancelled checkout", cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                // Best-effort: PayOS may already consider the link expired/gone. The local rows
-                // are still marked cancelled below regardless, so the Seller is never blocked.
-            }
+            await FinalizeCheckoutAsync(invoice, CheckoutOutcome.Paid, cancellationToken);
+        }
+        else if (closure == PaymentLinkClosure.Closed)
+        {
+            await FinalizeCheckoutAsync(invoice, CheckoutOutcome.Cancelled, cancellationToken);
         }
 
-        await FinalizeCheckoutAsync(invoice, CheckoutOutcome.Cancelled, cancellationToken);
         return Result.Success();
     }
 
@@ -896,6 +897,8 @@ public sealed class SubscriptionService(
                 previousActive.CancelledAt = timeProvider.GetUtcNow().UtcDateTime;
                 await subscriptions.UpdateAsync(previousActive, cancellationToken: cancellationToken);
             }
+
+            await CloseOpenRenewalsAsync(invoice, cancellationToken);
         }
 
         invoice.Status = succeeded ? InvoiceStatuses.Paid : InvoiceStatuses.Void;
@@ -924,6 +927,70 @@ public sealed class SubscriptionService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
+    private enum PaymentLinkClosure
+    {
+        /// <summary>The link can no longer be paid.</summary>
+        Closed,
+
+        /// <summary>The Seller paid before the link could be closed.</summary>
+        Paid,
+
+        /// <summary>PayOS could not say: the link may still be paid, and its webhook settles it.</summary>
+        StillOpen
+    }
+
+    /// <summary>
+    /// Cancels a payment link. PayOS refuses a link that is already paid or gone, and can be
+    /// briefly unreachable, so a refusal is checked against the link's status rather than ignored.
+    /// </summary>
+    private async Task<PaymentLinkClosure> ClosePaymentLinkAsync(
+        long orderCode,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await paymentGateway.CancelPaymentLinkAsync(orderCode, reason, cancellationToken);
+            return PaymentLinkClosure.Closed;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            try
+            {
+                var status = await paymentGateway.GetPaymentLinkStatusAsync(orderCode, cancellationToken);
+                return status.IsPaid ? PaymentLinkClosure.Paid
+                    : status.IsFailed ? PaymentLinkClosure.Closed
+                    : PaymentLinkClosure.StillOpen;
+            }
+            catch (Exception statusException) when (statusException is not OperationCanceledException)
+            {
+                return PaymentLinkClosure.StillOpen;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A new plan replaces the old one, so a renewal link still open for the old plan must not be
+    /// payable afterwards: that money would buy nothing. A link that cannot be closed stays as it is.
+    /// </summary>
+    private async Task CloseOpenRenewalsAsync(Invoice paidInvoice, CancellationToken cancellationToken)
+    {
+        var open = await invoices.GetByStatusForUserAsync(paidInvoice.UserId, InvoiceStatuses.AwaitingPayment, cancellationToken);
+        foreach (var renewal in open.Where(candidate => candidate.Id != paidInvoice.Id
+            && candidate.SubscriptionId != paidInvoice.SubscriptionId
+            && RenewalInvoiceItem.TryRead(candidate.Items) is not null))
+        {
+            var closure = renewal.PayosOrderCode is { } orderCode
+                ? await ClosePaymentLinkAsync(orderCode, "Replaced by a new plan", cancellationToken)
+                : PaymentLinkClosure.Closed;
+            if (closure == PaymentLinkClosure.Closed)
+            {
+                renewal.Status = InvoiceStatuses.Void;
+                await invoices.UpdateAsync(renewal, cancellationToken: cancellationToken);
+            }
+        }
+    }
+
     /// <summary>
     /// Settles a renewal invoice. Paid: the subscription gets one more cycle of the plan that was
     /// priced. Not paid: only the invoice is voided; the subscription keeps whatever time it has.
@@ -949,6 +1016,14 @@ public sealed class SubscriptionService(
             if (other is null || other.Id == subscription.Id)
             {
                 await ApplyRenewalAsync(subscription, renewal, stillUsable ? subscription.RenewalDate : today, cancellationToken);
+            }
+            else
+            {
+                // Should not happen: buying the other plan closes this link. If the payment still
+                // got through, nothing was delivered for it, so the money has to be returned by hand.
+                logger.LogError(
+                    "Renewal invoice {InvoiceId} was paid but not applied: user {UserId} is on subscription {SubscriptionId}. Refund it by hand.",
+                    invoice.Id, invoice.UserId, other.Id);
             }
         }
 

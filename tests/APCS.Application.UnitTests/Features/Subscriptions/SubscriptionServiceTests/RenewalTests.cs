@@ -318,4 +318,46 @@ public sealed class RenewalTests
         dto.CanRenew.Should().BeFalse();
         dto.LastGraceDay.Should().BeNull();
     }
+
+    private static (SubscriptionService Service, Invoice OpenRenewal, Mock<IPaymentGatewayClient> Gateway) UpgradePaidWithAnOpenRenewal()
+    {
+        var starter = SubscriptionTestData.CreateStarterPlan();
+        var oldPlan = SubscriptionTestData.CreateActiveSubscription(starter);
+        var newPlan = SubscriptionTestData.CreateActiveSubscription(SubscriptionTestData.CreateProPlan());
+        newPlan.Status = "trialing";
+        var upgrade = SubscriptionTestData.CreatePendingInvoice(newPlan, 123);
+        var openRenewal = RenewalInvoice(oldPlan, starter);
+        openRenewal.PayosOrderCode = 555;
+
+        var invoices = InvoiceIs(upgrade);
+        invoices.Setup(candidate => candidate.GetByStatusForUserAsync(SubscriptionTestData.UserId, "issued", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { openRenewal, upgrade });
+        var gateway = WebhookSays(true);
+        return (SubscriptionTestData.CreateService(CurrentIs(oldPlan), invoices: invoices, paymentGateway: gateway), openRenewal, gateway);
+    }
+
+    [TestMethod]
+    public async Task PaidUpgrade_ClosesARenewalLinkStillOpenForTheOldPlan()
+    {
+        var (service, openRenewal, gateway) = UpgradePaidWithAnOpenRenewal();
+
+        await service.HandlePayOsWebhookAsync("{}", CancellationToken.None);
+
+        gateway.Verify(candidate => candidate.CancelPaymentLinkAsync(555, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        openRenewal.Status.Should().Be("void", "paying it now would buy nothing");
+    }
+
+    [TestMethod]
+    public async Task PaidUpgrade_LeavesARenewalLinkThatMayStillBePaid()
+    {
+        var (service, openRenewal, gateway) = UpgradePaidWithAnOpenRenewal();
+        gateway.Setup(candidate => candidate.CancelPaymentLinkAsync(555, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
+        gateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(555, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
+
+        await service.HandlePayOsWebhookAsync("{}", CancellationToken.None);
+
+        openRenewal.Status.Should().Be("issued");
+    }
 }
