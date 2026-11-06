@@ -19,6 +19,10 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     public async Task<IActionResult> Templates(CancellationToken ct) => (await planning.ListTemplatesAsync(ct)).ToActionResult(this);
     [HttpGet("workflows/ai-video-templates")]
     public async Task<IActionResult> AiTemplates(CancellationToken ct) => (await planning.ListAiTemplatesAsync(ct)).ToActionResult(this);
+    [HttpGet("workflows/video-packs")]
+    public async Task<IActionResult> VideoPacks(CancellationToken ct) => (await planning.ListVideoPacksAsync(ct)).ToActionResult(this);
+    [HttpGet("workflows/ai-character-models")]
+    public async Task<IActionResult> AiCharacters(CancellationToken ct) => (await planning.ListAiCharactersAsync(ct)).ToActionResult(this);
     [HttpGet("music-tracks")]
     public async Task<IActionResult> Music(CancellationToken ct)
     {

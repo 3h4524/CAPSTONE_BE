@@ -14,6 +14,7 @@ namespace APCS.Application.Features.Workflows;
 /// <summary>Stores seller review observations, optional offline evidence and private RAG lesson candidates.</summary>
 public interface IVideoQualityReviewService
 {
+    Task<Result<VideoQualitySummaryResponse>> GetSummaryAsync(Guid runId, Guid videoId, CancellationToken cancellationToken);
     Task<Result<VideoSceneQualityResponse>> GetAsync(Guid runId, Guid videoId, int sceneOrder, CancellationToken cancellationToken);
     Task<Result<VideoSceneQualityResponse>> EvaluateAsync(Guid runId, Guid videoId, int sceneOrder, CancellationToken cancellationToken);
     Task<Result<VideoSceneQualityResponse>> SaveReviewAsync(Guid runId, Guid videoId, int sceneOrder,
@@ -27,7 +28,8 @@ public interface IVideoQualityReviewService
 public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<WorkflowRun> runs,
     IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes, IRepository<MockupImage> assets,
     IRepository<WorkflowNodeRun> nodes, IRepository<MediaJob> jobs, IMediaStorage storage,
-    IVideoQualityEvidenceRunner evidenceRunner, IRagService rag, IUnitOfWork unitOfWork, TimeProvider time)
+    IVideoQualityEvidenceRunner evidenceRunner, IRagService rag, IUnitOfWork unitOfWork, TimeProvider time,
+    IVideoQualityJobService? qualityJobs = null)
     : IVideoQualityReviewService
 {
     private static readonly HashSet<string> Categories = new(StringComparer.Ordinal)
@@ -36,6 +38,27 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
         { "low", "medium", "high", "critical" };
     private static readonly HashSet<string> Targets = new(StringComparer.Ordinal)
         { "source_image", "prompt_template", "prompt_rule", "rag_experience", "unknown" };
+
+    public async Task<Result<VideoQualitySummaryResponse>> GetSummaryAsync(Guid runId, Guid videoId,
+        CancellationToken cancellationToken)
+    {
+        if (user.UserId is not Guid ownerId) return Result.Failure<VideoQualitySummaryResponse>(Missing());
+        var run = await runs.GetByIdAsync(runId, cancellationToken);
+        var video = await videos.GetByIdAsync(videoId, cancellationToken);
+        if (run?.UserId != ownerId || video?.WorkflowRunId != runId)
+            return Result.Failure<VideoQualitySummaryResponse>(Missing());
+
+        var payload = ReadPayload(video.QaResult);
+        var sceneResults = payload.Scenes.OrderBy(scene => scene.SceneOrder).Select(scene =>
+        {
+            var evaluation = scene.Evaluation;
+            return new VideoQualitySceneSummary(scene.SceneOrder, evaluation?.Status ?? "not_applicable",
+                evaluation?.Detail, evaluation?.Metrics ?? new Dictionary<string, object?>());
+        }).ToArray();
+        var (technical, etsy) = ReadSummaryRoot(video.QaResult);
+        var status = SummaryStatus(technical, etsy, sceneResults);
+        return Result.Success(new VideoQualitySummaryResponse(video.Id, status, technical, etsy, sceneResults));
+    }
 
     public async Task<Result<VideoSceneQualityResponse>> GetAsync(Guid runId, Guid videoId, int sceneOrder,
         CancellationToken cancellationToken)
@@ -51,6 +74,11 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
     {
         var context = await FindSceneAsync(runId, videoId, sceneOrder, cancellationToken);
         if (context is null) return Result.Failure<VideoSceneQualityResponse>(Missing());
+        if (qualityJobs is not null)
+        {
+            await qualityJobs.QueueAsync(runId, videoId, sceneOrder, cancellationToken);
+            return Result.Success(await MapAsync(context.Video.Id, sceneOrder, ReadPayload(context.Video.QaResult), cancellationToken));
+        }
         var payload = ReadPayload(context.Video.QaResult);
         var clip = await FindStoredClipAsync(context.Run, context.Video.Id, sceneOrder, cancellationToken);
         VideoQualityEvidenceResult evidence;
@@ -76,7 +104,8 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
             try
             {
                 var sourceBytes = await storage.ReadImageAsync(context.Source.StorageKey, context.Source.StorageVersion, cancellationToken);
-                evidence = await evidenceRunner.EvaluateAsync(new(clip.Url, sourceBytes, sceneOrder), cancellationToken);
+                var reference = await VideoQualityReferenceMockup.ReadAsync(context.Source, assets, storage, cancellationToken);
+                evidence = await evidenceRunner.EvaluateAsync(new(clip.Url, sourceBytes, sceneOrder, reference), cancellationToken);
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
@@ -251,8 +280,8 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
 
     private static Error? Validate(SaveVideoSceneReviewRequest request)
     {
-        if (request.StartMilliseconds < 0 || request.EndMilliseconds < request.StartMilliseconds || request.EndMilliseconds > 30_000)
-            return Error.Validation("Review timestamps must be within one 30-second video and in order.");
+        if (request.StartMilliseconds < 0 || request.EndMilliseconds < request.StartMilliseconds || request.EndMilliseconds > VideoDurationPolicy.MaximumVideoSeconds * 1_000)
+            return Error.Validation("Review timestamps must be within one 15-second video and in order.");
         if (!Categories.Contains(request.Category?.Trim().ToLowerInvariant() ?? string.Empty)
             || !Severities.Contains(request.Severity?.Trim().ToLowerInvariant() ?? string.Empty))
             return Error.Validation("Choose a supported review category and severity.");
@@ -275,7 +304,7 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
         if (category is "artwork" or "text" or "body" or "person_product")
             return new("prompt_rule", "This issue is covered by the shared product-preservation or continuity rules.", "medium");
         if (category is "hands" or "camera" && plan.AiTemplateCode == "lifestyle_in_use")
-            return new("prompt_template", "The observed action or framing belongs to the Lifestyle In-Use template.", "medium");
+            return new("prompt_template", "The observed action or framing belongs to the Product On Model template.", "medium");
         return new("unknown", "One clip does not provide enough evidence to attribute a correction target.", "low");
     }
 
@@ -341,6 +370,47 @@ public sealed class VideoQualityReviewService(ICurrentUser user, IRepository<Wor
         }
         root["videoQuality"] = JsonSerializer.SerializeToElement(payload, WorkflowJson.Options);
         return JsonSerializer.Serialize(root, WorkflowJson.Options);
+    }
+
+    private static (JsonElement Technical, JsonElement? Etsy) ReadSummaryRoot(string? qa)
+    {
+        var empty = JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(qa) ? "{}" : qa);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return (empty, null);
+            var root = document.RootElement;
+            var technical = root.TryGetProperty("technical", out var storedTechnical)
+                ? storedTechnical.Clone()
+                : root.TryGetProperty("codec", out _) ? root.Clone() : empty;
+            return (technical, root.TryGetProperty("etsyCompliance", out var etsy) ? etsy.Clone() : null);
+        }
+        catch (JsonException) { return (empty, null); }
+    }
+
+    private static string SummaryStatus(JsonElement technical, JsonElement? etsy,
+        IReadOnlyList<VideoQualitySceneSummary> scenes)
+    {
+        if (technical.ValueKind != JsonValueKind.Object || !technical.TryGetProperty("codec", out _))
+            return "not_applicable";
+        if (technical.TryGetProperty("fullDecode", out var fullDecode) &&
+            fullDecode.ValueKind is JsonValueKind.False)
+            return "fail";
+
+        var etsyStatus = etsy is { ValueKind: JsonValueKind.Object } && etsy.Value.TryGetProperty("status", out var value)
+            ? value.GetString()
+            : null;
+        if (string.Equals(etsyStatus, "fail", StringComparison.Ordinal)) return "fail";
+
+        var sceneStatuses = scenes.Select(scene => scene.Status).ToArray();
+        if (sceneStatuses.Contains("running", StringComparer.OrdinalIgnoreCase)) return "running";
+        if (sceneStatuses.Contains("queued", StringComparer.OrdinalIgnoreCase)) return "queued";
+        if (sceneStatuses.Contains("failed", StringComparer.OrdinalIgnoreCase) ||
+            sceneStatuses.Contains("uncertain", StringComparer.OrdinalIgnoreCase) ||
+            sceneStatuses.Contains("skipped", StringComparer.OrdinalIgnoreCase) ||
+            string.Equals(etsyStatus, "pass_with_warning", StringComparison.Ordinal))
+            return "warning";
+        return "pass";
     }
 
     private static string NormalizeLesson(string value) => string.Join(' ', value.Split((char[]?)null,

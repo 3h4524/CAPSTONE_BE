@@ -25,21 +25,13 @@ public sealed class GeminiTextGenerationProvider(
         if (string.IsNullOrWhiteSpace(request.Prompt))
             throw new ArgumentException("Generation prompt cannot be empty.", nameof(request));
 
-        var contents = new List<object>();
-        if (!string.IsNullOrWhiteSpace(request.SystemInstruction))
+        var parts = new List<object> { new { text = request.Prompt } };
+        foreach (var image in request.Images ?? [])
         {
-            contents.Add(new
-            {
-                role = "user",
-                parts = new[] { new { text = request.SystemInstruction } }
-            });
+            if (image.Bytes.Length == 0 || image.MimeType is not ("image/png" or "image/jpeg" or "image/webp"))
+                throw new ArgumentException("Supply a non-empty PNG, JPEG or WebP image.", nameof(request));
+            parts.Add(new { inline_data = new { mime_type = image.MimeType, data = Convert.ToBase64String(image.Bytes) } });
         }
-
-        contents.Add(new
-        {
-            role = "user",
-            parts = new[] { new { text = request.Prompt } }
-        });
 
         // Google answers 503, or does not answer at all, while a model is overloaded. Nothing is generated or
         // charged then, so the request moves on: once to the fallback model, then one more try after a pause.
@@ -57,10 +49,12 @@ public sealed class GeminiTextGenerationProvider(
             httpRequest.Headers.Add("x-goog-api-key", settings.ApiKey);
             httpRequest.Content = JsonContent.Create(new
             {
-                contents,
+                systemInstruction = string.IsNullOrWhiteSpace(request.SystemInstruction)
+                    ? null : new { parts = new[] { new { text = request.SystemInstruction } } },
+                contents = new[] { new { role = "user", parts } },
                 generationConfig = new
                 {
-                    temperature = settings.Temperature,
+                    temperature = request.Temperature ?? settings.Temperature,
                     responseMimeType = "application/json"
                 }
             });

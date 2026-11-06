@@ -12,15 +12,25 @@ namespace APCS.Api.Controllers;
 [Route("api/video-quality")]
 public sealed class VideoQualityController(IVideoQualityReviewService quality) : ControllerBase
 {
+    /// <summary>Returns technical Etsy evidence and automatic AI-scene evaluation status for one video.</summary>
+    [HttpGet("runs/{runId:guid}/videos/{videoId:guid}")]
+    public async Task<IActionResult> GetSummary(Guid runId, Guid videoId, CancellationToken cancellationToken) =>
+        (await quality.GetSummaryAsync(runId, videoId, cancellationToken)).ToActionResult(this);
+
     /// <summary>Returns saved local-tool evidence and seller observations for a scene.</summary>
     [HttpGet("runs/{runId:guid}/videos/{videoId:guid}/scenes/{sceneOrder:int}")]
     public async Task<IActionResult> Get(Guid runId, Guid videoId, int sceneOrder, CancellationToken cancellationToken) =>
         (await quality.GetAsync(runId, videoId, sceneOrder, cancellationToken)).ToActionResult(this);
 
-    /// <summary>Runs configured local PaddleOCR and VBench adapters for the stored scene clip.</summary>
+    /// <summary>Queues a fresh PaddleOCR and VBench evaluation for the stored AI scene clip.</summary>
     [HttpPost("runs/{runId:guid}/videos/{videoId:guid}/scenes/{sceneOrder:int}/evaluate")]
-    public async Task<IActionResult> Evaluate(Guid runId, Guid videoId, int sceneOrder, CancellationToken cancellationToken) =>
-        (await quality.EvaluateAsync(runId, videoId, sceneOrder, cancellationToken)).ToActionResult(this);
+    public async Task<IActionResult> Evaluate(Guid runId, Guid videoId, int sceneOrder, CancellationToken cancellationToken)
+    {
+        var result = await quality.EvaluateAsync(runId, videoId, sceneOrder, cancellationToken);
+        return result.IsSuccess
+            ? AcceptedAtAction(nameof(Get), new { runId, videoId, sceneOrder }, result.Value)
+            : result.ToActionResult(this);
+    }
 
     /// <summary>Saves a timestamped seller observation and the correction target they confirmed.</summary>
     [HttpPut("runs/{runId:guid}/videos/{videoId:guid}/scenes/{sceneOrder:int}/reviews")]

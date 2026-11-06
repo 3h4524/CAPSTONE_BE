@@ -58,6 +58,57 @@ public sealed class AiShotQuoteServiceTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task QuoteAsync_CancelledRunSceneRegeneration_QuotesOnlyTargetAndRequiresOtherStoredClip(bool otherStored)
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
+            AiScenes: [new(MockupId: context.Asset.Id, DurationSeconds: 4, RightsConfirmed: true),
+                new(MockupId: context.Asset.Id, DurationSeconds: 4, RightsConfirmed: true)]);
+        var board = (await context.Fixture.Runtime.PlanAsync(context.Run, config, default)).Value;
+        var job = context.Fixture.AddJob(context.Run);
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "succeeded";
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(Guid.NewGuid(), board, board.AiShots!.Select(shot =>
+            new AiShotJobState(shot.SceneOrder, shot.Fingerprint,
+                StorageKey: shot.SceneOrder == 1 && !otherStored ? null : $"private/shot-{shot.SceneOrder}.mp4",
+                StorageVersion: shot.SceneOrder == 1 && !otherStored ? null : "1",
+                Status: shot.SceneOrder == 1 && !otherStored ? "pending" : "stored")).ToArray()));
+
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(config, Regenerate: true, SceneOrder: 0), default);
+
+        if (!otherStored)
+        {
+            result.IsFailure.Should().BeTrue();
+            result.Error.Code.Should().Be("OtherScenesIncomplete");
+            context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+            return;
+        }
+        result.IsSuccess.Should().BeTrue();
+        result.Value.NewClips.Should().Be(1);
+        context.Claims!.SceneOrder.Should().Be(0);
+        context.Claims.Regenerate.Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    public async Task QuoteAsync_CancelledRunWithoutCompletedTargetScene_RejectsQuote(bool regenerate, bool selectScene)
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
+
+        var result = await context.Service.QuoteAsync(context.Run.Id,
+            new(Config(context.Asset), Regenerate: regenerate, SceneOrder: selectScene ? 0 : null), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("InvalidCheckpoint");
+        context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task QuoteAsync_PendingStudioFrame_IsRejectedBeforeSigningVideoQuote()
     {
         var context = CreateContext();

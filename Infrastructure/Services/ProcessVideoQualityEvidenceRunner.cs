@@ -28,6 +28,8 @@ public sealed class ProcessVideoQualityEvidenceRunner(IOptions<VideoQualityOptio
             var source = Path.Combine(workspace.FullName, "source.png");
             await DownloadAsync(request.ClipUrl, clip, cancellationToken);
             await File.WriteAllBytesAsync(source, request.SourceImage, cancellationToken);
+            var reference = request.ReferenceMockup is null ? null : Path.Combine(workspace.FullName, "reference.png");
+            if (reference is not null) await File.WriteAllBytesAsync(reference, request.ReferenceMockup!, cancellationToken);
 
             var metrics = new Dictionary<string, object?>();
             var attempted = 0;
@@ -43,7 +45,8 @@ public sealed class ProcessVideoQualityEvidenceRunner(IOptions<VideoQualityOptio
                 }
                 attempted++;
                 var output = Path.Combine(workspace.FullName, $"{tool.Name}.json");
-                var result = await RunToolAsync(settings, tool.Script, clip, source, output, cancellationToken);
+                var result = await RunToolAsync(settings, tool.Script, clip, source, output,
+                    tool.Name == "paddleOcr" ? reference : null, cancellationToken);
                 if (result.Error is not null)
                 {
                     metrics[tool.Name] = new Dictionary<string, object?> { ["status"] = "failed", ["reason"] = result.Error };
@@ -87,7 +90,7 @@ public sealed class ProcessVideoQualityEvidenceRunner(IOptions<VideoQualityOptio
     }
 
     private static async Task<ToolResult> RunToolAsync(VideoQualityOptions settings, string script, string clip,
-        string source, string output, CancellationToken cancellationToken)
+        string source, string output, string? reference, CancellationToken cancellationToken)
     {
         if (!File.Exists(script))
             return new(null, $"Configured script was not found: {script}");
@@ -101,6 +104,7 @@ public sealed class ProcessVideoQualityEvidenceRunner(IOptions<VideoQualityOptio
         start.ArgumentList.Add(script);
         start.ArgumentList.Add("--video"); start.ArgumentList.Add(clip);
         start.ArgumentList.Add("--source"); start.ArgumentList.Add(source);
+        if (reference is not null) { start.ArgumentList.Add("--reference"); start.ArgumentList.Add(reference); }
         start.ArgumentList.Add("--output"); start.ArgumentList.Add(output);
         using var process = new Process { StartInfo = start };
         if (!process.Start())

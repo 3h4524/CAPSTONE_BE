@@ -179,7 +179,7 @@ public sealed class VideoQualityReviewServiceTests
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product, "Lifestyle");
         var run = fixture.AddRun(product);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 4,
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5,
             AiScenes: [new(MockupId: source.Id, TemplateCode: templateCode, RightsConfirmed: true)]);
         var plan = new VideoStoryboardPlanner().Plan(product, [source], config).Value.Scenes.Single();
         if (ragApplied)

@@ -157,8 +157,33 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         }
         else if (request.Action is "rerender" or "retry" or "regenerate_ai_shot")
         {
-            if (run.Status is not ("waiting_for_review" or "failed" or "waiting_for_input")) return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "Cancel an active render before changing configuration."));
             var generate = checkpoints.Single(x => x.NodeType == "generate-video");
+            var reopenCancelledScene = run.Status == "cancelled" && request.Action == "regenerate_ai_shot" &&
+                request.SceneOrder.HasValue && generate.Status == "succeeded" &&
+                checkpoints.Where(x => x.NodeType is "product-input" or "apply-mockup" or "approval-gate")
+                    .All(x => x.Status == "succeeded");
+            if (run.Status is not ("waiting_for_review" or "failed" or "waiting_for_input") && !reopenCancelledScene)
+                return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
+            if (reopenCancelledScene)
+            {
+                var completedJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id && x.Kind == "render", ct)).SingleOrDefault();
+                try
+                {
+                    var payload = completedJob is null ? null : WorkflowJson.Read<AiRenderJobPayload>(completedJob.Payload);
+                    if (payload?.AiShotStates?.Any(item => item.SceneOrder == request.SceneOrder && item.Status == "stored" &&
+                            !string.IsNullOrEmpty(item.StorageKey) && !string.IsNullOrEmpty(item.StorageVersion)) != true)
+                        return Result.Failure<RunResponse>(Error.Conflict("SceneNotStored", "The selected scene has no stored clip to regenerate."));
+                    if (payload.Storyboard?.AiShots is not { Count: > 0 } previousShots ||
+                        previousShots.All(shot => shot.SceneOrder != request.SceneOrder) ||
+                        previousShots.Any(shot => payload.AiShotStates.All(item => item.SceneOrder != shot.SceneOrder || item.Fingerprint != shot.Fingerprint ||
+                            item.Status != "stored" || string.IsNullOrEmpty(item.StorageKey) || string.IsNullOrEmpty(item.StorageVersion))))
+                        return Result.Failure<RunResponse>(Error.Conflict("OtherScenesIncomplete", "Finish the other AI scenes before replacing this clip."));
+                }
+                catch (JsonException)
+                {
+                    return Result.Failure<RunResponse>(Error.Conflict("SceneNotStored", "The selected scene has no stored clip to regenerate."));
+                }
+            }
             if (request.Config != null)
             {
                 if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<RunResponse>(new("UnsupportedVideoMode", "This video mode is unavailable.", ErrorType.Validation));
@@ -196,23 +221,30 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 generate.Status = "pending"; if (request.Action is "rerender" or "regenerate_ai_shot" || configChanged) generate.Attempt++; generate.OutputSnapshot = "{}"; generate.ErrorMessage = null;
                 if (request.Action == "regenerate_ai_shot")
                 {
-                    var previousJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id, ct)).SingleOrDefault();
-                    if (previousJob?.Kind == "render" && request.SceneOrder.HasValue)
+                    var previousJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id && x.Kind == "render", ct)).SingleOrDefault();
+                    if (previousJob is not null && request.SceneOrder.HasValue)
                     {
                         try
                         {
                             var payload = WorkflowJson.Read<AiRenderJobPayload>(previousJob.Payload);
-                            previousJob.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(item =>
-                                item.SceneOrder == request.SceneOrder.Value ? new AiShotJobState(item.SceneOrder, item.Fingerprint) : item).ToArray() });
+                            previousJob.Payload = WorkflowJson.Write(payload with
+                            {
+                                TargetSceneOrder = request.SceneOrder.Value,
+                                AiShotStates = payload.AiShotStates.Select(item =>
+                                    item.SceneOrder == request.SceneOrder.Value
+                                        ? new AiShotJobState(item.SceneOrder, item.Fingerprint)
+                                        : item).ToArray()
+                            });
                         }
                         catch (JsonException) { previousJob.Payload = "{}"; }
                     }
-                    else if (previousJob?.Kind == "render") previousJob.Payload = "{}";
+                    else if (previousJob is not null) previousJob.Payload = "{}";
                 }
                 checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";
-            run.Status = "running"; run.ErrorMessage = null; await runtime.AdvanceAsync(run, ct);
+            run.Status = "running"; run.ErrorMessage = null; if (reopenCancelledScene) run.CompletedAt = null;
+            await runtime.AdvanceAsync(run, ct);
         }
         else return Result.Failure<RunResponse>(Error.Validation("Unknown run action."));
         run.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;

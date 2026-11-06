@@ -27,9 +27,12 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
     {
         var run = await runs.GetByIdAsync(runId, ct);
         if (run == null || run.UserId != user.UserId) return Result.Failure<AiShotQuoteResponse>(Error.NotFound("RunNotFound", "Run not found."));
-        if (run.Status is not ("waiting_for_input" or "waiting_for_review" or "failed"))
+        var reopenCancelledScene = run.Status == "cancelled" && request.Regenerate && request.SceneOrder.HasValue;
+        if (run.Status is not ("waiting_for_input" or "waiting_for_review" or "failed") && !reopenCancelledScene)
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
-        var node = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).Single();
+        var node = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).SingleOrDefault();
+        if (node is null || (reopenCancelledScene && node.Status != "succeeded"))
+            return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
         var config = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
         if (!HasAiVideoScene(config))
             return Result.Failure<AiShotQuoteResponse>(Error.Validation("This storyboard has no AI video scenes to quote."));
@@ -43,7 +46,9 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("StoryboardChanged",
                 "The prompt preview changed. Review the current prompt before confirming its cost."));
         var expires = time.GetUtcNow().AddMinutes(10);
-        var models = string.Join(", ", (board.AiShots ?? []).Select(x => x.Model).Distinct(StringComparer.Ordinal));
+        var models = string.Join(", ", (board.AiShots ?? [])
+            .Where(x => !request.SceneOrder.HasValue || x.SceneOrder == request.SceneOrder.Value)
+            .Select(x => x.Model).Distinct(StringComparer.Ordinal));
         var configFingerprint = WorkflowJson.Hash(WorkflowJson.Write(config));
         return Result.Success(new AiShotQuoteResponse(signer.Sign(new(run.Id, board.Fingerprint, request.Regenerate, cost, expires,
             request.SceneOrder, configFingerprint, board)),
@@ -97,18 +102,39 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
         if (planned.IsFailure) return Result.Failure<(Storyboard, decimal, int)>(planned.Error);
         var board = planned.Value;
         var node = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).Single();
-        var previous = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
+        var previous = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == "render", ct)).SingleOrDefault();
         AiShotJobState[] stored = [];
-        if ((!regenerate || sceneOrder.HasValue) && previous?.Kind == "render")
+        AiShotPlan[] previousShots = [];
+        if ((!regenerate || sceneOrder.HasValue) && previous is not null)
         {
-            try { stored = WorkflowJson.Read<AiRenderJobPayload>(previous.Payload).AiShotStates?.ToArray() ?? []; }
+            try
+            {
+                var payload = WorkflowJson.Read<AiRenderJobPayload>(previous.Payload);
+                stored = payload.AiShotStates?.ToArray() ?? [];
+                previousShots = payload.Storyboard?.AiShots?.ToArray() ?? [];
+            }
             catch (System.Text.Json.JsonException) { /* An older Standard job has no AI states. */ }
         }
         var shots = board.AiShots ?? [];
         if (sceneOrder.HasValue && shots.All(x => x.SceneOrder != sceneOrder.Value))
             return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("The selected scene is not part of this storyboard."));
+        if (run.Status == "cancelled" && sceneOrder.HasValue &&
+            (!previousShots.Any(shot => shot.SceneOrder == sceneOrder.Value) || !stored.Any(state =>
+                state.SceneOrder == sceneOrder.Value && state.Status == "stored" &&
+                !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))))
+            return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("SceneNotStored", "The selected scene has no stored clip to regenerate."));
+        if (run.Status == "cancelled" && previousShots.Any(shot => stored.All(state => state.SceneOrder != shot.SceneOrder ||
+                state.Fingerprint != shot.Fingerprint || state.Status != "stored" ||
+                string.IsNullOrEmpty(state.StorageKey) || string.IsNullOrEmpty(state.StorageVersion))))
+            return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("OtherScenesIncomplete", "Finish the other AI scenes before replacing this clip."));
+        if (sceneOrder.HasValue && shots.Where(x => x.SceneOrder != sceneOrder.Value).Any(shot =>
+            previousShots.FirstOrDefault(old => old.SceneOrder == shot.SceneOrder) is { } old &&
+            (!string.Equals(old.ProviderKey, shot.ProviderKey, StringComparison.OrdinalIgnoreCase) ||
+             !string.Equals(old.ModelKey, shot.ModelKey, StringComparison.OrdinalIgnoreCase))))
+            return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("AiVideoOptionChanged",
+                "Another scene's AI video option has changed. Generate that scene separately or regenerate all AI scenes together."));
         if (sceneOrder.HasValue && shots.Where(x => x.SceneOrder != sceneOrder.Value).Any(shot => !stored.Any(state =>
-                state.Fingerprint == shot.Fingerprint && state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))))
+                state.SceneOrder == shot.SceneOrder && state.Status == "stored" && !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))))
             return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("OtherScenesIncomplete", "Finish or regenerate the other incomplete scenes before replacing this clip."));
         var missing = sceneOrder.HasValue
             ? shots.Where(x => x.SceneOrder == sceneOrder.Value).ToArray()

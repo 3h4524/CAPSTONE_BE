@@ -27,6 +27,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pgvector.EntityFrameworkCore;
 
@@ -133,6 +134,8 @@ public static class DependencyInjection
         services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
             ?? throw new InvalidOperationException("The registered Veo provider must implement an AI video strategy."));
         services.AddScoped<IAiVideoGenerationStrategy, MiniMaxVideoProvider>();
+        services.AddScoped<IAiVideoGenerationStrategy>(provider => new MiniMaxVideoProvider(
+            provider.GetRequiredService<IHttpClientFactory>(), provider.GetRequiredService<ILogger<MiniMaxVideoProvider>>(), true));
         services.AddSingleton<IAiShotQuoteSigner, AiShotQuoteSigner>();
         services.AddSingleton<IDesignGenerationQueue, APCS.Infrastructure.BackgroundServices.DesignGenerationQueueChannel>();
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
@@ -147,6 +150,9 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(VideoQualityOptions.SectionName));
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.VideoPromptPreparationOptions.SectionName));
+        services.AddScoped<IVideoFirstFramePreparer, MiniMaxFirstFramePreparer>();
         services.PostConfigure<GeminiTextGenerationOptions>(options =>
         {
             if (string.IsNullOrWhiteSpace(options.ApiKey))
@@ -183,6 +189,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
 
         return services;
     }
@@ -243,7 +250,10 @@ public static class DependencyInjection
         services.AddHttpClient(MockupMapService.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddHttpClient("PrivateMedia", client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddScoped<IMediaStorage, CloudinaryMediaStorage>();
-        services.AddScoped<IVideoQualityEvidenceRunner, ProcessVideoQualityEvidenceRunner>();
+        services.AddHttpClient("VideoQualityWorker", client => client.Timeout = Timeout.InfiniteTimeSpan);
+        services.AddScoped<ProcessVideoQualityEvidenceRunner>();
+        services.AddScoped<IVideoQualityEvidenceRunner, VideoQualityEvidenceRunner>();
+        services.AddSingleton<IVideoQualityLeaseHeartbeat, VideoQualityLeaseHeartbeat>();
         services.AddHttpClient<GeminiEmbeddingProvider>((provider, client) =>
         {
             var options = provider.GetRequiredService<IOptions<GeminiEmbeddingOptions>>().Value;

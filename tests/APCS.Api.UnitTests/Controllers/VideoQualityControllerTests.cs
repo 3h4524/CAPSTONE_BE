@@ -23,7 +23,7 @@ public sealed class VideoQualityControllerTests
 
         var action = await new VideoQualityController(service.Object).Evaluate(runId, videoId, 0, cancellation.Token);
 
-        action.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+        action.Should().BeOfType<AcceptedAtActionResult>().Which.Value.Should().BeSameAs(response);
         service.VerifyAll();
     }
 

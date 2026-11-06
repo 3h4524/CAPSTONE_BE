@@ -18,12 +18,14 @@ public sealed class MiniMaxVideoProviderTests
     private readonly List<CapturedRequest> requests = [];
 
     [TestMethod]
-    public async Task StartAsync_ApprovedFirstFrame_SendsH3At768PAndReturnsTaskId()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StartAsync_ApprovedFirstFrame_SendsH3At768PAndReturnsTaskId(bool lite)
     {
         var png = Png(1200, 1200);
         var provider = Provider(request => request.RequestUri!.Host == "signed.example"
             ? Bytes(png)
-            : Json(HttpStatusCode.OK, """{"task_id":"task_123"}"""));
+            : Json(HttpStatusCode.OK, """{"task_id":"task_123"}"""), lite);
 
         var taskId = await provider.StartAsync("mini-key", "https://signed.example/source.png",
             "A person naturally wears the product.", "9:16", 6, true, new Region(0, 0, 1, 1), default);
@@ -33,10 +35,10 @@ public sealed class MiniMaxVideoProviderTests
         submitted.Url.Should().Be("https://api.minimax.io/v2/video_generation");
         submitted.Authorization.Should().Be("Bearer mini-key");
         using var body = JsonDocument.Parse(submitted.Body);
-        body.RootElement.GetProperty("model").GetString().Should().Be("MiniMax-H3");
+        body.RootElement.GetProperty("model").GetString().Should().Be(lite ? AiVideoModel.LiteModelName : AiVideoModel.ModelName);
         body.RootElement.GetProperty("resolution").GetString().Should().Be("768P");
         body.RootElement.GetProperty("duration").GetInt32().Should().Be(6);
-        body.RootElement.GetProperty("ratio").GetString().Should().Be("adaptive");
+        body.RootElement.GetProperty("ratio").GetString().Should().Be(lite ? "9:16" : "adaptive");
         var content = body.RootElement.GetProperty("content");
         content[0].GetProperty("text").GetString().Should().Be("A person naturally wears the product.");
         content[1].GetProperty("role").GetString().Should().Be("first_frame");
@@ -188,7 +190,7 @@ public sealed class MiniMaxVideoProviderTests
         requests.Should().ContainSingle();
     }
 
-    private MiniMaxVideoProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send)
+    private MiniMaxVideoProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send, bool lite = false)
     {
         var clients = new Mock<IHttpClientFactory>();
         clients.Setup(x => x.CreateClient(It.IsAny<string>())).Returns(() => new HttpClient(new Handler(async request =>
@@ -197,7 +199,7 @@ public sealed class MiniMaxVideoProviderTests
                 request.Headers.Authorization?.ToString(), request.Content is null ? "" : await request.Content.ReadAsStringAsync()));
             return send(request);
         })));
-        return new(clients.Object, NullLogger<MiniMaxVideoProvider>.Instance);
+        return new(clients.Object, NullLogger<MiniMaxVideoProvider>.Instance, lite);
     }
 
     private static byte[] Png(int width, int height)

@@ -1,6 +1,9 @@
 namespace APCS.Application.Abstractions.Ai;
 
-public sealed record GeminiTextGenerationRequest(string Prompt, string? SystemInstruction = null);
+public sealed record GeminiInputImage(byte[] Bytes, string MimeType);
+
+public sealed record GeminiTextGenerationRequest(string Prompt, string? SystemInstruction = null,
+    IReadOnlyList<GeminiInputImage>? Images = null, decimal? Temperature = null);
 
 public sealed record GeminiTextGenerationResult(
     string Text,

@@ -13,6 +13,18 @@ public static class WorkflowJson
     public static string Hash(string value) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 }
 
+/// <summary>Duration rules for videos created after the Etsy policy update.</summary>
+public static class VideoDurationPolicy
+{
+    public const int CurrentVersion = 2;
+    public const int MinimumVideoSeconds = 5;
+    public const int MaximumVideoSeconds = 15;
+    public const int MinimumAiSceneSeconds = 4;
+    public const int FramesPerSecond = 30;
+    public const int MinimumVideoFrames = MinimumVideoSeconds * FramesPerSecond;
+    public const int MaximumVideoFrames = MaximumVideoSeconds * FramesPerSecond;
+}
+
 public sealed record Point(double X = .5, double Y = .5);
 public sealed record Region(double X, double Y, double Width, double Height);
 public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null,
@@ -30,7 +42,8 @@ public sealed record StandardSceneOptions(Guid MockupId, Region? StartCrop = nul
 public sealed record AiVideoSceneOptions(
     Guid? MockupId = null,
     string TemplateCode = "cinematic_product_showcase",
-    int DurationSeconds = 4,
+    string? SubtemplateCode = null,
+    int DurationSeconds = 5,
     string Framing = "medium",
     string CameraAngle = "three_quarter",
     string CameraMovement = "push_in",
@@ -61,7 +74,9 @@ public sealed record AiVideoSceneOptions(
     int? PromptRuleVersion = null,
     string? StartingState = null,
     string? PrimaryAction = null,
-    string? EndingState = null);
+    string? EndingState = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? AiVideoModelKey = null);
 public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
     string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
 public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
@@ -90,12 +105,23 @@ public sealed record GenerateVideoConfig(
     IReadOnlyList<string?>? SceneMotionPresets = null, int? TemplateVersion = null, string OutputFormat = VideoOutputFormats.Default,
     IReadOnlyList<AiVideoSceneOptions>? AiScenes = null, string? AiGlobalInstructions = null,
     string AiStudioMode = "direct", string AiStudioLayout = "hanging_window",
-    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null,
-    IReadOnlyList<StandardSceneOptions>? StandardScenes = null, VideoEditConfig? VideoEdit = null);
+    Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null, Guid? AiCharacterModelId = null,
+    Guid? SharedMockupId = null,
+    IReadOnlyList<StandardSceneOptions>? StandardScenes = null, VideoEditConfig? VideoEdit = null,
+    int DurationPolicyVersion = VideoDurationPolicy.CurrentVersion, string? AiVideoModelKey = null);
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
     string? PreviewVideoUrl, int DefaultDurationSeconds, string DefaultTransition, string DefaultMotionPreset,
     VideoTemplateRequirements Requirements);
+public sealed record VideoPackSceneDefinition(string Id, string Mode, int DurationSeconds,
+    string? TemplateCode = null, string? SubtemplateCode = null, string? TransitionIn = null,
+    int? TransitionDurationFrames = null, string? StandardMotionPreset = null);
+public sealed record VideoPackDefinition(string Code, int Version, string Name, string Description,
+    string? PreviewVideoUrl, int TotalDurationSeconds, bool RequiresCharacter, bool RequiresSharedMockup,
+    IReadOnlyList<VideoPackSceneDefinition> Scenes);
+public sealed record AiCharacterCatalogItem(Guid Id, string Code, string Name, string Continent, string Gender,
+    short AgeMin, short AgeMax, string BodyType, string SkinTone, string Description, string ImageUrl,
+    string PreviewUrl, bool IsDefault);
 public sealed record CostRange(string Currency, decimal Minimum, decimal Maximum, string Note);
 public sealed record VideoModeCapability(string Mode, bool Enabled, string Availability, string Description, bool SupportsFallback, CostRange? EstimatedCostRange = null);
 public sealed record NodeCapability(string Type, bool Enabled, string Description);
@@ -126,7 +152,12 @@ public sealed record VideoPromptExperience(Guid LessonId, string? Revision, stri
 /// <summary>Explains the prompt supplied to the provider without exposing a separate prompt-building endpoint.</summary>
 public sealed record AiPromptTrace(int? RuleVersion, string RagStatus, IReadOnlyList<string> AppliedRules,
     IReadOnlyList<string> Warnings, IReadOnlyList<AiPromptPart> Parts, string FinalPrompt,
-    IReadOnlyList<VideoPromptExperience>? RetrievedExperiences = null);
+    IReadOnlyList<VideoPromptExperience>? RetrievedExperiences = null,
+    VideoPromptPreparationTrace? Preparation = null);
+/// <summary>Model observations are reviewable hypotheses, not verified OCR or product measurements.</summary>
+public sealed record VideoPromptPreparationTrace(string Status, string Version, string? AnalysisModel = null,
+    string? RewriteModel = null, string? PreparedFrameHash = null, string? OpeningDescription = null,
+    IReadOnlyList<string>? Uncertainties = null);
 public sealed record ScenePlan(Guid MockupId, long SourceRevision, string SourceHash, string Role, int SceneOrder, int DurationFrames, Region Crop, Region EndCrop, string Motion, string Transition, string Text, string GenerationStrategy, IReadOnlyList<string> Warnings,
     string? AiTemplateCode = null, int? PromptVersion = null, string? CompiledPrompt = null, AiVideoSceneOptions? AiSettings = null, Region? SourceCrop = null,
     string? AiProviderKey = null, string? AiModelKey = null, string? AiModelName = null, double StartScale = 1, double EndScale = 1, double StartRotation = 0, double EndRotation = 0,
@@ -138,9 +169,10 @@ public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash
 public sealed record Storyboard(string Template, int TemplateVersion, int DurationSeconds, string ProductType, IReadOnlyList<ScenePlan> Scenes, string Fingerprint,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
     string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null,
-    VideoEditConfig? VideoEdit = null);
+    VideoEditConfig? VideoEdit = null, int DurationPolicyVersion = VideoDurationPolicy.CurrentVersion);
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
-    string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16");
+    string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
+    GenerateVideoConfig? Config = null, string? ArtworkGroupKey = null, IReadOnlyList<Guid>? MockupIds = null);
 public sealed record AiSceneVideoResponse(int SceneOrder, string Status, string? PreviewUrl, string? Failure);
 /// <summary>Evidence produced by the locally configured OCR and VBench tools for one scene.</summary>
 public sealed record VideoSceneEvaluationResponse(string Status, DateTimeOffset? EvaluatedAtUtc,
@@ -156,6 +188,12 @@ public sealed record VideoSceneReviewResponse(Guid Id, int StartMilliseconds, in
 /// <summary>All quality evidence and seller observations saved for a single scene.</summary>
 public sealed record VideoSceneQualityResponse(Guid VideoId, int SceneOrder,
     VideoSceneEvaluationResponse? Evaluation, IReadOnlyList<VideoSceneReviewResponse> Reviews);
+/// <summary>One automatically assessed AI scene shown in the video-level QA summary.</summary>
+public sealed record VideoQualitySceneSummary(int SceneOrder, string Status, string? Detail,
+    IReadOnlyDictionary<string, object?> Metrics);
+/// <summary>Quality evidence for the completed video and each generated AI scene.</summary>
+public sealed record VideoQualitySummaryResponse(Guid VideoId, string Status, JsonElement Technical,
+    JsonElement? EtsyCompliance, IReadOnlyList<VideoQualitySceneSummary> Scenes);
 /// <summary>Creates or updates one seller observation for a scene.</summary>
 public sealed record SaveVideoSceneReviewRequest(int StartMilliseconds, int EndMilliseconds, string Category,
     string Severity, bool PresentInSourceImage, string Description, bool ConfirmSuggestion = false,
@@ -175,11 +213,20 @@ public sealed record MediaQa(string Codec, string PixelFormat, int Width, int He
 public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa);
 public sealed record JobFailure(Guid LeaseToken, string Message);
 public sealed record RenderJobPayload(Guid VideoId, Storyboard Storyboard);
+/// <summary>Stable stored-clip reference used by an automatic scene-quality job.</summary>
+public sealed record VideoQualitySceneJobTarget(int SceneOrder, Guid MockupId, string Fingerprint,
+    string? StorageKey, string? StorageVersion, string? ProviderKey = null, string? SourceHash = null,
+    string? InputAspectRatio = null, Region? SourceCrop = null);
+/// <summary>Durable background request to assess every AI scene, or one requested scene, for a completed video.</summary>
+public sealed record VideoQualityJobPayload(Guid VideoId, int? SceneOrder = null,
+    IReadOnlyList<VideoQualitySceneJobTarget>? SceneTargets = null);
 /// <param name="Failure">Why the scene has no clip, when Google answered without one.</param>
 /// <param name="Resubmissions">How often the scene was sent again after Google dropped a clip without charging for it.</param>
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
     string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0);
-public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates);
+/// <param name="TargetSceneOrder">The one scene selected for an isolated generation or regeneration. Stored clips for the other scenes remain reusable.</param>
+public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates,
+    int? TargetSceneOrder = null);
 /// <summary>Protected prompt snapshot written after quote confirmation and consumed once by the render step.</summary>
 public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard Storyboard);
 public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion, string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest);
