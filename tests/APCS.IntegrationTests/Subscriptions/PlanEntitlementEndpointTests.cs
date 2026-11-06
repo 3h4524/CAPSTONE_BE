@@ -179,7 +179,7 @@ public sealed class PlanEntitlementEndpointTests
         mockups.GetProperty("dailyCap").ValueKind.Should().Be(JsonValueKind.Null);
         mockups.GetProperty("usersAtDailyCap").ValueKind.Should().Be(JsonValueKind.Null);
         mockups.GetProperty("medianUses").ValueKind.Should().Be(JsonValueKind.Null);
-        body.GetProperty("pipeline").GetArrayLength().Should().Be(6);
+        body.GetProperty("pipeline").GetArrayLength().Should().Be(11);
         // Unit costs are measured in USD and sent in VND at the PayOS rate: $0.002 and $0.01 at 25,000.
         var unitCosts = body.GetProperty("unitCosts").EnumerateArray()
             .ToDictionary(cost => cost.GetProperty("key").GetString()!, cost => cost.GetProperty("costVnd").GetDecimal());
@@ -214,7 +214,9 @@ public sealed class PlanEntitlementEndpointTests
         var seller = await SignInAsync();
         using var trial = await seller.Client.PostAsync(TrialRoute, content: null);
         trial.StatusCode.Should().Be(HttpStatusCode.OK);
-        using var admin = _host.Factory.CreateAuthenticatedClient(TestAuth.MintToken([TestAuth.AdminRole]));
+        // A real account: saving the change logs who made it, and the log refers to the users table.
+        var adminAccount = await SignInAsync(withGeminiKey: false);
+        using var admin = _host.Factory.CreateAuthenticatedClient(TestAuth.MintToken([TestAuth.AdminRole], adminAccount.UserId));
         var plan = JsonNode.Parse(await admin.GetStringAsync($"/api/admin/subscription-plans/{planId}"))!.AsObject();
         // Rows the plan already has, so the update writes over existing plan_features keys.
         plan["features"] = new JsonArray(
