@@ -29,6 +29,7 @@ internal sealed class WorkflowTestData
     public List<PromoVideoScene> SceneRows { get; } = [];
     public List<MediaJob> JobRows { get; } = [];
     public List<VideoTemplate> TemplateRows { get; } = [];
+    public List<AiCharacterModel> CharacterModelRows { get; } = [];
     public List<ExportPackage> ExportRows { get; } = [];
     public List<ExportPackageItem> ItemRows { get; } = [];
     public Mock<IRepository<Workflow>> Workflows { get; }
@@ -40,6 +41,7 @@ internal sealed class WorkflowTestData
     public Mock<IRepository<PromoVideoScene>> Scenes { get; }
     public Mock<IRepository<MediaJob>> Jobs { get; }
     public Mock<IRepository<VideoTemplate>> Templates { get; }
+    public Mock<IRepository<AiCharacterModel>> CharacterModels { get; }
     public Mock<IRepository<ExportPackage>> Exports { get; }
     public Mock<IRepository<ExportPackageItem>> Items { get; }
     public Mock<IWorkflowStateRepository> State { get; } = new();
@@ -67,6 +69,7 @@ internal sealed class WorkflowTestData
         Scenes = Repository(SceneRows, x => x.Id);
         Jobs = Repository(JobRows, x => x.Id);
         Templates = Repository(TemplateRows, x => x.Id);
+        CharacterModels = Repository(CharacterModelRows, x => x.Id);
         Exports = Repository(ExportRows, x => x.Id);
         Items = Repository(ItemRows, x => x.Id);
         State.Setup(x => x.LockWorkflowAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))

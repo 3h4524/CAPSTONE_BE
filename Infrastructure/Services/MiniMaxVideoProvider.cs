@@ -6,24 +6,20 @@ using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Features.Workflows;
 using Microsoft.Extensions.Logging;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Processing;
 
 namespace APCS.Infrastructure.Services;
 
 /// <summary>MiniMax H3 image-to-video adapter for newly planned AI video scenes.</summary>
-public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<MiniMaxVideoProvider> logger)
+public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<MiniMaxVideoProvider> logger, bool lite = false)
     : IAiVideoGenerationStrategy
 {
     private const string BaseUrl = "https://api.minimax.io";
-    private const int MaxSourceBytes = 20_000_000;
-    private const int MaxPreparedBytes = 30_000_000;
     private const int MaxClipBytes = 100_000_000;
     private static readonly Regex TaskId = new("^[A-Za-z0-9_-]{1,128}$", RegexOptions.CultureInvariant);
 
     public string ProviderKey => AiVideoModel.ProviderKey;
-    public string ModelKey => AiVideoModel.ModelKey;
-    public string ModelName => AiVideoModel.ModelName;
+    public string ModelKey => lite ? AiVideoModel.LiteModelKey : AiVideoModel.ModelKey;
+    public string ModelName => lite ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
 
     public Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
         int durationSeconds, bool people, CancellationToken ct) =>
@@ -36,7 +32,7 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
         try
         {
             ValidateSettings(prompt, aspectRatio, durationSeconds);
-            firstFrame = await PrepareFirstFrameAsync(sourceImageUrl, aspectRatio, sourceCrop, ct);
+            firstFrame = await new MiniMaxFirstFramePreparer(clients).PrepareAsync(sourceImageUrl, aspectRatio, sourceCrop, ct);
         }
         catch (Exception ex) when (ex is not AiVideoNotSubmittedException)
         {
@@ -66,7 +62,7 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
             resolution = AiVideoModel.Resolution,
             duration = durationSeconds,
             // H3 derives image-to-video ratio from the prepared first frame.
-            ratio = "adaptive"
+            ratio = lite ? aspectRatio : "adaptive"
         });
 
         HttpResponseMessage sent;
@@ -177,38 +173,6 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
         throw new InvalidOperationException("Too many MiniMax download redirects.");
     }
 
-    private async Task<byte[]> PrepareFirstFrameAsync(string sourceImageUrl, string aspectRatio, Region? sourceCrop,
-        CancellationToken ct)
-    {
-        using var response = await clients.CreateClient("PrivateMedia")
-            .GetAsync(sourceImageUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-        await using var sourceStream = await response.Content.ReadAsStreamAsync(ct);
-        var source = await ReadLimitedAsync(sourceStream, MaxSourceBytes,
-            "AI video source exceeds 20 MB.", ct);
-        if (source.Length < 24 || !source.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
-            throw new InvalidOperationException("AI video source must be a valid approved PNG under 20 MB.");
-
-        using var image = Image.Load(source);
-        if (sourceCrop is not null) image.Mutate(x => x.Crop(ToPixelCrop(sourceCrop, image.Width, image.Height)));
-        image.Mutate(x => x.Crop(CentreCrop(image.Width, image.Height, aspectRatio)));
-
-        var scale = Math.Min(1d, 5760d / Math.Max(image.Width, image.Height));
-        if (Math.Min(image.Width, image.Height) * scale < 256)
-            scale = 256d / Math.Min(image.Width, image.Height);
-        if (Math.Abs(scale - 1d) > 0.0001)
-            image.Mutate(x => x.Resize(Math.Max(1, (int)Math.Round(image.Width * scale)),
-                Math.Max(1, (int)Math.Round(image.Height * scale))));
-        if (image.Width > 5760 || image.Height > 5760)
-            throw new InvalidOperationException("The approved source crop is outside MiniMax image limits.");
-
-        await using var prepared = new MemoryStream();
-        await image.SaveAsPngAsync(prepared, ct);
-        if (prepared.Length > MaxPreparedBytes)
-            throw new InvalidOperationException("The prepared MiniMax first frame exceeds 30 MB.");
-        return prepared.ToArray();
-    }
-
     private async Task<AiVideoProviderException> RefusedAsync(HttpResponseMessage response, string step, CancellationToken ct)
     {
         var body = await response.Content.ReadAsStringAsync(ct);
@@ -230,30 +194,8 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
     {
         if (string.IsNullOrWhiteSpace(prompt) || prompt.Length > 7000)
             throw new ArgumentException("MiniMax prompt must contain 1 to 7000 characters.", nameof(prompt));
-        if (durationSeconds is not (4 or 6 or 8) || aspectRatio is not ("9:16" or "16:9"))
+        if (durationSeconds is < 4 or > 15 || aspectRatio is not ("9:16" or "16:9"))
             throw new ArgumentException("Unsupported MiniMax video settings.");
-    }
-
-    private static Rectangle ToPixelCrop(Region crop, int width, int height)
-    {
-        var x = Math.Clamp((int)Math.Floor(crop.X * width), 0, width - 1);
-        var y = Math.Clamp((int)Math.Floor(crop.Y * height), 0, height - 1);
-        var cropWidth = Math.Clamp((int)Math.Ceiling(crop.Width * width), 1, width - x);
-        var cropHeight = Math.Clamp((int)Math.Ceiling(crop.Height * height), 1, height - y);
-        return new Rectangle(x, y, cropWidth, cropHeight);
-    }
-
-    private static Rectangle CentreCrop(int width, int height, string aspectRatio)
-    {
-        var targetRatio = aspectRatio == "9:16" ? 9d / 16d : 16d / 9d;
-        var currentRatio = (double)width / height;
-        if (currentRatio > targetRatio)
-        {
-            var targetWidth = Math.Max(1, (int)Math.Round(height * targetRatio));
-            return new Rectangle((width - targetWidth) / 2, 0, targetWidth, height);
-        }
-        var targetHeight = Math.Max(1, (int)Math.Round(width / targetRatio));
-        return new Rectangle(0, (height - targetHeight) / 2, width, targetHeight);
     }
 
     private static void EnsureTrustedVideoUri(Uri uri)

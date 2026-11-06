@@ -99,7 +99,7 @@ function AiClip({ src, width, height, text, trimStartFrames }: { src?: string; w
 
 function Root() {
   return <Composition id="APCS-Standard" component={Showcase} width={1080} height={1920} fps={30} durationInFrames={360}
-    defaultProps={{ storyboard: { template: "product_showcase", templateVersion: 1, durationSeconds: 12, productType: "tshirt", fingerprint: "", outputFormat: "portrait", width: 1080, height: 1920, aspectRatio: "9:16", mode: "standard", transitionOverlapFrames: 0, scenes: [] }, sources: {} }}
+    defaultProps={{ storyboard: { template: "product_showcase", templateVersion: 1, durationSeconds: 12, productType: "tshirt", fingerprint: "", outputFormat: "portrait", width: 1080, height: 1920, aspectRatio: "9:16", mode: "standard", transitionOverlapFrames: 0, scenes: [], durationPolicyVersion: 1 }, sources: {} }}
     calculateMetadata={({ props }) => ({ durationInFrames: props.storyboard.outputDurationFrames ?? props.storyboard.durationSeconds * 30, width: props.storyboard.width, height: props.storyboard.height })} />;
 }
 

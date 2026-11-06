@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace APCS.Domain.Entities;
@@ -32,4 +32,6 @@ public partial class PlanAiReview
     public Guid? TriggeredBy { get; set; }
 
     public DateTime GeneratedAt { get; set; }
+
+    public virtual User? TriggeredByNavigation { get; set; }
 }

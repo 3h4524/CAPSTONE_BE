@@ -184,11 +184,11 @@ public sealed class PlanAiReviewService(
     {
         var request = new GeminiTextGenerationRequest(
             record.InputJson,
-            PlanAiReviewPrompt.System,
-            PlanAiReviewPrompt.Schema(),
-            Settings.Model,
-            Settings.FallbackModel,
-            TimeSpan.FromSeconds(Settings.AttemptTimeoutSeconds));
+            SystemInstruction: PlanAiReviewPrompt.System,
+            ResponseSchema: PlanAiReviewPrompt.Schema(),
+            Model: Settings.Model,
+            FallbackModel: Settings.FallbackModel,
+            AttemptTimeout: TimeSpan.FromSeconds(Settings.AttemptTimeoutSeconds));
 
         for (var generation = 1; generation <= Settings.MaxGenerations; generation++)
         {

@@ -18,7 +18,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<ExportPackage> exports, IRepository<ExportPackageItem> items,
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
-    IRepository<MusicTrack>? musicTracks = null) : IMediaJobService
+    IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
     {
@@ -117,6 +117,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (request.StorageKey != expected || request.StorageVersion.Length > 40 ||
             !await storage.VerifyAsync(expected, job.Kind == "render" ? "video" : "raw", request.StorageVersion, request.Qa?.Bytes, ct))
             return Result.Failure(Error.Validation("Worker output does not match its upload grant."));
+        var queueAutomaticQuality = false;
+        Guid qualityVideoId = Guid.Empty;
         if (job.Kind == "render")
         {
             var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
@@ -144,8 +146,15 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var video = (await videos.GetByIdAsync(payload.VideoId, ct))!;
             video.MusicTrackId = payload.Storyboard.VideoEdit?.Music?.TrackId;
             video.Status = "completed"; video.StorageProvider = "cloudinary"; video.StorageKey = expected; video.StorageVersion = request.StorageVersion;
-            video.ThumbnailStorageKey = thumb; video.ThumbnailStorageVersion = request.ThumbnailStorageVersion; video.QaResult = WorkflowJson.Write(request.Qa);
+            video.ThumbnailStorageKey = thumb; video.ThumbnailStorageVersion = request.ThumbnailStorageVersion;
+            video.QaResult = WorkflowJson.Write(new
+            {
+                technical = request.Qa,
+                etsyCompliance = EtsyVideoCompliance.Evaluate(request.Qa!, payload.Storyboard.AspectRatio, "mp4")
+            });
             video.FileSizeMb = request.Qa!.Bytes / (1024m * 1024m); video.UpdatedAt = time.GetUtcNow().UtcDateTime;
+            queueAutomaticQuality = payload.Storyboard.Mode == "ai_shot";
+            qualityVideoId = video.Id;
         }
         else
         {
@@ -166,7 +175,10 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.UpdatedAt = time.GetUtcNow().UtcDateTime;
         var node = (await nodes.GetByIdAsync(job.WorkflowNodeRunId, ct))!; node.Status = "succeeded"; node.Progress = 100; node.ErrorMessage = null;
         run!.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
-        await uow.SaveChangesAsync(ct); await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        await uow.SaveChangesAsync(ct);
+        if (queueAutomaticQuality && qualityJobs is not null)
+            await qualityJobs.QueueAsync(job.WorkflowRunId, qualityVideoId, null, ct);
+        await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Result.Success();
     }
     public async Task<Result> FailAsync(Guid id, JobFailure request, CancellationToken ct)

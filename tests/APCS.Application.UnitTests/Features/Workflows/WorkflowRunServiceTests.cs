@@ -466,6 +466,91 @@ public sealed class WorkflowRunServiceTests
         fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [TestMethod]
+    public async Task ActionAsync_RegenerateStoredSceneInCancelledRun_ReusesOtherSceneAndReopensReview()
+    {
+        var fixture = new WorkflowTestData();
+        var (run, config, job) = await PrepareCancelledAiVideoAsync(fixture);
+        var oldVideo = fixture.VideoRows.Single();
+
+        var result = await fixture.RunService.ActionAsync(run.Id,
+            new(7, "regenerate_ai_shot", Config: config, AiShotQuoteToken: "confirmed", SceneOrder: 0), default);
+
+        result.IsSuccess.Should().BeTrue();
+        run.Status.Should().Be("running");
+        run.CompletedAt.Should().BeNull();
+        fixture.VideoRows.Should().HaveCount(2);
+        oldVideo.Status.Should().Be("completed");
+        oldVideo.StorageKey.Should().Be("private/approved-video");
+        job.Status.Should().Be("queued");
+        var payload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+        payload.AiShotStates.Single(item => item.SceneOrder == 0).Status.Should().Be("pending");
+        var retained = payload.AiShotStates.Single(item => item.SceneOrder == 1);
+        retained.Status.Should().Be("stored");
+        retained.StorageKey.Should().Be("private/scene-1.mp4");
+        retained.StorageVersion.Should().Be("1");
+        fixture.NodeRows.Single(item => item.NodeType == "review-video").Status.Should().Be("pending");
+        fixture.Quotes.Verify(item => item.VerifyAsync(run, config, "confirmed", true, 0, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow("missing_target", "SceneNotStored")]
+    [DataRow("other_incomplete", "OtherScenesIncomplete")]
+    [DataRow("other_mismatch", "OtherScenesIncomplete")]
+    [DataRow("unfinished_video", "InvalidCheckpoint")]
+    [DataRow("all_scenes", "InvalidCheckpoint")]
+    [DataRow("completed_run", "InvalidCheckpoint")]
+    public async Task ActionAsync_CannotSafelyReopenCancelledVideo_LeavesArtifactsUntouched(string condition, string expectedCode)
+    {
+        var fixture = new WorkflowTestData();
+        var (run, config, job) = await PrepareCancelledAiVideoAsync(fixture);
+        var payload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+        if (condition is "missing_target" or "other_incomplete")
+            job.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(item =>
+                item.SceneOrder == (condition == "missing_target" ? 0 : 1)
+                    ? item with { Status = "pending", StorageKey = null, StorageVersion = null } : item).ToArray() });
+        if (condition == "other_mismatch")
+            job.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(item =>
+                item.SceneOrder == 1 ? item with { Fingerprint = "unrelated-clip" } : item).ToArray() });
+        if (condition == "unfinished_video") fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
+        if (condition == "completed_run") run.Status = "completed";
+        var originalPayload = job.Payload;
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "regenerate_ai_shot", Config: config,
+            AiShotQuoteToken: "confirmed", SceneOrder: condition == "all_scenes" ? null : 0), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be(expectedCode);
+        run.Status.Should().Be(condition == "completed_run" ? "completed" : "cancelled");
+        job.Payload.Should().Be(originalPayload);
+        fixture.VideoRows.Should().ContainSingle();
+        fixture.Quotes.Verify(item => item.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(),
+            It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static async Task<(WorkflowRun Run, GenerateVideoConfig Config, MediaJob Job)> PrepareCancelledAiVideoAsync(WorkflowTestData fixture)
+    {
+        var run = PrepareReview(fixture);
+        var source = fixture.AssetRows.Single();
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
+            AiScenes: [new(MockupId: source.Id, DurationSeconds: 4, RightsConfirmed: true),
+                new(MockupId: source.Id, DurationSeconds: 4, RightsConfirmed: true)]);
+        var board = (await fixture.Runtime.PlanAsync(run, config, default)).Value;
+        var generate = fixture.NodeRows.Single(item => item.NodeType == "generate-video");
+        generate.InputSnapshot = WorkflowJson.Write(config);
+        var job = fixture.AddJob(run);
+        job.Status = "succeeded";
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(fixture.VideoRows.Single().Id, board,
+            board.AiShots!.Select(shot => new AiShotJobState(shot.SceneOrder, shot.Fingerprint,
+                StorageKey: $"private/scene-{shot.SceneOrder}.mp4", StorageVersion: "1", Status: "stored")).ToArray()));
+        generate.Status = "succeeded";
+        fixture.NodeRows.Single(item => item.NodeType == "review-video").Status = "cancelled";
+        fixture.NodeRows.Single(item => item.NodeType == "export-zip").Status = "cancelled";
+        run.Status = "cancelled";
+        run.CompletedAt = WorkflowTestData.Now.UtcDateTime;
+        return (run, config, job);
+    }
+
     internal static WorkflowRun PrepareReview(WorkflowTestData fixture)
     {
         var product = fixture.AddProduct();

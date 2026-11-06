@@ -29,7 +29,7 @@ public sealed class VideoExperienceContextService(IVideoContextRetriever retriev
             if (scene.Mode == "standard" || string.IsNullOrWhiteSpace(scene.TemplateCode))
                 continue;
 
-            var scope = new VideoExperienceSearchRequest(ownerId, scene.TemplateCode, AiVideoModel.ModelKey,
+            var scope = new VideoExperienceSearchRequest(ownerId, scene.TemplateCode, scene.AiVideoModelKey ?? config.AiVideoModelKey ?? AiVideoModel.ModelKey,
                 scene.PrimaryAction);
             var query = $"{product.ProductType} {scene.TemplateCode} {scene.PrimaryAction ?? "product continuity"}";
             try

@@ -10,7 +10,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
-    IVideoExperienceContextService? experiences = null)
+    IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -44,7 +44,9 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var experienceMap = experiences is null
             ? null
             : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
-        return planner.Plan(product, approved, config, aiTemplates, experienceMap);
+        var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap);
+        if (planned.IsFailure || promptPreparation is null) return planned;
+        return Result.Success(await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct));
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)
@@ -103,16 +105,30 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     if (board.Mode == "ai_shot")
                     {
                         AiShotJobState[] retained = [];
-                        var oldJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
-                        if (oldJob?.Kind == "render")
+                        int? targetSceneOrder = null;
+                        var oldJob = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == "render", ct)).SingleOrDefault();
+                        if (oldJob is not null)
                         {
-                            try { retained = WorkflowJson.Read<AiRenderJobPayload>(oldJob.Payload).AiShotStates?.ToArray() ?? []; }
+                            try
+                            {
+                                var previousPayload = WorkflowJson.Read<AiRenderJobPayload>(oldJob.Payload);
+                                retained = previousPayload.AiShotStates?.ToArray() ?? [];
+                                targetSceneOrder = previousPayload.TargetSceneOrder;
+                            }
                             catch (JsonException) { /* The previous render used the Standard payload. */ }
                         }
-                        // A scene Google answered without a clip starts over, so this attempt submits it again (the seller
-                        // has just confirmed its cost). One whose submission is uncertain is kept: it is never sent twice.
-                        var states = (board.AiShots ?? []).Select(shot => retained.FirstOrDefault(x => x.Fingerprint == shot.Fingerprint && x.Status != "failed")
-                            is { } existing ? existing with { SceneOrder = shot.SceneOrder } : new AiShotJobState(shot.SceneOrder, shot.Fingerprint)).ToArray();
+                        // An isolated scene request keeps already stored clips for all other scene positions. This lets a
+                        // seller append or replace one scene after changing the current storyboard configuration.
+                        var states = (board.AiShots ?? []).Select(shot =>
+                        {
+                            var existing = targetSceneOrder.HasValue && shot.SceneOrder != targetSceneOrder.Value
+                                ? retained.FirstOrDefault(item => item.SceneOrder == shot.SceneOrder && item.Status == "stored" &&
+                                    item.StorageKey is not null && item.StorageVersion is not null)
+                                : retained.FirstOrDefault(item => item.Fingerprint == shot.Fingerprint && item.Status != "failed");
+                            return existing is not null
+                                ? existing with { SceneOrder = shot.SceneOrder, Fingerprint = shot.Fingerprint }
+                                : new AiShotJobState(shot.SceneOrder, shot.Fingerprint);
+                        }).ToArray();
                         await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct);
                     }
                     else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct);
@@ -314,7 +330,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
 
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {
-        var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id, ct)).SingleOrDefault();
+        var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == kind, ct)).SingleOrDefault();
         if (job == null)
         {
             job = new() { Id = Guid.NewGuid(), WorkflowRunId = run.Id, WorkflowNodeRunId = node.Id, UserId = run.UserId, MaximumAttempts = 3, CreatedAt = time.GetUtcNow().UtcDateTime };

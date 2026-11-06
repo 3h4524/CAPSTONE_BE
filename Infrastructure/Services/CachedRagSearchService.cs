@@ -40,33 +40,23 @@ public sealed class CachedRagSearchService(
         return activated;
     }
 
-    public Task<RagVideoExperienceDto?> GetVideoExperienceAsync(Guid documentId, Guid ownerId,
-        CancellationToken cancellationToken = default) =>
-        inner.GetVideoExperienceAsync(documentId, ownerId, cancellationToken);
-
-    public async Task<RagVideoExperienceDto?> SetVideoExperienceStatusAsync(Guid documentId, Guid ownerId, string status,
-        CancellationToken cancellationToken = default)
-    {
-        var experience = await inner.SetVideoExperienceStatusAsync(documentId, ownerId, status, cancellationToken);
-        if (experience is not null)
-            await StartNewGenerationAsync();
-        return experience;
-    }
-
-    public async Task<RagVideoExperienceDto?> ReviseVideoExperienceAsync(Guid documentId, Guid ownerId, string content,
-        CancellationToken cancellationToken = default)
-    {
-        var experience = await inner.ReviseVideoExperienceAsync(documentId, ownerId, content, cancellationToken);
-        if (experience is not null)
-            await StartNewGenerationAsync();
-        return experience;
-    }
-
     public Task<IReadOnlyList<RagAdminDocumentDto>> GetAdminDocumentsAsync(string? status, string? sourceId, CancellationToken cancellationToken = default) =>
         inner.GetAdminDocumentsAsync(status, sourceId, cancellationToken);
 
     public Task<RagAdminDocumentDetailDto?> GetAdminDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) =>
         inner.GetAdminDocumentAsync(documentId, cancellationToken);
+
+    public Task<RagVideoExperienceDto?> SetVideoExperienceStatusAsync(Guid documentId, Guid ownerId, string status,
+        CancellationToken cancellationToken = default) =>
+        inner.SetVideoExperienceStatusAsync(documentId, ownerId, status, cancellationToken);
+
+    public Task<RagVideoExperienceDto?> GetVideoExperienceAsync(Guid documentId, Guid ownerId,
+        CancellationToken cancellationToken = default) =>
+        inner.GetVideoExperienceAsync(documentId, ownerId, cancellationToken);
+
+    public Task<RagVideoExperienceDto?> ReviseVideoExperienceAsync(Guid documentId, Guid ownerId, string content,
+        CancellationToken cancellationToken = default) =>
+        inner.ReviseVideoExperienceAsync(documentId, ownerId, content, cancellationToken);
 
     public async Task<IReadOnlyList<RagSearchResultDto>> SearchAsync(RagSearchRequest request, CancellationToken cancellationToken = default)
     {
