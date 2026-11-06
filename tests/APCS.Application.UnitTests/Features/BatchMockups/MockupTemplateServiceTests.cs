@@ -1,4 +1,5 @@
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups;
@@ -2410,7 +2411,8 @@ public sealed class MockupTemplateServiceTests
             new SaveMockupOverrideValidator(),
             new SaveMockupOverridesValidator(),
             TimeProvider.System,
-            NullLogger<MockupTemplateService>.Instance);
+            NullLogger<MockupTemplateService>.Instance,
+            TestEntitlements.AllowAll());
     }
 
     private static Mock<IRepository<MockupTemplate>> TemplateRepository(params MockupTemplate[] items)

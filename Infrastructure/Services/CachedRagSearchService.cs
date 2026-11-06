@@ -40,27 +40,6 @@ public sealed class CachedRagSearchService(
         return activated;
     }
 
-    public Task<RagSearchDiagnosticsDto> SearchWithDiagnosticsAsync(RagSearchRequest request, CancellationToken cancellationToken = default) =>
-        inner.SearchWithDiagnosticsAsync(request, cancellationToken);
-
-    public Task<RagEvaluationResponse> EvaluateAsync(RagEvaluationRequest request, CancellationToken cancellationToken = default) =>
-        inner.EvaluateAsync(request, cancellationToken);
-
-    public Task<RagCorpusHealthResponse> GetCorpusHealthAsync(string? contentType, int staleDays = 30, CancellationToken cancellationToken = default) =>
-        inner.GetCorpusHealthAsync(contentType, staleDays, cancellationToken);
-
-    public async Task<RagReingestResponse> ReingestAsync(RagReingestRequest request, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return await inner.ReingestAsync(request, cancellationToken);
-        }
-        finally
-        {
-            await StartNewGenerationAsync();
-        }
-    }
-
     public Task<RagVideoExperienceDto?> GetVideoExperienceAsync(Guid documentId, Guid ownerId,
         CancellationToken cancellationToken = default) =>
         inner.GetVideoExperienceAsync(documentId, ownerId, cancellationToken);
@@ -107,6 +86,31 @@ public sealed class CachedRagSearchService(
         var results = await inner.SearchAsync(request, cancellationToken);
         await TrySetAsync(key, results, cancellationToken);
         return results;
+    }
+
+    public Task<RagSearchDiagnosticsDto> SearchWithDiagnosticsAsync(
+        RagSearchRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.SearchWithDiagnosticsAsync(request, cancellationToken);
+
+    public Task<RagEvaluationResponse> EvaluateAsync(
+        RagEvaluationRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.EvaluateAsync(request, cancellationToken);
+
+    public Task<RagCorpusHealthResponse> GetCorpusHealthAsync(
+        string? contentType,
+        int staleDays = 30,
+        CancellationToken cancellationToken = default) =>
+        inner.GetCorpusHealthAsync(contentType, staleDays, cancellationToken);
+
+    public async Task<RagReingestResponse> ReingestAsync(
+        RagReingestRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await inner.ReingestAsync(request, cancellationToken);
+        await StartNewGenerationAsync();
+        return response;
     }
 
     private async Task<string?> CurrentGenerationAsync(CancellationToken cancellationToken)

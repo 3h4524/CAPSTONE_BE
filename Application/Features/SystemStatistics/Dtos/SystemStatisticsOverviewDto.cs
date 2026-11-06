@@ -10,6 +10,20 @@ public class SystemStatisticsOverviewDto
     public List<PipelineStageBreakdownDto> PipelineStages { get; set; } = new();
     public IntegrationStatusDto IntegrationStatus { get; set; } = new();
     public List<SystemErrorLogDto> RecentErrors { get; set; } = new();
+    public JobReliabilityDto Reliability { get; set; } = new();
+    public string PeriodStart { get; set; } = null!;
+    public string PeriodEnd { get; set; } = null!;
+}
+
+public class JobReliabilityDto
+{
+    public int FinishedJobs { get; set; }
+    public int CompletedJobs { get; set; }
+    public int PartiallyCompletedJobs { get; set; }
+    public int FailedJobs { get; set; }
+    public decimal SuccessRate { get; set; }
+    public decimal? AvgProcessingMinutes { get; set; }
+    public decimal TotalCostUsd { get; set; }
 }
 
 public class MetricValueDto

@@ -1660,11 +1660,12 @@ public sealed class DesignGenerationProcessingTests
             new Repository<Batch>(db), new Repository<BatchJob>(db), new Repository<BatchJobProduct>(db), new Repository<Product>(db),
             new Repository<AiPrompt>(db), new Repository<DesignImage>(db), new Repository<ApiUsageRecord>(db), new Repository<BatchJobLog>(db),
             new Repository<DesignTemplate>(db), new Repository<StyleArtPreset>(db),
-            new ApiKeyRepository(db), credentials.Object, new SubscriptionRepository(db), new UsageStatisticRepository(db),
+            new ApiKeyRepository(db), credentials.Object, new SubscriptionRepository(db, new FakeTimeProvider(UtcNow)), new UsageStatisticRepository(db),
             [provider.Object], storage.Object, backgroundRemover ?? Mock.Of<IDesignBackgroundRemover>(), queue ?? Mock.Of<IDesignGenerationQueue>(),
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
-            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)), textCheckQueue);
+            Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)),
+            new AllowAllEntitlements(), textCheckQueue);
     }
 
     // Keeps what design generation hands to the background text check.

@@ -39,6 +39,8 @@ public partial class MarketListingSnapshot
 
     public string? RawPayload { get; set; }
 
+    public bool IsSynthetic { get; set; }
+
     public Guid? RagDocumentId { get; set; }
 
     public virtual ICollection<MarketOpportunityEvidence> MarketOpportunityEvidences { get; set; } = new List<MarketOpportunityEvidence>();

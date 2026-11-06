@@ -9,91 +9,39 @@ namespace APCS.Application.UnitTests.Features.Subscriptions.Common;
 public sealed class QuotaDefinitionsTests
 {
     [TestMethod]
-    public void Build_WhenUsageIsNull_TreatsUsageAsZeroForEveryQuota()
+    public void Build_WhenUsageIsNull_ReportsZeroUsed()
     {
-        var plan = SubscriptionTestData.CreateStarterPlan();
-
-        var quotas = QuotaDefinitions.Build(plan, null);
+        var quotas = QuotaDefinitions.Build(null);
 
         quotas.Should().OnlyContain(quota => quota.Used == 0 && quota.PercentUsed == 0 && !quota.IsWarning);
     }
 
     [TestMethod]
-    public void Build_ReturnsThreeQuotas_ImageGenerationApiCallsAndStorage()
+    public void Build_ReportsImageGenerationWithoutALimit()
     {
-        var plan = SubscriptionTestData.CreateStarterPlan();
+        var quotas = QuotaDefinitions.Build(null);
 
-        var quotas = QuotaDefinitions.Build(plan, null);
-
-        quotas.Select(quota => quota.QuotaCode).Should().Contain(["image_generation", "api_calls", "storage"]);
+        quotas.Should().ContainSingle();
+        quotas[0].QuotaCode.Should().Be("image_generation");
+        quotas[0].Limit.Should().Be(0, "plans have no monthly quotas, and 0 means no limit");
     }
 
     [TestMethod]
-    public void Build_WhenUsageExactlyMatchesLimit_Is100PercentAndWarning()
+    public void Build_WithHeavyUsage_NeverWarns()
     {
-        var plan = SubscriptionTestData.CreateStarterPlan();
         var usage = new UsageStatistic
         {
             Id = Guid.NewGuid(),
             UserId = SubscriptionTestData.UserId,
             BillingPeriodStart = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime),
             BillingPeriodEnd = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime).AddMonths(1),
-            ImagesGenerated = plan.ImageGenerationQuota
+            ImagesGenerated = 10_000
         };
 
-        var quotas = QuotaDefinitions.Build(plan, usage);
+        var quotas = QuotaDefinitions.Build(usage);
 
-        var imageQuota = quotas.Single(quota => quota.QuotaCode == "image_generation");
-        imageQuota.PercentUsed.Should().Be(100);
-        imageQuota.IsWarning.Should().BeTrue();
-    }
-
-    [TestMethod]
-    public void Build_WhenUsageExceedsLimit_ClampsPercentUsedAt100()
-    {
-        var plan = SubscriptionTestData.CreateStarterPlan();
-        var usage = new UsageStatistic
-        {
-            Id = Guid.NewGuid(),
-            UserId = SubscriptionTestData.UserId,
-            BillingPeriodStart = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime),
-            BillingPeriodEnd = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime).AddMonths(1),
-            ImagesGenerated = plan.ImageGenerationQuota * 5
-        };
-
-        var quotas = QuotaDefinitions.Build(plan, usage);
-
-        quotas.Single(quota => quota.QuotaCode == "image_generation").PercentUsed.Should().Be(100);
-    }
-
-    [TestMethod]
-    public void Build_WhenPlanLimitIsZero_DoesNotDivideByZero()
-    {
-        var plan = SubscriptionTestData.CreateStarterPlan();
-        plan.ApiCallQuota = 0;
-
-        var quotas = QuotaDefinitions.Build(plan, null);
-
-        var apiQuota = quotas.Single(quota => quota.QuotaCode == "api_calls");
-        apiQuota.PercentUsed.Should().Be(0);
-        apiQuota.IsWarning.Should().BeFalse();
-    }
-
-    [TestMethod]
-    public void Build_WithPartialUsage_RoundsPercentUsedSensibly()
-    {
-        var plan = SubscriptionTestData.CreateStarterPlan();
-        var usage = new UsageStatistic
-        {
-            Id = Guid.NewGuid(),
-            UserId = SubscriptionTestData.UserId,
-            BillingPeriodStart = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime),
-            BillingPeriodEnd = DateOnly.FromDateTime(SubscriptionTestData.UtcNow.UtcDateTime).AddMonths(1),
-            ImagesGenerated = plan.ImageGenerationQuota / 2
-        };
-
-        var quotas = QuotaDefinitions.Build(plan, usage);
-
-        quotas.Single(quota => quota.QuotaCode == "image_generation").PercentUsed.Should().Be(50);
+        quotas.Single().Used.Should().Be(10_000);
+        quotas.Single().PercentUsed.Should().Be(0);
+        quotas.Single().IsWarning.Should().BeFalse();
     }
 }

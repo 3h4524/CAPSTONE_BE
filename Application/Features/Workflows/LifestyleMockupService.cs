@@ -3,6 +3,8 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -34,7 +36,8 @@ public interface ILifestyleMockupService
 public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<DesignImage> designs, IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials,
     IEnumerable<IImageGenerationProvider> imageProviders, IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
-    ILogger<LifestyleMockupService> logger, IRepository<MockupTemplate> templates, IMockupMapService maps) : ILifestyleMockupService
+    ILogger<LifestyleMockupService> logger, IRepository<MockupTemplate> templates, IMockupMapService maps,
+    IPlanEntitlementService entitlements) : ILifestyleMockupService
 {
     // Ideogram edits the photo, the same provider the designs are made with.
     private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Ideogram);
@@ -115,11 +118,13 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         return await DressAsync(userId, product, garment, personBytes, group: model.People == ModelPeople.Group, ct);
     }
 
-    // The Seller's own product, and a mock-up of it that can be worn.
+    // The Seller's own product, and a mock-up of it that can be worn, when the Seller's plan includes lifestyle images.
     private async Task<Result<(Guid UserId, Product Product, MockupImage Garment)>> FindAsync(Guid productId, Guid garmentMockupId, CancellationToken ct)
     {
         if (user.UserId is not Guid userId || await products.GetByIdAsync(productId, ct) is not { DeletedAt: null } product || product.UserId != userId)
             return Result.Failure<(Guid, Product, MockupImage)>(Missing());
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.LifestyleMockup, ct);
+        if (planCheck.IsFailure) return Result.Failure<(Guid, Product, MockupImage)>(planCheck.Error);
         var garment = await assets.GetByIdAsync(garmentMockupId, ct);
         // A batch mock-up is only its composite link until the video imports it; either one can be worn.
         if (garment is null || garment.DeletedAt != null || garment.ProductId != productId
@@ -171,7 +176,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
 
         await usage.AddAsync(new ApiUsageRecord
         {
-            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = ImageGenerationProviders.Ideogram, Feature = "image_generation",
+            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = ImageGenerationProviders.Ideogram, Feature = UsageFeatures.Mockup,
             ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
         }, cancellationToken: ct);
         await assets.AddAsync(new MockupImage

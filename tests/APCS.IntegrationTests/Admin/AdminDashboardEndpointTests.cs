@@ -23,6 +23,7 @@ public sealed class AdminDashboardEndpointTests
 {
     private const string MetricsRoute = "/api/admin/dashboard/metrics";
     private const string ExportRoute = "/api/admin/dashboard/export";
+    private const string OperationsRoute = "/api/admin/dashboard/operations";
 
     private static IntegrationTestHost _host = null!;
 
@@ -68,6 +69,37 @@ public sealed class AdminDashboardEndpointTests
         using var response = await client.GetAsync($"{MetricsRoute}?timeRange=day");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [TestMethod]
+    [DataRow("week", "day")]
+    [DataRow("month", "day")]
+    [DataRow("halfyear", "month")]
+    [DataRow("year", "month")]
+    public async Task Operations_WithAnAdminSession_AnswersEveryRangeFromTheDatabase(string timeRange, string bucket)
+    {
+        _host.EnsureAvailable();
+        using var client = AdminClient();
+
+        using var response = await client.GetAsync($"{OperationsRoute}?timeRange={timeRange}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("bucket").GetString().Should().Be(bucket);
+        body.GetProperty("throughput").GetArrayLength().Should().BeGreaterThan(0);
+        body.GetProperty("funnel").GetProperty("products").GetInt32().Should().Be(0);
+    }
+
+    [TestMethod]
+    public async Task Operations_WhenTheTokenCarriesTheSellerRole_ReturnsForbidden()
+    {
+        _host.EnsureAvailable();
+        var token = TestAuth.MintToken([TestAuth.SellerRole]);
+        using var client = _host.Factory.CreateAuthenticatedClient(token);
+
+        using var response = await client.GetAsync(OperationsRoute);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [TestMethod]

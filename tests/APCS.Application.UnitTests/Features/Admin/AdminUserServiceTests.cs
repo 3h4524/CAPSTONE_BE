@@ -49,6 +49,7 @@ public sealed class AdminUserServiceTests
             currentUser.Object,
             authService.Object,
             timeProvider,
+            Microsoft.Extensions.Options.Options.Create(new APCS.Application.Features.Subscriptions.PaymentGatewaySettings(25_000m, null)),
             NullLogger<AdminUserService>.Instance);
     }
 
@@ -103,6 +104,35 @@ public sealed class AdminUserServiceTests
         result.Value.Should().NotBeNull();
         result.Value.Items.Should().HaveCount(2);
         result.Value.TotalCount.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task GetUsersAsync_ReportsWhatEachSellerPaysAMonthInVndAsTheRevenuePageCountsIt()
+    {
+        var pro = new SubscriptionPlan { Name = "Pro", MonthlyPriceUsd = 29.99m, AnnualPriceUsd = 299.99m };
+        User Seller(string email, Subscription subscription) => new()
+        {
+            Id = Guid.NewGuid(),
+            FullName = email,
+            Email = email,
+            AccountStatus = "Active",
+            CreatedAt = DateTime.UtcNow,
+            Subscriptions = [subscription]
+        };
+        var monthly = Seller("monthly@test.com", new Subscription { Status = "active", Plan = pro, BillingCycle = "monthly", MonthlyPriceUsd = 29.99m });
+        // Bought at an older annual price: the stored price counts, a twelfth of it a month.
+        var annual = Seller("annual@test.com", new Subscription { Status = "active", Plan = pro, BillingCycle = "annual", MonthlyPriceUsd = 29.99m, AnnualPriceUsd = 240m });
+        var trial = Seller("trial@test.com", new Subscription { Status = "active", Plan = pro, BillingCycle = "monthly", MonthlyPriceUsd = 29.99m, TrialEndsAt = DateTime.UtcNow.AddDays(5) });
+        var userRepository = new Mock<IRepository<User>>();
+        userRepository.Setup(x => x.Query()).Returns(new List<User> { monthly, annual, trial }.AsQueryable().BuildMock());
+        var service = CreateService(userRepository: userRepository);
+
+        var result = await service.GetUsersAsync(new GetUsersRequestDto { PageIndex = 1, PageSize = 10 }, CancellationToken.None);
+
+        var cost = result.Value.Items.ToDictionary(u => u.Email, u => u.MonthlyApiCost);
+        cost["monthly@test.com"].Should().Be(749_750m, "29.99 USD at 25,000 VND");
+        cost["annual@test.com"].Should().Be(500_000m, "240 / 12 = 20 USD at 25,000 VND");
+        cost["trial@test.com"].Should().Be(0m, "a free trial pays nothing");
     }
 
     [TestMethod]

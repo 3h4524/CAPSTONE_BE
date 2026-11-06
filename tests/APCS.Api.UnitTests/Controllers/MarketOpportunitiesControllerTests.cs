@@ -91,5 +91,5 @@ public sealed class MarketOpportunitiesControllerTests
         new(Guid.NewGuid(), "Find personalized gifts", ["gift buyers"], ["home decor"], ["clothing"], ["personalized"], 20, 100, 1, DateTime.UtcNow);
 
     private static SellerOpportunityResponse CreateOpportunity(Guid? id = null) =>
-        new(id ?? Guid.NewGuid(), Guid.NewGuid(), "etsy", "Personalized gift", "wedding gift", "gifts", "Summary", 80, 75, 90, 84, 1, "active", "Strong fit", new Dictionary<string, double> { ["category"] = .9 }, DateTime.UtcNow);
+        new(id ?? Guid.NewGuid(), Guid.NewGuid(), "etsy", "Personalized gift", "wedding gift", "gifts", "Summary", 80, 75, 90, 84, 1, "active", "Strong fit", new Dictionary<string, double> { ["category"] = .9 }, DateTime.UtcNow, null!);
 }

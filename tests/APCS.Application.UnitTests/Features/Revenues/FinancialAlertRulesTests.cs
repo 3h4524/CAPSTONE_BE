@@ -34,13 +34,14 @@ public sealed class FinancialAlertRulesTests
     [TestMethod]
     public void Evaluate_LapsedSubscriptions_AreADangerWithTheMonthlyValueAtRisk()
     {
-        var alert = FinancialAlertRules.Evaluate(Healthy with { LapsedCount = 3, LapsedMonthlyValue = 89.97m, LapsedOldestDays = 12 }).First();
+        var alert = FinancialAlertRules.Evaluate(Healthy with { LapsedCount = 3, LapsedMonthlyValue = 89.97m, LapsedOldestDays = 2 }).First();
 
         alert.Id.Should().Be("lapsed-subscriptions");
         alert.Type.Should().Be("danger");
         alert.Amount.Should().Be(89.97m);
         alert.Count.Should().Be(3, "a client marks the alert new again when the count grows");
-        alert.Description.Should().Contain("3 active subscriptions").And.Contain("12 days");
+        alert.Description.Should().Contain("3 subscriptions").And.Contain("2 days ago")
+            .And.Contain("expires 3 days after its renewal date");
     }
 
     [TestMethod]
@@ -103,6 +104,41 @@ public sealed class FinancialAlertRulesTests
     {
         Ids(Healthy with { TopPlanRevenue = 600m }).Should().Contain("plan-concentration");
         Ids(Healthy with { TopPlanRevenue = 599m }).Should().NotContain("plan-concentration");
+    }
+
+    [TestMethod]
+    public void Evaluate_PlanMrrFalling_FiresPerPlanFromThreePercentEvenWhenTheTotalGrows()
+    {
+        var inputs = Healthy with
+        {
+            PlanMrr =
+            [
+                new PlanMrrInput("Pro", Start: 29_940_000m, End: 28_942_000m, Left: 12),
+                new PlanMrrInput("Starter", Start: 19_900_000m, End: 21_293_000m, Left: 9)
+            ]
+        };
+
+        var alert = FinancialAlertRules.Evaluate(inputs).Single(a => a.Id.StartsWith("plan-mrr-falling"));
+
+        alert.Id.Should().Be("plan-mrr-falling-pro");
+        alert.Type.Should().Be("warning");
+        alert.Amount.Should().Be(998_000m);
+        alert.Count.Should().Be(12);
+        alert.Description.Should().Contain("3.3%").And.Contain("12 customers");
+        Ids(Healthy with { PlanMrr = [new PlanMrrInput("Pro", 1000m, 971m, 1)] }).Should().NotContain("plan-mrr-falling-pro");
+        Ids(Healthy with { PlanMrr = [new PlanMrrInput("Pro", 0m, 0m, 0)] }).Should().NotContain("plan-mrr-falling-pro");
+    }
+
+    [TestMethod]
+    public void Evaluate_UsageGap_FiresFromThirtyPointsAsAPurpleHint()
+    {
+        var wide = new PlanUsageGap("lifestyle_mockups", "Lifestyle mockups", Stayed: 44, Left: 12, StayedRate: 72.7m, LeftRate: 16.7m);
+        var narrow = wide with { StayedRate = 46.6m };
+
+        var alert = FinancialAlertRules.Evaluate(Healthy with { UsageGaps = [("Pro", wide)] }).Single(a => a.Id == "plan-usage-gap-pro");
+        alert.Type.Should().Be("purple");
+        alert.Description.Should().Be("Only 16.7% of the Pro customers who left used Lifestyle mockups, against 72.7% of those who stayed.");
+        Ids(Healthy with { UsageGaps = [("Pro", narrow)] }).Should().NotContain("plan-usage-gap-pro");
     }
 
     [TestMethod]

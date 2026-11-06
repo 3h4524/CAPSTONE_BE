@@ -18,10 +18,19 @@ internal static class SubscriptionStatuses
 
     public const string Active = "active";
 
+    /// <summary>
+    /// Past the renewal date without the renewal payment. The Seller keeps the plan for
+    /// <see cref="RenewalRules.GraceDays"/> days, but it no longer counts as revenue.
+    /// </summary>
+    public const string PastDue = "past_due";
+
     /// <summary>The Seller explicitly cancelled the checkout before paying.</summary>
     public const string Cancelled = "cancelled";
 
-    /// <summary>PayOS declined or the payment link expired unpaid — not a Seller action.</summary>
+    /// <summary>
+    /// PayOS declined or the payment link expired unpaid — not a Seller action. Also a paid
+    /// subscription whose grace period ended without the renewal payment.
+    /// </summary>
     public const string Expired = "expired";
 }
 

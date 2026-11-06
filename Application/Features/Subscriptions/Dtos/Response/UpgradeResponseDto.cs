@@ -17,6 +17,9 @@ namespace APCS.Application.Features.Subscriptions.Dtos.Response;
 /// <param name="QrCode">Populated only when <see cref="PaymentRequired"/> is true.</param>
 /// <param name="CheckoutUrl">Populated only when <see cref="PaymentRequired"/> is true.</param>
 /// <param name="AmountVnd">Populated only when <see cref="PaymentRequired"/> is true.</param>
+/// <param name="DueTodayVnd"><see cref="DueTodayUsd"/> in whole đồng.</param>
+/// <param name="ProratedCreditVnd"><see cref="ProratedCreditUsd"/> in whole đồng.</param>
+/// <param name="MonthlyRateVnd"><see cref="MonthlyRate"/> in whole đồng.</param>
 public sealed record UpgradeResponseDto(
     bool PaymentRequired,
     decimal DueTodayUsd,
@@ -26,4 +29,7 @@ public sealed record UpgradeResponseDto(
     Guid InvoiceId,
     string? QrCode,
     string? CheckoutUrl,
-    int? AmountVnd);
+    int? AmountVnd,
+    decimal DueTodayVnd = 0m,
+    decimal ProratedCreditVnd = 0m,
+    decimal MonthlyRateVnd = 0m);

@@ -30,16 +30,38 @@ public sealed class MarketResearchSyncWorker(
         var schedules = scope.ServiceProvider.GetRequiredService<IMarketResearchScheduleService>();
         var schedule = await schedules.GetAsync(cancellationToken);
         var now = timeProvider.GetUtcNow();
-        if (!schedule.Enabled || schedule.Queries.Count == 0 || (schedule.NextRunAtUtc is not null && schedule.NextRunAtUtc > now))
+        if (!schedule.Enabled || schedule.Queries.Count == 0)
             return;
 
+        if (schedule.WindowEndsAtUtc is not null && schedule.WindowEndsAtUtc <= now)
+        {
+            await schedules.DisableAsync(cancellationToken);
+            logger.LogInformation("Scheduled market research window ended after {RunWindowMinutes} minutes.", schedule.RunWindowMinutes);
+            return;
+        }
+
+        if (schedule.NextRunAtUtc is not null && schedule.NextRunAtUtc > now)
+            return;
+
+        var batchSize = Math.Max(1, schedule.BatchSize);
         try
         {
-            var result = await scope.ServiceProvider.GetRequiredService<IMarketResearchService>()
-                .RetrieveAndIngestAsync(new MarketResearchRequest(
-                    schedule.Platform, schedule.Queries, schedule.LimitPerQuery, schedule.MinimumViralScore, schedule.TopN), cancellationToken);
-            await schedules.MarkRunAsync(now, cancellationToken);
-            logger.LogInformation("Scheduled market research retrieved {RetrievedCount} and queued {SelectedCount} listing references.", result.RetrievedCount, result.SelectedCount);
+            // Trends compare one observation per query and day, so a query already observed
+            // today is skipped until the next UTC day instead of being sampled again.
+            var research = scope.ServiceProvider.GetRequiredService<IMarketResearchService>();
+            var pending = await research.SelectUnobservedQueriesAsync(
+                schedule.Platform,
+                schedule.Queries,
+                DateOnly.FromDateTime(now.UtcDateTime),
+                cancellationToken);
+            if (pending.Count == 0)
+                return;
+
+            var batch = pending.Take(batchSize).ToArray();
+            var result = await research.RetrieveAndIngestAsync(new MarketResearchRequest(
+                schedule.Platform, batch, schedule.LimitPerQuery, schedule.MinimumViralScore, schedule.TopN), cancellationToken);
+            await schedules.MarkRunAsync(now, batch.Length, cancellationToken);
+            logger.LogInformation("Scheduled market research collected {BatchCount} queries ({RemainingCount} left today of {QueryCount}), retrieved {RetrievedCount} and queued {SelectedCount} listing references.", batch.Length, pending.Count - batch.Length, schedule.Queries.Count, result.RetrievedCount, result.SelectedCount);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
