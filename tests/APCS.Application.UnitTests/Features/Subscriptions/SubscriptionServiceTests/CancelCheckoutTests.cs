@@ -74,6 +74,8 @@ public sealed class CancelCheckoutTests
             .ReturnsAsync(invoice);
         var subscriptions = new Mock<ISubscriptionRepository>();
         var paymentGateway = new Mock<IPaymentGatewayClient>();
+        paymentGateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(123, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PaymentLinkStatusResult(false, false));
         var service = SubscriptionTestData.CreateService(subscriptions, invoices: invoices, paymentGateway: paymentGateway);
 
         var result = await service.CancelCheckoutAsync(invoice.Id, CancellationToken.None);
@@ -104,8 +106,6 @@ public sealed class CancelCheckoutTests
         invoices.Setup(candidate => candidate.GetByIdForUserAsync(invoice.Id, SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(invoice);
         var paymentGateway = new Mock<IPaymentGatewayClient>();
-        paymentGateway.Setup(candidate => candidate.CancelPaymentLinkAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("This link has expired"));
         paymentGateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PaymentLinkStatusResult(false, true));
         var service = SubscriptionTestData.CreateService(invoices: invoices, paymentGateway: paymentGateway);
@@ -114,6 +114,9 @@ public sealed class CancelCheckoutTests
 
         result.IsSuccess.Should().BeTrue();
         invoice.Status.Should().Be("void");
+        paymentGateway.Verify(
+            candidate => candidate.CancelPaymentLinkAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [TestMethod]
@@ -128,8 +131,6 @@ public sealed class CancelCheckoutTests
         invoices.Setup(candidate => candidate.GetByIdForUserAsync(invoice.Id, SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(invoice);
         var paymentGateway = new Mock<IPaymentGatewayClient>();
-        paymentGateway.Setup(candidate => candidate.CancelPaymentLinkAsync(123, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("This link is already paid"));
         paymentGateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(123, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PaymentLinkStatusResult(true, false));
         var service = SubscriptionTestData.CreateService(invoices: invoices, paymentGateway: paymentGateway);
@@ -139,6 +140,33 @@ public sealed class CancelCheckoutTests
         result.IsSuccess.Should().BeTrue();
         invoice.Status.Should().Be("paid");
         subscription.Status.Should().Be("active");
+        paymentGateway.Verify(
+            candidate => candidate.CancelPaymentLinkAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CancelCheckoutAsync_WhenTheSellerPaysWhileItIsBeingCancelled_SettlesItAsPaid()
+    {
+        var starter = SubscriptionTestData.CreateStarterPlan();
+        var subscription = SubscriptionTestData.CreateActiveSubscription(starter);
+        subscription.Status = "trialing";
+        var invoice = SubscriptionTestData.CreatePendingInvoice(subscription, 123);
+
+        var invoices = new Mock<IInvoiceRepository>();
+        invoices.Setup(candidate => candidate.GetByIdForUserAsync(invoice.Id, SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(invoice);
+        var paymentGateway = new Mock<IPaymentGatewayClient>();
+        paymentGateway.SetupSequence(candidate => candidate.GetPaymentLinkStatusAsync(123, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PaymentLinkStatusResult(false, false))
+            .ReturnsAsync(new PaymentLinkStatusResult(true, false));
+        paymentGateway.Setup(candidate => candidate.CancelPaymentLinkAsync(123, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("This link is already paid"));
+        var service = SubscriptionTestData.CreateService(invoices: invoices, paymentGateway: paymentGateway);
+
+        await service.CancelCheckoutAsync(invoice.Id, CancellationToken.None);
+
+        invoice.Status.Should().Be("paid");
     }
 
     [TestMethod]
@@ -153,8 +181,6 @@ public sealed class CancelCheckoutTests
         invoices.Setup(candidate => candidate.GetByIdForUserAsync(invoice.Id, SubscriptionTestData.UserId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(invoice);
         var paymentGateway = new Mock<IPaymentGatewayClient>();
-        paymentGateway.Setup(candidate => candidate.CancelPaymentLinkAsync(123, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
         paymentGateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(123, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
         var service = SubscriptionTestData.CreateService(invoices: invoices, paymentGateway: paymentGateway);
@@ -163,6 +189,9 @@ public sealed class CancelCheckoutTests
 
         result.IsSuccess.Should().BeTrue();
         invoice.Status.Should().Be("issued", "the Seller may have paid, so the invoice is not voided on a guess");
+        paymentGateway.Verify(
+            candidate => candidate.CancelPaymentLinkAsync(It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [TestMethod]

@@ -940,14 +940,21 @@ public sealed class SubscriptionService(
     }
 
     /// <summary>
-    /// Cancels a payment link. PayOS refuses a link that is already paid or gone, and can be
-    /// briefly unreachable, so a refusal is checked against the link's status rather than ignored.
+    /// Closes a payment link, asking PayOS for its status first: a link that may already be paid
+    /// is never cancelled on a guess. A refused cancel is checked the same way, since the Seller
+    /// can pay between the two calls.
     /// </summary>
     private async Task<PaymentLinkClosure> ClosePaymentLinkAsync(
         long orderCode,
         string reason,
         CancellationToken cancellationToken)
     {
+        var status = await TryReadLinkAsync(orderCode, cancellationToken);
+        if (status is not { IsPaid: false, IsFailed: false })
+        {
+            return ToClosure(status);
+        }
+
         try
         {
             await paymentGateway.CancelPaymentLinkAsync(orderCode, reason, cancellationToken);
@@ -955,17 +962,25 @@ public sealed class SubscriptionService(
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            try
-            {
-                var status = await paymentGateway.GetPaymentLinkStatusAsync(orderCode, cancellationToken);
-                return status.IsPaid ? PaymentLinkClosure.Paid
-                    : status.IsFailed ? PaymentLinkClosure.Closed
-                    : PaymentLinkClosure.StillOpen;
-            }
-            catch (Exception statusException) when (statusException is not OperationCanceledException)
-            {
-                return PaymentLinkClosure.StillOpen;
-            }
+            return ToClosure(await TryReadLinkAsync(orderCode, cancellationToken));
+        }
+    }
+
+    private static PaymentLinkClosure ToClosure(PaymentLinkStatusResult? status) =>
+        status is null ? PaymentLinkClosure.StillOpen
+        : status.IsPaid ? PaymentLinkClosure.Paid
+        : status.IsFailed ? PaymentLinkClosure.Closed
+        : PaymentLinkClosure.StillOpen;
+
+    private async Task<PaymentLinkStatusResult?> TryReadLinkAsync(long orderCode, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await paymentGateway.GetPaymentLinkStatusAsync(orderCode, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
         }
     }
 

@@ -333,6 +333,8 @@ public sealed class RenewalTests
         invoices.Setup(candidate => candidate.GetByStatusForUserAsync(SubscriptionTestData.UserId, "issued", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[] { openRenewal, upgrade });
         var gateway = WebhookSays(true);
+        gateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(555, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PaymentLinkStatusResult(false, false));
         return (SubscriptionTestData.CreateService(CurrentIs(oldPlan), invoices: invoices, paymentGateway: gateway), openRenewal, gateway);
     }
 
@@ -351,8 +353,6 @@ public sealed class RenewalTests
     public async Task PaidUpgrade_LeavesARenewalLinkThatMayStillBePaid()
     {
         var (service, openRenewal, gateway) = UpgradePaidWithAnOpenRenewal();
-        gateway.Setup(candidate => candidate.CancelPaymentLinkAsync(555, It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
         gateway.Setup(candidate => candidate.GetPaymentLinkStatusAsync(555, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new HttpRequestException("PayOS unreachable"));
 
