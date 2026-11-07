@@ -47,7 +47,9 @@ This guide defines the development workflow and coding conventions. Architecture
 
 ## Database-first schema workflow
 
-Neon schema `public` is the source of truth. Make an approved schema change in Neon first, set `ConnectionStrings__DefaultConnection` in the ignored local `.env`, then run from the solution root:
+The schema changes only through Flyway migrations in [`migrations/`](migrations/README.md). Write the change as a new `V<yyyyMMddHHmm>__<what_it_does>.sql` file, open a pull request, and let CI apply it: every pull request replays all migrations on an empty database, and a push to the integration branch named in the repository variable `DEV_MIGRATION_BRANCH` applies it to the shared dev database. The dev logins cannot run DDL, so a schema change made by hand is refused.
+
+Once the migration is on the dev database, point `ConnectionStrings__DefaultConnection` in the ignored local `.env` at it and run from the solution root:
 
 ```powershell
 ./scripts/Scaffold-Database.ps1
@@ -58,11 +60,11 @@ The script reads the named connection from configuration and replaces only:
 - `Domain/Entities/Generated`
 - `Infrastructure/Persistence/Generated`
 
-Review the generated entity/context diff, rebuild, and run the full test suite. Put all custom entity behavior and context configuration in partial files outside the generated directories so re-scaffolding cannot erase it. Do not add EF migrations or run `dotnet ef database update` in this repository.
+Commit the regenerated files in the same pull request as the migration, rebuild, and run the full test suite. Put all custom entity behavior and context configuration in partial files outside the generated directories so re-scaffolding cannot erase it. Do not add EF migrations or run `dotnet ef database update` in this repository.
 
 ## Pull requests
 
-The repository currently enforces pull-request and `main`-branch builds through GitHub Actions. It does not define a special branch-naming or commit-message convention.
+The repository enforces pull-request, `main`, and `production` builds through GitHub Actions; deployment is described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). It does not define a special branch-naming or commit-message convention.
 
 A pull request should explain the changed behavior, important architecture decisions, verification performed, and any intentionally deferred tests or follow-up work. GitHub loads [`.github/pull_request_template.md`](.github/pull_request_template.md) into the description; complete its checklist instead of replacing it.
 
