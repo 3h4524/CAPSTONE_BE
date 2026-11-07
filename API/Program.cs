@@ -51,6 +51,7 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 builder.Services.AddAssistantRateLimiting();
+builder.Services.AddApiRateLimiting(builder.Configuration);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Frontend", policy =>
