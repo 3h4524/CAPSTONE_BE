@@ -149,7 +149,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, x.StorageVersion, x.ContentHash, x.MetadataRevision)).ToArray();
                     var approvedDesigns = designImages is null ? [] : (await designImages.FindAsync(x => x.ProductId == run.ProductId &&
                         x.DeletedAt == null && x.ApprovalStatus == "approved", ct))
-                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex)).ToArray();
+                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex, x.FileFormat)).ToArray();
                     ExportListingSnapshot? exportListing = null;
                     var listingNode = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing" && x.Status == "succeeded");
                     if (listingNode is not null)
@@ -166,7 +166,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     Storyboard? exportStoryboard = null;
                     try
                     {
-                        using var snapshotDocument = JsonDocument.Parse(approvedVideo.ConfigSnapshot);
+                        using var snapshotDocument = JsonDocument.Parse(approvedVideo.ConfigSnapshot ?? "{}");
                         exportStoryboard = snapshotDocument.RootElement.GetProperty("storyboard").Deserialize<Storyboard>(WorkflowJson.Options);
                         if (snapshotDocument.RootElement.TryGetProperty("exportSources", out var sourceElement))
                             sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);

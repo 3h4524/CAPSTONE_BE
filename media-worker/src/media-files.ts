@@ -5,6 +5,7 @@ import { join } from "node:path";
 import archiver from "archiver";
 import type { Upload, WorkerJob } from "./contracts";
 import { exportPayloadSchema } from "./contracts";
+import { SourceDownloadError } from "./failures";
 
 export async function downloadAssets(job: WorkerJob, directory: string, signal: AbortSignal) {
   const downloaded = new Map<string, { file: string; data: Buffer }>();
@@ -12,7 +13,7 @@ export async function downloadAssets(job: WorkerJob, directory: string, signal: 
     const url = new URL(asset.url);
     if (url.protocol !== "https:" || !["api.cloudinary.com", "res.cloudinary.com"].includes(url.hostname)) throw new Error("Untrusted media host");
     const response = await fetch(url, { signal });
-    if (!response.ok || !response.body) throw new Error("Source download failed");
+    if (!response.ok || !response.body) throw new SourceDownloadError(asset.fileName, response.status);
     const chunks: Uint8Array[] = [];
     let length = 0;
     for await (const chunk of response.body) {

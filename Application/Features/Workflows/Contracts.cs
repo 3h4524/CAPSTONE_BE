@@ -241,7 +241,7 @@ public sealed record VideoExportSourceSnapshot(int Version, Guid VideoId, string
     IReadOnlyList<VideoSceneExportSource> Scenes);
 /// <summary>Protected prompt snapshot written after quote confirmation and consumed once by the render step.</summary>
 public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard Storyboard);
-public sealed record ExportAssetSnapshot(Guid Id, string StorageKey, string? StorageVersion, string? Sha256 = null, long Revision = 0);
+public sealed record ExportAssetSnapshot(Guid Id, string StorageKey, string? StorageVersion, string? Sha256 = null, long Revision = 0, string? FileFormat = null);
 public sealed record ExportListingSnapshot(string Title, string Description, IReadOnlyList<string> Tags, int Version);
 public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion,
     string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
