@@ -1,0 +1,165 @@
+name: apcs
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks: [apcs]
+  logging:
+    driver: local
+    options:
+      max-size: 20m
+      max-file: "5"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  caddy:
+    <<: *defaults
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    depends_on:
+      - api
+      - fe
+
+  fe:
+    <<: *defaults
+    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-fe:${FE_TAG:?Set FE_TAG}
+    extra_hosts:
+      - "${APP_DOMAIN}:host-gateway"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  api:
+    <<: *defaults
+    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-api:${API_TAG:?Set API_TAG}
+    env_file: ${ENV_DIR:-/opt/apcs/env}/api.env
+    volumes:
+      - keyring:/data/keyring
+      - models:/app/models
+    mem_limit: 3g
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  media-worker:
+    <<: *defaults
+    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-media-worker:${API_TAG:?Set API_TAG}
+    init: true
+    env_file: ${ENV_DIR:-/opt/apcs/env}/media-worker.env
+    environment:
+      APCS_API_URL: http://api:8080
+    shm_size: 1gb
+    mem_limit: 2500m
+    cpus: 1.5
+    depends_on:
+      api:
+        condition: service_healthy
+
+  redis:
+    <<: *defaults
+    image: redis:7-alpine
+    env_file: ${ENV_DIR:-/opt/apcs/env}/redis.env
+    command: >-
+      sh -c 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      --maxmemory 128mb --maxmemory-policy noeviction'
+    volumes:
+      - redis_data:/data
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  postgres-prod:
+    <<: *defaults
+    image: pgvector/pgvector:pg18
+    env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-prod.env
+    command: >-
+      postgres -c shared_buffers=256MB -c max_connections=100
+      -c log_min_duration_statement=2000 -c timezone=UTC
+    ports:
+      - "${PROD_DB_BIND:-127.0.0.1}:2510:5432"
+    volumes:
+      - pg_prod:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    mem_limit: 1g
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  postgres-dev:
+    <<: *defaults
+    image: pgvector/pgvector:pg18
+    env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-dev.env
+    command: >-
+      postgres -c shared_buffers=128MB -c max_connections=80
+      -c ssl=on -c ssl_cert_file=/etc/postgresql/tls/server.crt -c ssl_key_file=/etc/postgresql/tls/server.key
+      -c hba_file=/etc/postgresql/pg_hba.conf -c timezone=UTC
+    ports:
+      - "${DEV_DB_BIND:-0.0.0.0}:5432:5432"
+    volumes:
+      - pg_dev:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ${ENV_DIR:-/opt/apcs/env}/tls:/etc/postgresql/tls:ro
+      - ./postgres/dev-pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    mem_limit: 768m
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backup:
+    <<: *defaults
+    build: ./backup
+    image: apcs-backup:local
+    env_file: ${ENV_DIR:-/opt/apcs/env}/backup.env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - backups:/backups
+      - keyring:/keyring:ro
+    mem_limit: 256m
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+      postgres-dev:
+        condition: service_healthy
+
+networks:
+  apcs:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  caddy_data:
+  caddy_config:
+  keyring:
+  models:
+  redis_data:
+  pg_prod:
+  pg_dev:
+  backups:
