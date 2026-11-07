@@ -15,8 +15,14 @@ role used by CI can create, alter, or drop objects.
    release). The database is never rolled back; only the application image is.
 4. Seed or catalog data belongs here too, written idempotently
    (`INSERT ... ON CONFLICT DO NOTHING`).
-5. `V1__baseline.sql` is the schema exported from Neon. Databases restored from that dump are
-   marked with `flyway baseline` instead of running it.
+5. `V1__baseline.sql` is the schema of the last Neon dump (2026-10-29) with every later
+   `scripts/sql` delta applied, checked column for column against the EF model; it keeps the
+   check constraints and expression indexes the EF model cannot express. `V2__seed_catalog.sql`
+   holds the system catalog (roles, plans, features, allowances, system templates and presets,
+   video templates, music, AI character models) as `INSERT ... ON CONFLICT DO NOTHING`, so it
+   fills an empty production database and changes nothing on a database that already has it.
+   A database restored from a dump is marked with `flyway baseline` (version 1) instead of
+   running V1.
 
 ## Where it runs
 
