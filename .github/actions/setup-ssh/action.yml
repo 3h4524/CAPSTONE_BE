@@ -1,0 +1,39 @@
+name: Set up SSH to the APCS VM
+description: Writes the deploy key and pinned host key, and adds an "apcs" host alias.
+inputs:
+  host:
+    description: VM host name or IP.
+    required: true
+  user:
+    description: SSH user on the VM.
+    required: true
+  key:
+    description: Private key for the user.
+    required: true
+  known-hosts:
+    description: Output of ssh-keyscan for the host.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SSH_HOST: ${{ inputs.host }}
+        SSH_USER: ${{ inputs.user }}
+        SSH_KEY: ${{ inputs.key }}
+        SSH_KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        install -m 700 -d ~/.ssh
+        printf '%s\n' "$SSH_KEY" > ~/.ssh/apcs_deploy
+        chmod 600 ~/.ssh/apcs_deploy
+        printf '%s\n' "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+        cat >> ~/.ssh/config <<CONFIG
+        Host apcs
+          HostName $SSH_HOST
+          User $SSH_USER
+          IdentityFile ~/.ssh/apcs_deploy
+          IdentitiesOnly yes
+          ServerAliveInterval 30
+          StrictHostKeyChecking yes
+        CONFIG
+        chmod 600 ~/.ssh/config

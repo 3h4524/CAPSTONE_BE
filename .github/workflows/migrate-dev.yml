@@ -1,0 +1,51 @@
+name: Migrate dev database
+
+on:
+  push:
+    paths:
+      - "migrations/**"
+      - "deploy/flyway/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-dev
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply pending migrations to the shared dev database
+    if: vars.DEV_MIGRATION_BRANCH != '' && github.ref_name == vars.DEV_MIGRATION_BRANCH
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up SSH
+        uses: ./.github/actions/setup-ssh
+        with:
+          host: ${{ secrets.DEV_SSH_HOST }}
+          user: ${{ secrets.DEV_SSH_USER }}
+          key: ${{ secrets.DEV_SSH_KEY }}
+          known-hosts: ${{ secrets.DEV_SSH_KNOWN_HOSTS }}
+
+      - name: Open a tunnel to the dev database
+        run: ssh -o ExitOnForwardFailure=yes -fN -L 15432:127.0.0.1:5432 apcs
+
+      - name: Migrate
+        env:
+          FLYWAY_URL: jdbc:postgresql://127.0.0.1:15432/apcs
+          FLYWAY_USER: apcs_migrator
+          FLYWAY_PASSWORD: ${{ secrets.FLYWAY_DEV_PASSWORD }}
+        run: |
+          ./deploy/scripts/flyway.sh migrate
+          {
+            echo "### Dev database after migrating \`${GITHUB_REF_NAME}\`"
+            echo '```'
+            ./deploy/scripts/flyway.sh info
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

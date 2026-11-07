@@ -1,0 +1,159 @@
+name: Deploy production
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to redeploy (images must already exist; migrations are skipped)
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+jobs:
+  guard:
+    name: Tag is on the production branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify the tagged commit belongs to production
+        run: |
+          git fetch --no-tags origin production
+          if ! git merge-base --is-ancestor HEAD origin/production; then
+            echo "::error::$RELEASE_TAG is not on the production branch. Merge into production first, then tag."
+            exit 1
+          fi
+
+  test:
+    name: Build and unit tests
+    needs: guard
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Build and test
+        run: |
+          dotnet restore Capstone.sln
+          dotnet build Capstone.sln -c Release --no-restore
+          dotnet test Capstone.sln -c Release --no-build
+
+  images:
+    name: Build and push images
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: API/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/apcs-api:${{ env.RELEASE_TAG }}
+            ${{ env.REGISTRY }}/apcs-api:latest-prod
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Media worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: media-worker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/apcs-media-worker:${{ env.RELEASE_TAG }}
+            ${{ env.REGISTRY }}/apcs-media-worker:latest-prod
+          cache-from: type=gha,scope=media-worker
+          cache-to: type=gha,mode=max,scope=media-worker
+
+  deploy:
+    name: Deploy to the VM
+    needs: [guard, images]
+    if: always() && needs.guard.result == 'success' && (needs.images.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.images.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://${{ vars.APP_DOMAIN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up SSH
+        uses: ./.github/actions/setup-ssh
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          user: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          known-hosts: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+
+      - name: Sync deployment files
+        run: |
+          rsync -az --delete --exclude .env deploy/ apcs:/opt/apcs/deploy/
+          ssh apcs 'cd /opt/apcs/deploy && docker compose build backup'
+
+      - name: Back up production before deploying
+        run: ssh apcs "cd /opt/apcs/deploy && docker compose run --rm backup /usr/local/bin/backup.sh --only prod --label $RELEASE_TAG"
+
+      - name: Migrate the production database
+        if: github.event_name == 'push'
+        env:
+          FLYWAY_URL: jdbc:postgresql://127.0.0.1:15432/apcs
+          FLYWAY_USER: apcs_migrator
+          FLYWAY_PASSWORD: ${{ secrets.FLYWAY_PROD_PASSWORD }}
+        run: |
+          ssh -o ExitOnForwardFailure=yes -fN -L 15432:127.0.0.1:2510 apcs
+          ./deploy/scripts/flyway.sh migrate
+          {
+            echo "### Production database after $RELEASE_TAG"
+            echo '```'
+            ./deploy/scripts/flyway.sh info
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Roll out API and media worker
+        run: ssh apcs "/opt/apcs/deploy/scripts/deploy.sh api $RELEASE_TAG"
+
+      - name: Smoke test
+        run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://${{ vars.APP_DOMAIN }}/health"
