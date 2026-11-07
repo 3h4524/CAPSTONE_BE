@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS public.market_listing_snapshots (
     observed_at timestamp without time zone NOT NULL,
     collected_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     raw_payload jsonb NULL,
+    is_synthetic boolean NOT NULL DEFAULT false,
     rag_document_id uuid NULL REFERENCES public.rag_documents(id) ON DELETE SET NULL,
     CONSTRAINT chk_market_listing_platform CHECK (char_length(btrim(platform)) > 0),
     CONSTRAINT chk_market_listing_title CHECK (char_length(btrim(title)) BETWEEN 1 AND 500),
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS public.market_opportunities (
     last_observed_at timestamp without time zone NOT NULL,
     created_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    is_synthetic boolean NOT NULL DEFAULT false,
     CONSTRAINT chk_market_opportunity_score CHECK (market_opportunity_score BETWEEN 0 AND 100),
     CONSTRAINT chk_market_opportunity_confidence CHECK (confidence BETWEEN 0 AND 1),
     CONSTRAINT chk_market_opportunity_breakdown CHECK (jsonb_typeof(score_breakdown) = 'object'),
@@ -161,4 +163,27 @@ CREATE INDEX IF NOT EXISTS idx_opportunity_analysis_runs_status
 CREATE INDEX IF NOT EXISTS idx_opportunity_analysis_runs_seller_opportunity
     ON public.opportunity_analysis_runs (seller_opportunity_id, requested_at DESC);
 
+-- One row per platform/query/day with the marketplace's own total for the query.
+-- total_results describes the whole marketplace, so it is comparable across days
+-- regardless of how many listings a run sampled; sample_size and limit_used record
+-- the sampling method of the latest run of that day.
+CREATE TABLE IF NOT EXISTS public.market_query_observations (
+    id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+    platform varchar(40) NOT NULL,
+    query varchar(300) NOT NULL,
+    observed_on date NOT NULL,
+    total_results integer NULL,
+    sample_size integer NOT NULL,
+    limit_used integer NOT NULL,
+    sort_on varchar(40) NOT NULL,
+    observed_at timestamp without time zone NOT NULL,
+    CONSTRAINT chk_market_query_observation_platform CHECK (char_length(btrim(platform)) > 0),
+    CONSTRAINT chk_market_query_observation_query CHECK (char_length(btrim(query)) BETWEEN 1 AND 300),
+    CONSTRAINT chk_market_query_observation_total CHECK (total_results IS NULL OR total_results >= 0),
+    CONSTRAINT chk_market_query_observation_sample CHECK (sample_size >= 0),
+    CONSTRAINT chk_market_query_observation_limit CHECK (limit_used > 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_market_query_observation_day
+    ON public.market_query_observations (platform, query, observed_on);
 COMMIT;

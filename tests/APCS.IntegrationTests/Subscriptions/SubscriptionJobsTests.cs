@@ -247,6 +247,18 @@ public sealed class SubscriptionJobsTests
 
         await using var connection = new NpgsqlConnection(ConnectionString());
         await connection.OpenAsync();
+        await using (var seedFeature = new NpgsqlCommand(
+            """
+            INSERT INTO features (code, label, group_name, kind)
+            VALUES (@featureCode, @featureCode, 'Test', 'flag')
+            ON CONFLICT (code) DO NOTHING;
+            """,
+            connection))
+        {
+            seedFeature.Parameters.AddWithValue("featureCode", featureCode);
+            await seedFeature.ExecuteNonQueryAsync();
+        }
+
         await using var command = new NpgsqlCommand(
             """
             INSERT INTO subscription_feature_grants

@@ -5,7 +5,7 @@ public interface ICommerceMarketDataConnector
 {
     CommercePlatform Platform { get; }
 
-    Task<IReadOnlyList<CommerceMarketListing>> SearchPublicListingsAsync(
+    Task<CommerceMarketSearchResult> SearchPublicListingsAsync(
         CommerceMarketSearchRequest request,
         CancellationToken cancellationToken = default);
 }

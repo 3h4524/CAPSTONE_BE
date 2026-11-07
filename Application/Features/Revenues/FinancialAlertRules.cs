@@ -119,7 +119,7 @@ internal static class FinancialAlertRules
                 Id = "revenue-drop",
                 Type = "danger",
                 Title = "Revenue dropped",
-                Description = $"Revenue is down {Math.Round(-change, 1)}% vs. the previous period.",
+                Description = FormattableString.Invariant($"Revenue is down {Math.Round(-change, 1)}% vs. the previous period."),
                 Amount = inputs.PreviousRevenue - inputs.CurrentRevenue,
                 AmountLabel = "less than before",
                 Scope = ScopePeriod
@@ -139,7 +139,7 @@ internal static class FinancialAlertRules
                     Count = plan.Left,
                     Type = "warning",
                     Title = $"{plan.PlanName} MRR is falling",
-                    Description = $"{plan.PlanName} lost {Math.Round(-planChange, 1)}% of its MRR in the period; {Plural(plan.Left, "customer")} stopped paying.",
+                    Description = FormattableString.Invariant($"{plan.PlanName} lost {Math.Round(-planChange, 1)}% of its MRR in the period; {Plural(plan.Left, "customer")} stopped paying."),
                     Amount = plan.Start - plan.End,
                     AmountLabel = "less per month",
                     Scope = ScopePeriod
@@ -155,7 +155,7 @@ internal static class FinancialAlertRules
                 Id = "churn-rising",
                 Type = "warning",
                 Title = "Churn rising",
-                Description = $"Monthly churn rose from {previousChurn}% to {churn}% (+{churn - previousChurn} pp).",
+                Description = FormattableString.Invariant($"Monthly churn rose from {previousChurn}% to {churn}% (+{churn - previousChurn} pp)."),
                 Scope = ScopePeriod
             });
         }
@@ -169,7 +169,7 @@ internal static class FinancialAlertRules
                 Count = inputs.FailedPaymentCount,
                 Type = "warning",
                 Title = "Failed payments",
-                Description = $"{Plural(inputs.FailedPaymentCount, "payment")} declined or expired unpaid — {Math.Round(inputs.FailedPaymentCount * 100m / attempts, 1)}% of attempts.",
+                Description = FormattableString.Invariant($"{Plural(inputs.FailedPaymentCount, "payment")} declined or expired unpaid — {Math.Round(inputs.FailedPaymentCount * 100m / attempts, 1)}% of attempts."),
                 Scope = ScopePeriod,
                 ActionStatus = "cancelled"
             });
@@ -200,7 +200,7 @@ internal static class FinancialAlertRules
                 Id = "refunds-high",
                 Type = "warning",
                 Title = "High refunds",
-                Description = $"Refunds equal {Math.Round(inputs.RefundedAmount * 100m / inputs.CurrentRevenue, 1)}% of revenue.",
+                Description = FormattableString.Invariant($"Refunds equal {Math.Round(inputs.RefundedAmount * 100m / inputs.CurrentRevenue, 1)}% of revenue."),
                 Amount = inputs.RefundedAmount,
                 AmountLabel = "refunded",
                 Scope = ScopePeriod,
@@ -232,7 +232,7 @@ internal static class FinancialAlertRules
                 Id = "forecast-down",
                 Type = "warning",
                 Title = "Forecast trending down",
-                Description = $"Weekly revenue is falling over the last 26 weeks (R² = {inputs.ForecastRSquared:0.00}).",
+                Description = FormattableString.Invariant($"Weekly revenue is falling over the last 26 weeks (R² = {inputs.ForecastRSquared:0.00})."),
                 Amount = -inputs.ForecastWeeklyTrend,
                 AmountLabel = "less each week",
                 Scope = "Last 26 weeks"
@@ -247,7 +247,7 @@ internal static class FinancialAlertRules
                 Id = "plan-concentration",
                 Type = "purple",
                 Title = "Revenue depends on one plan",
-                Description = $"{inputs.TopPlanName} earns {Math.Round(inputs.TopPlanRevenue * 100m / inputs.CurrentRevenue, 1)}% of revenue.",
+                Description = FormattableString.Invariant($"{inputs.TopPlanName} earns {Math.Round(inputs.TopPlanRevenue * 100m / inputs.CurrentRevenue, 1)}% of revenue."),
                 Scope = ScopePeriod
             });
         }
@@ -261,7 +261,7 @@ internal static class FinancialAlertRules
                     Id = $"plan-usage-gap-{Slug(planName)}",
                     Type = "purple",
                     Title = $"{planName} leavers skipped a feature",
-                    Description = $"Only {gap.LeftRate}% of the {planName} customers who left used {gap.Label}, against {gap.StayedRate}% of those who stayed.",
+                    Description = FormattableString.Invariant($"Only {gap.LeftRate}% of the {planName} customers who left used {gap.Label}, against {gap.StayedRate}% of those who stayed."),
                     Scope = ScopePeriod
                 });
             }

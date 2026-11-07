@@ -9,5 +9,7 @@ public interface IWorkflowStateRepository
     Task<Workflow?> LockWorkflowAsync(Guid workflowId, CancellationToken cancellationToken);
     Task<MockupImage?> LockMockupAsync(Guid mockupId, CancellationToken cancellationToken);
     Task<MediaJob?> LockJobAsync(Guid jobId, CancellationToken cancellationToken);
-    Task<MediaJob?> ClaimAsync(DateTime now, Guid token, CancellationToken cancellationToken);
+    Task<MediaJob?> ClaimAsync(DateTime now, Guid token, CancellationToken cancellationToken) =>
+        ClaimAsync(now, token, "media", cancellationToken);
+    Task<MediaJob?> ClaimAsync(DateTime now, Guid token, string capability, CancellationToken cancellationToken);
 }

@@ -21,9 +21,13 @@ public sealed class VideoStoryboardPlanner
         !string.IsNullOrEmpty(configured) && owned.Any(x => x.ArtworkGroupKey == configured) ? configured : null;
 
     public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config,
-        IReadOnlyList<VideoTemplate>? aiVideoTemplates = null)
+        IReadOnlyList<VideoTemplate>? aiVideoTemplates = null,
+        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences = null)
     {
+        if (!AiVideoModel.IsSupported(config.AiVideoModelKey)) return Result.Failure<Storyboard>(Error.Validation("Choose a supported AI video option."));
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
+        if (config.DurationSeconds is < VideoDurationPolicy.MinimumVideoSeconds or > VideoDurationPolicy.MaximumVideoSeconds)
+            return Result.Failure<Storyboard>(Error.Validation("New videos must be 5-15 seconds."));
         if (!ValidVideoEdit(config.VideoEdit)) return Result.Failure<Storyboard>(Error.Validation("Video text or music settings are invalid."));
         if (config.Mode == "ai_shot" && config.OutputFormat == "square" &&
             (config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard")))
@@ -40,7 +44,7 @@ public sealed class VideoStoryboardPlanner
         // Standard scene has a source image; its initial blank scene is a UI draft
         // and must not prevent the approved mockups from continuing automatically.
         if (hasSceneTimeline)
-            return PlanAiScenes(product, eligible, config, aiVideoTemplates);
+            return PlanAiScenes(product, eligible, config, aiVideoTemplates, experiences);
         var templateVersion = config.TemplateVersion ?? 1;
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
         var template = config.Mode == "ai_shot" && config.AiShotOptions?.Coverage == "full_video"
@@ -118,15 +122,17 @@ public sealed class VideoStoryboardPlanner
     }
 
     private Result<Storyboard> PlanAiScenes(Product product, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config,
-        IReadOnlyList<VideoTemplate>? aiVideoTemplates)
+        IReadOnlyList<VideoTemplate>? aiVideoTemplates,
+        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences)
     {
         var requestedScenes = config.AiScenes!;
         if (requestedScenes.Count is < 1 or > 4)
             return Result.Failure<Storyboard>(Error.Validation("Configure between one and four scenes."));
         if (requestedScenes.Any(scene => scene.Mode == "standard"
-                ? scene.DurationSeconds is < 1 or > 30
-                : scene.DurationSeconds is not (4 or 6 or 8)) || requestedScenes.Sum(scene => scene.DurationSeconds) > 30)
-            return Result.Failure<Storyboard>(Error.Validation("Standard scenes must be 1–30 seconds, AI scenes must be 4, 6 or 8 seconds, and total duration cannot exceed 30 seconds."));
+                ? scene.DurationSeconds is < 1 or > VideoDurationPolicy.MaximumVideoSeconds
+                : scene.DurationSeconds is < VideoDurationPolicy.MinimumAiSceneSeconds or > VideoDurationPolicy.MaximumVideoSeconds) ||
+            requestedScenes.Sum(scene => scene.DurationSeconds) is < VideoDurationPolicy.MinimumVideoSeconds or > VideoDurationPolicy.MaximumVideoSeconds)
+            return Result.Failure<Storyboard>(Error.Validation("Standard scenes must be 1–15 seconds, AI scenes must be 4–15 seconds, and the total must be 5–15 seconds."));
         if (requestedScenes.Where((scene, index) => !ValidTimelineEdit(scene, index)).Any() || !ValidVideoEdit(config.VideoEdit))
             return Result.Failure<Storyboard>(Error.Validation("Video edits must keep each scene at least one second and use valid text, music and transitions."));
         if (requestedScenes.Any(scene => scene.Mode != "standard") && config.AiGlobalInstructions is { Length: > 500 })
@@ -144,6 +150,8 @@ public sealed class VideoStoryboardPlanner
         for (var index = 0; index < requestedScenes.Count; index++)
         {
             var requested = requestedScenes[index];
+            if (!AiVideoModel.IsSupported(requested.AiVideoModelKey))
+                return Result.Failure<Storyboard>(Error.Validation($"Choose a supported AI video option for scene {index + 1}."));
             if (requested.Mode is not ("ai" or "standard"))
                 return Result.Failure<Storyboard>(Error.Validation($"Choose AI video or Standard motion for scene {index + 1}."));
             if (requested.Mode == "standard")
@@ -201,10 +209,22 @@ public sealed class VideoStoryboardPlanner
                 continue;
             }
 
+            var modelKey = requested.AiVideoModelKey ?? config.AiVideoModelKey ?? AiVideoModel.ModelKey;
+            var modelName = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
+            var modelPrice = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LitePricePerSecondUsd : AiVideoModel.PricePerSecondUsd;
             var definition = templates.SingleOrDefault(item => item.Code == requested.TemplateCode);
             if (definition == null)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} uses an unavailable template."));
-            var settings = AiVideoPromptCompiler.ApplyDefaults(definition, requested);
+            if (requested.PromptRuleVersion is not null and not AiVideoPromptRules.CurrentVersion)
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} uses an unsupported prompt-rule version."));
+            var usesP1Rules = AiVideoPromptRules.IsRequested(requested);
+            if (usesP1Rules && !AiVideoPromptRules.Supports(definition))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} can use P1 prompt rules only with the Product On Model template."));
+            if (usesP1Rules && !HasP1Brief(requested))
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs a start state, one primary action, and an end state of 1–240 characters for P1 prompt rules."));
+            var settings = AiVideoPromptCompiler.ApplyDefaults(definition, requested, modelKey);
+            var ruleApplication = AiVideoPromptRules.Apply(definition, settings);
+            settings = ruleApplication.Settings;
             if (!SettingsAreSupported(definition, settings))
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} contains a setting that its template does not support."));
             if (settings.ExtraInstructions is { Length: > 500 })
@@ -220,6 +240,11 @@ public sealed class VideoStoryboardPlanner
             var source = productSources.FirstOrDefault(asset => asset.Id == selectedMockupId);
             if (source == null)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} source is not an approved mockup."));
+
+            if (usesP1Rules && startFrameMode != "direct")
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} must use its approved Lifestyle image directly with P1 prompt rules."));
+            if (usesP1Rules && source.Role != "Lifestyle")
+                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs an approved Lifestyle image with a person for P1 prompt rules."));
 
             if (definition.RequiresLifestyle && !settings.RightsConfirmed)
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires confirmation that you have rights to use the selected image with people."));
@@ -244,6 +269,17 @@ public sealed class VideoStoryboardPlanner
                 if (studioFrame is null)
                     return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired", $"Choose an approved studio keyframe for AI scene {index + 1}."));
 
+                // Product-on-Model is a complete, shared-source sequence. Unlike a manually selected
+                // reviewed frame, every pack frame must still be current for the selected shared mockup
+                // and its stored per-scene prompt/reference snapshot when the video is submitted.
+                if (config.Template == "product_on_model_pack" &&
+                    (config.SharedMockupId != source.Id || metadata is null ||
+                     !AiStudioFrameIdentity.IsCurrent(studioFrame, source, layout,
+                         VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio, requested.StudioPrompt,
+                         requested.TemplateCode, requested.StudioReferenceHashes)))
+                    return Result.Failure<Storyboard>(Error.Conflict("StudioFrameRequired",
+                        $"Product on Model scene {index + 1} needs a current approved start frame from the shared mockup."));
+
                 // An explicitly selected keyframe is a reviewed scene asset. Its original prompt,
                 // reference files and output format describe how it was created; they do not make
                 // the approved pixels unsafe to send to the video model later.
@@ -255,7 +291,17 @@ public sealed class VideoStoryboardPlanner
             var contextSource = useStudioFrame ? studioSource! : source;
             var productContext = new AiVideoProductContext(product.ProductType, contextSource.Role,
                 contextSource.GarmentColor, contextSource.BackgroundColor);
-            var prompt = AiVideoPromptCompiler.Compile(definition, settings, productContext, requested.DurationSeconds, config.AiGlobalInstructions, useStudioFrame);
+            // P1 is deliberately isolated from every optional creative direction so the team can evaluate
+            // the template and its rule set before reintroducing advanced controls.
+            var sharedInstructions = AiVideoPromptCompiler.AdvancedControlsEnabled && !usesP1Rules
+                ? config.AiGlobalInstructions
+                : null;
+            IReadOnlyList<VideoPromptExperience>? sceneExperiences = null;
+            if (experiences is not null)
+                sceneExperiences = experiences.TryGetValue(index, out var retrieved) ? retrieved : [];
+            var promptTrace = AiVideoPromptCompiler.CompileTrace(definition, settings, productContext, requested.DurationSeconds,
+                sharedInstructions, useStudioFrame, ruleApplication, sceneExperiences, modelKey);
+            var prompt = promptTrace.FinalPrompt;
             var sceneTransition = ResolveSceneTransition(requested, index, config.StandardOptions?.Transition);
             var trimStart = requested.TrimStartFrames ?? 0;
             var trimEnd = requested.TrimEndFrames ?? 0;
@@ -271,8 +317,11 @@ public sealed class VideoStoryboardPlanner
                 AiSettings = settings,
                 SourceCrop = sourceCrop,
                 AiProviderKey = AiVideoModel.ProviderKey,
-                AiModelKey = AiVideoModel.ModelKey,
-                AiModelName = AiVideoModel.ModelName
+                AiModelKey = modelKey,
+                AiModelName = modelName,
+                AiResolution = AiVideoModel.Resolution,
+                AiPricePerSecondUsd = modelPrice,
+                AiPromptTrace = promptTrace
             };
             var fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new
             {
@@ -283,20 +332,27 @@ public sealed class VideoStoryboardPlanner
                 definition.Code,
                 definition.PromptVersion,
                 // Timeline trims and boundary transitions alter the final composition only; they must not spend for a new AI clip.
-                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null },
+                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null, AiVideoModelKey = null },
                 prompt,
-                Model = AiVideoModel.ModelName,
+                Provider = AiVideoModel.ProviderKey,
+                ModelKey = modelKey,
+                Model = modelName,
+                Resolution = AiVideoModel.Resolution,
+                PricePerSecondUsd = modelPrice,
                 Duration = requested.DurationSeconds,
                 Aspect = VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio,
                 index
             }));
             plannedScenes.Add(scene);
-            shots.Add(new(index, sceneSource.Id, sceneSource.ContentHash!, AiVideoModel.ModelName, definition.Code,
-                prompt, requested.DurationSeconds, fingerprint, AiVideoModel.ProviderKey, AiVideoModel.ModelKey, definition.PromptVersion, sourceCrop));
+            shots.Add(new(index, sceneSource.Id, sceneSource.ContentHash!, modelName, definition.Code,
+                prompt, requested.DurationSeconds, fingerprint, AiVideoModel.ProviderKey, modelKey, definition.PromptVersion,
+                sourceCrop, AiVideoModel.Resolution, modelPrice));
         }
 
         var outputFrames = plannedScenes.Sum(scene => scene.DurationFrames);
         var duration = Math.Max(1, (int)Math.Ceiling(outputFrames / 30d));
+        if (duration is < VideoDurationPolicy.MinimumVideoSeconds or > VideoDurationPolicy.MaximumVideoSeconds)
+            return Result.Failure<Storyboard>(Error.Validation("The edited video duration must remain between 5 and 15 seconds."));
         var overlapFrames = plannedScenes.Select(scene => scene.TransitionFrames).DefaultIfEmpty().Max();
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
         var boardMode = shots.Count > 0 ? "ai_shot" : "standard";
@@ -320,7 +376,7 @@ public sealed class VideoStoryboardPlanner
         var sourceFrames = scene.Mode == "standard" ? scene.DisplayDurationFrames ?? scene.DurationSeconds * 30
             : scene.DurationSeconds * 30;
         var display = sourceFrames - (scene.TrimStartFrames ?? 0) - (scene.TrimEndFrames ?? 0);
-        return display is >= 30 and <= 900 && (scene.TrimStartFrames ?? 0) >= 0 && (scene.TrimEndFrames ?? 0) >= 0 &&
+        return display is >= 30 and <= VideoDurationPolicy.MaximumVideoFrames && (scene.TrimStartFrames ?? 0) >= 0 && (scene.TrimEndFrames ?? 0) >= 0 &&
             (scene.TransitionDurationFrames ?? TransitionFrames) is >= 0 and <= 30 &&
             (scene.TransitionIn == null || new[] { "none", "fade", "swipe", "zoom", "flash", "whip_pan", "blur", "cut" }.Contains(scene.TransitionIn));
     }
@@ -352,10 +408,10 @@ public sealed class VideoStoryboardPlanner
     private static bool ValidVideoEdit(VideoEditConfig? edit)
     {
         if (edit == null) return true;
-        if (edit.Version != 1 || edit.Music is { StartFrame: < 0 or > 900 } || edit.Overlays is { Count: > 12 }) return false;
+        if (edit.Version != 1 || edit.Music is { StartFrame: < 0 or > VideoDurationPolicy.MaximumVideoFrames } || edit.Overlays is { Count: > 12 }) return false;
         return (edit.Overlays ?? []).All(overlay => overlay.Type is "headline" or "cta" && overlay.Text.Length is > 0 and <= 120 &&
             (overlay.Type != "cta" || overlay.Text.Length <= 40) && overlay.EndFrame - overlay.StartFrame >= 15 &&
-            overlay.StartFrame >= 0 && overlay.EndFrame <= 900 && overlay.X is >= -1 and <= 2 && overlay.Y is >= -1 and <= 2 && overlay.FontScale is >= .02 and <= .2);
+            overlay.StartFrame >= 0 && overlay.EndFrame <= VideoDurationPolicy.MaximumVideoFrames && overlay.X is >= -1 and <= 2 && overlay.Y is >= -1 and <= 2 && overlay.FontScale is >= .02 and <= .2);
     }
 
     private static bool SettingsAreSupported(AiVideoTemplateDefinition definition, AiVideoSceneOptions settings) =>
@@ -365,6 +421,12 @@ public sealed class VideoStoryboardPlanner
         definition.AllowedSettings.TryGetValue("subjectMotion", out var subjectMotion) && subjectMotion.Contains(settings.SubjectMotion, StringComparer.Ordinal) &&
         definition.AllowedSettings.TryGetValue("motionIntensity", out var intensities) && intensities.Contains(settings.MotionIntensity, StringComparer.Ordinal) &&
         definition.AllowedSettings.TryGetValue("lighting", out var lighting) && lighting.Contains(settings.Lighting, StringComparer.Ordinal);
+
+    private static bool HasP1Brief(AiVideoSceneOptions scene) =>
+        ValidP1Text(scene.StartingState) && ValidP1Text(scene.PrimaryAction) && ValidP1Text(scene.EndingState);
+
+    private static bool ValidP1Text(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Trim().Length <= 240 && value.All(character => !char.IsControl(character));
 
     private Result<Storyboard> PlanAiShot(Storyboard standard, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config)
     {
@@ -378,7 +440,9 @@ public sealed class VideoStoryboardPlanner
             return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
         if (options.Concept is "lifestyle_motion" or "product_in_use" && !options.RightsConfirmed)
             return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need image-rights confirmation for the selected image."));
-        var model = AiVideoModel.ModelName;
+        var modelKey = config.AiVideoModelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelKey : AiVideoModel.ModelKey;
+        var model = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
+        var modelPrice = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LitePricePerSecondUsd : AiVideoModel.PricePerSecondUsd;
         var aspect = config.OutputFormat == "landscape" ? "16:9" : "9:16";
         var prompt = BuildPrompt(options.Concept, options.Prompt);
         AiShotPlan Shot(int index, MockupImage asset, int seconds)
@@ -386,8 +450,25 @@ public sealed class VideoStoryboardPlanner
             var direction = options.Coverage == "full_video" && config.DurationSeconds == 15
                 ? index == 0 ? " Opening shot with a slow reveal." : " Closing shot from a complementary camera direction." : "";
             var shotPrompt = prompt + direction;
-            var hash = WorkflowJson.Hash(WorkflowJson.Write(new { asset.Id, asset.ContentHash, asset.MetadataRevision, asset.Role, model, options.Concept, shotPrompt, seconds, aspect, index }));
-            return new(index, asset.Id, asset.ContentHash!, model, options.Concept, shotPrompt, seconds, hash);
+            var hash = WorkflowJson.Hash(WorkflowJson.Write(new
+            {
+                asset.Id,
+                asset.ContentHash,
+                asset.MetadataRevision,
+                asset.Role,
+                Provider = AiVideoModel.ProviderKey,
+                ModelKey = modelKey,
+                Model = model,
+                Resolution = AiVideoModel.Resolution,
+                PricePerSecondUsd = modelPrice,
+                options.Concept,
+                shotPrompt,
+                seconds,
+                aspect,
+                index
+            }));
+            return new(index, asset.Id, asset.ContentHash!, model, options.Concept, shotPrompt, seconds, hash,
+                AiVideoModel.ProviderKey, modelKey, 1, null, AiVideoModel.Resolution, modelPrice);
         }
         if (options.Coverage == "single_scene")
         {
@@ -401,7 +482,12 @@ public sealed class VideoStoryboardPlanner
             var remaining = singleSceneOutputFrames - 180;
             var stillPosition = 0;
             var scenes = standard.Scenes.Select((scene, index) => index == options.SceneIndex
-                ? CreateScene(source, standard.ProductType, config, index, 180) with { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : singleSceneTransition }
+                ? CreateScene(source, standard.ProductType, config, index, 180) with
+                {
+                    GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : singleSceneTransition,
+                    AiProviderKey = AiVideoModel.ProviderKey, AiModelKey = modelKey, AiModelName = model,
+                    AiResolution = AiVideoModel.Resolution, AiPricePerSecondUsd = modelPrice
+                }
                 : scene with { DurationFrames = remaining / stillCount + (stillPosition++ < remaining % stillCount ? 1 : 0) }).ToArray();
             var shots = new[] { Shot(options.SceneIndex, source, 6) };
             return Result.Success(standard with { Scenes = scenes, Mode = "ai_shot", AiShots = shots,
@@ -426,7 +512,9 @@ public sealed class VideoStoryboardPlanner
         var outputFrames = count * 240;
         var fullScenes = allSources.Select((asset, index) => CreateScene(asset, standard.ProductType, config, index, 240) with
         { GenerationStrategy = "ai_shot", Motion = "static", Transition = index == 0 ? "none" : transition,
-            TransitionFrames = index == 0 || transition == "none" ? 0 : TransitionFrames }).ToArray();
+            TransitionFrames = index == 0 || transition == "none" ? 0 : TransitionFrames,
+            AiProviderKey = AiVideoModel.ProviderKey, AiModelKey = modelKey, AiModelName = model,
+            AiResolution = AiVideoModel.Resolution, AiPricePerSecondUsd = modelPrice }).ToArray();
         var fullShots = allSources.Select((asset, index) => Shot(index, asset, 8)).ToArray();
         return Result.Success(standard with { Scenes = fullScenes, Mode = "ai_shot", AiShots = fullShots,
             TransitionOverlapFrames = overlapFrames, OutputDurationFrames = outputFrames,
@@ -438,8 +526,8 @@ public sealed class VideoStoryboardPlanner
         var motion = concept switch
         {
             "material_detail" => "A smooth macro camera glide across the visible product material and printed artwork.",
-            "lifestyle_motion" => "The adult person already visible in the image moves naturally and subtly while wearing the same product.",
-            "product_in_use" => "The adult person already visible in the image naturally uses the same product, with gentle camera motion.",
+            "lifestyle_motion" => "The person or people already visible in the image move naturally and subtly while wearing the same product.",
+            "product_in_use" => "The person or people already visible in the image naturally use the same product, with gentle camera motion.",
             _ => "A cinematic, smooth, subtle camera dolly and gentle angle reveal of the product."
         };
         return $"{motion} Start from the supplied image. Keep the exact visible product, colors, print, text and composition unchanged. " +

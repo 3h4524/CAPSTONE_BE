@@ -1,5 +1,4 @@
 using APCS.Application.Abstractions.AI;
-using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Common.Models;
@@ -12,7 +11,7 @@ namespace APCS.Application.Features.Workflows;
 public sealed record AiShotLeaseRequest(Guid LeaseToken);
 /// <summary>Lease-bound confirmation that a generated clip was uploaded to private storage.</summary>
 public sealed record AiShotStoredRequest(Guid LeaseToken, string StorageKey, string StorageVersion);
-/// <summary>Progress of a single external Veo operation.</summary>
+/// <summary>Progress of a single external AI video operation.</summary>
 public sealed record AiShotProgressResponse(string Status, string? Message = null);
 
 public interface IAiShotJobService
@@ -24,11 +23,11 @@ public interface IAiShotJobService
 }
 
 public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<MockupImage> assets,
-    IApiKeyRepository keys, IApiKeyCredentials credentials, IWorkflowStateRepository state, IUnitOfWork uow,
+    IAiVideoCredentialResolver videoCredentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
     IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null) : IAiShotJobService
 {
-    /// <summary>How often one scene is sent again without asking, and only after Google said the dropped clip was free.</summary>
+    /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
 
     public async Task<Result<AiShotProgressResponse>> StartAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct)
@@ -42,7 +41,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             (job, var payload, var item) = loaded.Value;
             if (item.Status == "stored") return Result.Success(new AiShotProgressResponse("stored"));
             if (item.OperationName != null) return Result.Success(new AiShotProgressResponse(item.Status));
-            if (item.Status != "pending") return Result.Failure<AiShotProgressResponse>(Error.Conflict("VeoSubmissionUncertain", "Veo may have received this request. It will not be sent again automatically."));
+            if (item.Status != "pending") return Result.Failure<AiShotProgressResponse>(Error.Conflict("AiVideoSubmissionUncertain", "The video provider may have received this request. It will not be sent again automatically."));
             shot = payload.Storyboard.AiShots!.Single(x => x.SceneOrder == sceneOrder);
             var scene = payload.Storyboard.Scenes.Single(x => x.SceneOrder == sceneOrder);
             var source = await assets.GetByIdAsync(shot.MockupId, ct);
@@ -64,9 +63,11 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         }
         catch (Exception ex)
         {
-            // Nothing has been sent yet; the seller has to reconnect the key before a retry can work.
+            // Nothing has been sent yet; the configured credential must be restored before a retry can work.
             logger?.LogWarning(ex, "AI scene {Scene} of job {Job} has no usable {Provider} key", sceneOrder, jobId, shot.ProviderKey);
-            var missing = $"The connected {shot.ProviderKey} API key is missing or failed its last check. Reconnect it, then retry.";
+            var missing = string.Equals(shot.ProviderKey, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase)
+                ? "AI video is temporarily unavailable because the system MiniMax API key is not configured."
+                : $"The connected {shot.ProviderKey} API key is missing or failed its last check. Reconnect it, then retry.";
             await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", missing, ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(missing));
         }
@@ -79,39 +80,41 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
                 shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment",
                 shot.SourceCrop, ct);
         }
-        // Every HTTP error from Google below means it made no operation: nothing is being generated or billed, so
+        // Every provider HTTP error below means it made no operation: nothing is being generated or billed, so
         // only a request whose outcome is really unknown (no answer, or an answer that cannot be read) is uncertain.
         catch (AiVideoProviderException ex) when (ex.StatusCode is 408 or 429 or >= 500)
         {
-            // Over quota, overloaded or failing on Google's side: the scene goes back to pending and the job's next
+            // Over quota, overloaded or failing on the provider's side: the scene goes back to pending and the job's next
             // attempt may submit it again.
-            var providerName = shot.ProviderKey == "gemini" ? "Google Veo" : shot.ProviderKey;
+            var providerName = ProviderName(shot.ProviderKey);
             var errorCode = shot.ProviderKey == "gemini" ? "VeoBusy" : "AiVideoProviderBusy";
             var busy = ex.StatusCode switch
             {
-                429 => $"{providerName} quota or rate limit reached: this key allows only a few video requests per minute and per day. Check its usage in Google AI Studio, then try again.",
+                429 => $"{providerName} quota or rate limit reached. Check the provider account's usage, then try again.",
                 503 => $"{providerName} is overloaded right now. Try again in a few minutes.",
                 _ => $"{providerName} had a temporary error ({ex.StatusCode}) and made no clip. Try again in a few minutes."
             };
             logger?.LogWarning("AI scene {Scene} of job {Job} was refused by {Provider} with status {Status}: {Detail}", sceneOrder, jobId, providerName, ex.StatusCode, ex.Detail);
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Detail == null ? busy : $"{busy} Google: {ex.Detail}", ct);
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Detail == null ? busy : $"{busy} {providerName}: {ex.Detail}", ct);
             return Result.Failure<AiShotProgressResponse>(Error.Failure(errorCode, busy));
         }
         catch (AiVideoProviderException ex)
         {
-            var providerName = shot.ProviderKey == "gemini" ? "Google Veo" : shot.ProviderKey;
+            var providerName = ProviderName(shot.ProviderKey);
             var refusal = ex.StatusCode is 401 or 403
-                ? $"{providerName} access denied. Check the connected {shot.ProviderKey} key, billing and model availability."
+                ? string.Equals(shot.ProviderKey, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase)
+                    ? $"{providerName} access denied. Check the system MiniMax key, billing and model availability."
+                    : $"{providerName} access denied. Check the connected {shot.ProviderKey} key, billing and model availability."
                 : ex.StatusCode is 400 or 404
                     ? $"{providerName} rejected this source or prompt. Review the AI scene settings."
                     : $"{providerName} refused the request ({ex.StatusCode}). Review the AI scene settings.";
-            // Kept with the scene, so the run can show the seller what Google said and not only that it refused.
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ex.Detail == null ? refusal : $"{refusal} Google: {ex.Detail}", ct);
+            // Kept with the scene, so the run can show the seller what its provider said and not only that it refused.
+            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ex.Detail == null ? refusal : $"{refusal} {providerName}: {ex.Detail}", ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(refusal));
         }
         catch (AiVideoNotSubmittedException ex)
         {
-            // Failed before the POST reached Google, so the job's next attempt may submit it. Recorded even when the
+            // Failed before the POST reached the provider, so the job's next attempt may submit it. Recorded even when the
             // worker has gone, or the scene would be left looking half-sent.
             logger?.LogWarning(ex, "AI scene {Scene} of job {Job} was not submitted", sceneOrder, jobId);
             await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Message, CancellationToken.None);
@@ -121,12 +124,13 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         catch (Exception ex)
         {
             // The provider may have accepted a timed-out POST. Never re-submit automatically, but say what happened.
-            logger?.LogError(ex, "AI scene {Scene} of job {Job} has an unknown Veo submission result", sceneOrder, jobId);
+            var providerName = ProviderName(shot.ProviderKey);
+            logger?.LogError(ex, "AI scene {Scene} of job {Job} has an unknown {Provider} submission result", sceneOrder, jobId, providerName);
             var unknown = ex is AiVideoSubmissionUnknownException ? ex.Message
-                : ex is TaskCanceledException or TimeoutException ? "Google Veo did not answer in time."
-                : $"The request to Google Veo broke off: {ex.Message}";
+                : ex is TaskCanceledException or TimeoutException ? $"{providerName} did not answer in time."
+                : $"The request to {providerName} broke off: {ex.Message}";
             await MarkAsync(jobId, sceneOrder, request.LeaseToken, "submitting", unknown, CancellationToken.None);
-            return Result.Failure<AiShotProgressResponse>(Error.Conflict("VeoSubmissionUncertain", "Veo submission failed or has an unknown result. Do not auto-retry this paid request."));
+            return Result.Failure<AiShotProgressResponse>(Error.Conflict("AiVideoSubmissionUncertain", "AI video submission failed or has an unknown result. Do not auto-retry this paid request."));
         }
         await using (var tx = await uow.BeginTransactionAsync(ct))
         {
@@ -145,19 +149,19 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
         var (job, payload, item) = loaded.Value;
         if (item.Status is "stored" or "ready") return Result.Success(new AiShotProgressResponse(item.Status));
-        if (item.OperationName == null) return Result.Failure<AiShotProgressResponse>(Error.Conflict("VeoSubmissionUncertain", "No recoverable Veo operation was recorded."));
+        if (item.OperationName == null) return Result.Failure<AiShotProgressResponse>(Error.Conflict("AiVideoSubmissionUncertain", "No recoverable AI video operation was recorded."));
         var shot = payload.Storyboard.AiShots!.Single(x => x.SceneOrder == sceneOrder);
         VeoOperationResult result;
         try { result = await ProviderFor(shot).PollAsync(await KeyAsync(job.UserId, shot.ProviderKey, ct), item.OperationName, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { return Result.Failure<AiShotProgressResponse>(Error.Failure("VeoUnavailable", "Could not check Veo progress. Retry the status check.")); }
+        catch { return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoProviderUnavailable", "Could not check AI video progress. Retry the status check.")); }
         if (!result.Done) return Result.Success(new AiShotProgressResponse("polling"));
         await using var tx = await uow.BeginTransactionAsync(ct);
         loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
         (job, payload, item) = loaded.Value;
-        var failure = result.Failure ?? "Veo returned no video.";
-        // Google sometimes drops a finished clip and says the attempt was free. That is worth one more submission
+        var failure = result.Failure ?? "The video provider returned no video.";
+        // A provider can drop a finished clip and explicitly say the attempt was free. That is worth one more submission
         // inside what the seller already confirmed; a second drop is left for them to decide.
         var resubmit = result.VideoUri == null && result.NotCharged && item.Resubmissions < MaximumResubmissions;
         var next = result.VideoUri != null ? item with { DownloadUri = result.VideoUri, Status = "ready", Failure = null }
@@ -179,7 +183,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         var shot = payload.Storyboard.AiShots!.Single(x => x.SceneOrder == sceneOrder);
         try { return Result.Success(await ProviderFor(shot).DownloadAsync(await KeyAsync(job.UserId, shot.ProviderKey, ct), item.DownloadUri, ct)); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { return Result.Failure<byte[]>(Error.Failure("VeoDownloadFailed", "Could not download the completed Veo clip.")); }
+        catch { return Result.Failure<byte[]>(Error.Failure("AiVideoDownloadFailed", "Could not download the completed AI video clip.")); }
     }
 
     public async Task<Result> StoredAsync(Guid jobId, int sceneOrder, AiShotStoredRequest request, CancellationToken ct)
@@ -226,9 +230,9 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
 
     private async Task<string> KeyAsync(Guid owner, string providerKey, CancellationToken ct)
     {
-        var key = (await keys.ListOwnedAsync(owner, ct)).FirstOrDefault(x => x.ServiceProvider == providerKey && x.IsActive == true && x.LastCheckSucceeded == true);
-        if (key == null) throw new InvalidOperationException($"Connected {providerKey} API key is missing.");
-        return credentials.Unprotect(key.KeyValueEncrypted);
+        var key = await videoCredentials.ResolveAsync(owner, providerKey, ct);
+        if (key == null) throw new InvalidOperationException($"Configured {providerKey} API key is missing.");
+        return key;
     }
     private static string ReadAspect(string payload)
     {
@@ -238,4 +242,10 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Media job lease expired or the run was cancelled.");
+    private static string ProviderName(string providerKey) => providerKey.ToLowerInvariant() switch
+    {
+        "minimax" => "MiniMax",
+        "gemini" => "Google Veo",
+        _ => providerKey
+    };
 }

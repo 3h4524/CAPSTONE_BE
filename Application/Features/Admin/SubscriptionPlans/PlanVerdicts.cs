@@ -74,7 +74,7 @@ internal static class PlanVerdicts
             if (designs <= belowDesigns && mockups <= belowMockups)
             {
                 var ratio = Math.Round(plan.MonthlyPriceVnd / below.MonthlyPriceVnd, 1);
-                evidence.Add($"Pays {ratio:0.#}× {below.Name}, but a typical Seller makes {designs:0.#} designs and {mockups:0.#} mockups against {below.Name}'s {belowDesigns:0.#} and {belowMockups:0.#}.");
+                evidence.Add(FormattableString.Invariant($"Pays {ratio:0.#}× {below.Name}, but a typical Seller makes {designs:0.#} designs and {mockups:0.#} mockups against {below.Name}'s {belowDesigns:0.#} and {belowMockups:0.#}."));
                 verdict = ("overpriced", $"Overpriced vs {below.Name}", "warning",
                     $"Find out which Sellers need {plan.Name}'s higher limits. The rest get little more than {below.Name} for their money, so add value or expect downgrades.");
             }
@@ -82,13 +82,13 @@ internal static class PlanVerdicts
 
         if (plan.RetentionRate is { } rate && lowestRetention == plan && rate < rules.LowRetentionRate)
         {
-            evidence.Add($"Keeps {rate:0.#}% of its customers ({plan.Retained} of {plan.RetentionStart}), the lowest of all plans.");
+            evidence.Add(FormattableString.Invariant($"Keeps {rate:0.#}% of its customers ({plan.Retained} of {plan.RetentionStart}), the lowest of all plans."));
             verdict ??= ("retention_risk", "Retention risk", "danger",
                 $"Find out why {plan.Name} customers leave: ask the ones who stopped, and show new ones the features the ones who stay use.");
         }
         else if (plan.RetentionRate is { } kept)
         {
-            evidence.Add($"Keeps {kept:0.#}% of its customers ({plan.Retained} of {plan.RetentionStart}).");
+            evidence.Add(FormattableString.Invariant($"Keeps {kept:0.#}% of its customers ({plan.Retained} of {plan.RetentionStart})."));
         }
 
         if (above is not null)
@@ -98,7 +98,7 @@ internal static class PlanVerdicts
             var candidates = plan.Sellers.Count(seller => seller.DesignImages >= aboveDesigns && seller.Mockups >= aboveMockups);
             if (candidates > 0)
             {
-                evidence.Add($"{candidates} Seller{(candidates == 1 ? " already makes" : "s already make")} as many designs and mockups as a typical {above.Name} Seller ({aboveDesigns:0.#} designs, {aboveMockups:0.#} mockups).");
+                evidence.Add(FormattableString.Invariant($"{candidates} Seller{(candidates == 1 ? " already makes" : "s already make")} as many designs and mockups as a typical {above.Name} Seller ({aboveDesigns:0.#} designs, {aboveMockups:0.#} mockups)."));
                 verdict ??= ("upsell", "Upsell ready", "info", $"Offer {above.Name} to the {candidates} heaviest {plan.Name} Seller{(candidates == 1 ? "" : "s")}.");
                 return Finish(plan, verdict.Value, evidence, candidates, above.Name);
             }
@@ -109,7 +109,7 @@ internal static class PlanVerdicts
             .MinBy(feature => feature.Rate);
         if (unused is not null)
         {
-            evidence.Add($"{unused.Label} is used by only {unused.Rate:0.#}% of its Sellers.");
+            evidence.Add(FormattableString.Invariant($"{unused.Label} is used by only {unused.Rate:0.#}% of its Sellers."));
         }
 
         verdict ??= ("healthy", "Healthy", "success",

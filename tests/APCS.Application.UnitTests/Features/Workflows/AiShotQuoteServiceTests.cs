@@ -14,9 +14,9 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 public sealed class AiShotQuoteServiceTests
 {
     [TestMethod]
-    [DataRow("single_scene", 12, 1, 0.30)]
-    [DataRow("full_video", 8, 1, 0.40)]
-    [DataRow("full_video", 15, 2, 0.80)]
+    [DataRow("single_scene", 12, 1, 0.48)]
+    [DataRow("full_video", 8, 1, 0.64)]
+    [DataRow("full_video", 15, 2, 1.28)]
     public async Task QuoteAsync_MissingAiClips_ReturnsExactEstimatedCost(string coverage, int duration, int clips, double cost)
     {
         var context = CreateContext();
@@ -32,8 +32,9 @@ public sealed class AiShotQuoteServiceTests
         result.Value.Token.Should().Be("signed-quote");
         result.Value.ExpiresAtUtc.Should().Be(context.Fixture.Time.GetUtcNow().AddMinutes(10));
         context.Claims.Should().Match<AiShotQuoteClaims>(x => x.RunId == context.Run.Id &&
-            x.EstimatedCostUsd == (decimal)cost && !x.Regenerate && x.StoryboardFingerprint.Length == 64);
-        context.Keys.Verify(x => x.ListOwnedAsync(WorkflowTestData.Owner, cancellation.Token), Times.Once);
+            x.EstimatedCostUsd == (decimal)cost && !x.Regenerate && x.StoryboardFingerprint.Length == 64 &&
+            x.ConfigFingerprint != null && x.PromptSnapshot != null && x.PromptSnapshot.Fingerprint == x.StoryboardFingerprint);
+        context.VideoCredentials.Verify(x => x.ResolveAsync(WorkflowTestData.Owner, AiVideoModel.ProviderKey, cancellation.Token), Times.Once);
         context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Once);
     }
 
@@ -54,11 +55,62 @@ public sealed class AiShotQuoteServiceTests
         reuse.Value.NewClips.Should().Be(0);
         reuse.Value.EstimatedCostUsd.Should().Be(0m);
         regenerate.Value.NewClips.Should().Be(1);
-        regenerate.Value.EstimatedCostUsd.Should().Be(.30m);
+        regenerate.Value.EstimatedCostUsd.Should().Be(.48m);
     }
 
     [TestMethod]
-    public async Task QuoteAsync_PendingStudioFrame_IsRejectedBeforeSigningVeoQuote()
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task QuoteAsync_CancelledRunSceneRegeneration_QuotesOnlyTargetAndRequiresOtherStoredClip(bool otherStored)
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 8,
+            AiScenes: [new(MockupId: context.Asset.Id, DurationSeconds: 4, RightsConfirmed: true),
+                new(MockupId: context.Asset.Id, DurationSeconds: 4, RightsConfirmed: true)]);
+        var board = (await context.Fixture.Runtime.PlanAsync(context.Run, config, default)).Value;
+        var job = context.Fixture.AddJob(context.Run);
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "succeeded";
+        job.Payload = WorkflowJson.Write(new AiRenderJobPayload(Guid.NewGuid(), board, board.AiShots!.Select(shot =>
+            new AiShotJobState(shot.SceneOrder, shot.Fingerprint,
+                StorageKey: shot.SceneOrder == 1 && !otherStored ? null : $"private/shot-{shot.SceneOrder}.mp4",
+                StorageVersion: shot.SceneOrder == 1 && !otherStored ? null : "1",
+                Status: shot.SceneOrder == 1 && !otherStored ? "pending" : "stored")).ToArray()));
+
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(config, Regenerate: true, SceneOrder: 0), default);
+
+        if (!otherStored)
+        {
+            result.IsFailure.Should().BeTrue();
+            result.Error.Code.Should().Be("OtherScenesIncomplete");
+            context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+            return;
+        }
+        result.IsSuccess.Should().BeTrue();
+        result.Value.NewClips.Should().Be(1);
+        context.Claims!.SceneOrder.Should().Be(0);
+        context.Claims.Regenerate.Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    public async Task QuoteAsync_CancelledRunWithoutCompletedTargetScene_RejectsQuote(bool regenerate, bool selectScene)
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
+
+        var result = await context.Service.QuoteAsync(context.Run.Id,
+            new(Config(context.Asset), Regenerate: regenerate, SceneOrder: selectScene ? 0 : null), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("InvalidCheckpoint");
+        context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_PendingStudioFrame_IsRejectedBeforeSigningVideoQuote()
     {
         var context = CreateContext();
         var frame = WorkflowTestData.Asset(context.Asset.ProductId, "VideoScene");
@@ -84,13 +136,26 @@ public sealed class AiShotQuoteServiceTests
     }
 
     [TestMethod]
-    public async Task QuoteAsync_MissingPaidGeminiKey_RejectsBeforeSigning()
+    public async Task QuoteAsync_MissingSystemMiniMaxKey_RejectsBeforeSigning()
     {
-        var context = CreateContext(connectedKey: false);
+        var context = CreateContext(systemKeyConfigured: false);
         var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset)), default);
 
         result.IsFailure.Should().BeTrue();
-        result.Error.Message.Should().Contain("Gemini API key");
+        result.Error.Message.Should().Contain("system MiniMax API key");
+        context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_PreviewFingerprintChanged_RejectsBeforeCostConfirmation()
+    {
+        var context = CreateContext();
+
+        var result = await context.Service.QuoteAsync(context.Run.Id,
+            new(Config(context.Asset), ExpectedStoryboardFingerprint: "outdated-preview"), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("StoryboardChanged");
         context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
     }
 
@@ -103,7 +168,7 @@ public sealed class AiShotQuoteServiceTests
         var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset)), default);
 
         result.Error.Code.Should().Be("RunNotFound");
-        context.Keys.Verify(x => x.ListOwnedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        context.VideoCredentials.Verify(x => x.ResolveAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         context.Fixture.Assets.Verify(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<MockupImage, bool>>>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -117,7 +182,7 @@ public sealed class AiShotQuoteServiceTests
         var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset)), default);
 
         result.Error.Code.Should().Be("InvalidCheckpoint");
-        context.Keys.Verify(x => x.ListOwnedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        context.VideoCredentials.Verify(x => x.ResolveAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
     }
 
@@ -166,10 +231,9 @@ public sealed class AiShotQuoteServiceTests
         costlier.Error.Code.Should().Be("AiShotQuoteChanged");
     }
 
-    // The confirmation caps what the run may be charged: a storyboard that changed (the source mock-up was edited and
-    // approved again) without costing more does not need another one.
+    // Prompt snapshots record the approved source revision. A newer source must be reviewed before it can be rendered.
     [TestMethod]
-    public async Task VerifyAsync_SourceChangedAtTheSameCost_KeepsQuote()
+    public async Task VerifyAsync_SourceChangedAtTheSameCost_RequiresAnotherReview()
     {
         var context = CreateContext();
         var config = Config(context.Asset);
@@ -180,13 +244,30 @@ public sealed class AiShotQuoteServiceTests
         context.Asset.ApprovedRevision++;
         var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
-        changedSource.IsSuccess.Should().BeTrue();
+        changedSource.IsFailure.Should().BeTrue();
+        changedSource.Error.Code.Should().Be("AiShotQuoteChanged");
+    }
+
+    [TestMethod]
+    public async Task VerifyAsync_CurrentQuote_WritesTheSignedPromptSnapshotForTheRenderStep()
+    {
+        var context = CreateContext();
+        var config = Config(context.Asset);
+        await context.Service.QuoteAsync(context.Run.Id, new(config), default);
+
+        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
+
+        result.IsSuccess.Should().BeTrue();
+        var generate = context.Fixture.NodeRows.Single(item => item.WorkflowRunId == context.Run.Id && item.NodeType == "generate-video");
+        var snapshot = WorkflowJson.Read<AiShotPromptSnapshot>(generate.OutputSnapshot);
+        snapshot.ConfigFingerprint.Should().Be(context.Claims!.ConfigFingerprint);
+        snapshot.Storyboard.Fingerprint.Should().Be(context.Claims.PromptSnapshot!.Fingerprint);
     }
 
     private static GenerateVideoConfig Config(MockupImage source, string coverage = "single_scene", int duration = 12) =>
         new(Mode: "ai_shot", DurationSeconds: duration, AiShotOptions: new(Coverage: coverage, MockupId: source.Id));
 
-    private static Context CreateContext(bool connectedKey = true)
+    private static Context CreateContext(bool systemKeyConfigured = true)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -194,31 +275,26 @@ public sealed class AiShotQuoteServiceTests
         var run = fixture.AddRun(product, "waiting_for_input");
         var user = new Mock<ICurrentUser>();
         user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
-        var keys = new Mock<IApiKeyRepository>();
-        keys.Setup(x => x.ListOwnedAsync(WorkflowTestData.Owner, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(connectedKey ? [new ApiKey
-            {
-                Id = Guid.NewGuid(), UserId = WorkflowTestData.Owner, ServiceProvider = "gemini",
-                KeyIdentifier = "Connected Gemini", KeyValueEncrypted = "synthetic-encrypted-value", AuthType = "api_key",
-                IsActive = true, LastCheckSucceeded = true
-            }] : []);
+        var videoCredentials = new Mock<IAiVideoCredentialResolver>();
+        videoCredentials.Setup(x => x.ResolveAsync(WorkflowTestData.Owner, AiVideoModel.ProviderKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(systemKeyConfigured ? "system-minimax-key" : null);
         var signer = new Mock<IAiShotQuoteSigner>();
-        var context = new Context(fixture, run, asset, keys, signer);
+        var context = new Context(fixture, run, asset, videoCredentials, signer);
         signer.Setup(x => x.Sign(It.IsAny<AiShotQuoteClaims>()))
             .Callback<AiShotQuoteClaims>(claims => context.Claims = claims).Returns("signed-quote");
         signer.Setup(x => x.Read("signed-quote")).Returns(() => context.Claims);
         context.Service = new AiShotQuoteService(user.Object, fixture.Runs.Object, fixture.Nodes.Object, fixture.Jobs.Object,
-            keys.Object, fixture.Runtime, signer.Object, fixture.Time, TestEntitlements.AllowAll());
+            videoCredentials.Object, fixture.Runtime, signer.Object, fixture.Time, TestEntitlements.AllowAll());
         return context;
     }
 
     private sealed class Context(WorkflowTestData fixture, WorkflowRun run, MockupImage asset,
-        Mock<IApiKeyRepository> keys, Mock<IAiShotQuoteSigner> signer)
+        Mock<IAiVideoCredentialResolver> videoCredentials, Mock<IAiShotQuoteSigner> signer)
     {
         public WorkflowTestData Fixture { get; } = fixture;
         public WorkflowRun Run { get; } = run;
         public MockupImage Asset { get; } = asset;
-        public Mock<IApiKeyRepository> Keys { get; } = keys;
+        public Mock<IAiVideoCredentialResolver> VideoCredentials { get; } = videoCredentials;
         public Mock<IAiShotQuoteSigner> Signer { get; } = signer;
         public AiShotQuoteClaims? Claims { get; set; }
         public AiShotQuoteService Service { get; set; } = null!;

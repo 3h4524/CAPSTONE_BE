@@ -21,6 +21,7 @@ using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Features.Translations;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -67,23 +68,31 @@ public static class DependencyInjection
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
+        services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
+        services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
         services.AddScoped<Features.Workflows.VideoStoryboardPlanner>();
+        services.AddScoped<Features.Workflows.IVideoPromptPreparationService, Features.Workflows.VideoPromptPreparationService>();
+        services.AddScoped<Features.Workflows.IVideoExperienceContextService, Features.Workflows.VideoExperienceContextService>();
         services.AddScoped<Features.Workflows.WorkflowRuntime>();
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();
+        services.AddScoped<Features.Workflows.IModelPhotoMockupService, Features.Workflows.ModelPhotoMockupService>();
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
+        services.AddScoped<Features.Workflows.IVideoQualityReviewService, Features.Workflows.VideoQualityReviewService>();
+        services.AddScoped<Features.Workflows.IVideoQualityJobService, Features.Workflows.VideoQualityJobService>();
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
         services.AddScoped<Features.Workflows.IAiShotQuoteService, Features.Workflows.AiShotQuoteService>();
         services.AddScoped<Features.Workflows.IAiShotJobService, Features.Workflows.AiShotJobService>();
@@ -124,8 +133,10 @@ public static class DependencyInjection
         services.AddScoped<ICommerceConnectorFactory, CommerceConnectorFactory>();
         services.AddScoped<ICommerceMarketDataConnectorFactory, CommerceMarketDataConnectorFactory>();
         services.AddScoped<IMarketResearchService, MarketResearchService>();
+        services.AddScoped<IMarketInsightsService, MarketInsightsService>();
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
+        services.AddScoped<ITranslationService, TranslationService>();
 
         return services;
     }

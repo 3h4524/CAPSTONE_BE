@@ -18,7 +18,7 @@ public sealed class AiShotJobServiceTests
 
     private readonly WorkflowTestData fixture = new();
     private readonly Mock<IVeoVideoProvider> provider = new();
-    private readonly Mock<IApiKeyRepository> keys = new();
+    private readonly Mock<IAiVideoCredentialResolver> videoCredentials = new();
     private MediaJob job = null!;
     private MockupImage source = null!;
 
@@ -54,7 +54,7 @@ public sealed class AiShotJobServiceTests
     {
         var service = Service(new AiShotJobState(0, "fingerprint", Status: "submitting"));
 
-        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoSubmissionUncertain");
         provider.VerifyNoOtherCalls();
     }
 
@@ -130,8 +130,8 @@ public sealed class AiShotJobServiceTests
 
         result.Error.Message.Should().Contain(message);
         State().Status.Should().Be("failed");
-        // What Google said stays with the scene, for the run to show.
-        State().Failure.Should().Contain(message).And.EndWith("Google: The image is not usable.");
+        // What the provider said stays with the scene, for the run to show.
+        State().Failure.Should().Contain(message).And.EndWith("Google Veo: The image is not usable.");
     }
 
     [TestMethod]
@@ -151,7 +151,7 @@ public sealed class AiShotJobServiceTests
         result.Error.Message.Should().Contain(message);
         State().Status.Should().Be("pending");
         State().OperationName.Should().BeNull();
-        State().Failure.Should().Contain(message).And.EndWith("Google: The image is not usable.");
+        State().Failure.Should().Contain(message).And.EndWith("Google Veo: The image is not usable.");
     }
 
     [TestMethod]
@@ -174,7 +174,7 @@ public sealed class AiShotJobServiceTests
         provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiVideoSubmissionUnknownException("Veo accepted the request, but did not name an operation to follow."));
 
-        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoSubmissionUncertain");
         State().Status.Should().Be("submitting");
         State().Failure.Should().Contain("did not name an operation");
     }
@@ -186,7 +186,7 @@ public sealed class AiShotJobServiceTests
         provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException());
 
-        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        (await service.StartAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoSubmissionUncertain");
         State().Status.Should().Be("submitting");
     }
 
@@ -291,7 +291,7 @@ public sealed class AiShotJobServiceTests
         var service = Service(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
         provider.Setup(x => x.PollAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ThrowsAsync(new HttpRequestException());
 
-        (await service.PollAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoUnavailable");
+        (await service.PollAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoProviderUnavailable");
         State().Status.Should().Be("polling");
     }
 
@@ -300,7 +300,7 @@ public sealed class AiShotJobServiceTests
     {
         var service = Service();
 
-        (await service.PollAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoSubmissionUncertain");
+        (await service.PollAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoSubmissionUncertain");
         (await service.PollAsync(job.Id, 0, new(Guid.NewGuid()), default)).Error.Code.Should().Be("LeaseLost");
     }
 
@@ -328,7 +328,7 @@ public sealed class AiShotJobServiceTests
         var service = Service(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"));
         provider.Setup(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ThrowsAsync(new HttpRequestException());
 
-        (await service.DownloadAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("VeoDownloadFailed");
+        (await service.DownloadAsync(job.Id, 0, Lease(), default)).Error.Code.Should().Be("AiVideoDownloadFailed");
     }
 
     [TestMethod]
@@ -358,6 +358,42 @@ public sealed class AiShotJobServiceTests
         State().Status.Should().Be("ready");
     }
 
+    [TestMethod]
+    public async Task StartAsync_NewMiniMaxSnapshot_UsesCapturedMiniMaxStrategyAndKey()
+    {
+        var minimax = new Mock<IAiVideoGenerationStrategy>();
+        minimax.Setup(x => x.StartAsync("plain-key", It.IsAny<string>(), "Move gently.", "9:16", 8, true,
+                It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("minimax-task-123");
+        var factory = new Mock<IAiVideoGenerationStrategyFactory>();
+        factory.Setup(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey)).Returns(minimax.Object);
+        var service = Service(providerKey: AiVideoModel.ProviderKey, modelKey: AiVideoModel.ModelKey,
+            model: AiVideoModel.ModelName, providerFactory: factory.Object);
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.IsSuccess.Should().BeTrue();
+        State().OperationName.Should().Be("minimax-task-123");
+        provider.VerifyNoOtherCalls();
+        factory.Verify(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_NewMiniMaxSnapshotWithoutSystemKey_DoesNotSubmit()
+    {
+        var minimax = new Mock<IAiVideoGenerationStrategy>();
+        var factory = new Mock<IAiVideoGenerationStrategyFactory>();
+        factory.Setup(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey)).Returns(minimax.Object);
+        var service = Service(connected: false, providerKey: AiVideoModel.ProviderKey, modelKey: AiVideoModel.ModelKey,
+            model: AiVideoModel.ModelName, providerFactory: factory.Object);
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("system MiniMax API key");
+        minimax.VerifyNoOtherCalls();
+    }
+
     private AiShotLeaseRequest Lease() => new(job.LeaseToken!.Value);
 
     private AiShotJobState State() => WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates.Single();
@@ -366,7 +402,9 @@ public sealed class AiShotJobServiceTests
         provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new VeoProviderException(status, "The image is not usable."));
 
-    private AiShotJobService Service(AiShotJobState? state = null, bool connected = true)
+    private AiShotJobService Service(AiShotJobState? state = null, bool connected = true,
+        string providerKey = VeoVideoModel.ProviderKey, string modelKey = VeoVideoModel.ModelKey,
+        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null)
     {
         var product = fixture.AddProduct();
         var run = fixture.AddRun(product);
@@ -374,15 +412,16 @@ public sealed class AiShotJobServiceTests
         job = fixture.AddJob(run);
         var scene = new ScenePlan(source.Id, source.MetadataRevision, source.ContentHash!, source.Role, 0, 240, new(0, 0, 1, 1), new(0, 0, 1, 1), "static", "cut", "", "ai_shot", []);
         var board = new Storyboard("auto", 2, 8, "tshirt", [scene], "board", OutputFormat: "portrait", Width: 1080, Height: 1920, AspectRatio: "9:16", Mode: "ai_shot",
-            AiShots: [new(0, source.Id, source.ContentHash!, "veo", "lifestyle_motion", "Move gently.", 8, "fingerprint")]);
+            AiShots: [new(0, source.Id, source.ContentHash!, model, "lifestyle_motion", "Move gently.", 8, "fingerprint",
+                providerKey, modelKey, 1, null,
+                providerKey == AiVideoModel.ProviderKey ? AiVideoModel.Resolution : VeoVideoModel.Resolution,
+                providerKey == AiVideoModel.ProviderKey ? AiVideoModel.PricePerSecondUsd : VeoVideoModel.PricePerSecondUsd)]);
         job.Payload = WorkflowJson.Write(new AiRenderJobPayload(Guid.NewGuid(), board, [state ?? new AiShotJobState(0, "fingerprint")]));
 
-        var credentials = new Mock<IApiKeyCredentials>();
-        credentials.Setup(x => x.Unprotect("encrypted")).Returns("plain-key");
-        keys.Setup(x => x.ListOwnedAsync(WorkflowTestData.Owner, It.IsAny<CancellationToken>())).ReturnsAsync(
-            [new ApiKey { ServiceProvider = "gemini", IsActive = true, LastCheckSucceeded = connected, KeyValueEncrypted = "encrypted" }]);
+        videoCredentials.Setup(x => x.ResolveAsync(WorkflowTestData.Owner, providerKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(connected ? "plain-key" : null);
         fixture.Storage.Setup(x => x.SignRead(source.StorageKey, "image", source.StorageVersion, false)).Returns("https://signed.example/source");
-        return new(fixture.Jobs.Object, fixture.Assets.Object, keys.Object, credentials.Object, fixture.State.Object,
-            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time);
+        return new(fixture.Jobs.Object, fixture.Assets.Object, videoCredentials.Object, fixture.State.Object,
+            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory);
     }
 }

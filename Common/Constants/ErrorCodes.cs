@@ -54,4 +54,6 @@ public static class ErrorCodes
     public const string TestReportNotFound = "test_reports.not_found";
     public const string TestReportRunInProgress = "test_reports.run_in_progress";
     public const string TestReportRunFailed = "test_reports.run_failed";
+    public const string ImageEvaluationNotFound = "image_quality.evaluation_not_found";
+    public const string ImageEvaluationThumbnailUploadFailed = "image_quality.thumbnail_upload_failed";
 }

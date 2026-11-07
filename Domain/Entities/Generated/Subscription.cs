@@ -45,5 +45,7 @@ public partial class Subscription
 
     public virtual SubscriptionPlan? ScheduledPlan { get; set; }
 
+    public virtual ICollection<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; } = new List<SubscriptionFeatureGrant>();
+
     public virtual User User { get; set; } = null!;
 }

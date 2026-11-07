@@ -9,6 +9,7 @@ test("a failure outside an AI scene is never reported as an AI Shot failure", ()
 
 test("an AI scene failure is named by the API's error code, not by its status alone", () => {
   assert.equal(failureCode(new ApiError(409, "VeoSubmissionUncertain"), true), "VeoSubmissionUncertain");
+  assert.equal(failureCode(new ApiError(409, "AiVideoSubmissionUncertain"), true), "AiVideoSubmissionUncertain");
   assert.equal(failureCode(new ApiError(409, "SourceChanged"), true), "SourceChanged");
   // Other conflicts (a lost lease, a clip that is not ready) say nothing about the submission.
   assert.equal(failureCode(new ApiError(409, "LeaseLost"), true), "AiShotFailed");

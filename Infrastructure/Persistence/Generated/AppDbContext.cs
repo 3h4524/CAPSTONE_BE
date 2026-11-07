@@ -12,6 +12,8 @@ public partial class AppDbContext : DbContext
     {
     }
 
+    public virtual DbSet<AiCharacterModel> AiCharacterModels { get; set; }
+
     public virtual DbSet<AiPrompt> AiPrompts { get; set; }
 
     public virtual DbSet<ApiKey> ApiKeys { get; set; }
@@ -50,6 +52,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Feature> Features { get; set; }
 
+    public virtual DbSet<ImageEvalRun> ImageEvalRuns { get; set; }
+
     public virtual DbSet<Invoice> Invoices { get; set; }
 
     public virtual DbSet<ListingContent> ListingContents { get; set; }
@@ -69,6 +73,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<MarketOpportunity> MarketOpportunities { get; set; }
 
     public virtual DbSet<MarketOpportunityEvidence> MarketOpportunityEvidences { get; set; }
+
+    public virtual DbSet<MarketQueryObservation> MarketQueryObservations { get; set; }
 
     public virtual DbSet<MediaJob> MediaJobs { get; set; }
 
@@ -142,6 +148,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<TicketReply> TicketReplies { get; set; }
 
+    public virtual DbSet<TranslationEntry> TranslationEntries { get; set; }
+
     public virtual DbSet<UsageAllowance> UsageAllowances { get; set; }
 
     public virtual DbSet<UsageStatistic> UsageStatistics { get; set; }
@@ -165,6 +173,72 @@ public partial class AppDbContext : DbContext
         modelBuilder
             .HasPostgresExtension("uuid-ossp")
             .HasPostgresExtension("vector");
+
+        modelBuilder.Entity<AiCharacterModel>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("ai_character_models_pkey");
+
+            entity.ToTable("ai_character_models");
+
+            entity.HasIndex(e => new { e.IsActive, e.SortOrder, e.Name }, "idx_ai_character_models_catalog").HasFilter("(deleted_at IS NULL)");
+
+            entity.HasIndex(e => e.IsDefault, "ux_ai_character_models_default")
+                .IsUnique()
+                .HasFilter("((is_default = true) AND (deleted_at IS NULL))");
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.AgeMax).HasColumnName("age_max");
+            entity.Property(e => e.AgeMin).HasColumnName("age_min");
+            entity.Property(e => e.BodyType)
+                .HasMaxLength(50)
+                .HasColumnName("body_type");
+            entity.Property(e => e.CloudinaryPublicId)
+                .HasMaxLength(255)
+                .HasColumnName("cloudinary_public_id");
+            entity.Property(e => e.Code)
+                .HasMaxLength(80)
+                .HasColumnName("code");
+            entity.Property(e => e.Continent)
+                .HasMaxLength(50)
+                .HasColumnName("continent");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.Description)
+                .HasMaxLength(300)
+                .HasDefaultValueSql("''::character varying")
+                .HasColumnName("description");
+            entity.Property(e => e.Gender)
+                .HasMaxLength(30)
+                .HasColumnName("gender");
+            entity.Property(e => e.ImageUrl)
+                .HasMaxLength(1000)
+                .HasColumnName("image_url");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.IsDefault)
+                .HasDefaultValue(false)
+                .HasColumnName("is_default");
+            entity.Property(e => e.Name)
+                .HasMaxLength(100)
+                .HasColumnName("name");
+            entity.Property(e => e.PreviewUrl)
+                .HasMaxLength(1000)
+                .HasColumnName("preview_url");
+            entity.Property(e => e.SkinTone)
+                .HasMaxLength(50)
+                .HasColumnName("skin_tone");
+            entity.Property(e => e.SortOrder)
+                .HasDefaultValue(0)
+                .HasColumnName("sort_order");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+        });
 
         modelBuilder.Entity<AiPrompt>(entity =>
         {
@@ -1230,6 +1304,81 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("unit");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.Features)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_features_updated_by");
+        });
+
+        modelBuilder.Entity<ImageEvalRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_image_eval_runs");
+
+            entity.ToTable("image_eval_runs");
+
+            entity.HasIndex(e => e.CreatedAt, "ix_image_eval_runs_created_at").IsDescending();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ImageCount)
+                .HasDefaultValue(0)
+                .HasColumnName("image_count");
+            entity.Property(e => e.Name)
+                .HasMaxLength(200)
+                .HasColumnName("name");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProductCount)
+                .HasDefaultValue(0)
+                .HasColumnName("product_count");
+            entity.Property(e => e.Report)
+                .HasColumnType("jsonb")
+                .HasColumnName("report");
+            entity.Property(e => e.UploadedBy)
+                .HasMaxLength(320)
+                .HasColumnName("uploaded_by");
+            entity.Property(e => e.VersionCount)
+                .HasDefaultValue(0)
+                .HasColumnName("version_count");
+        });
+
+        modelBuilder.Entity<ImageEvalRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_image_eval_runs");
+
+            entity.ToTable("image_eval_runs");
+
+            entity.HasIndex(e => e.CreatedAt, "ix_image_eval_runs_created_at").IsDescending();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ImageCount)
+                .HasDefaultValue(0)
+                .HasColumnName("image_count");
+            entity.Property(e => e.Name)
+                .HasMaxLength(200)
+                .HasColumnName("name");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProductCount)
+                .HasDefaultValue(0)
+                .HasColumnName("product_count");
+            entity.Property(e => e.Report)
+                .HasColumnType("jsonb")
+                .HasColumnName("report");
+            entity.Property(e => e.UploadedBy)
+                .HasMaxLength(320)
+                .HasColumnName("uploaded_by");
+            entity.Property(e => e.VersionCount)
+                .HasDefaultValue(0)
+                .HasColumnName("version_count");
         });
 
         modelBuilder.Entity<Invoice>(entity =>
@@ -1609,6 +1758,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.RawPayload)
                 .HasColumnType("jsonb")
                 .HasColumnName("raw_payload");
+            entity.Property(e => e.IsSynthetic)
+                .HasColumnName("is_synthetic")
+                .HasDefaultValue(false);
             entity.Property(e => e.SourceUrl).HasColumnName("source_url");
             entity.Property(e => e.Tags)
                 .HasDefaultValueSql("'[]'::jsonb")
@@ -1670,6 +1822,9 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
                 .HasColumnName("score_breakdown");
+            entity.Property(e => e.IsSynthetic)
+                .HasColumnName("is_synthetic")
+                .HasDefaultValue(false);
             entity.Property(e => e.Status)
                 .HasMaxLength(24)
                 .HasDefaultValueSql("'active'::character varying")
@@ -1721,6 +1876,35 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("market_opportunity_evidence_snapshot_id_fkey");
         });
 
+        modelBuilder.Entity<MarketQueryObservation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("market_query_observations_pkey");
+
+            entity.ToTable("market_query_observations");
+
+            entity.HasIndex(e => new { e.Platform, e.Query, e.ObservedOn }, "ux_market_query_observation_day").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.LimitUsed).HasColumnName("limit_used");
+            entity.Property(e => e.ObservedAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("observed_at");
+            entity.Property(e => e.ObservedOn).HasColumnName("observed_on");
+            entity.Property(e => e.Platform)
+                .HasMaxLength(40)
+                .HasColumnName("platform");
+            entity.Property(e => e.Query)
+                .HasMaxLength(300)
+                .HasColumnName("query");
+            entity.Property(e => e.SampleSize).HasColumnName("sample_size");
+            entity.Property(e => e.SortOn)
+                .HasMaxLength(40)
+                .HasColumnName("sort_on");
+            entity.Property(e => e.TotalResults).HasColumnName("total_results");
+        });
+
         modelBuilder.Entity<MediaJob>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("media_jobs_pkey");
@@ -1729,7 +1913,7 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.Status, e.AvailableAt, e.LeaseExpiresAt }, "idx_media_jobs_claim");
 
-            entity.HasIndex(e => e.WorkflowNodeRunId, "uq_media_job_node_active")
+            entity.HasIndex(e => new { e.WorkflowNodeRunId, e.Kind }, "uq_media_job_node_active")
                 .IsUnique()
                 .HasFilter("((status)::text = ANY ((ARRAY['queued'::character varying, 'leased'::character varying])::text[]))");
 
@@ -1781,8 +1965,8 @@ public partial class AppDbContext : DbContext
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("media_jobs_user_id_fkey");
 
-            entity.HasOne(d => d.WorkflowNodeRun).WithOne(p => p.MediaJob)
-                .HasForeignKey<MediaJob>(d => d.WorkflowNodeRunId)
+            entity.HasOne(d => d.WorkflowNodeRun).WithMany(p => p.MediaJobs)
+                .HasForeignKey(d => d.WorkflowNodeRunId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("media_jobs_workflow_node_run_id_fkey");
 
@@ -1919,6 +2103,12 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.AgeGroup)
+                .HasMaxLength(8)
+                .HasColumnName("age_group");
+            entity.Property(e => e.AiGenerated)
+                .HasDefaultValue(false)
+                .HasColumnName("ai_generated");
             entity.Property(e => e.AllowRecolor)
                 .HasDefaultValue(false)
                 .HasColumnName("allow_recolor");
@@ -1935,17 +2125,30 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.GarmentIsLight)
                 .HasDefaultValue(false)
                 .HasColumnName("garment_is_light");
+            entity.Property(e => e.Gender)
+                .HasMaxLength(8)
+                .HasColumnName("gender");
+            entity.Property(e => e.GroupType)
+                .HasMaxLength(8)
+                .HasColumnName("group_type");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
             entity.Property(e => e.IsSystemTemplate)
                 .HasDefaultValue(true)
                 .HasColumnName("is_system_template");
+            entity.Property(e => e.Kind)
+                .HasMaxLength(16)
+                .HasDefaultValueSql("'garment'::character varying")
+                .HasColumnName("kind");
             entity.Property(e => e.Name)
                 .HasMaxLength(255)
                 .HasColumnName("name");
             entity.Property(e => e.OutputHeightPx).HasColumnName("output_height_px");
             entity.Property(e => e.OutputWidthPx).HasColumnName("output_width_px");
+            entity.Property(e => e.People)
+                .HasMaxLength(8)
+                .HasColumnName("people");
             entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
             entity.Property(e => e.PrintAreaConfig)
                 .HasDefaultValueSql("'{}'::jsonb")
@@ -2259,6 +2462,11 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(20)
                 .HasColumnName("status");
             entity.Property(e => e.TriggeredBy).HasColumnName("triggered_by");
+
+            entity.HasOne(d => d.TriggeredByNavigation).WithMany(p => p.PlanAiReviews)
+                .HasForeignKey(d => d.TriggeredBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_plan_ai_reviews_triggered_by");
         });
 
         modelBuilder.Entity<PlanFeature>(entity =>
@@ -2296,6 +2504,11 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
             entity.Property(e => e.Value).HasColumnName("value");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.PlanSettings)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_plan_settings_updated_by");
         });
 
         modelBuilder.Entity<PrintifyIntegration>(entity =>
@@ -3275,6 +3488,24 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(30)
                 .HasColumnName("reason");
             entity.Property(e => e.SubscriptionId).HasColumnName("subscription_id");
+
+            entity.HasOne(d => d.CreatedByNavigation).WithMany(p => p.SubscriptionFeatureGrants)
+                .HasForeignKey(d => d.CreatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_subscription_feature_grants_created_by");
+
+            entity.HasOne(d => d.FeatureCodeNavigation).WithMany(p => p.SubscriptionFeatureGrants)
+                .HasForeignKey(d => d.FeatureCode)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("fk_subscription_feature_grants_feature");
+
+            entity.HasOne(d => d.Plan).WithMany(p => p.SubscriptionFeatureGrants)
+                .HasForeignKey(d => d.PlanId)
+                .HasConstraintName("fk_subscription_feature_grants_plan");
+
+            entity.HasOne(d => d.Subscription).WithMany(p => p.SubscriptionFeatureGrants)
+                .HasForeignKey(d => d.SubscriptionId)
+                .HasConstraintName("fk_subscription_feature_grants_subscription");
         });
 
         modelBuilder.Entity<SubscriptionPlan>(entity =>
@@ -3556,6 +3787,43 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("ticket_replies_support_ticket_id_fkey");
         });
 
+        modelBuilder.Entity<TranslationEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_entries_pkey");
+
+            entity.ToTable("translation_entries");
+
+            entity.HasIndex(e => new { e.SourceLocale, e.TargetLocale }, "idx_translation_entries_locale");
+
+            entity.HasIndex(e => new { e.SourceHash, e.SourceLocale, e.TargetLocale, e.Provider }, "translation_entries_lookup_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Provider)
+                .HasMaxLength(40)
+                .HasColumnName("provider");
+            entity.Property(e => e.SourceHash)
+                .HasMaxLength(64)
+                .HasColumnName("source_hash");
+            entity.Property(e => e.SourceLocale)
+                .HasMaxLength(10)
+                .HasColumnName("source_locale");
+            entity.Property(e => e.SourceText).HasColumnName("source_text");
+            entity.Property(e => e.TargetLocale)
+                .HasMaxLength(10)
+                .HasColumnName("target_locale");
+            entity.Property(e => e.TranslatedText).HasColumnName("translated_text");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("updated_at");
+        });
+
         modelBuilder.Entity<UsageAllowance>(entity =>
         {
             entity.HasKey(e => new { e.Scope, e.Code }).HasName("pk_usage_allowances");
@@ -3571,6 +3839,11 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.LimitValue).HasColumnName("limit_value");
             entity.Property(e => e.UpdatedAt).HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.UsageAllowances)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_usage_allowances_updated_by");
         });
 
         modelBuilder.Entity<UsageStatistic>(entity =>

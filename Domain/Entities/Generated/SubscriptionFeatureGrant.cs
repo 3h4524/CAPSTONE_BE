@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace APCS.Domain.Entities;
@@ -24,4 +24,12 @@ public partial class SubscriptionFeatureGrant
     public Guid? CreatedBy { get; set; }
 
     public DateTime CreatedAt { get; set; }
+
+    public virtual User? CreatedByNavigation { get; set; }
+
+    public virtual Feature FeatureCodeNavigation { get; set; } = null!;
+
+    public virtual SubscriptionPlan Plan { get; set; } = null!;
+
+    public virtual Subscription Subscription { get; set; } = null!;
 }

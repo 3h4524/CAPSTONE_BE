@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace APCS.Domain.Entities;
@@ -12,4 +12,6 @@ public partial class PlanSetting
     public DateTime? UpdatedAt { get; set; }
 
     public Guid? UpdatedBy { get; set; }
+
+    public virtual User? UpdatedByNavigation { get; set; }
 }

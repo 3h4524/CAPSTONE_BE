@@ -10,9 +10,9 @@ namespace APCS.Infrastructure.Services;
 
 public sealed class VeoVideoProvider(IHttpClientFactory clients, ILogger<VeoVideoProvider> logger) : IAiVideoGenerationStrategy
 {
-    public string ProviderKey => "gemini";
-    public string ModelKey => AiVideoModel.ModelKey;
-    public string ModelName => AiVideoModel.ModelName;
+    public string ProviderKey => VeoVideoModel.ProviderKey;
+    public string ModelKey => VeoVideoModel.ModelKey;
+    public string ModelName => VeoVideoModel.ModelName;
     // Google says why it refused a request in the response body; without it every refusal looks the same.
     private async Task<VeoProviderException> RefusedAsync(HttpResponseMessage response, string step, CancellationToken ct)
     {

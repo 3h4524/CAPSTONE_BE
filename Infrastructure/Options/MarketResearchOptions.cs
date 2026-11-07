@@ -14,7 +14,7 @@ public sealed class MarketResearchOptions
 
     public string[] Queries { get; set; } = [];
 
-    [Range(1, 100)]
+    [Range(1, 500)]
     public int LimitPerQuery { get; set; } = 25;
 
     [Range(0, 100)]
@@ -23,6 +23,12 @@ public sealed class MarketResearchOptions
     [Range(1, 25)]
     public int TopN { get; set; } = 3;
 
-    [Range(15, 10080)]
+    [Range(1, 10080)]
     public int IntervalMinutes { get; set; } = 1440;
+
+    [Range(1, 100)]
+    public int BatchSize { get; set; } = 5;
+
+    [Range(1, 10080)]
+    public int RunWindowMinutes { get; set; } = 120;
 }

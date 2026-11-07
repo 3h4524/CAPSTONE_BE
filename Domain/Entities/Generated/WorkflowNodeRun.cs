@@ -31,7 +31,7 @@ public partial class WorkflowNodeRun
 
     public DateTime UpdatedAt { get; set; }
 
-    public virtual MediaJob? MediaJob { get; set; }
+    public virtual ICollection<MediaJob> MediaJobs { get; set; } = new List<MediaJob>();
 
     public virtual WorkflowRun WorkflowRun { get; set; } = null!;
 }

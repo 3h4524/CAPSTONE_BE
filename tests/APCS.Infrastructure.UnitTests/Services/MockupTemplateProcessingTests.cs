@@ -174,14 +174,14 @@ public sealed class MockupTemplateProcessingTests
             Id = teeTemplateId, UserId = UserId, Name = "Tee Front", ProductType = "tshirt",
             BaseImageUrl = "https://res.cloudinary.com/demo/image/upload/v1700000000/apcs/mockup-templates/tee.jpg",
             PrintAreaConfig = "{\"x\":820,\"y\":640,\"width\":900,\"height\":1100}",
-            OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, UsageCount = 0, CreatedAt = now, UpdatedAt = now
+            OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, UsageCount = 0, Kind = "garment", CreatedAt = now, UpdatedAt = now
         });
         db.MockupTemplates.Add(new MockupTemplate
         {
             Id = mugTemplateId, UserId = UserId, Name = "Mug Front", ProductType = "mug",
             BaseImageUrl = "https://res.cloudinary.com/demo/image/upload/v1700000000/apcs/mockup-templates/mug.jpg",
             PrintAreaConfig = "{\"x\":100,\"y\":100,\"width\":300,\"height\":300}",
-            OutputWidthPx = 1200, OutputHeightPx = 1200, IsActive = true, UsageCount = 0, CreatedAt = now, UpdatedAt = now
+            OutputWidthPx = 1200, OutputHeightPx = 1200, IsActive = true, UsageCount = 0, Kind = "garment", CreatedAt = now, UpdatedAt = now
         });
 
         foreach (var (productType, suffix) in new[] { ("tshirt", "tee"), ("mug", "mug") })
@@ -232,7 +232,7 @@ public sealed class MockupTemplateProcessingTests
             Id = templateId, UserId = UserId, Name = "Tee Front", ProductType = "tshirt",
             BaseImageUrl = "https://res.cloudinary.com/demo/image/upload/v1700000000/apcs/mockup-templates/tee.jpg",
             PrintAreaConfig = "{\"x\":820,\"y\":640,\"width\":900,\"height\":1100,\"unit\":\"px\"}",
-            OutputWidthPx = 2000, OutputHeightPx = 2000, IsSystemTemplate = false, IsActive = true, UsageCount = 0,
+            OutputWidthPx = 2000, OutputHeightPx = 2000, IsSystemTemplate = false, IsActive = true, UsageCount = 0, Kind = "garment",
             CreatedAt = now, UpdatedAt = now
         });
         db.DesignImages.Add(new DesignImage
