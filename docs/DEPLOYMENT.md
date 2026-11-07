@@ -1,6 +1,6 @@
 # Deployment
 
-APCS runs on one Azure VM with Docker Compose behind one domain. Everything needed to rebuild the
+APCS runs on one cloud VM (Google Cloud by default, Azure as an alternative) with Docker Compose behind one domain. Everything needed to rebuild the
 VM lives in [`deploy/`](../deploy); secrets never enter the repository.
 
 ## Topology
@@ -53,6 +53,15 @@ Production-specific rules:
 - Admin "Run tests" (TestReports), the OCR text check, and the video-quality worker need tools that
   the runtime image does not contain; keep them disabled.
 
+## Without a domain
+
+The browser only keeps the `Secure` session cookies over HTTPS, so the app cannot run on a bare
+`http://<ip>`. Until a domain is bought, set `APP_DOMAIN=<ip>.sslip.io`: that name resolves to the
+IP and Caddy obtains a Let's Encrypt certificate for it. Switching to a real domain later means
+changing `APP_DOMAIN`, `App__BaseUrl`, `Cors__AllowedOrigins`, the frontend build variables, the
+Google OAuth origins, and the PayOS webhook. The dev database needs no domain: developers connect
+to `<ip>:5432`.
+
 ## Databases and roles
 
 Each Postgres container runs `deploy/postgres/init/01-roles.sh` on first start:
@@ -97,7 +106,8 @@ The `production` environment should require a reviewer and allow only `v*` tags.
 The `backup` container runs `deploy/backup/backup.sh` every day at 02:00 (Asia/Ho_Chi_Minh): a
 `pg_dump -Fc` of both databases, the Data Protection key ring, and a Redis snapshot, verified with
 `pg_restore --list`, uploaded with rclone to every remote in `BACKUP_REMOTES` (Azure Blob and Google
-Drive), and reported to Discord. It keeps 7 daily and 4 weekly sets; pre-deploy sets are kept for
+Drive), and reported to Discord. On Google Cloud the bucket is written with the VM's own service
+account (`RCLONE_CONFIG_GCS_ENV_AUTH=true`), so no key is stored. It keeps 7 daily and 4 weekly sets; pre-deploy sets are kept for
 30 days. Every Sunday at 03:00, `deploy/scripts/restore-test.sh` restores the latest production
 dump into a throwaway container and reports the result.
 
@@ -115,8 +125,9 @@ Restore with `deploy/scripts/restore-db.sh <prod|dev> <file.dump>` and
 
 ## Rebuilding the VM
 
-1. `deploy/provision/create-azure-resources.sh` (Azure CLI, idempotent) creates the resource
-   group, NSG, static IP, VM, and backup storage, and prints the backup SAS URL.
+1. `deploy/provision/create-gcp-resources.sh` (gcloud, idempotent) creates the static IP,
+   firewall rules, backup bucket, a service account the VM uses to write backups, and the VM.
+   `deploy/provision/create-azure-resources.sh` does the same on Azure.
 2. `deploy/provision/bootstrap-vm.sh` hardens SSH, adds swap, installs Docker, creates the
    `deploy` user and the dev database certificate, and schedules the weekly restore test.
 3. Copy `deploy/` and the env files, restore the latest backups, start the stack, and point DNS
