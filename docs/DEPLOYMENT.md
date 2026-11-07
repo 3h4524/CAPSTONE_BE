@@ -47,7 +47,9 @@ Production-specific rules:
 - The ONNX models download once into the `models` volume on first start.
 - `RateLimiting__*` tunes the app-wide limiter (`API/Extensions/ApiRateLimiting.cs`): per user,
   per anonymous IP, and stricter per-IP limits on the sign-in, registration, password, and OTP
-  endpoints. `/health`, `/internal/*`, `/hubs/*`, and the PayOS webhook are exempt.
+  endpoints. `/health`, `/internal/*`, `/hubs/*`, and the PayOS webhook are exempt. The limiter runs
+  after authentication and before authorization, so unauthenticated calls to protected endpoints
+  count too.
 - Admin "Run tests" (TestReports), the OCR text check, and the video-quality worker need tools that
   the runtime image does not contain; keep them disabled.
 

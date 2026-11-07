@@ -170,8 +170,8 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseCors("Frontend");
 app.UseAuthentication();
-app.UseAuthorization();
 app.UseRateLimiter();
+app.UseAuthorization();
 
 app.MapHub<SupportHub>("/hubs/support");
 app.MapHub<NotificationHub>("/hubs/notification");
