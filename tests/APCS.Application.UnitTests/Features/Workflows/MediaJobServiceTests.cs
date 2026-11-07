@@ -1,5 +1,7 @@
 using System.Text.Json;
+using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
+using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
 
@@ -8,6 +10,31 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 [TestClass]
 public sealed class MediaJobServiceTests
 {
+    [TestMethod]
+    public async Task ClaimAsync_ApprovedPublicDesign_ReturnsOriginalPublicImageUrl()
+    {
+        var fixture = await ExportFixtureAsync();
+        var job = fixture.JobRows.Single();
+        var product = fixture.ProductRows.Single();
+        var design = new DesignImage { Id = Guid.NewGuid(), ProductId = product.Id, ApprovalStatus = "approved",
+            StorageKey = "design/original", FileFormat = "jpeg", ImageUrl = "https://res.cloudinary.com/example/image/upload/v1/design/original.jpeg" };
+        var designs = new Mock<IRepository<DesignImage>>();
+        designs.Setup(x => x.GetByIdAsync(design.Id, It.IsAny<CancellationToken>())).ReturnsAsync(design);
+        var payload = WorkflowJson.Read<ExportJobPayload>(job.Payload);
+        job.Payload = WorkflowJson.Write(payload with { Designs = [new(design.Id, design.StorageKey, null, FileFormat: "jpeg")] });
+        SetupClaim(fixture);
+        fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), false)).Returns("https://example.invalid/private");
+        var service = new MediaJobService(fixture.Jobs.Object, fixture.Nodes.Object, fixture.Assets.Object, fixture.Videos.Object,
+            fixture.Scenes.Object, fixture.Exports.Object, fixture.Items.Object, fixture.State.Object, fixture.Unit.Object,
+            fixture.Storage.Object, fixture.Runtime, fixture.Time, designImages: designs.Object);
+
+        var result = await service.ClaimAsync(default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Assets.Should().ContainSingle(x => x.FileName == $"designs/{design.Id}" && x.Url == design.ImageUrl);
+        fixture.Storage.Verify(x => x.SignRead(design.StorageKey, It.IsAny<string>(), It.IsAny<string>(), false), Times.Never);
+    }
+
     [TestMethod]
     public async Task FailAsync_WrongLeaseToken_DoesNotCancelActiveWorker()
     {
@@ -25,16 +52,12 @@ public sealed class MediaJobServiceTests
     public async Task ClaimAsync_ApprovedExport_ReturnsOnlyApprovedVideoThumbnailAndSourceMockup()
     {
         var fixture = await ExportFixtureAsync();
-        var job = fixture.JobRows.Single();
         SetupClaim(fixture);
         fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), false)).Returns("https://example.invalid/expiring");
-        fixture.Storage.Setup(x => x.CreateUploadGrant(It.IsAny<string>(), It.IsAny<string>()))
-            .Returns((string key, string type) => new UploadGrant("https://example.invalid/upload", new Dictionary<string, string>(), key, type));
         var result = await fixture.MediaService.ClaimAsync(default);
         result.Value!.Assets.Select(x => x.FileName).Should().BeEquivalentTo($"mockups/{fixture.AssetRows.Single().Id}.png", "video.mp4", "thumbnail.png");
-        result.Value.Uploads.Keys.Should().Equal("zip");
-        result.Value.Uploads["zip"].StorageKey.Should().Be(WorkflowTestData.OutputKey(job, "package.zip"));
-        result.Value.Uploads["zip"].ResourceType.Should().Be("raw");
+        result.Value.Uploads.Should().BeEmpty();
+        fixture.Storage.Verify(x => x.CreateUploadGrant(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
         result.Value.Payload.GetProperty("manifest").GetRawText().Should().NotContain("https:").And.NotContain("prompt");
     }
 
@@ -59,17 +82,18 @@ public sealed class MediaJobServiceTests
         var fixture = await ExportFixtureAsync();
         var job = fixture.JobRows.Single();
         SetupVerification(fixture);
-        var completion = new JobCompletion(job.LeaseToken!.Value, WorkflowTestData.OutputKey(job, "package.zip"), "9", null, null, null);
+        var completion = LocalExportCompletion(job);
         var result = await fixture.MediaService.CompleteAsync(job.Id, completion, default);
         result.IsSuccess.Should().BeTrue();
         fixture.ExportRows.Single().Status.Should().Be("ready");
         fixture.ExportRows.Single().StorageKey.Should().Be(completion.StorageKey);
+        fixture.ExportRows.Single().StorageProvider.Should().Be("local");
         fixture.ItemRows.Single().ItemStatus.Should().Be("packed");
         fixture.RunRows.Single().Status.Should().Be("completed");
         fixture.RunRows.Single().CompletedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
         job.Status.Should().Be("succeeded");
         job.LeaseToken.Should().BeNull();
-        fixture.Storage.Verify(x => x.VerifyAsync(completion.StorageKey, "raw", "9", null, It.IsAny<CancellationToken>()), Times.Once);
+        fixture.LocalExports.Verify(x => x.VerifyAsync(completion.StorageKey, completion.StorageVersion, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -84,7 +108,7 @@ public sealed class MediaJobServiceTests
         if (reason == "source_rejected") fixture.AssetRows.Single().ApprovalStatus = "rejected";
         if (reason == "source_revision") fixture.AssetRows.Single().MetadataRevision++;
         SetupVerification(fixture);
-        var result = await fixture.MediaService.CompleteAsync(job.Id, new(job.LeaseToken!.Value, WorkflowTestData.OutputKey(job, "package.zip"), "9", null, null, null), default);
+        var result = await fixture.MediaService.CompleteAsync(job.Id, LocalExportCompletion(job), default);
         result.Error.Code.Should().Be(error);
         fixture.ExportRows.Single().Status.Should().Be("preparing");
         fixture.ItemRows.Single().ItemStatus.Should().Be("pending");
@@ -512,8 +536,14 @@ public sealed class MediaJobServiceTests
             });
     }
 
-    private static void SetupVerification(WorkflowTestData fixture) => fixture.Storage
-        .Setup(x => x.VerifyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+    private static void SetupVerification(WorkflowTestData fixture)
+    {
+        fixture.Storage.Setup(x => x.VerifyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        fixture.LocalExports.Setup(x => x.VerifyAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long?>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+    }
+
+    private static JobCompletion LocalExportCompletion(MediaJob job) =>
+        new(job.LeaseToken!.Value, $"local-export/{job.Id:D}/{job.LeaseToken.Value:D}", new string('a', 64), null, null, null);
 
     private static JobCompletion Completion(APCS.Domain.Entities.MediaJob job) => new(job.LeaseToken!.Value,
         WorkflowTestData.OutputKey(job, "video"), "1", WorkflowTestData.OutputKey(job, "thumbnail"), "1", WorkflowTestData.Qa());

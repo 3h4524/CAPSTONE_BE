@@ -102,9 +102,13 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             foreach (var design in payload.Designs ?? [])
             {
                 var source = designImages is null ? null : await designImages.GetByIdAsync(design.Id, ct);
-                if (source == null || source.ProductId != productId || source.DeletedAt != null || source.ApprovalStatus != "approved" || source.StorageKey != design.StorageKey)
+                if (source == null || source.ProductId != productId || source.DeletedAt != null || source.ApprovalStatus != "approved" ||
+                    source.StorageKey != design.StorageKey || design.FileFormat is not null && source.FileFormat != design.FileFormat ||
+                    !Uri.TryCreate(source.ImageUrl, UriKind.Absolute, out var designUri) || designUri.Scheme != Uri.UriSchemeHttps ||
+                    !string.Equals(designUri.Host, "res.cloudinary.com", StringComparison.OrdinalIgnoreCase) ||
+                    !designUri.AbsolutePath.Contains("/image/upload/", StringComparison.Ordinal))
                 { await FailAsync(job.Id, new(token, "An approved design is no longer available."), ct); return Result.Success<WorkerJob?>(null); }
-                workerAssets.Add(new(source.Id, storage.SignRead(source.StorageKey, "image"), $"designs/{source.Id}.png"));
+                workerAssets.Add(new(source.Id, source.ImageUrl, $"designs/{source.Id}"));
             }
             if (payload.Sources is { } sources && sources.VideoId == video.Id && sources.StoryboardFingerprint == payload.Storyboard?.Fingerprint)
             {
@@ -307,6 +311,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             "VeoSubmissionUncertain" or "AiVideoSubmissionUncertain" => "AI video request status is uncertain. Retry will not submit it again; choose Regenerate AI clips after checking provider usage.",
             "AiVideoBusy" => $"{note ?? "The AI video provider is busy or over quota."} Nothing was billed for it; choose Retry checkpoint once the quota allows it.",
             "SourceChanged" => "A source mock-up changed or is no longer approved. Approve the mock-ups again, then retry.",
+            "SourceDownloadFailed" => "An export source could not be downloaded. Check that the approved design, mock-ups and video are still available, then retry.",
             "AiShotRejected" or "AiShotFailed" when reason != null =>
                 $"The video provider did not generate this AI scene: {reason} Choose Retry checkpoint to submit it again; if it keeps refusing, change the source image or the motion direction.",
             "AiShotRejected" => "The video provider rejected this AI scene. Change its approved source or motion instruction, then regenerate AI clips.",

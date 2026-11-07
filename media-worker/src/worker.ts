@@ -180,9 +180,11 @@ async function execute(job: WorkerJob) {
           outputImages.push({ id: mockup.id, path: `mockup/mockup-${String(index + 1).padStart(2, "0")}.png`, file: source.file, version: mockup.storageVersion, sha256: mockup.sha256 });
         }
         for (const [index, design] of [...(payload.designs ?? [])].sort((a, b) => a.id.localeCompare(b.id)).entries()) {
-          const source = assets.get(`designs/${design.id}.png`);
+          const source = assets.get(`designs/${design.id}`);
           if (!source) throw new Error("An approved design disappeared during ZIP export");
-          outputImages.push({ id: design.id, path: `design/design-${String(index + 1).padStart(2, "0")}.png`, file: source.file });
+          const extension = (design.fileFormat ?? "png").toLowerCase();
+          if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new Error("An approved design has an invalid file format");
+          outputImages.push({ id: design.id, path: `design/design-${String(index + 1).padStart(2, "0")}.${extension}`, file: source.file });
         }
         const sourceSnapshot = payload.sources;
         const scenesReady = Boolean(sourceSnapshot && sourceSnapshot.videoId === payload.videoId &&
