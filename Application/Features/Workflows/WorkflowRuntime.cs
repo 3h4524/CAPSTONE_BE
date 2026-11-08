@@ -10,7 +10,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
-    IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null)
+    IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
+    Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -154,6 +155,19 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
                         approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest)), ct); return;
             }
+        }
+        // Publishing calls Printify and Etsy for up to minutes, so it runs in the background after this transaction
+        // commits; WorkflowPublishService finishes the step and advances the run again.
+        foreach (var type in WorkflowCapabilityRegistry.PublishSteps)
+        {
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null || node.Status == "succeeded") continue;
+            if (node.Status is "running" or "failed" or "cancelled") return;
+            node.Status = "running"; node.Stage = "Queued"; node.Progress = 5; node.ErrorMessage = null;
+            node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
+            node.UpdatedAt = time.GetUtcNow().UtcDateTime;
+            publishQueue?.Enqueue(node.Id);
+            return;
         }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
     }

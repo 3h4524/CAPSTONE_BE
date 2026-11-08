@@ -14,5 +14,11 @@ public sealed class VideoQualityOptions
     public int TimeoutSeconds { get; set; } = 90;
     /// <summary>Claims queued automatic scene-evaluation jobs. Disabled local tooling records a skipped result.</summary>
     public bool AutoEvaluate { get; set; } = true;
+    /// <summary>Wait after an empty poll, so a newly queued job starts within seconds.</summary>
     public int PollIntervalSeconds { get; set; } = 3;
+    /// <summary>
+    /// Longest wait between polls of an empty queue. Each empty poll doubles the wait up to this, so an idle
+    /// database can scale to zero (Neon suspends after 5 idle minutes) instead of being queried every few seconds.
+    /// </summary>
+    public int MaxIdlePollSeconds { get; set; } = 600;
 }

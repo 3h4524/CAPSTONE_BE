@@ -67,4 +67,7 @@ public static class ConfigurationSections
 
     /// <summary>Public Etsy market-research API settings.</summary>
     public const string Etsy = "Etsy";
+
+    /// <summary>Printify API settings; each seller brings their own access token.</summary>
+    public const string Printify = "Printify";
 }
