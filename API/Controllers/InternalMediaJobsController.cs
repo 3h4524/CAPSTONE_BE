@@ -3,12 +3,14 @@ using APCS.Api.Filters;
 using APCS.Application.Features.Workflows;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace APCS.Api.Controllers;
 
 [ApiController]
 [AllowAnonymous]
 [TypeFilter(typeof(MediaWorkerAuthorizationFilter))]
+[DisableRateLimiting]
 [Route("internal/media-jobs")]
 public sealed class InternalMediaJobsController(IMediaJobService service) : ControllerBase
 {

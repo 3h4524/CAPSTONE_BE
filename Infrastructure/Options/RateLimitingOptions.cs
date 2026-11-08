@@ -19,4 +19,7 @@ public sealed class RateLimitingOptions
 
     [Range(1, 1_000)]
     public int OtpPermitsPerMinute { get; set; } = 5;
+
+    [Range(1, 1_000)]
+    public int AssistantChatPermitsPerMinute { get; set; } = 20;
 }
