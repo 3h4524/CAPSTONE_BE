@@ -52,7 +52,12 @@ case "$target" in
     docker compose up -d --no-deps dozzle uptime-kuma backup
     if [ -n "$(docker compose ps -q caddy)" ]; then
       docker compose up -d --no-deps caddy
-      docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+      if docker compose exec -T caddy cmp -s - /etc/caddy/Caddyfile < Caddyfile; then
+        docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+      else
+        echo "Caddy still mounts a replaced Caddyfile; restarting it to pick up the new file"
+        docker compose restart caddy
+      fi
     else
       docker compose up -d --no-deps caddy
     fi
