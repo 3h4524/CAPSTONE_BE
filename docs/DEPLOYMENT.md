@@ -11,7 +11,7 @@ Secrets live only in Google Secret Manager; the repository holds templates and n
 | `caddy` | `caddy:2` | Internet, ports 80/443; issues the Let's Encrypt certificate |
 | `fe` | `asia-southeast1-docker.pkg.dev/apcs-prod/apcs/apcs-fe:<tag>` | Caddy only |
 | `api` | `.../apcs-api:<tag>` (`API/Dockerfile`) | Caddy and `media-worker` only |
-| `media-worker` | `.../apcs-media-worker:<tag>` (`media-worker/Dockerfile`) | nothing; it polls the API |
+| `media-worker` | `.../apcs-media-worker:<tag>` (`media-worker/Dockerfile`) | nothing; it reads jobs from the Redis stream and calls the API |
 | `redis` | `redis:7-alpine`, AOF and password | Docker network only |
 | `postgres-prod` | `pgvector/pgvector:pg18` | Docker network, and `127.0.0.1:2510` on the VM |
 | `postgres-dev` | `pgvector/pgvector:pg18`, SSL, **own compose project `apcs-dev`** (`deploy/dev-db/compose.yml`) | port 5432, the shared dev database; no release touches it |
@@ -33,6 +33,12 @@ changed together with the Callback URL registered on the Etsy app.
 
 The API runs exactly one instance: its work queues are in-memory channels, its scheduled jobs have
 no distributed lock, and SignalR has no backplane.
+
+Render and export-zip jobs use the stream queue (`MediaQueue__Mode=streams` in `api.env.tpl`,
+`MEDIA_QUEUE_MODE=streams` in `media-worker.env.tpl`): a trigger writes each queued job to
+`media_job_outbox`, the API publishes it to the Redis stream `apcs:prod:media:jobs`, and the worker
+consumes it with the `media-workers` group. Both sides must use the same mode, because the API answers
+409 to polling claims while it is in stream mode.
 
 ## Google Cloud resources
 
