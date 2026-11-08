@@ -21,6 +21,8 @@ Caddy routes one hostname by path: `/api/*`, `/hubs/*`, and `/health` go to the 
 answers 404, and everything else goes to the frontend. Frontend and API therefore share an origin,
 which the host-only `__Host-apcs_access` cookie and the frontend's server-side session check rely
 on. SSE is not buffered (`flush_interval -1`) and long AI calls get a 10-minute timeout.
+`api.<domain>` is an alias that serves only the API (for Postman, documentation and external
+webhooks); the browser app keeps using `<domain>/api` so the session cookies stay on one host.
 
 The API runs exactly one instance: its work queues are in-memory channels, its scheduled jobs have
 no distributed lock, and SignalR has no backplane.
@@ -75,7 +77,7 @@ only places the public host name appears. Until a domain is bought it is `<ip>.s
 resolves to the VM's IP so Caddy can still obtain a certificate (the app needs HTTPS: the session
 cookies are `Secure`). To move to a real domain:
 
-1. DNS: `A @ → <static IP>` and `A www → <static IP>`.
+1. DNS: `A @`, `A www` and `A api` → `<static IP>`.
 2. Change `APP_DOMAIN` (backend) and `APP_DOMAIN`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_SITE_URL` (frontend), merge into `production`, tag both repositories.
 3. Add `https://<domain>` to the Google OAuth client's authorized JavaScript origins and point the PayOS webhook at `https://<domain>/api/subscriptions/webhooks/payos`.
 

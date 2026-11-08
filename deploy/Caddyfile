@@ -49,3 +49,39 @@
 www.{$APP_DOMAIN} {
 	redir https://{$APP_DOMAIN}{uri} permanent
 }
+
+api.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 25MB
+	}
+
+	handle /internal/* {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
