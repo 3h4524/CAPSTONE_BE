@@ -12,4 +12,6 @@ public interface IWorkflowStateRepository
     Task<MediaJob?> ClaimAsync(DateTime now, Guid token, CancellationToken cancellationToken) =>
         ClaimAsync(now, token, "media", cancellationToken);
     Task<MediaJob?> ClaimAsync(DateTime now, Guid token, string capability, CancellationToken cancellationToken);
+    Task<MediaJob?> ClaimMediaAsync(Guid jobId, long queueVersion, DateTime now, Guid token, CancellationToken cancellationToken);
+    Task<string> GetMediaClaimStatusAsync(Guid jobId, long queueVersion, DateTime now, CancellationToken cancellationToken);
 }

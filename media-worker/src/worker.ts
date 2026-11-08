@@ -9,6 +9,7 @@ import { ApiError, failureCode } from "./failures";
 import { createZip, downloadAssets, pngSource, uploadFile } from "./media-files";
 import { RemotionVideoRenderer } from "./renderer";
 import { packageBatchExport, type ExportProduct } from "./batch-export";
+import { runMediaStream } from "./media-stream";
 
 const baseUrl = new URL(process.env.APCS_API_URL ?? "http://host.docker.internal:5191");
 const key = process.env.MEDIA_WORKER_API_KEY ?? "";
@@ -72,6 +73,7 @@ async function execute(job: WorkerJob) {
   const abort = new AbortController();
   const signal = AbortSignal.any([abort.signal, shutdown.signal, AbortSignal.timeout(30 * 60_000)]);
   let stage = "Planning", progress = 5, duringAiShot = false;
+  let settled = false;
   let heartbeatRunning = false;
   let consecutiveHeartbeatFailures = 0;
   const heartbeat = setInterval(() => {
@@ -226,16 +228,33 @@ async function execute(job: WorkerJob) {
       const output = await uploadLocalPackage(job, zip, signal);
       await api(`${job.id}/complete`, { leaseToken: job.leaseToken, storageKey: output.key, storageVersion: output.sha256, outputBytes: output.bytes }, signal);
     }
+    settled = true;
     process.stdout.write(`Media job ${job.id} completed.\n`);
   } catch (error) {
-    await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message: failureCode(error, duringAiShot) }, shutdown.signal).catch(() => {});
+    try { await api(`${job.id}/fail`, { leaseToken: job.leaseToken, message: failureCode(error, duringAiShot) }, shutdown.signal); settled = true; }
+    catch { /* Keep stream message pending until the lease is reconciled. */ }
     process.stderr.write(`Media job ${job.id} did not complete: ${error instanceof Error ? error.message : "unknown error"}.\n`);
   } finally {
     clearInterval(heartbeat); abort.abort();
     if (resolve(directory).startsWith(resolve(tmpdir()) + (process.platform === "win32" ? "\\" : "/")) && directory.includes("apcs-media-")) await rm(directory, { recursive: true, force: true });
   }
+  return settled;
 }
-while (!shutdown.signal.aborted) {
+const queueMode = (process.env.MEDIA_QUEUE_MODE ?? "polling").toLowerCase();
+if (queueMode !== "polling" && queueMode !== "streams") throw new Error("MEDIA_QUEUE_MODE must be polling or streams");
+if (queueMode === "streams") {
+  await runMediaStream(shutdown.signal, async event => {
+    while (!shutdown.signal.aborted) {
+      const result = await api(`${event.jobId}/claim`, { queueVersion: event.queueVersion }, shutdown.signal) as { status?: string; job?: unknown };
+      if (result.status === "obsolete") return true;
+      if (result.status === "busy") return false;
+      if (result.status === "claimed") return execute(workerJobSchema.parse(result.job));
+      if (result.status !== "not_due") throw new Error("Unexpected media claim response");
+      await delay(5000, undefined, { signal: shutdown.signal });
+    }
+    return false;
+  });
+} else while (!shutdown.signal.aborted) {
   try {
     const result = await api("claim", {}, shutdown.signal);
     if (result) await execute(workerJobSchema.parse(result));

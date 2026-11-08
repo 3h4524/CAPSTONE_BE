@@ -103,7 +103,7 @@ builder.Services
 
                 // SignalR fallback: Đọc Token từ URL nếu Cookie không đi kèm được trên WebSocket
                 var path = context.HttpContext.Request.Path;
-                if (string.IsNullOrEmpty(context.Token) && (path.StartsWithSegments("/hubs/support") || path.StartsWithSegments("/hubs/notification")))
+                if (string.IsNullOrEmpty(context.Token) && (path.StartsWithSegments("/hubs/support") || path.StartsWithSegments("/hubs/notification") || path.StartsWithSegments("/hubs/workflow")))
                 {
                     var accessTokenQuery = context.Request.Query["access_token"];
                     if (!string.IsNullOrEmpty(accessTokenQuery))
@@ -119,6 +119,7 @@ builder.Services
 
 builder.Services.AddAuthorization();
 builder.Services.AddSignalR();
+builder.Services.AddScoped<APCS.Application.Features.Workflows.ISceneVideoNotifier, APCS.Api.Hubs.SceneVideoNotifier>();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.ISupportTicketNotifier, APCS.Api.Hubs.SupportTicketNotifier>();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.INotificationHubClient, APCS.Api.Hubs.NotificationHubClient>();
 builder.Services.AddSingleton<APCS.Application.Features.TestReports.ITestReportRunBroadcaster, APCS.Api.Hubs.TestReportRunBroadcaster>();
@@ -174,6 +175,7 @@ app.UseRateLimiter();
 
 app.MapHub<SupportHub>("/hubs/support");
 app.MapHub<NotificationHub>("/hubs/notification");
+app.MapHub<WorkflowHub>("/hubs/workflow");
 app.MapControllers();
 app.MapHealthChecks("/health");
 

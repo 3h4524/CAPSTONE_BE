@@ -22,7 +22,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
-    IPlanEntitlementService entitlements) : IWorkflowRunService
+    IPlanEntitlementService entitlements, ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -265,7 +265,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         }
         else return Result.Failure<RunResponse>(Error.Validation("Unknown run action."));
         run.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(await MapAsync(run, ct));
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(run.Id, ct);
+        return Result.Success(await MapAsync(run, ct));
     }
     private async Task<RunResponse> MapAsync(WorkflowRun run, CancellationToken ct) => new(run.Id, run.WorkflowId, run.ProductId, run.Status,
         run.Revision, run.WorkflowRevision, run.CreatedAt, run.ErrorMessage,

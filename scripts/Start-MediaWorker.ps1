@@ -21,6 +21,12 @@ if ([string]::IsNullOrWhiteSpace($workerKey)) {
 
 $env:APCS_API_URL = "http://localhost:5191"
 $env:MEDIA_WORKER_API_KEY = $workerKey
+$queueMode = $settings["MediaQueue__Mode"]
+if (-not [string]::IsNullOrWhiteSpace($queueMode)) { $env:MEDIA_QUEUE_MODE = $queueMode }
+$queueUrl = $settings["MEDIA_QUEUE_REDIS_URL"]
+if (-not [string]::IsNullOrWhiteSpace($queueUrl)) { $env:MEDIA_QUEUE_REDIS_URL = $queueUrl }
+$queueStream = $settings["MediaQueue__Stream"]
+if (-not [string]::IsNullOrWhiteSpace($queueStream)) { $env:MEDIA_QUEUE_STREAM = $queueStream }
 if (-not [string]::IsNullOrWhiteSpace($aiSceneConcurrency)) {
     $env:AI_SCENE_CONCURRENCY = $aiSceneConcurrency
 }

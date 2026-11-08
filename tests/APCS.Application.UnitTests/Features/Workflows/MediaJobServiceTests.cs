@@ -11,6 +11,65 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 public sealed class MediaJobServiceTests
 {
     [TestMethod]
+    public async Task ClaimStreamAsync_EligibleJob_ReturnsClaimedJobWithSameLeaseToken()
+    {
+        var fixture = await ExportFixtureAsync();
+        var job = fixture.JobRows.Single();
+        using var cancellation = new CancellationTokenSource();
+        Guid claimedToken = Guid.Empty;
+        fixture.State.Setup(x => x.ClaimMediaAsync(job.Id, 4, WorkflowTestData.Now.UtcDateTime, It.IsAny<Guid>(), cancellation.Token))
+            .ReturnsAsync((Guid _, long _, DateTime _, Guid token, CancellationToken _) => { claimedToken = token; job.LeaseToken = token; return job; });
+        fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), false)).Returns("https://example.invalid/private");
+
+        var result = await fixture.MediaService.ClaimStreamAsync(job.Id, 4, cancellation.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be("claimed");
+        result.Value.Job.Should().NotBeNull();
+        result.Value.Job!.Id.Should().Be(job.Id);
+        claimedToken.Should().NotBeEmpty();
+        result.Value.Job.LeaseToken.Should().Be(claimedToken);
+        fixture.Transaction.Verify(x => x.CommitAsync(cancellation.Token), Times.Once);
+        fixture.State.Verify(x => x.GetMediaClaimStatusAsync(It.IsAny<Guid>(), It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.State.Verify(x => x.ClaimAsync(It.IsAny<DateTime>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow("busy")]
+    [DataRow("not_due")]
+    [DataRow("obsolete")]
+    public async Task ClaimStreamAsync_UnclaimableJob_ReturnsRepositoryDisposition(string status)
+    {
+        var fixture = new WorkflowTestData();
+        var jobId = Guid.NewGuid();
+        using var cancellation = new CancellationTokenSource();
+        fixture.State.Setup(x => x.ClaimMediaAsync(jobId, 3, WorkflowTestData.Now.UtcDateTime, It.IsAny<Guid>(), cancellation.Token)).ReturnsAsync((MediaJob?)null);
+        fixture.State.Setup(x => x.GetMediaClaimStatusAsync(jobId, 3, WorkflowTestData.Now.UtcDateTime, cancellation.Token)).ReturnsAsync(status);
+
+        var result = await fixture.MediaService.ClaimStreamAsync(jobId, 3, cancellation.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be(status);
+        result.Value.Job.Should().BeNull();
+        fixture.Transaction.Verify(x => x.CommitAsync(cancellation.Token), Times.Once);
+        fixture.State.Verify(x => x.GetMediaClaimStatusAsync(jobId, 3, WorkflowTestData.Now.UtcDateTime, cancellation.Token), Times.Once);
+    }
+
+    [TestMethod]
+    [DataRow(true, 1L)]
+    [DataRow(false, 0L)]
+    [DataRow(false, -1L)]
+    public async Task ClaimStreamAsync_InvalidIdOrVersion_ReturnsValidationBeforeOpeningTransaction(bool emptyId, long version)
+    {
+        var fixture = new WorkflowTestData();
+        var result = await fixture.MediaService.ClaimStreamAsync(emptyId ? Guid.Empty : Guid.NewGuid(), version, default);
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Be("A valid job ID and queue version are required.");
+        fixture.Unit.Verify(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+        fixture.State.Verify(x => x.ClaimMediaAsync(It.IsAny<Guid>(), It.IsAny<long>(), It.IsAny<DateTime>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task ClaimAsync_ApprovedPublicDesign_ReturnsOriginalPublicImageUrl()
     {
         var fixture = await ExportFixtureAsync();

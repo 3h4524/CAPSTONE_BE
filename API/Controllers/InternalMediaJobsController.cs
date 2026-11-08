@@ -10,14 +10,20 @@ namespace APCS.Api.Controllers;
 [AllowAnonymous]
 [TypeFilter(typeof(MediaWorkerAuthorizationFilter))]
 [Route("internal/media-jobs")]
-public sealed class InternalMediaJobsController(IMediaJobService service) : ControllerBase
+public sealed class InternalMediaJobsController(IMediaJobService service, IConfiguration? configuration = null) : ControllerBase
 {
     [HttpPost("claim")]
     public async Task<IActionResult> Claim(CancellationToken ct)
     {
+        var mode = configuration?["MediaQueue:Mode"] ?? "polling";
+        if (!string.Equals(mode, "polling", StringComparison.OrdinalIgnoreCase))
+            return Conflict(new { code = "MediaPollingDisabled" });
         var result = await service.ClaimAsync(ct);
         return result.IsSuccess && result.Value == null ? NoContent() : result.ToActionResult(this);
     }
+    [HttpPost("{id:guid}/claim")]
+    public async Task<IActionResult> ClaimStream(Guid id, MediaStreamClaimRequest request, CancellationToken ct) =>
+        (await service.ClaimStreamAsync(id, request.QueueVersion, ct)).ToActionResult(this);
     [HttpPost("{id:guid}/heartbeat")]
     public async Task<IActionResult> Heartbeat(Guid id, JobHeartbeat request, CancellationToken ct) => (await service.HeartbeatAsync(id, request, ct)).ToActionResult(this);
     [HttpPost("{id:guid}/package")]

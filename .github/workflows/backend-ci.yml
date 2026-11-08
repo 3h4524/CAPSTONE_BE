@@ -86,6 +86,9 @@ jobs:
       # so the container must not be downgraded below 18.
       APCS_TEST_CONNECTION_STRING: "Host=127.0.0.1;Port=5432;Database=apcs;Username=apcs;Password=apcs;SSL Mode=Disable"
       APCS_TEST_REDIS_CONNECTION_STRING: "127.0.0.1:6379,abortConnect=false"
+      APCS_TEST_DISPATCHER_POSTGRES: "Host=127.0.0.1;Port=5432;Database=postgres;Username=apcs;Password=apcs;SSL Mode=Disable"
+      APCS_TEST_DISPATCHER_REDIS: "127.0.0.1:6379,abortConnect=false"
+      APCS_TEST_REDIS_URL: "redis://127.0.0.1:6379"
       # Opt-in truncation so each test class starts clean. The tests only truncate
       # when this matches the database named in the connection string.
       APCS_TEST_RESET_DATABASE: apcs
@@ -106,8 +109,26 @@ jobs:
       - name: Build
         run: dotnet build Capstone.sln -c Release
 
+      # Provision the shared test database before solution-wide projects run in parallel.
+      - name: Prepare application schema
+        run: dotnet test tests/APCS.Infrastructure.IntegrationTests/APCS.Infrastructure.IntegrationTests.csproj -c Release --no-build -- --filter "FullyQualifiedName~MediaJobRepositoryTests"
+
       - name: Run integration tests
         run: dotnet test Capstone.sln -c Release --no-build -- --results-directory "$GITHUB_WORKSPACE/TestResults"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: media-worker/package-lock.json
+
+      - name: Run media worker tests
+        working-directory: media-worker
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check
+          npm test
 
       - name: Upload test results
         if: always()
