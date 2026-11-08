@@ -29,6 +29,9 @@ RateLimiting__OtpPermitsPerMinute=5
 RateLimiting__AssistantChatPermitsPerMinute=20
 
 MediaWorker__ApiKey=${MEDIA_WORKER_API_KEY}
+MediaQueue__Mode=streams
+MediaQueue__RedisConnectionString=redis:6379,password=${REDIS_PASSWORD},abortConnect=false
+MediaQueue__Stream=apcs:prod:media:jobs
 
 Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
 
@@ -68,4 +71,5 @@ Translation__ApiKey=${TRANSLATION_API_KEY}
 
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
+VideoQuality__AutoEvaluate=false
 MarketResearch__Scheduled__Enabled=false
