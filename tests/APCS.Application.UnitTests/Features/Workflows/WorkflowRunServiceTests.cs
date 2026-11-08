@@ -426,6 +426,20 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task GetAsync_RunningRunWithFailedJob_OnlyReads()
+    {
+        var fixture = new WorkflowTestData();
+        var run = fixture.AddRun(fixture.AddProduct());
+        var job = fixture.AddJob(run); job.Status = "failed"; job.ErrorMessage = "Worker lease expired after maximum attempts.";
+        var result = await fixture.RunService.GetAsync(run.Id, default);
+        result.Value.Status.Should().Be("running");
+        run.Status.Should().Be("running");
+        fixture.Unit.Verify(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        fixture.State.Verify(x => x.LockRunAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task GetAsync_StoredRun_ReadsSnapshotAndCheckpointState()
     {
         var fixture = new WorkflowTestData();

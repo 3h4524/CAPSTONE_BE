@@ -117,7 +117,21 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [HttpGet("promo-videos/{id:guid}/download")]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct) => (await media.DownloadAsync(id, false, ct)).ToActionResult(this);
     [HttpGet("video-exports/{id:guid}/download")]
-    public async Task<IActionResult> DownloadZip(Guid id, CancellationToken ct) => (await media.DownloadAsync(id, true, ct)).ToActionResult(this);
+    public async Task<IActionResult> DownloadZip(Guid id, CancellationToken ct)
+    {
+        var result = await media.DownloadAsync(id, true, ct);
+        return result.IsSuccess && result.Value == "local"
+            ? Ok(Url.ActionLink(nameof(DownloadLocalZip), values: new { id }))
+            : result.ToActionResult(this);
+    }
+    [HttpGet("video-exports/{id:guid}/file")]
+    public async Task<IActionResult> DownloadLocalZip(Guid id, CancellationToken ct)
+    {
+        var result = await media.OpenLocalExportAsync(id, ct);
+        return result.IsSuccess
+            ? File(result.Value, "application/zip", $"video-package-{id:N}.zip")
+            : result.ToActionResult(this);
+    }
 }
 
 public sealed class AiStudioFrameFormRequest

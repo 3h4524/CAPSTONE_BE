@@ -11,6 +11,7 @@ const sceneFields = {
   startScale: z.number().min(.01).max(5).optional(), endScale: z.number().min(.01).max(5).optional(), startRotation: z.number().min(-9999).max(9999).optional(), endRotation: z.number().min(-9999).max(9999).optional(),
   trimStartFrames: z.number().int().min(0).max(870).default(0), trimEndFrames: z.number().int().min(0).max(870).default(0), transitionFrames: z.number().int().min(0).max(30).default(0),
   transition: z.enum(["none", "fade", "swipe", "zoom", "flash", "whip_pan", "blur", "cut"]), text: z.string().max(120), warnings: z.array(z.string()),
+  aiCropPosition: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).nullable().optional(),
 };
 export const sceneSchema = z.discriminatedUnion("generationStrategy", [
   z.object({ ...sceneFields, motion: z.enum(standardMotions), generationStrategy: z.literal("standard") }),
@@ -28,7 +29,7 @@ export const storyboardSchema = z.object({ template: z.enum(["product_showcase",
   .refine(b => b.outputDurationFrames == null
     ? b.scenes.reduce((n, s) => n + s.durationFrames, 0) - b.transitionOverlapFrames === b.durationSeconds * 30
     : b.scenes.reduce((n, s) => n + s.durationFrames, 0) === b.outputDurationFrames, "Scene duration mismatch")
-  .refine(b => b.mode === "standard" ? b.scenes.length >= 2 && b.scenes.every(s => s.generationStrategy === "standard") : (b.aiShots?.length ?? 0) === b.scenes.filter(s => s.generationStrategy === "ai_shot").length, "AI scene mismatch")
+  .refine(b => b.mode === "standard" ? b.scenes.every(s => s.generationStrategy === "standard") && (b.aiShots?.length ?? 0) === 0 : (b.aiShots?.length ?? 0) === b.scenes.filter(s => s.generationStrategy === "ai_shot").length, "Scene generation strategy does not match storyboard mode")
   .superRefine((board, context) => {
     if (board.durationPolicyVersion < 2) return;
     if (board.durationSeconds < 5 || board.durationSeconds > 15)
@@ -42,12 +43,20 @@ export const storyboardSchema = z.object({ template: z.enum(["product_showcase",
   })
   .refine(b => { const expected = outputFormats[b.outputFormat]; return b.width === expected.width && b.height === expected.height && b.aspectRatio === expected.aspectRatio; }, "Output format dimensions do not match");
 export const uploadSchema = z.object({ url: z.string().url(), fields: z.record(z.string(), z.string()), storageKey: z.string(), resourceType: z.enum(["image", "video", "raw"]) });
-export const workerJobSchema = z.object({ id: z.string().uuid(), leaseToken: z.string().uuid(), kind: z.enum(["render", "export_zip"]), payload: z.unknown(), assets: z.array(z.object({ mockupId: z.string().uuid(), url: z.string().url(), fileName: z.string() })).max(20), uploads: z.record(z.string(), uploadSchema) });
+export const workerJobSchema = z.object({ id: z.string().uuid(), leaseToken: z.string().uuid(), kind: z.enum(["render", "export_zip"]), payload: z.unknown(), assets: z.array(z.object({ mockupId: z.string().uuid(), url: z.string().url(), fileName: z.string() })).max(100), uploads: z.record(z.string(), uploadSchema) });
 export const renderPayloadSchema = z.object({ videoId: z.string().uuid(), storyboard: storyboardSchema, aiShotStates: z.array(z.object({ sceneOrder: z.number().int(), fingerprint: z.string(), status: z.string() })).optional() });
-export const exportPayloadSchema = z.object({ exportId: z.string().uuid(), videoId: z.string().uuid(), manifest: z.object({ schemaVersion: z.literal(1), productId: z.string().uuid(), videoId: z.string().uuid(), version: z.number().int(), mode: z.enum(["standard", "ai_shot"]), fingerprint: z.string(), approvedRevision: z.number(), video: z.literal("video.mp4"), thumbnail: z.literal("thumbnail.png"), scenes: z.array(z.object({ order: z.number(), mockupId: z.string().uuid(), sourceRevision: z.number(), sourceHash: z.string().length(64), generationStrategy: z.enum(["standard", "ai_shot"]), source: z.string() })), modelPhotos: z.array(z.object({ mockupId: z.string().uuid(), sourceHash: z.string().length(64), source: z.string().regex(/^model-photos\/[a-f0-9-]{36}\.png$/) }).strict()).max(8).optional() }).strict() });
+export const exportPayloadSchema = z.object({ exportId: z.string().uuid(), videoId: z.string().uuid(), videoStorageKey: z.string().optional(), videoStorageVersion: z.string().optional(), thumbnailStorageKey: z.string().optional(), thumbnailStorageVersion: z.string().optional(), manifest: z.object({ schemaVersion: z.literal(1), productId: z.string().uuid(), videoId: z.string().uuid(), version: z.number().int(), mode: z.enum(["standard", "ai_shot"]), fingerprint: z.string(), approvedRevision: z.number(), video: z.literal("video.mp4"), thumbnail: z.literal("thumbnail.png"), scenes: z.array(z.object({ order: z.number(), mockupId: z.string().uuid(), sourceRevision: z.number(), sourceHash: z.string().length(64), generationStrategy: z.enum(["standard", "ai_shot"]), source: z.string() })), modelPhotos: z.array(z.object({ mockupId: z.string().uuid(), sourceHash: z.string().length(64), source: z.string().regex(/^model-photos\/[a-f0-9-]{36}\.png$/) }).strict()).max(8).optional() }).strict(),
+  productName: z.string().nullable().optional(), productType: z.string().nullable().optional(),
+  approvedMockups: z.array(z.object({ id: z.string().uuid(), storageKey: z.string(), storageVersion: z.string().nullable(), sha256: z.string().nullable(), revision: z.number().int() })).optional(),
+  designs: z.array(z.object({ id: z.string().uuid(), storageKey: z.string(), storageVersion: z.string().nullable(), sha256: z.string().nullable(), revision: z.number().int(), fileFormat: z.string().nullable().optional() })).optional(),
+  listing: z.object({ title: z.string(), description: z.string(), tags: z.array(z.string()), version: z.number().int() }).nullable().optional(),
+  storyboard: storyboardSchema.nullable().optional(),
+  sources: z.object({ version: z.number().int(), videoId: z.string().uuid(), storyboardFingerprint: z.string(), scenes: z.array(z.object({ sceneOrder: z.number().int(), mockupId: z.string().uuid(), sourceRevision: z.number().int(), sourceHash: z.string().length(64), imageStorageKey: z.string(), imageStorageVersion: z.string().nullable(), clipFingerprint: z.string().nullable(), clipStorageKey: z.string().nullable(), clipStorageVersion: z.string().nullable() })) }).nullable().optional()
+});
 export type Storyboard = z.infer<typeof storyboardSchema>;
 export type Scene = z.infer<typeof sceneSchema>;
 export type WorkerJob = z.infer<typeof workerJobSchema>;
 export type Upload = z.infer<typeof uploadSchema>;
 export type RenderProps = { storyboard: Storyboard; sources: Record<string, { url: string; width: number; height: number }>; clips?: Record<number, string>; music?: string };
+export type SceneRenderProps = RenderProps & { sceneOrder: number; finalVideo?: string };
 export interface MediaQa { codec: string; pixelFormat: string; width: number; height: number; fps: number; durationSeconds: number; bytes: number; hasAudio: boolean; fullDecode: boolean }

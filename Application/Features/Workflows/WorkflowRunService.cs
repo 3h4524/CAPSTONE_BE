@@ -22,7 +22,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
-    IPlanEntitlementService entitlements) : IWorkflowRunService
+    IPlanEntitlementService entitlements, ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -74,17 +74,13 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Result.Success(await MapAsync(run, ct));
     }
+    // Only reads: it is polled while a video renders, so it must not lock the run the worker writes to. A job that
+    // failed without the worker reporting it is caught up in the background (WorkflowRunReconciler).
     public async Task<Result<RunResponse>> GetAsync(Guid id, CancellationToken ct)
     {
-        await using var tx = await uow.BeginTransactionAsync(ct);
-        var run = await state.LockRunAsync(id, ct);
+        var run = await runs.GetByIdAsync(id, ct);
         if (run is null || run.UserId != user.UserId) return Result.Failure<RunResponse>(Missing());
-        if (run.Status == "running")
-        {
-            var failed = (await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)).FirstOrDefault();
-            if (failed != null) await runtime.FailAsync(run, failed.WorkflowNodeRunId, failed.ErrorMessage ?? "Render failed.", ct);
-        }
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(await MapAsync(run, ct));
+        return Result.Success(await MapAsync(run, ct));
     }
     public async Task<Result<RunResponse>> GetLatestAsync(Guid workflowId, CancellationToken ct)
     {
@@ -279,7 +275,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         }
         else return Result.Failure<RunResponse>(Error.Validation("Unknown run action."));
         run.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(await MapAsync(run, ct));
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(run.Id, ct);
+        return Result.Success(await MapAsync(run, ct));
     }
     private async Task<RunResponse> MapAsync(WorkflowRun run, CancellationToken ct) => new(run.Id, run.WorkflowId, run.ProductId, run.Status,
         run.Revision, run.WorkflowRevision, run.CreatedAt, run.ErrorMessage,

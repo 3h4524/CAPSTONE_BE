@@ -2,9 +2,15 @@
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string | null) { super(`Internal API rejected request (${status}${code ? ` ${code}` : ""})`); }
 }
+export class SourceDownloadError extends Error {
+  constructor(fileName: string, status: number) {
+    super(`Could not download ${fileName} (HTTP ${status})`);
+  }
+}
 
 // What the API is told when a job stops. Only a failure of an AI scene is reported as one: a Standard video has none.
 export function failureCode(error: unknown, duringAiShot: boolean): string {
+  if (error instanceof SourceDownloadError) return "SourceDownloadFailed";
   if (!duringAiShot) return "MediaProcessingFailed";
   if (!(error instanceof ApiError)) return "AiShotFailed";
   if (error.code === "VeoSubmissionUncertain" || error.code === "AiVideoSubmissionUncertain" || error.code === "SourceChanged") return error.code;

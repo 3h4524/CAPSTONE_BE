@@ -6,6 +6,7 @@ using APCS.Common.Models;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Moq;
 
 namespace APCS.Api.UnitTests.Controllers;
@@ -13,6 +14,61 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class InternalMediaJobsControllerTests
 {
+    [TestMethod]
+    [DataRow("busy")]
+    [DataRow("not_due")]
+    [DataRow("obsolete")]
+    public async Task ClaimStream_UnclaimableJob_ForwardsDispositionAndCancellation(string status)
+    {
+        var service = new Mock<IMediaJobService>(MockBehavior.Strict);
+        var id = Guid.NewGuid(); using var cancellation = new CancellationTokenSource();
+        var response = new MediaStreamClaimResponse(status, null);
+        service.Setup(x => x.ClaimStreamAsync(id, 7, cancellation.Token)).ReturnsAsync(Result.Success(response));
+
+        var result = await new InternalMediaJobsController(service.Object).ClaimStream(id, new(7), cancellation.Token);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(response);
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task ClaimStream_ClaimedJob_ReturnsJobAndLeaseToken()
+    {
+        var service = new Mock<IMediaJobService>(MockBehavior.Strict);
+        var job = VideoWorkflowTestData.Job();
+        service.Setup(x => x.ClaimStreamAsync(job.Id, 2, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new MediaStreamClaimResponse("claimed", job)));
+
+        var result = await new InternalMediaJobsController(service.Object).ClaimStream(job.Id, new(2), default);
+
+        var response = result.Should().BeOfType<OkObjectResult>().Which.Value.Should().BeOfType<MediaStreamClaimResponse>().Subject;
+        response.Status.Should().Be("claimed");
+        response.Job!.LeaseToken.Should().Be(job.LeaseToken);
+        response.Job.Id.Should().Be(job.Id);
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task ClaimStream_InvalidInput_ReturnsBadRequest()
+    {
+        var service = new Mock<IMediaJobService>(MockBehavior.Strict);
+        service.Setup(x => x.ClaimStreamAsync(Guid.Empty, 0, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MediaStreamClaimResponse>(Error.Validation("A valid job ID and queue version are required.")));
+        var result = await new InternalMediaJobsController(service.Object).ClaimStream(Guid.Empty, new(0), default);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(400);
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task Claim_StreamsMode_ReturnsConflictWithoutCallingLegacyClaim()
+    {
+        var service = new Mock<IMediaJobService>(MockBehavior.Strict);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["MediaQueue:Mode"] = "streams" }).Build();
+        var result = await new InternalMediaJobsController(service.Object, config).Claim(default);
+        result.Should().BeOfType<ConflictObjectResult>().Which.StatusCode.Should().Be(409);
+        service.Verify(x => x.ClaimAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [TestMethod]
     public async Task Claim_QueueFailure_ReturnsProblemInsteadOfAccessingAbsentSuccessValue()
     {

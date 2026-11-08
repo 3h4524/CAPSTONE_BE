@@ -29,9 +29,9 @@ public sealed class VideoStoryboardPlanner
         if (config.DurationSeconds is < VideoDurationPolicy.MinimumVideoSeconds or > VideoDurationPolicy.MaximumVideoSeconds)
             return Result.Failure<Storyboard>(Error.Validation("New videos must be 5-15 seconds."));
         if (!ValidVideoEdit(config.VideoEdit)) return Result.Failure<Storyboard>(Error.Validation("Video text or music settings are invalid."));
-        if (config.Mode == "ai_shot" && config.OutputFormat == "square" &&
-            (config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard")))
-            return Result.Failure<Storyboard>(Error.Validation("AI video supports portrait or landscape output."));
+        if (config.AiScenes?.Any(scene => scene.AiCropPosition is { } p &&
+            (!double.IsFinite(p.X) || !double.IsFinite(p.Y) || p.X is < 0 or > 1 || p.Y is < 0 or > 1)) == true)
+            return Result.Failure<Storyboard>(Error.Validation("AI scene crop position must be between 0 and 1."));
         var eligible = assets.Where(x => x.ProductId == product.Id && x.DeletedAt == null && x.ApprovalStatus == "approved" &&
             x.ApprovedRevision == x.MetadataRevision && !string.IsNullOrEmpty(x.ContentHash)).ToList();
         var hasSceneTimeline = config.AiScenes is { Count: > 0 } &&
@@ -321,7 +321,8 @@ public sealed class VideoStoryboardPlanner
                 AiModelName = modelName,
                 AiResolution = AiVideoModel.Resolution,
                 AiPricePerSecondUsd = modelPrice,
-                AiPromptTrace = promptTrace
+                AiPromptTrace = promptTrace,
+                AiCropPosition = requested.AiCropPosition
             };
             var fingerprint = WorkflowJson.Hash(WorkflowJson.Write(new
             {
@@ -332,7 +333,7 @@ public sealed class VideoStoryboardPlanner
                 definition.Code,
                 definition.PromptVersion,
                 // Timeline trims and boundary transitions alter the final composition only; they must not spend for a new AI clip.
-                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null, AiVideoModelKey = null },
+                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null, AiVideoModelKey = null, AiCropPosition = null },
                 prompt,
                 Provider = AiVideoModel.ProviderKey,
                 ModelKey = modelKey,
@@ -340,7 +341,7 @@ public sealed class VideoStoryboardPlanner
                 Resolution = AiVideoModel.Resolution,
                 PricePerSecondUsd = modelPrice,
                 Duration = requested.DurationSeconds,
-                Aspect = VideoOutputFormats.Resolve(config.OutputFormat).AspectRatio,
+                Aspect = VideoOutputFormats.AiSourceAspect(config.OutputFormat),
                 index
             }));
             plannedScenes.Add(scene);

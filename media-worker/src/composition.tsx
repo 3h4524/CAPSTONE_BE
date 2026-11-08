@@ -1,6 +1,7 @@
 import { getSceneFrame, getShotImageGeometry, getTransitionFrameStyle, type StandardVideoScene, type StandardVideoSource, type VideoTransition } from "@apcs/video-composition";
 import { AbsoluteFill, Audio, Composition, Freeze, Img, OffthreadVideo, Sequence, interpolate, registerRoot, useCurrentFrame } from "remotion";
-import type { RenderProps } from "./contracts";
+import type { RenderProps, SceneRenderProps } from "./contracts";
+import { sceneTimelineOffset } from "./scene-timing";
 
 function Shot({ scene, source, width, height }: { scene: StandardVideoScene; source: StandardVideoSource; width: number; height: number }) {
   const frame = useCurrentFrame();
@@ -18,13 +19,30 @@ function Shot({ scene, source, width, height }: { scene: StandardVideoScene; sou
   </AbsoluteFill>;
 }
 
-function OverlayLayer({ storyboard }: { storyboard: RenderProps["storyboard"] }) {
-  const frame = useCurrentFrame(); const overlays = storyboard.videoEdit?.overlays ?? [];
+function OverlayLayer({ storyboard, frameOffset = 0 }: { storyboard: RenderProps["storyboard"]; frameOffset?: number }) {
+  const frame = useCurrentFrame() + frameOffset; const overlays = storyboard.videoEdit?.overlays ?? [];
   return <>{overlays.filter(item => frame >= item.startFrame && frame < item.endFrame).map(item => {
     const local = Math.min(frame - item.startFrame, item.endFrame - frame - 1);
     const opacity = Math.min(1, Math.max(0, local / 6));
     return <div key={item.id} style={{ position: "absolute", left: `${item.x * 100}%`, top: `${item.y * 100}%`, transform: "translate(-50%, -50%)", maxWidth: "78%", padding: item.type === "cta" ? "18px 30px" : "10px 16px", color: item.textColor, background: item.preset === "minimal" || item.preset === "outline" ? "transparent" : item.backgroundColor, border: item.preset === "outline" ? `3px solid ${item.textColor}` : undefined, borderRadius: item.preset === "pill" ? 999 : 8, fontFamily: "Arial, sans-serif", fontWeight: item.preset === "bold" || item.type === "cta" ? 700 : 500, fontSize: `${Math.round(item.fontScale * Math.min(storyboard.width, storyboard.height))}px`, lineHeight: 1.1, textAlign: item.align, opacity, overflowWrap: "anywhere" }}>{item.text}</div>;
   })}</>;
+}
+
+function ExportScene({ storyboard, sources, clips = {}, sceneOrder, finalVideo }: SceneRenderProps) {
+  const scene = storyboard.scenes.find(item => item.sceneOrder === sceneOrder);
+  if (!scene) throw new Error("Scene is not in the video snapshot");
+  const source = sources[scene.mockupId];
+  if (!source) throw new Error("Missing immutable scene source");
+  const offset = sceneTimelineOffset(storyboard, sceneOrder);
+  const hasAudio = storyboard.videoEdit?.music && !storyboard.videoEdit.music.muted;
+  if (hasAudio && !finalVideo) throw new Error("Missing final video audio source");
+  return <AbsoluteFill style={{ backgroundColor: "#111827", overflow: "hidden" }}>
+    {scene.generationStrategy === "ai_shot"
+      ? <AiClip src={clips[scene.sceneOrder]} width={storyboard.width} height={storyboard.height} text={scene.text} trimStartFrames={scene.trimStartFrames} cropPosition={scene.aiCropPosition} />
+      : <Shot scene={scene} source={source} width={storyboard.width} height={storyboard.height} />}
+    <OverlayLayer storyboard={storyboard} frameOffset={offset} />
+    {hasAudio && finalVideo && <Audio src={finalVideo} startFrom={offset} />}
+  </AbsoluteFill>;
 }
 
 function Music({ storyboard, src }: { storyboard: RenderProps["storyboard"]; src?: string }) {
@@ -55,7 +73,7 @@ function Showcase({ storyboard, sources, clips = {}, music }: RenderProps) {
         sceneIndex={index} durationFrames={scene.durationFrames} generationStrategy={scene.generationStrategy}
         legacy={legacy}>
         {scene.generationStrategy === "ai_shot"
-          ? <AiClip src={clips[scene.sceneOrder]} width={storyboard.width} height={storyboard.height} text={scene.text} trimStartFrames={scene.trimStartFrames} />
+          ? <AiClip src={clips[scene.sceneOrder]} width={storyboard.width} height={storyboard.height} text={scene.text} trimStartFrames={scene.trimStartFrames} cropPosition={scene.aiCropPosition} />
           : <Shot scene={scene} source={source} width={storyboard.width} height={storyboard.height} />}
       </TransitionLayer>
     </Sequence>;
@@ -88,19 +106,23 @@ function TransitionLayer({ children, transitionIn, transitionOut, overlapFrames,
   </AbsoluteFill>;
 }
 
-function AiClip({ src, width, height, text, trimStartFrames }: { src?: string; width: number; height: number; text: string; trimStartFrames: number }) {
+function AiClip({ src, width, height, text, trimStartFrames, cropPosition }: { src?: string; width: number; height: number; text: string; trimStartFrames: number; cropPosition?: { x: number; y: number } | null }) {
   if (!src) throw new Error("Missing AI Shot clip");
   const inset = Math.round(Math.min(width, height) * .074);
   const captionFontSize = Math.round(Math.min(width, height) * .048);
-  return <AbsoluteFill style={{ backgroundColor: "#111827" }}><OffthreadVideo src={src} muted startFrom={trimStartFrames} style={{ width, height, objectFit: "cover" }} />
+  return <AbsoluteFill style={{ backgroundColor: "#111827" }}><OffthreadVideo src={src} muted startFrom={trimStartFrames} style={{ width, height, objectFit: "cover", objectPosition: `${(cropPosition?.x ?? .5) * 100}% ${(cropPosition?.y ?? .5) * 100}%` }} />
     {text && <div style={{ position: "absolute", bottom: Math.round(height * .079), left: inset, right: inset, padding: `${Math.round(captionFontSize * .54)}px ${Math.round(captionFontSize * .69)}px`, backgroundColor: "rgba(0,0,0,.72)", color: "white", fontSize: captionFontSize, lineHeight: 1.35, fontFamily: "Arial, sans-serif", textAlign: "center", overflowWrap: "anywhere" }}>{text}</div>}
   </AbsoluteFill>;
 }
 
 function Root() {
-  return <Composition id="APCS-Standard" component={Showcase} width={1080} height={1920} fps={30} durationInFrames={360}
-    defaultProps={{ storyboard: { template: "product_showcase", templateVersion: 1, durationSeconds: 12, productType: "tshirt", fingerprint: "", outputFormat: "portrait", width: 1080, height: 1920, aspectRatio: "9:16", mode: "standard", transitionOverlapFrames: 0, scenes: [], durationPolicyVersion: 1 }, sources: {} }}
-    calculateMetadata={({ props }) => ({ durationInFrames: props.storyboard.outputDurationFrames ?? props.storyboard.durationSeconds * 30, width: props.storyboard.width, height: props.storyboard.height })} />;
+  const defaults: RenderProps = { storyboard: { template: "product_showcase", templateVersion: 1, durationSeconds: 12, productType: "tshirt", fingerprint: "", outputFormat: "portrait", width: 1080, height: 1920, aspectRatio: "9:16", mode: "standard", transitionOverlapFrames: 0, scenes: [], durationPolicyVersion: 1 }, sources: {} };
+  return <><Composition id="APCS-Standard" component={Showcase} width={1080} height={1920} fps={30} durationInFrames={360}
+    defaultProps={defaults}
+    calculateMetadata={({ props }) => ({ durationInFrames: props.storyboard.outputDurationFrames ?? props.storyboard.durationSeconds * 30, width: props.storyboard.width, height: props.storyboard.height })} />
+    <Composition id="APCS-Export-Scene" component={ExportScene} width={1080} height={1920} fps={30} durationInFrames={30}
+      defaultProps={{ ...defaults, sceneOrder: 0 }}
+      calculateMetadata={({ props }) => ({ durationInFrames: props.storyboard.scenes.find(scene => scene.sceneOrder === props.sceneOrder)?.durationFrames ?? 30, width: props.storyboard.width, height: props.storyboard.height })} /></>;
 }
 
 registerRoot(Root);

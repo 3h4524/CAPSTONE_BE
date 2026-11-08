@@ -25,7 +25,8 @@ public interface IAiShotJobService
 public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<MockupImage> assets,
     IAiVideoCredentialResolver videoCredentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
-    IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null) : IAiShotJobService
+    IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null,
+    ISceneVideoNotifier? sceneNotifier = null) : IAiShotJobService
 {
     /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
@@ -52,6 +53,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             // keyframe after harmless workflow edits and could strand an already paid run.
             Replace(job, payload, item with { Status = "submitting" });
             await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+            if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         }
         string key;
         try { key = await KeyAsync(job.UserId, shot.ProviderKey, ct); }
@@ -139,6 +141,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             (job, var payload, var item) = loaded.Value;
             Replace(job, payload, item with { OperationName = operation, Status = "polling" });
             await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+            if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         }
         return Result.Success(new AiShotProgressResponse("polling"));
     }
@@ -169,6 +172,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             : item with { Status = "failed", Failure = failure };
         Replace(job, payload, next);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         return result.VideoUri != null ? Result.Success(new AiShotProgressResponse("ready"))
             : resubmit ? Result.Success(new AiShotProgressResponse("pending", failure))
             : Result.Failure<AiShotProgressResponse>(Error.Validation(failure));
@@ -198,6 +202,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             return Result.Failure(Error.Validation("AI Shot upload could not be verified."));
         Replace(job, payload, item with { Status = "stored", StorageKey = expected, StorageVersion = request.StorageVersion, DownloadUri = null });
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         return Result.Success();
     }
 
@@ -225,6 +230,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         var (job, payload, item) = loaded.Value;
         Replace(job, payload, item with { Status = status, Failure = failure });
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
     }
     private IVeoVideoProvider ProviderFor(AiShotPlan shot) => providerFactory?.Resolve(shot.ProviderKey, shot.ModelKey) ?? provider;
 
@@ -237,7 +243,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     private static string ReadAspect(string payload)
     {
         var board = WorkflowJson.Read<AiRenderJobPayload>(payload).Storyboard;
-        return VideoOutputFormats.Resolve(board.OutputFormat).AspectRatio;
+        return VideoOutputFormats.AiSourceAspect(board.OutputFormat);
     }
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";

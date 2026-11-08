@@ -50,6 +50,7 @@ internal sealed class WorkflowTestData
     public Mock<IAiShotQuoteService> Quotes { get; } = new();
     public Mock<IListingContentService> ListingContent { get; } = new();
     public Mock<IMediaStorage> Storage { get; } = new();
+    public Mock<ILocalExportStore> LocalExports { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
     public WorkflowService WorkflowService { get; }
@@ -91,7 +92,7 @@ internal sealed class WorkflowTestData
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll());
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
-            Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time);
+            Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
         ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Nodes.Object, Jobs.Object, Storage.Object, Time);
         foreach (var version in new[] { 1, 2 })

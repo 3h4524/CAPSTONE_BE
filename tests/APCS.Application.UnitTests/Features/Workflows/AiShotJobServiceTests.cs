@@ -347,6 +347,24 @@ public sealed class AiShotJobServiceTests
     }
 
     [TestMethod]
+    public async Task StoredAsync_VerifiedUpload_NotifiesOnlyAfterTransactionCommit()
+    {
+        var notifier = new Mock<ISceneVideoNotifier>();
+        var committed = false;
+        fixture.Transaction.Setup(x => x.CommitAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => committed = true).Returns(Task.CompletedTask);
+        notifier.Setup(x => x.ChangedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => committed.Should().BeTrue()).Returns(Task.CompletedTask);
+        var service = Service(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"), notifier: notifier.Object);
+        var key = AiShotJobService.OutputKey(job, job.LeaseToken!.Value, 0);
+        fixture.Storage.Setup(x => x.VerifyAsync(key, "video", "42", null, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        (await service.StoredAsync(job.Id, 0, new(job.LeaseToken!.Value, key, "42"), default)).IsSuccess.Should().BeTrue();
+
+        notifier.Verify(x => x.ChangedAsync(job.WorkflowRunId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
     public async Task StoredAsync_UnexpectedKeyOrUnverifiedUpload_IsRejected()
     {
         var service = Service(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"));
@@ -404,7 +422,7 @@ public sealed class AiShotJobServiceTests
 
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true,
         string providerKey = VeoVideoModel.ProviderKey, string modelKey = VeoVideoModel.ModelKey,
-        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null)
+        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null)
     {
         var product = fixture.AddProduct();
         var run = fixture.AddRun(product);
@@ -422,6 +440,6 @@ public sealed class AiShotJobServiceTests
             .ReturnsAsync(connected ? "plain-key" : null);
         fixture.Storage.Setup(x => x.SignRead(source.StorageKey, "image", source.StorageVersion, false)).Returns("https://signed.example/source");
         return new(fixture.Jobs.Object, fixture.Assets.Object, videoCredentials.Object, fixture.State.Object,
-            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory);
+            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier);
     }
 }

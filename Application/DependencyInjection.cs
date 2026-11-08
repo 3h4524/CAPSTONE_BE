@@ -91,6 +91,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IWorkflowPublishService, Features.Workflows.WorkflowPublishService>();
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
+        services.AddScoped<Features.Workflows.IWorkflowRunReconciler, Features.Workflows.WorkflowRunReconciler>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();
@@ -98,6 +99,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
+        services.AddScoped<Features.Workflows.IBatchExportPreviewService, Features.Workflows.BatchExportPreviewService>();
         services.AddScoped<Features.Workflows.IVideoQualityReviewService, Features.Workflows.VideoQualityReviewService>();
         services.AddScoped<Features.Workflows.IVideoQualityJobService, Features.Workflows.VideoQualityJobService>();
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();

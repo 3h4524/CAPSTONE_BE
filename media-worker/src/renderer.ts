@@ -8,11 +8,36 @@ import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { processOutput } from "./process";
 import { inspectVideo } from "./qa";
-import type { MediaQa, RenderProps } from "./contracts";
+import type { MediaQa, RenderProps, SceneRenderProps } from "./contracts";
 
 export interface IVideoRenderer { render(props: RenderProps, directory: string, signal: AbortSignal, progress: (percent: number) => void): Promise<{ video: string; thumbnail: string; qa: MediaQa }> }
 export class RemotionVideoRenderer implements IVideoRenderer {
   private bundlePromise: Promise<string> | undefined;
+  async renderScene(props: SceneRenderProps, directory: string, signal: AbortSignal) {
+    const scene = props.storyboard.scenes.find(item => item.sceneOrder === props.sceneOrder);
+    if (!scene) throw new Error("Scene is not in the video snapshot");
+    if (props.storyboard.videoEdit?.music && !props.storyboard.videoEdit.music.muted && !props.finalVideo)
+      throw new Error("The approved final video is required to preserve scene audio");
+    this.bundlePromise ??= bundle({ entryPoint: fileURLToPath(new URL("./composition.tsx", import.meta.url)) });
+    const serveUrl = await this.bundlePromise;
+    const clipFiles: Record<number, string> = { ...props.clips };
+    if (props.finalVideo) clipFiles[-1] = props.finalVideo;
+    const clipServer = await serveLocalClips(clipFiles);
+    const inputProps = { ...props, clips: clipServer.urls, finalVideo: clipServer.urls[-1] };
+    const { cancel, cancelSignal } = makeCancelSignal();
+    signal.addEventListener("abort", cancel, { once: true });
+    const output = join(directory, `scene-${scene.sceneOrder + 1}.mp4`);
+    const raw = join(directory, `scene-${scene.sceneOrder + 1}-raw.mp4`);
+    try {
+      const composition = await selectComposition({ serveUrl, id: "APCS-Export-Scene", inputProps, browserExecutable: process.env.CHROME_EXECUTABLE });
+      const hasAudio = Boolean(props.storyboard.videoEdit?.music && !props.storyboard.videoEdit.music.muted);
+      await renderMedia({ composition, serveUrl, inputProps, outputLocation: raw, codec: "h264", pixelFormat: "yuv420p", crf: 20,
+        muted: !hasAudio, concurrency: 2, browserExecutable: process.env.CHROME_EXECUTABLE, cancelSignal });
+      await processOutput(process.env.FFMPEG_PATH ?? "ffmpeg", ["-y", "-i", raw, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-map_metadata", "-1", output], signal);
+      const qa = await inspectVideo(output, scene.durationFrames / 30, signal, props.storyboard.width, props.storyboard.height, hasAudio);
+      return { video: output, qa };
+    } finally { signal.removeEventListener("abort", cancel); await clipServer.close(); }
+  }
   async render(props: RenderProps, directory: string, signal: AbortSignal, progress: (percent: number) => void) {
     this.bundlePromise ??= bundle({ entryPoint: fileURLToPath(new URL("./composition.tsx", import.meta.url)) });
     const serveUrl = await this.bundlePromise;

@@ -76,7 +76,9 @@ public sealed record AiVideoSceneOptions(
     string? PrimaryAction = null,
     string? EndingState = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? AiVideoModelKey = null);
+    string? AiVideoModelKey = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Point? AiCropPosition = null);
 public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
     string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
 public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
@@ -87,6 +89,7 @@ public static class VideoOutputFormats
 {
     public const string Default = "portrait";
     public static bool IsSupported(string format) => format is "square" or "portrait" or "landscape";
+    public static string AiSourceAspect(string? format) => format == "landscape" ? "16:9" : "9:16";
     public static VideoOutputSpec Resolve(string? format) => format switch
     {
         "square" => new("square", 1080, 1080, "1:1"),
@@ -162,7 +165,9 @@ public sealed record ScenePlan(Guid MockupId, long SourceRevision, string Source
     string? AiTemplateCode = null, int? PromptVersion = null, string? CompiledPrompt = null, AiVideoSceneOptions? AiSettings = null, Region? SourceCrop = null,
     string? AiProviderKey = null, string? AiModelKey = null, string? AiModelName = null, double StartScale = 1, double EndScale = 1, double StartRotation = 0, double EndRotation = 0,
     int TrimStartFrames = 0, int TrimEndFrames = 0, int TransitionFrames = 0, string? AiResolution = null, decimal? AiPricePerSecondUsd = null,
-    AiPromptTrace? AiPromptTrace = null);
+    AiPromptTrace? AiPromptTrace = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Point? AiCropPosition = null);
 public sealed record AiShotPlan(int SceneOrder, Guid MockupId, string SourceHash, string Model, string Preset, string Prompt, int DurationSeconds, string Fingerprint,
     string ProviderKey = VeoVideoModel.ProviderKey, string ModelKey = VeoVideoModel.ModelKey, int PromptVersion = 1, Region? SourceCrop = null,
     string Resolution = VeoVideoModel.Resolution, decimal PricePerSecondUsd = VeoVideoModel.PricePerSecondUsd);
@@ -209,8 +214,12 @@ public sealed record WorkerAsset(Guid MockupId, string Url, string FileName);
 public sealed record UploadGrant(string Url, IReadOnlyDictionary<string, string> Fields, string StorageKey, string ResourceType);
 public sealed record WorkerJob(Guid Id, Guid LeaseToken, string Kind, JsonElement Payload, IReadOnlyList<WorkerAsset> Assets, IReadOnlyDictionary<string, UploadGrant> Uploads);
 public sealed record JobHeartbeat(Guid LeaseToken, string Stage, int Progress);
+/// <summary>Identifies the queue generation delivered by the media stream.</summary>
+public sealed record MediaStreamClaimRequest(long QueueVersion);
+/// <summary>The claim result and, when claimed, the media work assigned to the worker.</summary>
+public sealed record MediaStreamClaimResponse(string Status, WorkerJob? Job);
 public sealed record MediaQa(string Codec, string PixelFormat, int Width, int Height, double Fps, double DurationSeconds, long Bytes, bool HasAudio, bool FullDecode);
-public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa);
+public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa, long? OutputBytes = null);
 public sealed record JobFailure(Guid LeaseToken, string Message);
 public sealed record RenderJobPayload(Guid VideoId, Storyboard Storyboard);
 /// <summary>Stable stored-clip reference used by an automatic scene-quality job.</summary>
@@ -227,6 +236,19 @@ public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? 
 /// <param name="TargetSceneOrder">The one scene selected for an isolated generation or regeneration. Stored clips for the other scenes remain reusable.</param>
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates,
     int? TargetSceneOrder = null);
+/// <summary>Immutable media references for reconstructing one scene of a completed video.</summary>
+public sealed record VideoSceneExportSource(int SceneOrder, Guid MockupId, long SourceRevision, string SourceHash,
+    string ImageStorageKey, string? ImageStorageVersion, string? ClipFingerprint = null,
+    string? ClipStorageKey = null, string? ClipStorageVersion = null);
+/// <summary>Render-time media references tied to the exact completed video version.</summary>
+public sealed record VideoExportSourceSnapshot(int Version, Guid VideoId, string StoryboardFingerprint,
+    IReadOnlyList<VideoSceneExportSource> Scenes);
 /// <summary>Protected prompt snapshot written after quote confirmation and consumed once by the render step.</summary>
 public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard Storyboard);
-public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion, string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest);
+public sealed record ExportAssetSnapshot(Guid Id, string StorageKey, string? StorageVersion, string? Sha256 = null, long Revision = 0, string? FileFormat = null);
+public sealed record ExportListingSnapshot(string Title, string Description, IReadOnlyList<string> Tags, int Version);
+public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion,
+    string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
+    string? ProductType = null, IReadOnlyList<ExportAssetSnapshot>? ApprovedMockups = null,
+    IReadOnlyList<ExportAssetSnapshot>? Designs = null, ExportListingSnapshot? Listing = null,
+    Storyboard? Storyboard = null, VideoExportSourceSnapshot? Sources = null);

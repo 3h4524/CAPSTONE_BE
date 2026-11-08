@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Common.Models;
@@ -9,7 +10,9 @@ namespace APCS.Application.Features.Workflows;
 public interface IMediaJobService
 {
     Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct);
+    Task<Result<MediaStreamClaimResponse>> ClaimStreamAsync(Guid jobId, long queueVersion, CancellationToken ct);
     Task<Result> HeartbeatAsync(Guid id, JobHeartbeat request, CancellationToken ct);
+    Task<Result<LocalExportFile>> UploadExportAsync(Guid id, Guid leaseToken, Stream content, CancellationToken ct);
     Task<Result> CompleteAsync(Guid id, JobCompletion request, CancellationToken ct);
     Task<Result> FailAsync(Guid id, JobFailure request, CancellationToken ct);
 }
@@ -18,13 +21,31 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<ExportPackage> exports, IRepository<ExportPackageItem> items,
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
-    IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null) : IMediaJobService
+    IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null,
+    ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null,
+    ISceneVideoNotifier? sceneNotifier = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
+        => await ClaimCoreAsync(null, null, ct);
+
+    public async Task<Result<MediaStreamClaimResponse>> ClaimStreamAsync(Guid jobId, long queueVersion, CancellationToken ct)
+    {
+        if (jobId == Guid.Empty || queueVersion <= 0)
+            return Result.Failure<MediaStreamClaimResponse>(Error.Validation("A valid job ID and queue version are required."));
+        var claimed = await ClaimCoreAsync(jobId, queueVersion, ct);
+        if (claimed.IsFailure) return Result.Failure<MediaStreamClaimResponse>(claimed.Error);
+        if (claimed.Value is not null) return Result.Success(new MediaStreamClaimResponse("claimed", claimed.Value));
+        var status = await state.GetMediaClaimStatusAsync(jobId, queueVersion, time.GetUtcNow().UtcDateTime, ct);
+        return Result.Success(new MediaStreamClaimResponse(status, null));
+    }
+
+    private async Task<Result<WorkerJob?>> ClaimCoreAsync(Guid? jobId, long? queueVersion, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var token = Guid.NewGuid();
-        var job = await state.ClaimAsync(time.GetUtcNow().UtcDateTime, token, ct);
+        var job = jobId is Guid id && queueVersion is long version
+            ? await state.ClaimMediaAsync(id, version, time.GetUtcNow().UtcDateTime, token, ct)
+            : await state.ClaimAsync(time.GetUtcNow().UtcDateTime, token, ct);
         if (job == null) { await tx.CommitAsync(ct); return Result.Success<WorkerJob?>(null); }
         await tx.CommitAsync(ct);
         var workerAssets = new List<WorkerAsset>();
@@ -65,19 +86,58 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var payload = WorkflowJson.Read<ExportJobPayload>(job.Payload);
             var video = await videos.GetByIdAsync(payload.VideoId, ct);
             if (video?.ApprovalStatus != "approved") { await FailAsync(job.Id, new(token, "Video is no longer approved."), ct); return Result.Success<WorkerJob?>(null); }
-            foreach (var scene in (await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct)).DistinctBy(x => x.MockupImageId))
+            var packageItems = await items.FindAsync(x => x.ExportPackageId == payload.ExportId, ct);
+            var productId = packageItems.Select(x => x.ProductId).Distinct().SingleOrDefault();
+            var approvedSnapshot = payload.ApprovedMockups ?? [];
+            if (approvedSnapshot.Count == 0)
             {
-                var asset = scene.MockupImageId.HasValue ? await assets.GetByIdAsync(scene.MockupImageId.Value, ct) : null;
-                if (asset == null || asset.MetadataRevision != scene.SourceRevision || asset.ContentHash != scene.SourceHash || asset.ApprovalStatus != "approved" || asset.ApprovedRevision != scene.SourceRevision)
+                approvedSnapshot = (await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct)).Where(x => x.MockupImageId.HasValue)
+                    .Select(x => new ExportAssetSnapshot(x.MockupImageId!.Value, "", null, x.SourceHash, x.SourceRevision ?? 0)).DistinctBy(x => x.Id).ToArray();
+            }
+            foreach (var snapshot in approvedSnapshot.DistinctBy(x => x.Id))
+            {
+                var asset = await assets.GetByIdAsync(snapshot.Id, ct);
+                if (asset == null || asset.ProductId != productId || asset.MetadataRevision != snapshot.Revision || asset.ContentHash != snapshot.Sha256 ||
+                    asset.ApprovalStatus != "approved" || asset.ApprovedRevision != snapshot.Revision ||
+                    snapshot.StorageKey.Length > 0 && asset.StorageKey != snapshot.StorageKey ||
+                    snapshot.StorageVersion != null && asset.StorageVersion != snapshot.StorageVersion)
                 { await FailAsync(job.Id, new(token, "Source mockup is no longer approved at the rendered revision."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"mockups/{asset.Id}.png"));
+            }
+            foreach (var design in payload.Designs ?? [])
+            {
+                var source = designImages is null ? null : await designImages.GetByIdAsync(design.Id, ct);
+                if (source == null || source.ProductId != productId || source.DeletedAt != null || source.ApprovalStatus != "approved" ||
+                    source.StorageKey != design.StorageKey || design.FileFormat is not null && source.FileFormat != design.FileFormat ||
+                    !Uri.TryCreate(source.ImageUrl, UriKind.Absolute, out var designUri) || designUri.Scheme != Uri.UriSchemeHttps ||
+                    !string.Equals(designUri.Host, "res.cloudinary.com", StringComparison.OrdinalIgnoreCase) ||
+                    !designUri.AbsolutePath.Contains("/image/upload/", StringComparison.Ordinal))
+                { await FailAsync(job.Id, new(token, "An approved design is no longer available."), ct); return Result.Success<WorkerJob?>(null); }
+                workerAssets.Add(new(source.Id, source.ImageUrl, $"designs/{source.Id}"));
+            }
+            if (payload.Sources is { } sources && sources.VideoId == video.Id && sources.StoryboardFingerprint == payload.Storyboard?.Fingerprint)
+            {
+                foreach (var sceneSource in sources.Scenes)
+                {
+                    var sceneAsset = await assets.GetByIdAsync(sceneSource.MockupId, ct);
+                    if (sceneAsset == null || sceneAsset.ProductId != productId || sceneAsset.MetadataRevision != sceneSource.SourceRevision ||
+                        sceneAsset.ApprovedRevision != sceneSource.SourceRevision || sceneAsset.ApprovalStatus != "approved" ||
+                        sceneAsset.ContentHash != sceneSource.SourceHash || sceneAsset.StorageKey != sceneSource.ImageStorageKey ||
+                        sceneAsset.StorageVersion != sceneSource.ImageStorageVersion)
+                    { await FailAsync(job.Id, new(token, "A video scene source is no longer approved at its original revision."), ct); return Result.Success<WorkerJob?>(null); }
+                    workerAssets.Add(new(sceneSource.MockupId, storage.SignRead(sceneSource.ImageStorageKey, "image", sceneSource.ImageStorageVersion),
+                        $"scene-sources/{sceneSource.SceneOrder}.png"));
+                    if (sceneSource.ClipStorageKey is not null && sceneSource.ClipStorageVersion is not null)
+                        workerAssets.Add(new(Guid.Empty, storage.SignRead(sceneSource.ClipStorageKey, "video", sceneSource.ClipStorageVersion),
+                            $"scene-clips/{sceneSource.SceneOrder}.mp4"));
+                }
             }
             // Model photo images ride along as they were when the package was planned, and only while still approved.
             if (payload.Manifest.TryGetProperty("modelPhotos", out var modelPhotos) && modelPhotos.ValueKind == JsonValueKind.Array)
             {
                 foreach (var photo in modelPhotos.EnumerateArray())
                 {
-                    var asset = photo.TryGetProperty("mockupId", out var id) && id.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
+                    var asset = photo.TryGetProperty("mockupId", out var photoId) && photoId.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
                     if (asset == null || asset.DeletedAt != null || asset.ApprovalStatus != "approved"
                         || !photo.TryGetProperty("sourceHash", out var hash) || asset.ContentHash != hash.GetString())
                     { await FailAsync(job.Id, new(token, "A model photo image changed after the package was planned. Export again."), ct); return Result.Success<WorkerJob?>(null); }
@@ -86,9 +146,35 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             }
             workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey, "video", payload.VideoStorageVersion), "video.mp4"));
             workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
-            uploads["zip"] = storage.CreateUploadGrant(OutputKey(job, token, "package.zip"), "raw");
         }
         return Result.Success<WorkerJob?>(new(job.Id, token, job.Kind, JsonSerializer.Deserialize<JsonElement>(job.Payload), workerAssets, uploads));
+    }
+    public async Task<Result<LocalExportFile>> UploadExportAsync(Guid id, Guid leaseToken, Stream content, CancellationToken ct)
+    {
+        if (localExports is null) return Result.Failure<LocalExportFile>(Error.Failure("LocalExportUnavailable", "Local ZIP export storage is unavailable."));
+        var unlocked = await jobs.GetByIdAsync(id, ct);
+        if (unlocked is null) return Result.Failure<LocalExportFile>(LeaseError());
+        await using var tx = await uow.BeginTransactionAsync(ct);
+        var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
+        var job = await state.LockJobAsync(id, ct);
+        if (!ValidLease(job, leaseToken, run) || job!.Kind != "export_zip") return Result.Failure<LocalExportFile>(LeaseError());
+        // Renew the lease before accepting a streamed package; CompleteAsync validates it again before publishing.
+        job.LeaseExpiresAt = time.GetUtcNow().AddMinutes(2).UtcDateTime;
+        job.HeartbeatAt = time.GetUtcNow().UtcDateTime;
+        await uow.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        try
+        {
+            return Result.Success(await localExports.SaveAsync(id, leaseToken, content, ct));
+        }
+        catch (InvalidDataException exception)
+        {
+            return Result.Failure<LocalExportFile>(Error.Validation(exception.Message));
+        }
+        catch (IOException)
+        {
+            return Result.Failure<LocalExportFile>(Error.Failure("LocalExportWriteFailed", "The ZIP could not be saved on the API server."));
+        }
     }
     public async Task<Result> HeartbeatAsync(Guid id, JobHeartbeat request, CancellationToken ct)
     {
@@ -113,19 +199,24 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
         var job = await state.LockJobAsync(id, ct);
         if (!ValidLease(job, request.LeaseToken, run)) return Result.Failure(LeaseError());
-        var expected = OutputKey(job!, request.LeaseToken, job!.Kind == "render" ? "video" : "package.zip");
-        if (request.StorageKey != expected || request.StorageVersion.Length > 40 ||
-            !await storage.VerifyAsync(expected, job.Kind == "render" ? "video" : "raw", request.StorageVersion, request.Qa?.Bytes, ct))
+        var expected = job!.Kind == "render" ? OutputKey(job, request.LeaseToken, "video") : $"local-export/{job.Id:D}/{request.LeaseToken:D}";
+        var outputVerified = job.Kind == "render"
+            ? request.StorageKey == expected && request.StorageVersion.Length <= 40 &&
+                await storage.VerifyAsync(expected, "video", request.StorageVersion, request.Qa?.Bytes, ct)
+            : localExports is not null && request.StorageKey == expected && request.StorageVersion.Length == 64 &&
+                await localExports.VerifyAsync(expected, request.StorageVersion, request.Qa?.Bytes ?? request.OutputBytes, ct);
+        if (!outputVerified)
             return Result.Failure(Error.Validation("Worker output does not match its upload grant."));
         var queueAutomaticQuality = false;
         Guid qualityVideoId = Guid.Empty;
         if (job.Kind == "render")
         {
             var payload = WorkflowJson.Read<RenderJobPayload>(job.Payload);
+            AiRenderJobPayload? aiPayload = null;
             if (payload.Storyboard.Mode == "ai_shot")
             {
-                var ai = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
-                if ((ai.Storyboard.AiShots ?? []).Any(shot => !ai.AiShotStates.Any(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint && x.Status == "stored" && x.StorageKey != null)))
+                aiPayload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload);
+                if ((aiPayload.Storyboard.AiShots ?? []).Any(shot => !aiPayload.AiShotStates.Any(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint && x.Status == "stored" && x.StorageKey != null)))
                     return Result.Failure(Error.Conflict("AiShotIncomplete", "All AI Shot clips must be stored before render completion."));
             }
             var output = VideoOutputFormats.Resolve(payload.Storyboard.OutputFormat);
@@ -137,13 +228,36 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var thumb = OutputKey(job, request.LeaseToken, "thumbnail");
             if (request.ThumbnailStorageKey != thumb || string.IsNullOrEmpty(request.ThumbnailStorageVersion) ||
                 !await storage.VerifyAsync(thumb, "image", request.ThumbnailStorageVersion, null, ct)) return Result.Failure(Error.Validation("Thumbnail verification failed."));
+            var sourceAssets = new Dictionary<Guid, MockupImage>();
             foreach (var scene in payload.Storyboard.Scenes.DistinctBy(x => x.MockupId))
             {
                 var asset = await state.LockMockupAsync(scene.MockupId, ct);
-                if (asset?.ApprovedRevision != scene.SourceRevision || asset.MetadataRevision != scene.SourceRevision || asset.ApprovalStatus != "approved")
+                if (asset?.ApprovedRevision != scene.SourceRevision || asset.MetadataRevision != scene.SourceRevision ||
+                    asset.ApprovalStatus != "approved" || asset.ContentHash != scene.SourceHash)
                     return Result.Failure(Error.Conflict("SourceChanged", "Source mockup approval changed during render."));
+                sourceAssets.Add(scene.MockupId, asset);
             }
+            if (payload.Storyboard.Scenes.Any(scene =>
+                sourceAssets[scene.MockupId].MetadataRevision != scene.SourceRevision ||
+                sourceAssets[scene.MockupId].ContentHash != scene.SourceHash))
+                return Result.Failure(Error.Conflict("SourceChanged", "Source mockup approval changed during render."));
             var video = (await videos.GetByIdAsync(payload.VideoId, ct))!;
+            if (ReadConfigSnapshot(video.ConfigSnapshot) is { } snapshot)
+            {
+                var sceneSources = payload.Storyboard.Scenes.Select(scene =>
+                {
+                    var source = sourceAssets[scene.MockupId];
+                    var shot = aiPayload?.Storyboard.AiShots?.SingleOrDefault(item => item.SceneOrder == scene.SceneOrder);
+                    var clip = shot is null ? null : aiPayload!.AiShotStates.SingleOrDefault(item =>
+                        item.SceneOrder == shot.SceneOrder && item.Fingerprint == shot.Fingerprint && item.Status == "stored");
+                    return new VideoSceneExportSource(scene.SceneOrder, scene.MockupId, scene.SourceRevision, scene.SourceHash,
+                        source.StorageKey, source.StorageVersion, shot?.Fingerprint, clip?.StorageKey, clip?.StorageVersion);
+                }).ToArray();
+                snapshot["storyboard"] = JsonSerializer.SerializeToNode(payload.Storyboard, WorkflowJson.Options);
+                snapshot["exportSources"] = JsonSerializer.SerializeToNode(new VideoExportSourceSnapshot(1, video.Id,
+                    payload.Storyboard.Fingerprint, sceneSources), WorkflowJson.Options);
+                video.ConfigSnapshot = snapshot.ToJsonString(WorkflowJson.Options);
+            }
             video.MusicTrackId = payload.Storyboard.VideoEdit?.Music?.TrackId;
             video.Status = "completed"; video.StorageProvider = "cloudinary"; video.StorageKey = expected; video.StorageVersion = request.StorageVersion;
             video.ThumbnailStorageKey = thumb; video.ThumbnailStorageVersion = request.ThumbnailStorageVersion;
@@ -164,11 +278,13 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             foreach (var scene in await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct))
             {
                 var asset = scene.MockupImageId.HasValue ? await state.LockMockupAsync(scene.MockupImageId.Value, ct) : null;
-                if (asset?.ApprovedRevision != scene.SourceRevision || asset?.MetadataRevision != scene.SourceRevision || asset?.ApprovalStatus != "approved")
+                if (asset?.ApprovedRevision != scene.SourceRevision || asset?.MetadataRevision != scene.SourceRevision ||
+                    asset?.ApprovalStatus != "approved" || asset?.ContentHash != scene.SourceHash)
                     return Result.Failure(Error.Conflict("SourceChanged", "Source mockup approval changed during export."));
             }
             var package = (await exports.GetByIdAsync(payload.ExportId, ct))!;
-            package.Status = "ready"; package.StorageProvider = "cloudinary"; package.StorageKey = expected;
+            package.Status = "ready"; package.StorageProvider = "local"; package.StorageKey = expected;
+            package.FileSizeMb = (request.Qa?.Bytes ?? request.OutputBytes) / (1024m * 1024m);
             foreach (var item in await items.FindAsync(x => x.ExportPackageId == package.Id, ct)) item.ItemStatus = "packed";
         }
         job.Status = "succeeded"; job.Progress = 100; job.ErrorMessage = null; job.LeaseToken = null; job.LeaseExpiresAt = null;
@@ -179,7 +295,14 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (queueAutomaticQuality && qualityJobs is not null)
             await qualityJobs.QueueAsync(job.WorkflowRunId, qualityVideoId, null, ct);
         await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         return Result.Success();
+    }
+    private static JsonObject? ReadConfigSnapshot(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        try { return JsonNode.Parse(value) as JsonObject; }
+        catch (JsonException) { return null; }
     }
     public async Task<Result> FailAsync(Guid id, JobFailure request, CancellationToken ct)
     {
@@ -206,6 +329,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             "VeoSubmissionUncertain" or "AiVideoSubmissionUncertain" => "AI video request status is uncertain. Retry will not submit it again; choose Regenerate AI clips after checking provider usage.",
             "AiVideoBusy" => $"{note ?? "The AI video provider is busy or over quota."} Nothing was billed for it; choose Retry checkpoint once the quota allows it.",
             "SourceChanged" => "A source mock-up changed or is no longer approved. Approve the mock-ups again, then retry.",
+            "SourceDownloadFailed" => "An export source could not be downloaded. Check that the approved design, mock-ups and video are still available, then retry.",
             "AiShotRejected" or "AiShotFailed" when reason != null =>
                 $"The video provider did not generate this AI scene: {reason} Choose Retry checkpoint to submit it again; if it keeps refusing, change the source image or the motion direction.",
             "AiShotRejected" => "The video provider rejected this AI scene. Change its approved source or motion instruction, then regenerate AI clips.",
@@ -217,7 +341,9 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.Status = request.Message is "VeoSubmissionUncertain" or "AiVideoSubmissionUncertain" or "AiShotRejected" or "SourceChanged" || reason != null || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
         job.AvailableAt = time.GetUtcNow().AddSeconds(busy ? 70 * job.Attempt : 5 * job.Attempt).UtcDateTime;
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
+        return Result.Success();
     }
     // What the AI scene in the given state recorded about itself: its provider's refusal, or why its outcome is unknown.
     private static string? AiShotFailure(MediaJob job, string status = "failed")
