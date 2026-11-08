@@ -8,7 +8,7 @@ deploy_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$deploy_dir"
 
 "$deploy_dir/scripts/render-env.sh"
-docker compose up -d postgres-prod postgres-dev redis
+docker compose up -d postgres-prod postgres-dev redis dozzle uptime-kuma
 docker compose build backup
 docker compose up -d backup
 

@@ -99,7 +99,7 @@ rm -f "$lifecycle"
 gcloud storage buckets add-iam-policy-binding "gs://$BACKUP_BUCKET" \
   --member "serviceAccount:$VM_SA" --role roles/storage.objectAdmin "${p[@]}" > /dev/null
 
-for secret in apcs-prod-secrets apcs-prod-external apcs-dev-secrets apcs-dev-migrator-password; do
+for secret in apcs-prod-secrets apcs-prod-external apcs-ops-auth apcs-dev-secrets apcs-dev-migrator-password; do
   exists gcloud secrets describe "$secret" "${p[@]}" \
     || gcloud secrets create "$secret" --replication-policy automatic "${p[@]}"
   gcloud secrets add-iam-policy-binding "$secret" --member "serviceAccount:$VM_SA" \

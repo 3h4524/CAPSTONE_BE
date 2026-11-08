@@ -13,9 +13,10 @@ secret() {
 
 PROD_SECRETS="$(secret apcs-prod-secrets)"
 PROD_EXTERNAL="$(secret apcs-prod-external)"
+OPS_AUTH="$(secret apcs-ops-auth)"
 DEV_SECRETS="$(secret apcs-dev-secrets)"
 DEV_MIGRATOR_PASSWORD="$(secret apcs-dev-migrator-password)"
-export PROD_SECRETS PROD_EXTERNAL DEV_SECRETS DEV_MIGRATOR_PASSWORD
+export PROD_SECRETS PROD_EXTERNAL OPS_AUTH DEV_SECRETS DEV_MIGRATOR_PASSWORD
 
 mkdir -p "$env_dir"
 chmod 700 "$env_dir"
@@ -37,6 +38,7 @@ for line in (deploy_dir / "env" / "common.env").read_text().splitlines():
         values[key.strip()] = value.strip()
 values.update(json.loads(os.environ["PROD_EXTERNAL"]))
 values.update(json.loads(os.environ["PROD_SECRETS"]))
+values.update(json.loads(os.environ["OPS_AUTH"]))
 values.update(json.loads(os.environ["DEV_SECRETS"]))
 values["DEV_MIGRATOR_PASSWORD"] = os.environ["DEV_MIGRATOR_PASSWORD"].strip()
 

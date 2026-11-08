@@ -21,6 +21,8 @@ services:
       - "443:443/udp"
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
+      OPS_USER: ${OPS_USER:?Set OPS_USER}
+      OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:?Set OPS_PASSWORD_HASH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -136,6 +138,28 @@ services:
       timeout: 5s
       retries: 12
 
+  dozzle:
+    <<: *defaults
+    image: amir20/dozzle:v8
+    environment:
+      DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_HOSTNAME: apcs-prod
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  uptime-kuma:
+    <<: *defaults
+    image: louislam/uptime-kuma:1
+    volumes:
+      - kuma_data:/app/data
+    mem_limit: 256m
+
   backup:
     <<: *defaults
     build: ./backup
@@ -168,3 +192,4 @@ volumes:
   pg_prod:
   pg_dev:
   backups:
+  kuma_data:

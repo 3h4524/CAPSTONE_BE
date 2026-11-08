@@ -47,6 +47,11 @@ install -d -m 755 -o deploy -g deploy /opt/apcs /opt/apcs/deploy /opt/apcs/migra
 install -d -m 700 -o deploy -g deploy /opt/apcs/env
 sudo -iu deploy /usr/bin/gcloud auth configure-docker "$REGISTRY_HOST" --quiet > /dev/null
 
+if ! systemctl is-active --quiet google-cloud-ops-agent; then
+  curl -fsSL https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh -o /tmp/add-ops-agent-repo.sh
+  bash /tmp/add-ops-agent-repo.sh --also-install
+fi
+
 tls=/opt/apcs/env/tls
 if [ ! -f "$tls/server.key" ]; then
   install -d -m 750 -o root -g deploy "$tls"

@@ -16,6 +16,8 @@ Secrets live only in Google Secret Manager; the repository holds templates and n
 | `postgres-prod` | `pgvector/pgvector:pg18` | Docker network, and `127.0.0.1:2510` on the VM |
 | `postgres-dev` | `pgvector/pgvector:pg18`, SSL | port 5432, the shared dev database |
 | `backup` | built from `deploy/backup` | nothing; runs `pg_dump` nightly |
+| `dozzle` | `amir20/dozzle:v8` | `logs.<domain>` behind basic auth; reads the Docker socket read-only |
+| `uptime-kuma` | `louislam/uptime-kuma:1` | `status.<domain>` behind basic auth (plus its own login) |
 
 Caddy routes one hostname by path: `/api/*`, `/hubs/*`, and `/health` go to the API, `/internal/*`
 answers 404, and everything else goes to the frontend. Frontend and API therefore share an origin,
@@ -56,6 +58,7 @@ port 22 is not open to the internet.
 | `deploy/env/*.env.tpl` | one template per service; plain values are written in, secrets are `${NAME}` |
 | Secret `apcs-prod-secrets` | JSON of generated values nobody edits by hand: database, Redis, JWT and media-worker secrets |
 | Secret `apcs-prod-external` | JSON of the external keys people upload as a whole file: Google client ID, SMTP, Cloudinary, PayOS, Gemini, assistant keys (`;`-separated, rotated on rate limits), MiniMax, Etsy, translation, Google Drive token, Discord webhook |
+| Secret `apcs-ops-auth` | basic-auth user, password, and the base64 bcrypt hash Caddy checks for `logs.` and `status.` |
 | Secret `apcs-dev-secrets` | `DEV_POSTGRES_PASSWORD`, `DEV_BACKUP_PASSWORD` |
 | Secret `apcs-dev-migrator-password` | the dev database `apcs_migrator` password |
 
@@ -78,7 +81,7 @@ only places the public host name appears. Until a domain is bought it is `<ip>.s
 resolves to the VM's IP so Caddy can still obtain a certificate (the app needs HTTPS: the session
 cookies are `Secure`). To move to a real domain:
 
-1. DNS: `A @`, `A www` and `A api` → `<static IP>`.
+1. DNS: `A @`, `A www`, `A api`, `A logs` and `A status` → `<static IP>`.
 2. Change `APP_DOMAIN` (backend) and `APP_DOMAIN`, `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_SITE_URL` (frontend), merge into `production`, tag both repositories.
 3. Add `https://<domain>` to the Google OAuth client's authorized JavaScript origins and point the PayOS webhook at `https://<domain>/api/subscriptions/webhooks/payos`.
 
@@ -102,6 +105,17 @@ older tag selected as the ref (images are reused, migrations already applied are
 
 The repository variable `DEV_MIGRATION_BRANCH` names the integration branch whose pushes migrate the
 shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
+
+## Observability
+
+| Tool | Where | What |
+|---|---|---|
+| Dozzle | `https://logs.<domain>` | live logs of every container, searchable |
+| Uptime Kuma | `https://status.<domain>` | checks the site, `/health`, the certificate, and the dev database every minute and alerts Discord |
+| Cloud Monitoring (Ops Agent on the VM) | Google Cloud console → Monitoring | CPU, memory, disk, network; email alerts from `deploy/provision/create-alerts.sh` (CPU > 90% for 10 min, memory > 90%, disk > 85%) |
+
+Both subdomains share one basic-auth login from the secret `apcs-ops-auth`
+(`gcloud secrets versions access latest --secret apcs-ops-auth`).
 
 ## Databases and roles
 

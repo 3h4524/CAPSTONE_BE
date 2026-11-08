@@ -85,3 +85,51 @@ api.{$APP_DOMAIN} {
 		}
 	}
 }
+
+logs.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	basic_auth {
+		{$OPS_USER} {$OPS_PASSWORD_HASH}
+	}
+
+	reverse_proxy dozzle:8080
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+status.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	basic_auth {
+		{$OPS_USER} {$OPS_PASSWORD_HASH}
+	}
+
+	reverse_proxy uptime-kuma:3001
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
