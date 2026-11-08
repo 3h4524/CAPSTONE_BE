@@ -132,7 +132,11 @@ shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
 | Cloud Monitoring (Ops Agent on the VM) | Google Cloud console → Monitoring | CPU, memory, disk, network; email alerts from `deploy/provision/create-alerts.sh` (CPU > 90% for 10 min, memory > 90%, disk > 85%) |
 
 Both subdomains share one basic-auth login from the secret `apcs-ops-auth`
-(`gcloud secrets versions access latest --secret apcs-ops-auth`).
+(`gcloud secrets versions access latest --secret apcs-ops-auth`). Caddy answers Dozzle's
+`/sw.js` itself, without the login, with a worker that unregisters on activation: Dozzle's own service
+worker refetches pages without the basic-auth credentials, so Chrome showed a bare
+"HTTP ERROR 401" instead of the login prompt. A browser still holding the old worker recovers after one
+reload.
 
 ## Databases and roles
 
