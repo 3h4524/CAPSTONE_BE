@@ -144,7 +144,7 @@ jobs:
             previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2> /dev/null || true)"
             if [ -z "$previous" ] || ! git diff --quiet "$previous" HEAD -- \
                 deploy/compose.yml deploy/Caddyfile deploy/backup deploy/postgres \
-                deploy/env/compose.env.tpl deploy/env/backup.env.tpl deploy/env/redis.env.tpl deploy/env/postgres-prod.env.tpl; then
+                deploy/env/compose.env.tpl deploy/env/backup.env.tpl deploy/env/redis.env.tpl deploy/env/redis-media.env.tpl deploy/env/postgres-prod.env.tpl; then
               target=all
             else
               target=api

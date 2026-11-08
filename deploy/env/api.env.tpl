@@ -30,7 +30,7 @@ RateLimiting__AssistantChatPermitsPerMinute=20
 
 MediaWorker__ApiKey=${MEDIA_WORKER_API_KEY}
 MediaQueue__Mode=streams
-MediaQueue__RedisConnectionString=redis:6379,password=${REDIS_PASSWORD},abortConnect=false
+MediaQueue__RedisConnectionString=redis-media:6379,password=${REDIS_MEDIA_PASSWORD},abortConnect=false
 MediaQueue__Stream=apcs:prod:media:jobs
 
 Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
