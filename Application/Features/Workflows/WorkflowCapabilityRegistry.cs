@@ -7,14 +7,17 @@ public sealed class WorkflowCapabilityRegistry
     // a workflow may place them between Product Input and Apply Mockup, and a run leaves them untouched.
     public static readonly string[] BatchSteps = ["prompt-synthesis", "design-image", "design-approval"];
     public static readonly string[] ListingSteps = ["generate-listing"];
+    // After the approved package: Printify makes the product and publishes it to Etsy, then a direct Etsy listing
+    // (meant for a digital download). Each runs in the background through WorkflowPublishService.
+    public static readonly string[] PublishSteps = ["publish-printify", "publish-etsy"];
     // The steps of a run that must be connected in this order. Listing Content is not one of them: it needs no approval.
-    public static readonly string[] RunOrder = ["product-input", .. BatchSteps, .. Pipeline.Skip(1)];
+    public static readonly string[] RunOrder = ["product-input", .. BatchSteps, .. Pipeline.Skip(1), .. PublishSteps];
     public WorkflowCapabilities Get() => new(2,
         Pipeline.Select(type => new NodeCapability(type, true, "Standard MVP executor"))
             .Concat(BatchSteps.Select(type => new NodeCapability(type, true, "Runs as a batch job from the canvas.")))
             .Concat(new[] { new NodeCapability("generate-listing", true, "Generates listing content with Gemini."),
-                new NodeCapability("publish-etsy", false, "Backend executor is not available yet."),
-                new NodeCapability("publish-printify", false, "Backend executor is not available yet.") }).ToArray(),
+                new NodeCapability("publish-printify", true, "Creates the product on Printify, which publishes it to Etsy and fulfils its orders."),
+                new NodeCapability("publish-etsy", true, "Creates an Etsy draft listing (a digital download, or a physical item without a print partner).") }).ToArray(),
         [new("standard", true, "available", "Showcase from approved mockups. No AI model cost.", true),
          new("ai_shot", true, "available", "Build a video from individually configured AI scenes.", false,
              new CostRange("USD", VideoDurationPolicy.MinimumAiSceneSeconds * AiVideoModel.LitePricePerSecondUsd, VideoDurationPolicy.MaximumVideoSeconds * AiVideoModel.PricePerSecondUsd,

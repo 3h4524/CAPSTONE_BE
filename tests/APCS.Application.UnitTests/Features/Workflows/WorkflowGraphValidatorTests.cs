@@ -34,13 +34,58 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    [DataRow("publish-etsy")]
-    [DataRow("publish-printify")]
-    public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode(string type)
+    public void Validate_NodeWithoutExecutor_RejectsUnsupportedNode()
     {
         var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
-        definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "apply-mockup" ? x with { Type = type } : x).ToArray() };
+        definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "apply-mockup" ? x with { Type = "publish-shopify" } : x).ToArray() };
         _validator.Validate(definition)!.Code.Should().Be("UnsupportedNode");
+    }
+
+    private static readonly object PrintifySettings = new { blueprintId = 6, printProviderId = 99, colors = new[] { "White" }, sizes = new[] { "M" }, targetProfit = 10 };
+    private static readonly object EtsySettings = new { listingType = "download", price = 4.99, taxonomyId = 2078 };
+
+    // Appends publish steps after Export ZIP (node-5), in the order given.
+    private static WorkflowDefinition WithPublish(WorkflowDefinition definition, params (string Type, object Config)[] steps)
+    {
+        var nodes = steps.Select((step, i) => new WorkflowNode("publish-" + i, step.Type, step.Type, new(), JsonSerializer.SerializeToElement(step.Config))).ToArray();
+        var line = new[] { "node-5" }.Concat(nodes.Select(x => x.Id)).ToArray();
+        return definition with
+        {
+            Nodes = definition.Nodes.Concat(nodes).ToArray(),
+            Edges = definition.Edges.Concat(line.Skip(1).Select((target, i) => new WorkflowEdge("publish-edge-" + i, line[i], target))).ToArray()
+        };
+    }
+
+    [TestMethod]
+    public void Validate_PublishStepsAfterExportZip_AreAccepted()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", PrintifySettings), ("publish-etsy", EtsySettings));
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_EtsyBeforePrintify_RejectsGraph()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-etsy", EtsySettings), ("publish-printify", PrintifySettings));
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
+    [TestMethod]
+    public void Validate_PrintifyWithoutAProductType_SaysWhatIsMissing()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", new { colors = new[] { "White" }, sizes = new[] { "M" } }));
+        _validator.Validate(definition)!.Message.Should().Contain("product type");
+    }
+
+    [TestMethod]
+    public void Validate_PhysicalEtsyListingWithoutShipping_SaysWhatIsMissing()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-etsy", new { listingType = "physical", price = 24.99, taxonomyId = 482 }));
+        _validator.Validate(definition)!.Message.Should().Contain("shipping profile");
     }
 
     [TestMethod]
@@ -169,6 +214,7 @@ public sealed class WorkflowGraphValidatorTests
         capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
             x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
         capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
-        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps).Concat(WorkflowCapabilityRegistry.ListingSteps));
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps)
+            .Concat(WorkflowCapabilityRegistry.ListingSteps).Concat(WorkflowCapabilityRegistry.PublishSteps));
     }
 }

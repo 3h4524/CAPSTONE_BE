@@ -358,8 +358,23 @@ public sealed class MarketSignalCalculatorTests
         var b = MarketSupplyCalculator.Calculate([Observation(new DateOnly(2026, 1, 2), 9_000)]);
 
         a.History.Should().Equal(new MarketSupplyPoint(new DateOnly(2026, 1, 1), 1_000), new MarketSupplyPoint(new DateOnly(2026, 1, 2), 1_100));
+        // b joins on day 2 with a far larger count. The line follows a's own +10%, scaled to the niche's
+        // current count (the median keyword, 9,000), instead of jumping because b joined the mix.
         var combined = MarketSupplyCalculator.Combine([a, b]).History;
-        combined.Should().Equal(new MarketSupplyPoint(new DateOnly(2026, 1, 1), 1_000), new MarketSupplyPoint(new DateOnly(2026, 1, 2), 9_000));
+        combined.Should().Equal(new MarketSupplyPoint(new DateOnly(2026, 1, 1), 8_182), new MarketSupplyPoint(new DateOnly(2026, 1, 2), 9_000));
+    }
+
+    [TestMethod]
+    public void Supply_CombinedHistoryIgnoresKeywordsJoiningLater()
+    {
+        // Two large keywords are flat; a small one joins on day 2. Raw medians would show a fall.
+        var large1 = MarketSupplyCalculator.Calculate([Observation(new DateOnly(2026, 1, 1), 100_000), Observation(new DateOnly(2026, 1, 2), 100_000)]);
+        var large2 = MarketSupplyCalculator.Calculate([Observation(new DateOnly(2026, 1, 1), 80_000), Observation(new DateOnly(2026, 1, 2), 80_000)]);
+        var small = MarketSupplyCalculator.Calculate([Observation(new DateOnly(2026, 1, 2), 5_000)]);
+
+        var history = MarketSupplyCalculator.Combine([large1, large2, small]).History!;
+
+        history.Select(point => point.ActiveListingCount).Distinct().Should().ContainSingle();
     }
 
     [TestMethod]

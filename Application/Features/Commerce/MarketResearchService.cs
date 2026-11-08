@@ -61,7 +61,11 @@ public sealed class MarketResearchService(
             .GroupBy(item => item.ExternalListingId, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToArray();
-        var selected = MarketResearchSelector.Select(uniqueListings, request.TopN, request.MinimumViralScore);
+        // Every listing is kept as a snapshot, but only physical products can become opportunities.
+        var selected = MarketResearchSelector.Select(
+            uniqueListings.Where(item => !MarketListingKind.IsDigital(item.RawPayload)).ToArray(),
+            request.TopN,
+            request.MinimumViralScore);
         var selectedByListingId = selected.ToDictionary(
             item => item.Listing.ExternalListingId,
             StringComparer.OrdinalIgnoreCase);
@@ -77,7 +81,7 @@ public sealed class MarketResearchService(
             {
                 var ragScore = selection.ViralScore;
                 var sourceId = $"{listing.Platform.ToString().ToLowerInvariant()}:public-listing:{listing.ExternalListingId}";
-                var content = BuildRagContent(listing, ragScore);
+                var content = BuildRagContent(listing);
                 documentId = await ragService.IngestAsync(new RagIngestRequest(
                     listing.Title,
                     $"{listing.Platform.ToString().ToLowerInvariant()}-public-listing",
@@ -160,6 +164,7 @@ public sealed class MarketResearchService(
                     Platform = platform,
                     Title = listing.Title,
                     Niche = niche,
+                    Category = MarketCategoryInference.FromText(niche) ?? MarketCategoryInference.FromText(listing.Title),
                     Summary = listing.Description,
                     MarketOpportunityScore = (decimal)score,
                     Confidence = 0.5m,
@@ -266,7 +271,12 @@ public sealed class MarketResearchService(
 
     private static DateTime DbNow() => DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
 
-    private static string BuildRagContent(CommerceMarketListing listing, double score)
+    /// <summary>
+    /// Only the stable listing text is embedded. Score, favorites and views change every day; in the
+    /// text they would change the content hash and force a new version with fresh embeddings on each
+    /// collection. They stay in the document metadata, which an unchanged document refreshes in place.
+    /// </summary>
+    private static string BuildRagContent(CommerceMarketListing listing)
     {
         var builder = new StringBuilder();
         builder.AppendLine($"Public marketplace listing reference from {listing.Platform}.");
@@ -274,9 +284,6 @@ public sealed class MarketResearchService(
         if (!string.IsNullOrWhiteSpace(listing.Description)) builder.AppendLine($"Description: {listing.Description}");
         if (listing.Tags.Count > 0) builder.AppendLine($"Tags: {string.Join(", ", listing.Tags)}");
         if (listing.Price is not null) builder.AppendLine($"Price: {listing.Price} {listing.Currency}");
-        builder.AppendLine($"Observed viral score: {score.ToString(CultureInfo.InvariantCulture)}/100");
-        if (listing.Favorites is not null) builder.AppendLine($"Observed favorites: {listing.Favorites}");
-        if (listing.Views is not null) builder.AppendLine($"Observed views: {listing.Views}");
         builder.AppendLine("Use this only as a trend, tone, structure, and keyword reference. Do not copy its wording or assume its product facts apply to another product.");
         return builder.ToString();
     }
