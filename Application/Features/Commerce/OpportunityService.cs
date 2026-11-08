@@ -1,5 +1,6 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Commerce;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -14,6 +15,7 @@ public sealed class OpportunityService(
     IRepository<MarketOpportunityEvidence> evidence,
     IRepository<SellerOpportunity> sellerOpportunities,
     IRepository<MarketQueryObservation> queryObservations,
+    IMarketListingQueries listingQueries,
     IUnitOfWork unitOfWork) : IOpportunityService
 {
     /// <summary>
@@ -88,7 +90,7 @@ public sealed class OpportunityService(
         MarketSupplySignal SupplyFor(string query) =>
             supplyByQuery.GetValueOrDefault(MarketQueryKey.Normalize(query), MarketSupplySignal.Unknown);
         var marketScoreRows = await opportunities.Query()
-            .Where(item => item.Platform == "etsy" && item.Status == "active")
+            .Where(item => item.Platform == "etsy" && item.Status == "active" && !item.IsSynthetic)
             .Select(item => new { item.Niche, item.MarketOpportunityScore })
             .ToListAsync(cancellationToken);
         var marketScores = marketScoreRows
@@ -148,7 +150,11 @@ public sealed class OpportunityService(
         var userId = RequireUserId();
         var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
         var snapshot = profile is null ? new SellerResearchProfileSnapshot([], [], [], []) : ToSnapshot(profile);
-        var marketRows = await opportunities.FindAsync(x => x.Status == "active", cancellationToken);
+        // Demo opportunities (is_synthetic) link to listings that do not exist, so sellers are only
+        // ranked against opportunities collected from the real marketplace.
+        var activeRows = await opportunities.FindAsync(x => x.Status == "active" && !x.IsSynthetic, cancellationToken);
+        var digitalIds = await listingQueries.GetDigitalOpportunityIdsAsync(activeRows.Select(x => x.Id).ToArray(), cancellationToken);
+        var marketRows = activeRows.Where(x => !digitalIds.Contains(x.Id)).ToArray();
         var marketOpportunityIds = marketRows.Select(x => x.Id).ToArray();
         var latestPrices = await evidence.Query()
             .Where(x => marketOpportunityIds.Contains(x.OpportunityId))
@@ -182,19 +188,25 @@ public sealed class OpportunityService(
                     RealEvidenceCount = group.Count(x => !x.IsSynthetic),
                     SyntheticEvidenceCount = group.Count(x => x.IsSynthetic)
                 });
+        var nicheEvidence = await LoadNicheEvidenceAsync(cancellationToken);
         var existingRows = await sellerOpportunities.FindAsync(x => x.UserId == userId, cancellationToken);
-        var ranked = new List<SellerOpportunity>(marketRows.Count);
+        var ranked = new List<SellerOpportunity>(marketRows.Length);
 
         foreach (var market in marketRows)
         {
+            // An opportunity is one product concept with one to a few evidence listings; its market is
+            // the niche it was collected for, sampled at 100 listings a day. Evidence quality therefore
+            // counts the niche's listings and observed days, not only the concept's own evidence.
+            var niche = nicheEvidence.GetValueOrDefault(MarketQueryKey.Normalize(market.Niche));
+            var stats = evidenceStats.GetValueOrDefault(market.Id);
             var score = SellerOpportunityScorer.Score(
                 new MarketOpportunityCandidate((double)market.MarketOpportunityScore, (double)market.Confidence,
-                    market.Category, ExtractKeywords(market),
+                    MarketCategoryInference.Resolve(market), ExtractKeywords(market),
                     priceByOpportunity.GetValueOrDefault(market.Id),
-                    evidenceStats.GetValueOrDefault(market.Id)?.EvidenceCount,
-                    evidenceStats.GetValueOrDefault(market.Id)?.DistinctListingCount,
-                    evidenceStats.GetValueOrDefault(market.Id)?.DistinctSellerCount,
-                    evidenceStats.GetValueOrDefault(market.Id)?.ObservationPeriodCount,
+                    stats?.EvidenceCount,
+                    LargerOf(stats?.DistinctListingCount, niche?.ListingCount),
+                    stats?.DistinctSellerCount,
+                    LargerOf(stats?.ObservationPeriodCount, niche?.ObservedDayCount),
                     evidenceStats.GetValueOrDefault(market.Id)?.RealEvidenceCount,
                     evidenceStats.GetValueOrDefault(market.Id)?.SyntheticEvidenceCount,
                     market.LastObservedAt), snapshot);
@@ -238,7 +250,8 @@ public sealed class OpportunityService(
     {
         var userId = RequireUserId();
         limit = Math.Clamp(limit, 1, 100);
-        var query = sellerOpportunities.Query().Where(x => x.UserId == userId);
+        // Rows ranked before demo data was excluded stay hidden until the next refresh replaces them.
+        var query = sellerOpportunities.Query().Where(x => x.UserId == userId && !x.Opportunity.IsSynthetic);
         query = query.Where(x =>
             x.SellerFitScore >= (decimal)SellerOpportunityThresholds.MinimumSellerFitScore
             && x.FinalScore >= (decimal)SellerOpportunityThresholds.MinimumFinalScore);
@@ -251,6 +264,11 @@ public sealed class OpportunityService(
             .Include(x => x.Opportunity)
             .Take(limit)
             .ToListAsync(cancellationToken);
+        if (rows.Count == 0) return [];
+
+        // Rows ranked before digital downloads were excluded stay hidden; the next refresh drops them.
+        var digitalIds = await listingQueries.GetDigitalOpportunityIdsAsync(rows.Select(row => row.OpportunityId).ToArray(), cancellationToken);
+        rows = rows.Where(row => !digitalIds.Contains(row.OpportunityId)).ToList();
         if (rows.Count == 0) return [];
 
         var opportunityIds = rows.Select(row => row.OpportunityId).ToArray();
@@ -302,10 +320,11 @@ public sealed class OpportunityService(
     {
         var userId = RequireUserId();
         var row = await sellerOpportunities.Query()
-            .Where(x => x.Id == id && x.UserId == userId)
+            .Where(x => x.Id == id && x.UserId == userId && !x.Opportunity.IsSynthetic)
             .Include(x => x.Opportunity)
             .SingleOrDefaultAsync(cancellationToken);
         if (row is null) return null;
+        if ((await listingQueries.GetDigitalOpportunityIdsAsync([row.OpportunityId], cancellationToken)).Count > 0) return null;
 
         var evidenceRows = await evidence.Query()
             .Where(item => item.OpportunityId == row.OpportunityId)
@@ -471,12 +490,39 @@ public sealed class OpportunityService(
         var opportunity = row.Opportunity;
         var breakdown = JsonSerializer.Deserialize<Dictionary<string, double>>(row.FitBreakdown, JsonOptions) ?? [];
         return new(row.Id, row.OpportunityId, opportunity.Platform, opportunity.Title, opportunity.Niche,
-            opportunity.Category, opportunity.Summary, opportunity.MarketOpportunityScore, opportunity.Confidence,
+            MarketCategoryInference.Resolve(opportunity), opportunity.Summary, opportunity.MarketOpportunityScore, opportunity.Confidence,
             row.SellerFitScore, row.FinalScore, row.Rank, row.State, row.FitExplanation, breakdown, row.LastEvaluatedAt, insights, nicheMarket);
     }
 
     private static IReadOnlyCollection<string> ExtractKeywords(MarketOpportunity opportunity) =>
-        $"{opportunity.Niche} {opportunity.Title} {opportunity.Category}".Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        $"{opportunity.Niche} {opportunity.Title} {MarketCategoryInference.Resolve(opportunity)}".Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static int? LargerOf(int? first, int? second) =>
+        first is null && second is null ? null : Math.Max(first ?? 0, second ?? 0);
+
+    private sealed record NicheEvidence(int ListingCount, int ObservedDayCount);
+
+    /// <summary>Distinct real listings and observed days per collected niche over the market history window.</summary>
+    private async Task<Dictionary<string, NicheEvidence>> LoadNicheEvidenceAsync(CancellationToken cancellationToken)
+    {
+        var since = DbNow().AddDays(-MarketHistoryDays);
+        var rows = await snapshots.Query()
+            .Where(item => item.Platform == "etsy" && !item.IsSynthetic && item.MatchedQuery != null && item.ObservedAt >= since)
+            .GroupBy(item => item.MatchedQuery!.ToLower())
+            .Select(group => new
+            {
+                Query = group.Key,
+                ListingCount = group.Select(item => item.ExternalListingId).Distinct().Count(),
+                ObservedDayCount = group.Select(item => item.ObservedAt.Date).Distinct().Count()
+            })
+            .ToListAsync(cancellationToken);
+        return rows
+            .GroupBy(row => MarketQueryKey.Normalize(row.Query), StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => new NicheEvidence(group.Max(row => row.ListingCount), group.Max(row => row.ObservedDayCount)),
+                StringComparer.Ordinal);
+    }
 
     private static string BuildNicheLabel(SellerResearchProfile? profile, IReadOnlyList<string> matchedQueries)
     {

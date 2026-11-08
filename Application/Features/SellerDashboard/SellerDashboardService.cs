@@ -190,7 +190,7 @@ public sealed class SellerDashboardService(
             .Select(integration => new { integration.ShopName, integration.OauthExpiresAt })
             .ToListAsync(cancellationToken);
         Add(ActionItemTypes.EtsyReconnect, ActionItemSeverities.Critical, expired.Count, expired.Min(shop => shop.OauthExpiresAt),
-            expired.Select(shop => new ActionTargetDto(shop.ShopName, 1, "/profile")), "/profile");
+            expired.Select(shop => new ActionTargetDto(shop.ShopName, 1, "/shop")), "/shop");
 
         // A product counts once it failed and has not been uploaded since. An upload before the
         // failure does not clear it.

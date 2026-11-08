@@ -14,7 +14,9 @@ public sealed class RagIngestionRecoveryService(
     TimeProvider timeProvider,
     ILogger<RagIngestionRecoveryService> logger) : BackgroundService
 {
-    private static readonly TimeSpan CheckEvery = TimeSpan.FromMinutes(1);
+    // A document only counts as abandoned after AbandonedAfter, so checking more often than this finds
+    // nothing new; ten minutes also leaves an idle database time to suspend between checks.
+    private static readonly TimeSpan CheckEvery = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan AbandonedAfter = TimeSpan.FromMinutes(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

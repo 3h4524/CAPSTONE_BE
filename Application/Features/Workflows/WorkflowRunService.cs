@@ -53,6 +53,11 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var exportCheck = await entitlements.RequireFeatureAsync(user.UserId!.Value, PlanFeatures.ZipExport, ct);
             if (exportCheck.IsFailure) return Result.Failure<RunResponse>(exportCheck.Error);
         }
+        if (definition.Nodes.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.Type)))
+        {
+            var publishCheck = await entitlements.RequireFeatureAsync(user.UserId!.Value, PlanFeatures.WorkflowPublish, ct);
+            if (publishCheck.IsFailure) return Result.Failure<RunResponse>(publishCheck.Error);
+        }
         var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
         var product = await products.GetByIdAsync(input.ProductId, ct);
         if (product is null || product.UserId != user.UserId || product.DeletedAt != null || product.BatchId != input.BatchId)
@@ -169,6 +174,15 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
             if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
             else { review.Status = "waiting_for_review"; run.Status = "waiting_for_review"; }
+        }
+        else if (request.Action == "retry" && checkpoints.FirstOrDefault(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed") is { } failedPublish)
+        {
+            // Only publishing failed: the approved package stays as it is and the publish step runs again. Pushing the
+            // same product to Printify again finds the product it already made instead of making a second one.
+            if (run.Status != "failed") return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
+            failedPublish.Status = "pending"; failedPublish.Attempt++; failedPublish.ErrorMessage = null; failedPublish.Stage = null;
+            run.Status = "running"; run.ErrorMessage = null;
+            await runtime.AdvanceAsync(run, ct);
         }
         else if (request.Action is "rerender" or "retry" or "regenerate_ai_shot")
         {

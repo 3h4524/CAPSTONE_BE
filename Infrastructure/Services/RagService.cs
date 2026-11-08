@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -11,6 +12,7 @@ using APCS.Domain.Entities;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using Pgvector;
 using Pgvector.EntityFrameworkCore;
@@ -27,6 +29,15 @@ public sealed class RagService(
 {
     private const int ChunkSize = 1400;
     private const int ChunkOverlap = 200;
+    private const int MinimumEfSearch = 40;
+    private const int MaximumEfSearch = 1000;
+    private const int MaximumKnownItemSources = 5000;
+
+    private static readonly HashSet<string> LexicalStopWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it",
+        "of", "on", "or", "that", "the", "this", "to", "with", "your", "you", "my", "our"
+    };
     private static readonly TimeSpan StaleProcessingTimeout = TimeSpan.FromMinutes(5);
 
     public async Task<Guid> IngestAsync(RagIngestRequest request, CancellationToken cancellationToken = default)
@@ -57,7 +68,13 @@ public sealed class RagService(
                 && existing.UpdatedAt < DateTime.UtcNow.Subtract(StaleProcessingTimeout);
             var isCompleted = existing.Status == RagDocumentStatuses.Ready && existing.ChunkCount > 0;
             var isActive = existing.Status is RagDocumentStatuses.Queued or RagDocumentStatuses.Processing;
-            if (isCompleted || (isActive && !isStaleProcessing))
+            if (isCompleted)
+            {
+                await RefreshMetadataAsync(existing.Id, request.Metadata, cancellationToken);
+                return existing.Id;
+            }
+
+            if (isActive && !isStaleProcessing)
                 return existing.Id;
 
             var previousDocument = await dbContext.RagDocuments
@@ -302,7 +319,12 @@ public sealed class RagService(
                 ContentType = contentType == "mixed" ? null : contentType,
             };
             var diagnostics = await SearchWithDiagnosticsAsync(searchRequest, cancellationToken);
-            var expectedMatch = diagnostics.Results.Any(result => MatchesExpected(result.Result, evaluationCase));
+            var matchedRank = diagnostics.Results
+                .Select((result, index) => (result, index))
+                .Where(item => MatchesExpected(item.result.Result, evaluationCase))
+                .Select(item => (int?)(item.index + 1))
+                .FirstOrDefault();
+            var expectedMatch = matchedRank is not null;
             var hasExpectedEvidence = evaluationCase.ExpectedDocumentId is not null
                 || !string.IsNullOrWhiteSpace(evaluationCase.ExpectedSourceId)
                 || !string.IsNullOrWhiteSpace(evaluationCase.ExpectedText);
@@ -325,7 +347,8 @@ public sealed class RagService(
                 expectedMatch ? null : diagnostics.Results.Count == 0 ? "No results retrieved." : "Expected evidence was not retrieved.",
                 diagnostics.Results,
                 contentType,
-                diagnostics));
+                diagnostics,
+                matchedRank));
         }
 
         var completedAt = timeProvider.GetUtcNow();
@@ -351,11 +374,29 @@ public sealed class RagService(
             results.Count == 0 ? 0 : results.Count(result => result.ExpectedMatch) * 100d / results.Count,
             results.Count == 0 ? 0 : results.Average(result => result.LatencyMs),
             results,
-            typeMetrics);
+            typeMetrics,
+            results.Count == 0 ? 0 : results.Average(result => result.MatchedRank is int rank ? 1d / rank : 0d));
     }
 
-    public async Task<RagCorpusHealthResponse> GetCorpusHealthAsync(
-        string? contentType,
+    public async Task<IReadOnlyList<RagKnownItemSource>> GetKnownItemSourcesAsync(CancellationToken cancellationToken = default)
+    {
+        var rows = await dbContext.RagDocuments
+            .AsNoTracking()
+            .Where(x => x.ContentType == RagContentTypes.Listing && x.Status == RagDocumentStatuses.Ready)
+            .OrderBy(x => x.SourceId)
+            .Take(MaximumKnownItemSources)
+            .Select(x => new { x.SourceId, x.IngestionMetadata, x.IngestionContent })
+            .ToListAsync(cancellationToken);
+        return rows
+            .Select(row =>
+            {
+                using var metadata = ParseMetadata(row.IngestionMetadata);
+                return new RagKnownItemSource(row.SourceId, ReadString(metadata, "niche"), row.IngestionContent);
+            })
+            .ToArray();
+    }
+
+    public async Task<RagCorpusHealthResponse> GetCorpusHealthAsync(        string? contentType,
         int staleDays = 30,
         CancellationToken cancellationToken = default)
     {
@@ -611,6 +652,10 @@ public sealed class RagService(
             query = ApplyVideoExperienceScope(query, request.VideoExperience);
         }
 
+        // HNSW returns at most hnsw.ef_search rows (40 by default) and applies the WHERE filters after
+        // the index scan, so the candidate count above was silently capped at 40 or fewer.
+        await using var searchScope = await BeginVectorSearchScopeAsync(candidateCount, settings, cancellationToken);
+
         var vectorRows = await query
             .OrderBy(x => x.Embedding.CosineDistance(queryVector))
             .Take(candidateCount)
@@ -634,11 +679,17 @@ public sealed class RagService(
         vectorRows = vectorRows.Where(row => MatchesMetadata(row.IngestionMetadata, request)).ToList();
 
         var terms = TokenizeQuery(request.Query);
-        var lexicalQuery = terms.Length == 0
+        // Any query term may match. plainto_tsquery required every term, so a long listing query
+        // (name, type, niche, audience, keywords, description) almost never matched a chunk. The
+        // rows are ranked so the candidate limit keeps the best lexical matches, not arbitrary ones.
+        var anyTermQuery = BuildAnyTermTsQuery(terms);
+        var lexicalQuery = anyTermQuery is null
             ? query.Where(_ => false)
-            : query.Where(x => EF.Functions
-                .ToTsVector("simple", x.Chunk.Content + " " + x.Chunk.Document.Title)
-                .Matches(EF.Functions.PlainToTsQuery("simple", request.Query)));
+            : query
+                .Where(x => EF.Functions.ToTsVector("simple", x.Chunk.Content).Matches(EF.Functions.ToTsQuery("simple", anyTermQuery))
+                    || EF.Functions.ToTsVector("simple", x.Chunk.Document.Title).Matches(EF.Functions.ToTsQuery("simple", anyTermQuery)))
+                .OrderByDescending(x => EF.Functions.ToTsVector("simple", x.Chunk.Document.Title + " " + x.Chunk.Content)
+                    .Rank(EF.Functions.ToTsQuery("simple", anyTermQuery)));
         var lexicalRows = await lexicalQuery
             .Take(candidateCount)
             .Select(x => new SearchRow(
@@ -653,7 +704,7 @@ public sealed class RagService(
                 x.Chunk.Document.Status,
                 x.Chunk.Document.IngestionMetadata,
                 x.Chunk.Document.UpdatedAt,
-                0,
+                x.Embedding.CosineDistance(queryVector),
                 x.Chunk.Metadata))
             .ToListAsync(cancellationToken);
         var lexicalCandidateCount = lexicalRows.Count;
@@ -669,15 +720,16 @@ public sealed class RagService(
                 .Where(row => vectorRows.All(vector => vector.ChunkId != row.ChunkId))
                 .Select(row => new Candidate(row.ChunkId, row.DocumentId, row.SourceId, row.Title, row.ContentType, row.Content,
                     row.SourceUrl, row.Version, row.Status, MergeMetadata(row.IngestionMetadata, row.Metadata), row.UpdatedAt,
-                    0, lexicalScores[row.ChunkId])))
+                    Math.Max(0, 1 - row.Distance), lexicalScores[row.ChunkId])))
             .Select(candidate => candidate with { RankScore = Rerank(candidate, settings, timeProvider.GetUtcNow()) })
             .OrderByDescending(candidate => candidate.RankScore)
             .ThenByDescending(candidate => candidate.VectorSimilarity)
             .ToArray();
-        var thresholdRejectedCandidateCount = rankedCandidates.Count(candidate =>
-            candidate.VectorSimilarity < settings.MinimumSimilarity && candidate.LexicalScore <= 0);
+        // With any-term matching most chunks share some word with the query, so lexical overlap alone
+        // admits a candidate only when it covers at least MinimumLexicalScore of the query terms.
+        var thresholdRejectedCandidateCount = rankedCandidates.Count(candidate => !PassesThreshold(candidate, settings));
         var candidates = rankedCandidates
-            .Where(candidate => candidate.VectorSimilarity >= settings.MinimumSimilarity || candidate.LexicalScore > 0)
+            .Where(candidate => PassesThreshold(candidate, settings))
             .ToArray();
         var rerankedCandidateCount = candidates.Length;
         var finalCandidates = candidates
@@ -891,6 +943,75 @@ public sealed class RagService(
             oldMetadata, document.ContentType, sourceId), cancellationToken);
         return new(newDocumentId, RagExperienceStatuses.Candidate,
             revision.ToString(System.Globalization.CultureInfo.InvariantCulture), normalizedContent);
+    }
+
+    /// <summary>
+    /// Raises hnsw.ef_search to the candidate count and, when enabled, lets pgvector (0.8+) keep
+    /// scanning the index until the filters are satisfied. SET LOCAL only lasts for a transaction,
+    /// so the search opens its own one unless the caller already runs inside a transaction.
+    /// </summary>
+    private async Task<IDbContextTransaction?> BeginVectorSearchScopeAsync(
+        int candidateCount,
+        RagRetrievalOptions settings,
+        CancellationToken cancellationToken)
+    {
+        if (!dbContext.Database.IsNpgsql())
+            return null;
+
+        var transaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var efSearch = Math.Clamp(candidateCount, MinimumEfSearch, MaximumEfSearch);
+        var setEfSearch = "SET LOCAL hnsw.ef_search = " + efSearch.ToString(CultureInfo.InvariantCulture);
+        await dbContext.Database.ExecuteSqlRawAsync(setEfSearch, cancellationToken);
+        if (settings.UseIterativeIndexScan)
+            await dbContext.Database.ExecuteSqlRawAsync("SET LOCAL hnsw.iterative_scan = relaxed_order", cancellationToken);
+        return transaction;
+    }
+
+    private static bool PassesThreshold(Candidate candidate, RagRetrievalOptions settings) =>
+        candidate.VectorSimilarity >= settings.MinimumSimilarity
+        || candidate.LexicalScore >= settings.MinimumLexicalScore;
+
+    /// <summary>
+    /// Builds "term1 | term2 | ..." for to_tsquery. Terms are cut into letter and digit runs, so no
+    /// input can inject tsquery operators, and common English words are dropped because with
+    /// any-term matching they would match nearly every chunk.
+    /// </summary>
+    internal static string? BuildAnyTermTsQuery(IEnumerable<string> terms)
+    {
+        var lexemes = terms
+            .SelectMany(term => Regex.Split(term.ToLowerInvariant(), @"[^\p{L}\p{N}]+"))
+            .Where(lexeme => lexeme.Length >= 2 && !LexicalStopWords.Contains(lexeme))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return lexemes.Length == 0 ? null : string.Join(" | ", lexemes);
+    }
+
+    /// <summary>
+    /// Unchanged content keeps its embeddings; only the metadata (scores, counts, timestamps) is
+    /// replaced. Chunks are updated too because chunk metadata wins when the two are merged.
+    /// </summary>
+    private async Task RefreshMetadataAsync(
+        Guid documentId,
+        IReadOnlyDictionary<string, object?>? metadata,
+        CancellationToken cancellationToken)
+    {
+        if (metadata is null || metadata.Count == 0)
+            return;
+
+        var serialized = JsonSerializer.Serialize(metadata);
+        var document = await dbContext.RagDocuments
+            .Include(x => x.RagChunks)
+            .SingleAsync(x => x.Id == documentId, cancellationToken);
+        if (document.IngestionMetadata == serialized)
+            return;
+
+        document.IngestionMetadata = serialized;
+        document.UpdatedAt = DateTime.UtcNow;
+        foreach (var chunk in document.RagChunks)
+            chunk.Metadata = serialized;
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private static IEnumerable<string> SplitIntoChunks(string content, string contentType)

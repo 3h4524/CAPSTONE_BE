@@ -27,6 +27,11 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
             return Error.Validation("Product Input is required once and Listing Content may appear only once.");
         if (WorkflowCapabilityRegistry.BatchSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
             return Error.Validation("Each design step may appear only once.");
+        // Publishing sends the approved package, so it follows Export ZIP of a video run.
+        if (WorkflowCapabilityRegistry.PublishSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
+            return Error.Validation("Each publish step may appear only once.");
+        if (!hasVideo && definition.Nodes.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.Type)))
+            return Error.Validation("Publishing comes after Export ZIP: add the video steps before Push to Printify or Publish to Etsy.");
         // One line in run order, so neither approval gate can be bypassed and the design steps stay ahead of the mock-ups.
         // Listing Content is written from the product's own details and waits for no approval: it may hang off
         // any step, or sit between two of them, without being one of the steps the line is checked against.
@@ -56,6 +61,12 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
                 if (assets.MockupIds is { Count: > 8 } || assets.MockupIds?.Distinct().Count() != assets.MockupIds?.Count)
                     return Error.Validation("Select at most eight distinct mockups.");
             }
+            if (definition.Nodes.SingleOrDefault(x => x.Type == "publish-printify") is { } printifyNode
+                && WorkflowJson.Config<PrintifyPublishConfig>(printifyNode).Problem() is { } printifyProblem)
+                return Error.Validation(printifyProblem);
+            if (definition.Nodes.SingleOrDefault(x => x.Type == "publish-etsy") is { } etsyNode
+                && WorkflowJson.Config<EtsyPublishConfig>(etsyNode).Problem() is { } etsyProblem)
+                return Error.Validation(etsyProblem);
         }
         catch (JsonException) { return Error.Validation("Invalid node configuration."); }
         return null;
