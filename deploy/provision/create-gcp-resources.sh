@@ -99,7 +99,7 @@ rm -f "$lifecycle"
 gcloud storage buckets add-iam-policy-binding "gs://$BACKUP_BUCKET" \
   --member "serviceAccount:$VM_SA" --role roles/storage.objectAdmin "${p[@]}" > /dev/null
 
-for secret in apcs-prod-secrets apcs-dev-secrets apcs-dev-migrator-password; do
+for secret in apcs-prod-secrets apcs-prod-external apcs-dev-secrets apcs-dev-migrator-password; do
   exists gcloud secrets describe "$secret" "${p[@]}" \
     || gcloud secrets create "$secret" --replication-policy automatic "${p[@]}"
   gcloud secrets add-iam-policy-binding "$secret" --member "serviceAccount:$VM_SA" \
@@ -149,5 +149,5 @@ Done.
   Registry              : $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO
   WIF provider          : $POOL/providers/github-actions
   Deployer / migrator   : $DEPLOYER_SA / $MIGRATOR_SA
-  Secrets to fill       : apcs-prod-secrets, apcs-dev-secrets, apcs-dev-migrator-password
+  Secrets to fill       : apcs-prod-secrets (generated), apcs-prod-external (external keys), apcs-dev-secrets, apcs-dev-migrator-password
 INFO

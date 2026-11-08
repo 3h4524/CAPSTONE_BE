@@ -38,7 +38,7 @@ Created by `deploy/provision/create-gcp-resources.sh` (idempotent, `gcloud` as a
 | Service account `apcs-dev-migrator` | GitHub Actions on a **branch push** of the backend repository: opens an IAP tunnel to port 5432 and reads only `apcs-dev-migrator-password`; cannot SSH |
 | Workload identity pool `github`, provider `github-actions` | accepts tokens only from `3h4524/CAPSTONE_BE` and `3h4524/CAPSTONE_FE` for `push` and `workflow_dispatch` (never pull requests); `attribute.repo_ref` = `<repo>@<tag\|branch>` selects the service account |
 | Artifact Registry `asia-southeast1/apcs` | images; cleanup keeps the 5 newest versions |
-| Secret Manager `apcs-prod-secrets`, `apcs-dev-secrets`, `apcs-dev-migrator-password` | all secret values (JSON objects for the first two) |
+| Secret Manager `apcs-prod-secrets`, `apcs-prod-external`, `apcs-dev-secrets`, `apcs-dev-migrator-password` | all secret values (JSON objects except the last) |
 | Bucket `gs://apcs-backups-64e51c` | backups, deleted after 35 days |
 | Firewall | `apcs-allow-web` 80/443 from anywhere; `apcs-allow-iap` 22 and 5432 from the IAP range `35.235.240.0/20`; `apcs-allow-dev-postgres` 5432 from anywhere until go-live; the default `default-allow-ssh` and `default-allow-rdp` rules are deleted |
 | VM | `e2-standard-2`, Ubuntu 24.04, 64 GB pd-balanced, static IP, OS Login on, no SSH keys in metadata |
@@ -54,7 +54,8 @@ port 22 is not open to the internet.
 |---|---|
 | `deploy/env/common.env` | non-secret settings shared by scripts and workflows: project, zone, VM, registry, backup bucket, `APP_DOMAIN` |
 | `deploy/env/*.env.tpl` | one template per service; plain values are written in, secrets are `${NAME}` |
-| Secret `apcs-prod-secrets` | JSON with every `${NAME}` the templates use: database, Redis, JWT and media-worker secrets, and the external keys (Cloudinary, PayOS, SMTP, Google client ID, Gemini, assistant, MiniMax, Etsy, translation, Google Drive token, Discord webhook) |
+| Secret `apcs-prod-secrets` | JSON of generated values nobody edits by hand: database, Redis, JWT and media-worker secrets |
+| Secret `apcs-prod-external` | JSON of the external keys people upload as a whole file: Google client ID, SMTP, Cloudinary, PayOS, Gemini, assistant keys (`;`-separated, rotated on rate limits), MiniMax, Etsy, translation, Google Drive token, Discord webhook |
 | Secret `apcs-dev-secrets` | `DEV_POSTGRES_PASSWORD`, `DEV_BACKUP_PASSWORD` |
 | Secret `apcs-dev-migrator-password` | the dev database `apcs_migrator` password |
 
