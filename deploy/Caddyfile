@@ -101,11 +101,24 @@ api.{$APP_DOMAIN} {
 logs.{$APP_DOMAIN} {
 	encode zstd gzip
 
-	basic_auth {
-		{$OPS_USER} {$OPS_PASSWORD_HASH}
+	# Dozzle's service worker fetches pages without the basic auth credentials, so Chrome shows a bare 401
+	# instead of the login prompt; this replacement removes the worker on its next update check.
+	@serviceWorker path /sw.js
+	handle @serviceWorker {
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-store"
+		respond `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));
+` 200
 	}
 
-	reverse_proxy dozzle:8080
+	handle {
+		basic_auth {
+			{$OPS_USER} {$OPS_PASSWORD_HASH}
+		}
+
+		reverse_proxy dozzle:8080
+	}
 
 	log {
 		output stdout
