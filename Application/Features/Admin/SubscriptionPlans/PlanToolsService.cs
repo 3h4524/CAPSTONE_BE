@@ -23,8 +23,11 @@ public interface IPlanToolsService
     /// <summary>Puts the plans in the order given, for the Admin and for Sellers comparing plans.</summary>
     Task<Result> ReorderAsync(ReorderPlansRequestDto request, CancellationToken cancellationToken = default);
 
-    /// <summary>One page of the changes to the plans, their features, the catalog, Free and the trial, newest first.</summary>
-    Task<Result<PagedResult<PlanHistoryEntryDto>>> GetHistoryAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// One page of the changes to the plans, their features, the catalog, Free and the trial, newest first.
+    /// <paramref name="action"/> keeps only what was added, edited or deleted ("add", "edit", "delete").
+    /// </summary>
+    Task<Result<PagedResult<PlanHistoryEntryDto>>> GetHistoryAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default, string? action = null);
 }
 
 /// <inheritdoc />
@@ -45,6 +48,8 @@ public sealed partial class PlanToolsService(
     private const string EditCatalog = "UpdatePlanFeature";
     private const string EditSettings = "UpdatePlanSettings";
     private const string SetRecommended = "SetRecommendedPlan";
+
+    private static readonly string[] HistoryActions = ["add", "edit", "delete"];
 
     private static readonly string[] Logged =
         [Duplicate, Reorder, ChangeFeature, EditCatalog, EditSettings, SetRecommended, PlanChangeActions.Create, PlanChangeActions.Update, PlanChangeActions.Delete];
@@ -156,10 +161,22 @@ public sealed partial class PlanToolsService(
     }
 
     /// <inheritdoc />
-    public async Task<Result<PagedResult<PlanHistoryEntryDto>>> GetHistoryAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<Result<PagedResult<PlanHistoryEntryDto>>> GetHistoryAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default, string? action = null)
     {
         pageSize = Math.Clamp(pageSize, 1, 100);
         var logged = auditLogs.Query().AsNoTracking().Where(log => Logged.Contains(log.ActionType));
+        if (HistoryActions.Contains(action))
+        {
+            // Whether a feature was added or removed is only in the logged JSON, so it is read here.
+            var matching = (await logged
+                    .Select(log => new { log.Id, log.ActionType, log.OldValue, log.NewValue })
+                    .ToListAsync(cancellationToken))
+                .Where(log => HistoryActionOf(log.ActionType, log.OldValue, log.NewValue) == action)
+                .Select(log => log.Id)
+                .ToList();
+            logged = logged.Where(log => matching.Contains(log.Id));
+        }
+
         var total = await logged.CountAsync(cancellationToken);
         // A page past the end shows the last one, so deleting history never leaves an empty page.
         pageNumber = Math.Clamp(pageNumber, 1, Math.Max(1, (int)Math.Ceiling(total / (double)pageSize)));
@@ -194,6 +211,22 @@ public sealed partial class PlanToolsService(
             })
             .ToList();
         return Result.Success(new PagedResult<PlanHistoryEntryDto>(entries, total, pageNumber, pageSize));
+    }
+
+    // What a logged change did, for the History tab's filter.
+    private static string HistoryActionOf(string actionType, string? oldValue, string? newValue)
+    {
+        if (actionType is PlanChangeActions.Create or Duplicate) return "add";
+        if (actionType == PlanChangeActions.Delete) return "delete";
+        if (actionType != ChangeFeature) return "edit";
+
+        using var before = Parse(oldValue);
+        using var after = Parse(newValue);
+        var isLimit = PlanFeatures.Find(Text(after?.RootElement, "code") ?? "")?.Kind == PlanFeatureKinds.Limit;
+        var wasOn = Bool(before?.RootElement, "isEnabled");
+        var isOn = Bool(after?.RootElement, "isEnabled");
+        if (isLimit || wasOn == isOn) return "edit";
+        return isOn ? "add" : "delete";
     }
 
     // One sentence for a logged change, in the words the History tab shows.

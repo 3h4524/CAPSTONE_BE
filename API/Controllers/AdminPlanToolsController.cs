@@ -50,9 +50,9 @@ public sealed class AdminPlanToolsController(IPlanToolsService toolsService) : C
     /// </summary>
     [HttpGet("history")]
     [ProducesResponseType(typeof(PagedResult<PlanHistoryEntryDto>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetHistory([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> GetHistory([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default, [FromQuery] string? action = null)
     {
-        var result = await toolsService.GetHistoryAsync(pageNumber, pageSize, cancellationToken);
+        var result = await toolsService.GetHistoryAsync(pageNumber, pageSize, cancellationToken, action);
 
         return result.ToActionResult(this);
     }
