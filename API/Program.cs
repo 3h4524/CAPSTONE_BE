@@ -50,7 +50,6 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-builder.Services.AddAssistantRateLimiting();
 builder.Services.AddApiRateLimiting(builder.Configuration);
 builder.Services.AddCors(options =>
 {
@@ -173,10 +172,10 @@ app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();
 
-app.MapHub<SupportHub>("/hubs/support");
-app.MapHub<NotificationHub>("/hubs/notification");
+app.MapHub<SupportHub>("/hubs/support").DisableRateLimiting();
+app.MapHub<NotificationHub>("/hubs/notification").DisableRateLimiting();
 app.MapControllers();
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health").DisableRateLimiting();
 
 app.Run();
 

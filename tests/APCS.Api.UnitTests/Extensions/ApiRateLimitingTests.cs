@@ -1,8 +1,11 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Claims;
+using APCS.Api.Controllers;
 using APCS.Api.Extensions;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace APCS.Api.UnitTests.Extensions;
 
@@ -10,28 +13,27 @@ namespace APCS.Api.UnitTests.Extensions;
 public sealed class ApiRateLimitingTests
 {
     [TestMethod]
-    [DataRow("/health")]
-    [DataRow("/internal/media-jobs/claim")]
-    [DataRow("/hubs/notification/negotiate")]
-    [DataRow("/api/subscriptions/webhooks/payos")]
-    [DataRow("/HUBS/support")]
-    public void IsExempt_WithInfrastructurePath_ReturnsTrue(string path)
+    [DataRow(typeof(InternalMediaJobsController))]
+    [DataRow(typeof(InternalAiShotController))]
+    [DataRow(typeof(PayOsWebhookController))]
+    public void Controller_CalledByAMachine_OptsOutOfRateLimiting(Type controller)
     {
-        ApiRateLimiting.IsExempt(new PathString(path)).Should().BeTrue();
+        controller.GetCustomAttribute<DisableRateLimitingAttribute>().Should().NotBeNull();
     }
 
     [TestMethod]
-    [DataRow("/api/auth/login")]
-    [DataRow("/api/batches")]
-    [DataRow("/healthz")]
-    [DataRow("/")]
-    public void IsExempt_WithApplicationPath_ReturnsFalse(string path)
+    public void AssistantChat_UsesTheAssistantChatPolicy()
     {
-        ApiRateLimiting.IsExempt(new PathString(path)).Should().BeFalse();
+        var chat = typeof(AssistantController).GetMethods()
+            .Select(method => method.GetCustomAttribute<EnableRateLimitingAttribute>())
+            .Where(attribute => attribute is not null)
+            .Should().ContainSingle().Subject!;
+
+        chat.PolicyName.Should().Be(ApiRateLimiting.AssistantChatPolicy);
     }
 
     [TestMethod]
-    public void GlobalPartitionKey_WithSignedInUser_UsesTheUserId()
+    public void CallerKey_WithSignedInUser_UsesTheUserId()
     {
         var context = new DefaultHttpContext
         {
@@ -39,20 +41,20 @@ public sealed class ApiRateLimitingTests
         };
         context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.7");
 
-        ApiRateLimiting.GlobalPartitionKey(context).Should().Be("user:user-1");
+        ApiRateLimiting.CallerKey(context).Should().Be("user:user-1");
     }
 
     [TestMethod]
-    public void GlobalPartitionKey_WithAnonymousCaller_UsesTheClientIp()
+    public void CallerKey_WithAnonymousCaller_UsesTheClientIp()
     {
         var context = new DefaultHttpContext();
         context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.7");
 
-        ApiRateLimiting.GlobalPartitionKey(context).Should().Be("ip:203.0.113.7");
+        ApiRateLimiting.CallerKey(context).Should().Be("ip:203.0.113.7");
     }
 
     [TestMethod]
-    public void GlobalPartitionKey_WithUnauthenticatedIdentityCarryingClaims_UsesTheClientIp()
+    public void CallerKey_WithUnauthenticatedIdentityCarryingClaims_UsesTheClientIp()
     {
         var context = new DefaultHttpContext
         {
@@ -60,6 +62,6 @@ public sealed class ApiRateLimitingTests
         };
         context.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.7");
 
-        ApiRateLimiting.GlobalPartitionKey(context).Should().Be("ip:203.0.113.7");
+        ApiRateLimiting.CallerKey(context).Should().Be("ip:203.0.113.7");
     }
 }

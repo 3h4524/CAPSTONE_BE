@@ -1,6 +1,7 @@
 using APCS.Application.Features.Subscriptions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace APCS.Api.Controllers;
 
@@ -15,6 +16,7 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Route("api/subscriptions/webhooks/payos")]
 [AllowAnonymous]
+[DisableRateLimiting]
 public sealed class PayOsWebhookController(ISubscriptionService subscriptionService) : ControllerBase
 {
     /// <summary>
