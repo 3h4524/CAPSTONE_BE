@@ -26,8 +26,10 @@ on. SSE is not buffered (`flush_interval -1`) and long AI calls get a 10-minute 
 `api.<domain>` is an alias of `<domain>/api` that serves only the API (for Postman, documentation
 and external callbacks): `api.<domain>/auth/login` reaches `/api/auth/login`, while `/health`,
 `/hubs/*` and already prefixed `/api/*` paths pass through unchanged. The browser app keeps using
-`<domain>/api` so the session cookies stay on one host. The Etsy OAuth callback is
-`https://api.<domain>/etsy/oauth/callback`.
+`<domain>/api` so the session cookies stay on one host. The Etsy OAuth callback is set by
+`Etsy__OAuthRedirectUri` in `deploy/env/api.env.tpl` (now `https://<domain>/api/etsy/oauth/callback`);
+`https://api.<domain>/etsy/oauth/callback` reaches the same route, so switching only needs that value
+changed together with the Callback URL registered on the Etsy app.
 
 The API runs exactly one instance: its work queues are in-memory channels, its scheduled jobs have
 no distributed lock, and SignalR has no backplane.
