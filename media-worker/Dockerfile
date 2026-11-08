@@ -4,7 +4,7 @@ WORKDIR /app
 COPY shared/video-composition ./shared/video-composition
 COPY media-worker/package*.json ./media-worker/
 WORKDIR /app/media-worker
-RUN npm ci --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY media-worker/tsconfig.json ./
 COPY media-worker/src ./src
 ENV CHROME_EXECUTABLE=/usr/bin/chromium
