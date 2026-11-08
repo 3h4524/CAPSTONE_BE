@@ -50,6 +50,9 @@ when the API runs next to the frontend.
   run and every account land there, and schema changes go through `migrations/`.
   `scripts/e2e/` starts a database of its own with Docker. Deployment, environments, and backups
   are described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+- **The app-wide rate limiter is off in `Development`** (`appsettings.Development.json`), so local
+  work is never throttled. Set `RateLimiting__Enabled=true` to try it; the limits are the
+  `RateLimiting:*` keys read by `API/Extensions/ApiRateLimiting.cs`.
 - The reports of the end-to-end suite live in the `test_report_runs` table, so a run outlives the
   machine that made it. Integration fixtures build the schema with `EnsureCreated`, so the table
   exists wherever tests run; against a pre-provisioned database, `APCS_TEST_CONNECTION_STRING`
