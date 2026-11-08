@@ -10,6 +10,7 @@ namespace APCS.Application.Features.Workflows;
 public interface IMediaJobService
 {
     Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct);
+    Task<Result<MediaStreamClaimResponse>> ClaimStreamAsync(Guid jobId, long queueVersion, CancellationToken ct);
     Task<Result> HeartbeatAsync(Guid id, JobHeartbeat request, CancellationToken ct);
     Task<Result<LocalExportFile>> UploadExportAsync(Guid id, Guid leaseToken, Stream content, CancellationToken ct);
     Task<Result> CompleteAsync(Guid id, JobCompletion request, CancellationToken ct);
@@ -21,13 +22,30 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IRepository<ExportPackage> exports, IRepository<ExportPackageItem> items,
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
     IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null,
-    ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null) : IMediaJobService
+    ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null,
+    ISceneVideoNotifier? sceneNotifier = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
+        => await ClaimCoreAsync(null, null, ct);
+
+    public async Task<Result<MediaStreamClaimResponse>> ClaimStreamAsync(Guid jobId, long queueVersion, CancellationToken ct)
+    {
+        if (jobId == Guid.Empty || queueVersion <= 0)
+            return Result.Failure<MediaStreamClaimResponse>(Error.Validation("A valid job ID and queue version are required."));
+        var claimed = await ClaimCoreAsync(jobId, queueVersion, ct);
+        if (claimed.IsFailure) return Result.Failure<MediaStreamClaimResponse>(claimed.Error);
+        if (claimed.Value is not null) return Result.Success(new MediaStreamClaimResponse("claimed", claimed.Value));
+        var status = await state.GetMediaClaimStatusAsync(jobId, queueVersion, time.GetUtcNow().UtcDateTime, ct);
+        return Result.Success(new MediaStreamClaimResponse(status, null));
+    }
+
+    private async Task<Result<WorkerJob?>> ClaimCoreAsync(Guid? jobId, long? queueVersion, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var token = Guid.NewGuid();
-        var job = await state.ClaimAsync(time.GetUtcNow().UtcDateTime, token, ct);
+        var job = jobId is Guid id && queueVersion is long version
+            ? await state.ClaimMediaAsync(id, version, time.GetUtcNow().UtcDateTime, token, ct)
+            : await state.ClaimAsync(time.GetUtcNow().UtcDateTime, token, ct);
         if (job == null) { await tx.CommitAsync(ct); return Result.Success<WorkerJob?>(null); }
         await tx.CommitAsync(ct);
         var workerAssets = new List<WorkerAsset>();
@@ -86,19 +104,6 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                 { await FailAsync(job.Id, new(token, "Source mockup is no longer approved at the rendered revision."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"mockups/{asset.Id}.png"));
             }
-            // Model photo images ride along as they were when the package was planned, and only while still approved.
-            // Only the old flat ZIP needs them: the per-product ZIP already packs every approved mock-up, model photos included.
-            if ((payload.Storyboard is null || string.IsNullOrEmpty(payload.ProductName)) &&payload.Manifest.TryGetProperty("modelPhotos", out var modelPhotos) && modelPhotos.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var photo in modelPhotos.EnumerateArray())
-                {
-                    var asset = photo.TryGetProperty("mockupId", out var id) && id.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
-                    if (asset == null || asset.DeletedAt != null || asset.ApprovalStatus != "approved"
-                        || !photo.TryGetProperty("sourceHash", out var hash) || asset.ContentHash != hash.GetString())
-                    { await FailAsync(job.Id, new(token, "A model photo image changed after the package was planned. Export again."), ct); return Result.Success<WorkerJob?>(null); }
-                    workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"model-photos/{asset.Id}.png"));
-                }
-            }
             foreach (var design in payload.Designs ?? [])
             {
                 var source = designImages is null ? null : await designImages.GetByIdAsync(design.Id, ct);
@@ -125,6 +130,18 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                     if (sceneSource.ClipStorageKey is not null && sceneSource.ClipStorageVersion is not null)
                         workerAssets.Add(new(Guid.Empty, storage.SignRead(sceneSource.ClipStorageKey, "video", sceneSource.ClipStorageVersion),
                             $"scene-clips/{sceneSource.SceneOrder}.mp4"));
+                }
+            }
+            // Model photo images ride along as they were when the package was planned, and only while still approved.
+            if (payload.Manifest.TryGetProperty("modelPhotos", out var modelPhotos) && modelPhotos.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var photo in modelPhotos.EnumerateArray())
+                {
+                    var asset = photo.TryGetProperty("mockupId", out var photoId) && photoId.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
+                    if (asset == null || asset.DeletedAt != null || asset.ApprovalStatus != "approved"
+                        || !photo.TryGetProperty("sourceHash", out var hash) || asset.ContentHash != hash.GetString())
+                    { await FailAsync(job.Id, new(token, "A model photo image changed after the package was planned. Export again."), ct); return Result.Success<WorkerJob?>(null); }
+                    workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"model-photos/{asset.Id}.png"));
                 }
             }
             workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey, "video", payload.VideoStorageVersion), "video.mp4"));
@@ -278,6 +295,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (queueAutomaticQuality && qualityJobs is not null)
             await qualityJobs.QueueAsync(job.WorkflowRunId, qualityVideoId, null, ct);
         await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         return Result.Success();
     }
     private static JsonObject? ReadConfigSnapshot(string? value)
@@ -323,7 +341,9 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         job.Status = request.Message is "VeoSubmissionUncertain" or "AiVideoSubmissionUncertain" or "AiShotRejected" or "SourceChanged" || reason != null || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
         job.AvailableAt = time.GetUtcNow().AddSeconds(busy ? 70 * job.Attempt : 5 * job.Attempt).UtcDateTime;
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
+        return Result.Success();
     }
     // What the AI scene in the given state recorded about itself: its provider's refusal, or why its outcome is unknown.
     private static string? AiShotFailure(MediaJob job, string status = "failed")

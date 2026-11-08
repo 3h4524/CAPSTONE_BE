@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - production
 
 permissions:
   contents: read
@@ -86,6 +87,9 @@ jobs:
       # so the container must not be downgraded below 18.
       APCS_TEST_CONNECTION_STRING: "Host=127.0.0.1;Port=5432;Database=apcs;Username=apcs;Password=apcs;SSL Mode=Disable"
       APCS_TEST_REDIS_CONNECTION_STRING: "127.0.0.1:6379,abortConnect=false"
+      APCS_TEST_DISPATCHER_POSTGRES: "Host=127.0.0.1;Port=5432;Database=postgres;Username=apcs;Password=apcs;SSL Mode=Disable"
+      APCS_TEST_DISPATCHER_REDIS: "127.0.0.1:6379,abortConnect=false"
+      APCS_TEST_REDIS_URL: "redis://127.0.0.1:6379"
       # Opt-in truncation so each test class starts clean. The tests only truncate
       # when this matches the database named in the connection string.
       APCS_TEST_RESET_DATABASE: apcs
@@ -106,8 +110,26 @@ jobs:
       - name: Build
         run: dotnet build Capstone.sln -c Release
 
+      # Provision the shared test database before solution-wide projects run in parallel.
+      - name: Prepare application schema
+        run: dotnet test tests/APCS.Infrastructure.IntegrationTests/APCS.Infrastructure.IntegrationTests.csproj -c Release --no-build -- --filter "FullyQualifiedName~MediaJobRepositoryTests"
+
       - name: Run integration tests
         run: dotnet test Capstone.sln -c Release --no-build -- --results-directory "$GITHUB_WORKSPACE/TestResults"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: media-worker/package-lock.json
+
+      - name: Run media worker tests
+        working-directory: media-worker
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run check
+          npm test
 
       - name: Upload test results
         if: always()
@@ -117,3 +139,44 @@ jobs:
           path: TestResults/**
           if-no-files-found: warn
           retention-days: 14
+
+  migrations:
+    name: Flyway migrations apply cleanly
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: apcs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d apcs"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create extensions
+        if: hashFiles('migrations/**/*.sql') != ''
+        env:
+          PGPASSWORD: postgres
+        run: psql -h 127.0.0.1 -U postgres -d apcs -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+
+      - name: Migrate an empty database and validate
+        if: hashFiles('migrations/**/*.sql') != ''
+        env:
+          FLYWAY_URL: jdbc:postgresql://127.0.0.1:5432/apcs
+          FLYWAY_USER: postgres
+          FLYWAY_PASSWORD: postgres
+        run: |
+          ./deploy/scripts/flyway.sh migrate
+          ./deploy/scripts/flyway.sh validate
+          ./deploy/scripts/flyway.sh info >> "$GITHUB_STEP_SUMMARY"

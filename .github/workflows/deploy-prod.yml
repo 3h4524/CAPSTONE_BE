@@ -1,0 +1,188 @@
+name: Deploy production
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to release from the selected tag
+        type: choice
+        options: [api, infra, all]
+        default: api
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  WIF_PROVIDER: projects/1035893227434/locations/global/workloadIdentityPools/github/providers/github-actions
+  DEPLOYER_SA: apcs-deployer@apcs-prod.iam.gserviceaccount.com
+  RELEASE_TAG: ${{ github.ref_name }}
+
+jobs:
+  guard:
+    name: Tag is on the production branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a release tag
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::Run this workflow from a v* tag (for a rollback, pick the older tag as the ref)."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tagged commit belongs to production
+        run: |
+          git fetch --no-tags origin production
+          if ! git merge-base --is-ancestor HEAD origin/production; then
+            echo "::error::$RELEASE_TAG is not on the production branch. Merge into production first, then tag."
+            exit 1
+          fi
+
+  test:
+    name: Build and unit tests
+    needs: guard
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Build and test
+        run: |
+          dotnet restore Capstone.sln
+          dotnet build Capstone.sln -c Release --no-restore
+          dotnet test Capstone.sln -c Release --no-build
+
+  images:
+    name: Build and push images
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Load deployment settings
+        run: grep -vE '^\s*(#|$)' deploy/env/common.env >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGISTRY%%/*}" --quiet
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: API/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/apcs-api:${{ env.RELEASE_TAG }}
+            ${{ env.REGISTRY }}/apcs-api:${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Media worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: media-worker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/apcs-media-worker:${{ env.RELEASE_TAG }}
+            ${{ env.REGISTRY }}/apcs-media-worker:${{ github.sha }}
+          cache-from: type=gha,scope=media-worker
+          cache-to: type=gha,mode=max,scope=media-worker
+
+  deploy:
+    name: Release on the VM
+    needs: [guard, images]
+    if: always() && needs.guard.result == 'success' && (needs.images.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.images.result == 'skipped'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Decide what to release
+        id: plan
+        env:
+          REQUESTED: ${{ inputs.target }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            target="$REQUESTED"
+          else
+            previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2> /dev/null || true)"
+            if [ -z "$previous" ] || ! git diff --quiet "$previous" HEAD -- \
+                deploy/compose.yml deploy/Caddyfile deploy/backup deploy/postgres \
+                deploy/env/compose.env.tpl deploy/env/backup.env.tpl deploy/env/redis.env.tpl deploy/env/postgres-prod.env.tpl; then
+              target=all
+            else
+              target=api
+            fi
+            echo "Previous release: ${previous:-none}"
+          fi
+          echo "Release target: $target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Load deployment settings
+        run: grep -vE '^\s*(#|$)' deploy/env/common.env >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Ship deployment files and migrations
+        run: |
+          tar czf - deploy migrations | gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" \
+            --tunnel-through-iap --quiet --command \
+            "sudo -u deploy bash -c 'set -e; rm -rf /opt/apcs/incoming/*; tar xzf - -C /opt/apcs/incoming; rsync -a --inplace --delete --exclude .env /opt/apcs/incoming/deploy/ /opt/apcs/deploy/; rsync -a --delete /opt/apcs/incoming/migrations/ /opt/apcs/migrations/'"
+
+      - name: Release infrastructure (Caddy, Dozzle, Uptime Kuma, backup)
+        if: steps.plan.outputs.target == 'infra' || steps.plan.outputs.target == 'all'
+        run: |
+          gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --tunnel-through-iap --quiet \
+            --command "sudo -iu deploy /opt/apcs/deploy/scripts/release.sh infra"
+
+      - name: Release the API and media worker
+        if: steps.plan.outputs.target == 'api' || steps.plan.outputs.target == 'all'
+        run: |
+          gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --tunnel-through-iap --quiet \
+            --command "sudo -iu deploy /opt/apcs/deploy/scripts/release.sh api $RELEASE_TAG"
+
+      - name: Smoke test
+        run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors "https://$APP_DOMAIN/health"

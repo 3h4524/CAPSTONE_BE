@@ -12,7 +12,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
-    IRepository<DesignImage>? designImages = null, Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null)
+    IRepository<DesignImage>? designImages = null,
+    Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {

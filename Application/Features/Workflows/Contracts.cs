@@ -214,6 +214,10 @@ public sealed record WorkerAsset(Guid MockupId, string Url, string FileName);
 public sealed record UploadGrant(string Url, IReadOnlyDictionary<string, string> Fields, string StorageKey, string ResourceType);
 public sealed record WorkerJob(Guid Id, Guid LeaseToken, string Kind, JsonElement Payload, IReadOnlyList<WorkerAsset> Assets, IReadOnlyDictionary<string, UploadGrant> Uploads);
 public sealed record JobHeartbeat(Guid LeaseToken, string Stage, int Progress);
+/// <summary>Identifies the queue generation delivered by the media stream.</summary>
+public sealed record MediaStreamClaimRequest(long QueueVersion);
+/// <summary>The claim result and, when claimed, the media work assigned to the worker.</summary>
+public sealed record MediaStreamClaimResponse(string Status, WorkerJob? Job);
 public sealed record MediaQa(string Codec, string PixelFormat, int Width, int Height, double Fps, double DurationSeconds, long Bytes, bool HasAudio, bool FullDecode);
 public sealed record JobCompletion(Guid LeaseToken, string StorageKey, string StorageVersion, string? ThumbnailStorageKey, string? ThumbnailStorageVersion, MediaQa? Qa, long? OutputBytes = null);
 public sealed record JobFailure(Guid LeaseToken, string Message);

@@ -267,6 +267,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
         services.AddSingleton<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();

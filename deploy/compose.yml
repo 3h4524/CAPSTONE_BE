@@ -1,0 +1,181 @@
+name: apcs
+
+x-defaults: &defaults
+  restart: unless-stopped
+  networks: [apcs]
+  logging:
+    driver: local
+    options:
+      max-size: 20m
+      max-file: "5"
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  caddy:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: edge
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
+      OPS_USER: ${OPS_USER:?Set OPS_USER}
+      OPS_PASSWORD_HASH: ${OPS_PASSWORD_HASH:?Set OPS_PASSWORD_HASH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 128m
+    depends_on:
+      - api
+      - fe
+
+  fe:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: app
+    image: ${REGISTRY:?Set REGISTRY}/apcs-fe:${FE_TAG:-unreleased}
+    extra_hosts:
+      - "${APP_DOMAIN}:host-gateway"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  api:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: app
+    image: ${REGISTRY:?Set REGISTRY}/apcs-api:${API_TAG:-unreleased}
+    env_file: ${ENV_DIR:-/opt/apcs/env}/api.env
+    volumes:
+      - keyring:/data/keyring
+      - models:/app/models
+    mem_limit: 3g
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  media-worker:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: app
+    image: ${REGISTRY:?Set REGISTRY}/apcs-media-worker:${API_TAG:-unreleased}
+    init: true
+    env_file: ${ENV_DIR:-/opt/apcs/env}/media-worker.env
+    environment:
+      APCS_API_URL: http://api:8080
+    shm_size: 1gb
+    mem_limit: 2500m
+    cpus: 1.5
+    depends_on:
+      api:
+        condition: service_healthy
+
+  redis:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: data
+    image: redis:7-alpine
+    env_file: ${ENV_DIR:-/opt/apcs/env}/redis.env
+    command: >-
+      sh -c 'exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      --maxmemory 128mb --maxmemory-policy noeviction'
+    volumes:
+      - redis_data:/data
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  postgres-prod:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: data
+    image: pgvector/pgvector:pg18
+    env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-prod.env
+    command: >-
+      postgres -c shared_buffers=256MB -c max_connections=100
+      -c log_min_duration_statement=2000 -c timezone=UTC
+    ports:
+      - "${PROD_DB_BIND:-127.0.0.1}:2510:5432"
+    volumes:
+      - pg_prod:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    mem_limit: 1g
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  dozzle:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: ops
+    image: amir20/dozzle:v11
+    environment:
+      DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_HOSTNAME: apcs-prod
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  uptime-kuma:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: ops
+    image: louislam/uptime-kuma:2
+    volumes:
+      - kuma_data:/app/data
+    mem_limit: 256m
+
+  backup:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: ops
+    build: ./backup
+    image: apcs-backup:local
+    env_file: ${ENV_DIR:-/opt/apcs/env}/backup.env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - backups:/backups
+      - keyring:/keyring:ro
+    mem_limit: 256m
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+
+networks:
+  apcs:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  caddy_data:
+  caddy_config:
+  keyring:
+  models:
+  redis_data:
+  pg_prod:
+  backups:
+  kuma_data:

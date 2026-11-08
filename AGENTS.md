@@ -23,7 +23,8 @@ The list above resolves conflicts. This table decides reading order, so a task r
 | Add or change tests only | [`docs/TESTING.md`](docs/TESTING.md) |
 | Change a layer boundary, a project reference, or add a dependency | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Rename or move types, or apply naming and language conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Change an entity or the schema | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *Database-first schema workflow* in [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Change an entity or the schema | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *Database-first schema workflow* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`migrations/README.md`](migrations/README.md) |
+| Change Docker images, the VM stack, CI/CD, or backups | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | Change the assistant chatbot or RAG caching | [`docs/ASSISTANT.md`](docs/ASSISTANT.md) and [`docs/adr/0001-rag-query-caching.md`](docs/adr/0001-rag-query-caching.md) |
 | Prepare a pull request | *Definition of done* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`.github/pull_request_template.md`](.github/pull_request_template.md) |
 | Use an APCS prompt or workflow | [`.agent/README.md`](.agent/README.md) |
@@ -44,8 +45,11 @@ when the API runs next to the frontend.
   `Cors:AllowedOrigins` as an array, and those child keys win over the environment variable, so
   only `http://localhost:3000` is allowed. To allow another origin in `Development`, add it to
   that file or run the API with another environment (the E2E stack uses `E2E`).
-- The local `.env` points at the **shared Neon database**, not at a local Postgres: the rows of
-  every run and every account land there. `scripts/e2e/` starts a database of its own with Docker.
+- The local `.env` points at the **shared dev database** on the deployment VM (a personal
+  `dev_<name>` login over SSL with data rights only), not at a local Postgres: the rows of every
+  run and every account land there, and schema changes go through `migrations/`.
+  `scripts/e2e/` starts a database of its own with Docker. Deployment, environments, and backups
+  are described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - **The app-wide rate limiter is off in `Development`** (`appsettings.Development.json`), so local
   work is never throttled. Set `RateLimiting__Enabled=true` to try it; the limits are the
   `RateLimiting:*` keys read by `API/Extensions/ApiRateLimiting.cs`.

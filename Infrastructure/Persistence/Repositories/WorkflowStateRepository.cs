@@ -22,11 +22,28 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
 
     public async Task<MediaJob?> ClaimAsync(DateTime now, Guid token, string capability, CancellationToken ct)
     {
-        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE media_jobs SET status = 'failed', error_message = 'Worker lease expired after maximum attempts.', updated_at = {now} WHERE status = 'leased' AND lease_expires_at < {now} AND attempt >= maximum_attempts", ct);
         var qualityOnly = string.Equals(capability, "video_quality", StringComparison.Ordinal);
+        await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE media_jobs SET status = 'failed', error_message = 'Worker lease expired after maximum attempts.', updated_at = {now} WHERE status = 'leased' AND lease_expires_at < {now} AND attempt >= maximum_attempts AND (({qualityOnly} AND kind = 'video_quality') OR (NOT {qualityOnly} AND kind IN ('render', 'export_zip')))", ct);
         var jobs = qualityOnly
             ? await db.MediaJobs.FromSqlInterpolated($"WITH candidate AS (SELECT id FROM media_jobs WHERE kind = 'video_quality' AND (status = 'queued' AND available_at <= {now} OR status = 'leased' AND lease_expires_at < {now}) AND attempt < maximum_attempts ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE media_jobs j SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} FROM candidate c WHERE j.id = c.id RETURNING j.*").ToListAsync(ct)
             : await db.MediaJobs.FromSqlInterpolated($"WITH candidate AS (SELECT id FROM media_jobs WHERE kind IN ('render', 'export_zip') AND (status = 'queued' AND available_at <= {now} OR status = 'leased' AND lease_expires_at < {now}) AND attempt < maximum_attempts ORDER BY available_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE media_jobs j SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} FROM candidate c WHERE j.id = c.id RETURNING j.*").ToListAsync(ct);
         return jobs.SingleOrDefault();
     }
+
+    public async Task<MediaJob?> ClaimMediaAsync(Guid jobId, long queueVersion, DateTime now, Guid token, CancellationToken ct)
+    {
+        var rows = await db.MediaJobs.FromSqlInterpolated($"UPDATE media_jobs SET status = 'leased', attempt = attempt + 1, lease_token = {token}, lease_expires_at = {now.AddMinutes(2)}, heartbeat_at = {now}, updated_at = {now} WHERE id = {jobId} AND queue_version = {queueVersion} AND kind IN ('render', 'export_zip') AND status = 'queued' AND available_at <= {now} AND attempt < maximum_attempts RETURNING *").ToListAsync(ct);
+        return rows.SingleOrDefault();
+    }
+
+    public async Task<IReadOnlyList<FailedMediaJob>> FindFailedJobsOfRunningRunsAsync(int limit, CancellationToken ct) =>
+        await db.MediaJobs.AsNoTracking()
+            .Where(job => job.Status == "failed" && (job.Kind == "render" || job.Kind == "export_zip") && job.WorkflowRun.Status == "running")
+            .OrderBy(job => job.UpdatedAt)
+            .Select(job => new FailedMediaJob(job.WorkflowRunId, job.WorkflowNodeRunId, job.ErrorMessage))
+            .Take(limit)
+            .ToListAsync(ct);
+
+    public async Task<string> GetMediaClaimStatusAsync(Guid jobId, long queueVersion, DateTime now, CancellationToken ct) =>
+        await db.Database.SqlQuery<string>($"SELECT COALESCE((SELECT CASE WHEN status = 'leased' THEN 'busy' WHEN status = 'queued' AND available_at > {now} AND attempt < maximum_attempts THEN 'not_due' ELSE 'obsolete' END FROM media_jobs WHERE id = {jobId} AND queue_version = {queueVersion} AND kind IN ('render', 'export_zip')), 'obsolete') AS \"Value\"").SingleAsync(ct);
 }
