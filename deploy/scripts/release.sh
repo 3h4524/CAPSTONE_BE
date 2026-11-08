@@ -25,7 +25,7 @@ if ! flock -n 9; then
 fi
 
 ensure_data_services() {
-  docker compose up -d --no-recreate postgres-prod redis
+  docker compose up -d --no-recreate postgres-prod redis redis-media
 }
 
 ensure_backup_image() {

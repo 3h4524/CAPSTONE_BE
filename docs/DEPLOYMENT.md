@@ -13,6 +13,7 @@ Secrets live only in Google Secret Manager; the repository holds templates and n
 | `api` | `.../apcs-api:<tag>` (`API/Dockerfile`) | Caddy and `media-worker` only |
 | `media-worker` | `.../apcs-media-worker:<tag>` (`media-worker/Dockerfile`) | nothing; it reads jobs from the Redis stream and calls the API |
 | `redis` | `redis:7-alpine`, AOF and password | Docker network only |
+| `redis-media` | `redis:7-alpine`, AOF `everysec`, `noeviction`, its own password (`REDIS_MEDIA_PASSWORD`) | Docker network only; holds only the media job stream |
 | `postgres-prod` | `pgvector/pgvector:pg18` | Docker network, and `127.0.0.1:2510` on the VM |
 | `postgres-dev` | `pgvector/pgvector:pg18`, SSL, **own compose project `apcs-dev`** (`deploy/dev-db/compose.yml`) | port 5432, the shared dev database; no release touches it |
 | `backup` | built from `deploy/backup` | nothing; runs `pg_dump` nightly |
@@ -36,7 +37,8 @@ no distributed lock, and SignalR has no backplane.
 
 Render and export-zip jobs use the stream queue (`MediaQueue__Mode=streams` in `api.env.tpl`,
 `MEDIA_QUEUE_MODE=streams` in `media-worker.env.tpl`): a trigger writes each queued job to
-`media_job_outbox`, the API publishes it to the Redis stream `apcs:prod:media:jobs`, and the worker
+`media_job_outbox`, the API publishes it to the stream `apcs:prod:media:jobs` on `redis-media` (kept apart
+from the cache Redis so a full cache cannot block job delivery, and the reverse), and the worker
 consumes it with the `media-workers` group. Both sides must use the same mode, because the API answers
 409 to polling claims while it is in stream mode.
 
