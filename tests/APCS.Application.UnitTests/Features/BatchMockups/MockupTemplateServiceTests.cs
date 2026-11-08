@@ -33,6 +33,57 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task ListAsync_LeavesModelPhotosOut()
+    {
+        var repository = TemplateRepository(
+            new MockupTemplate { Id = Guid.NewGuid(), Name = "Tee A", ProductType = "tshirt", BaseImageUrl = "https://x/a.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, Kind = MockupRules.GarmentKind },
+            new MockupTemplate { Id = Guid.NewGuid(), Name = "Model A", ProductType = "tshirt", BaseImageUrl = "https://x/m.jpg", PrintAreaConfig = "{}", OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, Kind = MockupRules.ModelKind });
+
+        var result = await CreateService(Guid.NewGuid(), templates: repository).ListAsync("tshirt");
+
+        result.Value.Should().ContainSingle().Which.Name.Should().Be("Tee A");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_ModelPhoto_IsNotATemplateABatchCanSelect()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var batches = MockBatches(new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "Draft", Config = "{}" });
+        var templates = TemplateRepository(new MockupTemplate
+        {
+            Id = templateId, Name = "Model", ProductType = "tshirt", BaseImageUrl = "https://x/m.jpg", PrintAreaConfig = "{}",
+            OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, Kind = MockupRules.ModelKind
+        });
+
+        var result = await CreateService(userId, templates, batches, MockRows(), MockProducts())
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([templateId]));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_ModelPhoto_IsChangedOnlyThroughItsOwnEndpoints()
+    {
+        var userId = Guid.NewGuid();
+        var id = Guid.NewGuid();
+        var templates = TemplateRepository(new MockupTemplate
+        {
+            Id = id, UserId = userId, Name = "Model", ProductType = "tshirt", BaseImageUrl = "https://x/m.jpg", PrintAreaConfig = "{}",
+            OutputWidthPx = 2000, OutputHeightPx = 2000, IsActive = true, Kind = MockupRules.ModelKind
+        });
+        SetupGetById(templates, id);
+
+        var result = await CreateService(userId, templates)
+            .UpdateAsync(id, new UpdateMockupTemplateRequestDto("Model", "tshirt", 10, 10, 100, 100, null));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
+    }
+
+    [TestMethod]
     public async Task ApplyAsync_WhenValid_StoresIdsInBatchConfig()
     {
         var userId = Guid.NewGuid();

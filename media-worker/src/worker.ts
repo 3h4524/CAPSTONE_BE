@@ -155,6 +155,12 @@ async function execute(job: WorkerJob) {
         if (!source) throw new Error("Missing ZIP source");
         pngSource(source.data, scene.sourceHash);
       }
+      // Model photo images: a mock-up put on a person, packed beside the video's sources.
+      for (const photo of payload.manifest.modelPhotos ?? []) {
+        const source = assets.get(photo.source);
+        if (!source) throw new Error("Missing ZIP source");
+        pngSource(source.data, photo.sourceHash);
+      }
       stage = "Exporting"; progress = 40;
       const zip = join(directory, "package.zip");
       await createZip(zip, assets, payload.manifest, signal);

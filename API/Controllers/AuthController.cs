@@ -6,6 +6,7 @@ using APCS.Application.Features.Auth.Dtos.Response;
 using APCS.Common.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace APCS.Api.Controllers;
 
@@ -25,6 +26,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </remarks>
     [AllowAnonymous]
     [HttpPost("register")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(typeof(RegisterResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
@@ -40,6 +42,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("verify-email")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -59,6 +62,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </remarks>
     [AllowAnonymous]
     [HttpPost("resend-verification")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ResendVerification(
@@ -77,6 +81,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("login")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -108,6 +113,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("admin/verify-2fa")]
+    [EnableRateLimiting(ApiRateLimiting.OtpPolicy)]
     [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -142,6 +148,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("admin/resend-otp")]
+    [EnableRateLimiting(ApiRateLimiting.OtpPolicy)]
     [ProducesResponseType(typeof(AdminTwoFactorResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -161,6 +168,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("google")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(typeof(LoginResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -255,6 +263,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </remarks>
     [AllowAnonymous]
     [HttpPost("forgot-password")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ForgotPassword(
@@ -272,6 +281,7 @@ public sealed class AuthController(IAuthService authService) : ControllerBase
     /// </summary>
     [AllowAnonymous]
     [HttpPost("reset-password")]
+    [EnableRateLimiting(ApiRateLimiting.AuthPolicy)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]

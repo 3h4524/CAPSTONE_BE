@@ -320,14 +320,47 @@ public sealed class IdeogramImageProviderTests
     }
 
     [TestMethod]
-    public async Task ComposeAsync_IsNotSupported()
+    public async Task ComposeAsync_EditsTheFirstImageWithTheOthersAsReferences_AtTheConfiguredQuality()
+    {
+        var provider = Provider(Answer, new IdeogramOptions { EditQuality = "low" });
+
+        var result = await provider.ComposeAsync("key", "Dress the person.",
+            [new ImageReference([1], "image/jpeg"), new ImageReference([2], "image/png"), new ImageReference([3], "image/png")]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ModelUsed.Should().Be("ideogram-4-5");
+        sent[0].RequestUri!.AbsoluteUri.Should().Be("https://api.ideogram.ai/v2/image/precise-edit/ideogram-4-5");
+        sent[0].Headers.GetValues("Api-Key").Should().Equal("key");
+        var form = body.Replace("\"", "");
+        Field(form, "prompt").Should().Be("Dress the person.");
+        Field(form, "quality").Should().Be("low");
+        Field(form, "async").Should().Be("true");
+        // The photo is the image edited; the rest only guide the edit.
+        CountOf(body, "name=image;").Should().Be(1);
+        CountOf(body, "name=reference_images;").Should().Be(2);
+        sent[1].RequestUri!.AbsoluteUri.Should().Be(GenerationUrl);
+    }
+
+    [TestMethod]
+    public async Task ComposeAsync_WithoutAnImageToEdit_SendsNothing()
     {
         var provider = Provider(Answer);
 
-        var result = await provider.ComposeAsync("key", "Dress the person.", [new ImageReference([1], "image/png")]);
+        var result = await provider.ComposeAsync("key", "Dress the person.", []);
 
         result.IsSuccess.Should().BeFalse();
         sent.Should().BeEmpty();
+    }
+
+    private static int CountOf(string text, string part) => text.Replace("\"", "").Split(part).Length - 1;
+
+    // The value of one text field of a multipart form: the line after the blank line that ends its headers.
+    private static string Field(string form, string name)
+    {
+        var start = form.IndexOf($"name={name}\r\n", StringComparison.Ordinal);
+        if (start < 0) return "";
+        var value = form.IndexOf("\r\n\r\n", start, StringComparison.Ordinal) + 4;
+        return form[value..form.IndexOf("\r\n", value, StringComparison.Ordinal)];
     }
 
     [TestMethod]

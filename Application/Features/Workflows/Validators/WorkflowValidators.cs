@@ -93,7 +93,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
             .WithMessage("Full AI videos must be 8 or 15 seconds.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
-            .WithMessage("Confirm rights to use the adult Lifestyle image for AI video generation.");
+            .WithMessage("Confirm rights to use the people in the Lifestyle image for AI video generation, with a parent's or guardian's consent for anyone under 18.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
             .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }

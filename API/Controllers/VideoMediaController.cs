@@ -49,8 +49,17 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     [HttpPost("products/{productId:guid}/mockup-assets/lifestyle")]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(9 * 1024 * 1024)]
-    public async Task<IActionResult> GenerateLifestyle(Guid productId, [FromForm] Guid garmentMockupId, [FromForm] IFormFile file, CancellationToken ct)
+    public async Task<IActionResult> GenerateLifestyle(Guid productId, [FromForm] Guid garmentMockupId, [FromForm] IFormFile? file,
+        [FromForm] Guid? modelPhotoId, CancellationToken ct)
     {
+        // The people to dress: an uploaded photo, or a model photo from the library.
+        if (file is null && modelPhotoId is not Guid)
+            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Upload a photo of the people to dress, or choose a model photo.");
+        if (file is null)
+        {
+            var fromLibrary = await lifestyle.GenerateFromModelPhotoAsync(productId, garmentMockupId, modelPhotoId!.Value, ct);
+            return fromLibrary.IsSuccess ? StatusCode(StatusCodes.Status201Created, fromLibrary.Value) : fromLibrary.ToActionResult(this);
+        }
         await using var content = file.OpenReadStream();
         var result = await lifestyle.GenerateAsync(productId, garmentMockupId, content, file.Length, ct);
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);

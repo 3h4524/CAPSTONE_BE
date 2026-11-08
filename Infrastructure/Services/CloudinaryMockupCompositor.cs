@@ -72,12 +72,30 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
             components.Add("fl_layer_apply,g_north_west,x_0,y_0");
         }
 
-        if (FitDesign(position, layers) is { } fitted)
+        // The design once for each print area; only the first can be warped onto corners.
+        AddDesign(position, layers?.DesignCorners is { Count: 4 } given ? given : null);
+        foreach (var more in layers?.MorePlacements ?? [])
+            AddDesign(more, null);
+
+        void AddDesign(MockupPosition position, IReadOnlyList<MockupPoint>? corners)
+        {
+        if ((corners is not null ? CornerBounds(corners) : FitDesign(position, layers)) is { } fitted)
         {
             // Scaled to its exact fitted size so the displacement map, cropped to the same
             // rectangle, lines up with it pixel for pixel.
             components.Add($"l_{overlayToken}");
             components.Add($"c_scale,w_{fitted.Width},h_{fitted.Height}");
+            if (corners is not null)
+            {
+                // Its corners are moved onto the print area's, measured from the box around them. The warp
+                // can leave the layer larger than that box, so it is cut back to it.
+                components.Add("e_distort:" + string.Join(':', corners.SelectMany(point => new[]
+                {
+                    (int)Math.Round(point.X - fitted.X),
+                    (int)Math.Round(point.Y - fitted.Y),
+                })));
+                components.Add($"c_crop,g_north_west,x_0,y_0,w_{fitted.Width},h_{fitted.Height}");
+            }
             if (layers!.DisplacementMapKey is { } displacementKey)
             {
                 components.Add($"l_{LayerToken(displacementKey)}");
@@ -115,6 +133,7 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
                 "fl_layer_apply"
             ]));
         }
+        }
 
         if (recolorMaskToken is not null)
         {
@@ -147,6 +166,16 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
     /// The design's rectangle after fitting it inside the print area and centering it, or
     /// <see langword="null"/> when its size is unknown.
     /// </summary>
+    /// <summary>The pixel box around a design's four corners, at least one pixel wide and high.</summary>
+    internal static MockupPosition CornerBounds(IReadOnlyList<MockupPoint> corners)
+    {
+        var left = (int)Math.Floor(corners.Min(point => point.X));
+        var top = (int)Math.Floor(corners.Min(point => point.Y));
+        var right = (int)Math.Ceiling(corners.Max(point => point.X));
+        var bottom = (int)Math.Ceiling(corners.Max(point => point.Y));
+        return new MockupPosition(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+    }
+
     internal static MockupPosition? FitDesign(MockupPosition area, MockupLayers? layers)
     {
         if (layers is not { DesignWidthPx: > 0 and var designWidth, DesignHeightPx: > 0 and var designHeight })

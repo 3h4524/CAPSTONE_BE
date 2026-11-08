@@ -1,13 +1,33 @@
+using APCS.Application.Features.DesignGeneration.Common;
+
 namespace APCS.Application.Features.DesignGeneration.Dtos.Response;
 
 /// <summary>One generated design image shown on the review grid.</summary>
+/// <param name="TextCheck">What OCR read in the design compared with the phrase it should print; null when it was not checked.</param>
 public sealed record GeneratedImageDto(
     Guid Id,
     string ImageUrl,
     int VariationIndex,
     int WidthPx,
     int HeightPx,
-    string ApprovalStatus);
+    string ApprovalStatus,
+    DesignTextCheckDto? TextCheck = null);
+
+/// <summary>The OCR check of a design's text, shown to the Seller as a warning, never as a block.</summary>
+/// <param name="Ok">Every word of the phrase was read, with no other word and no repeat.</param>
+/// <param name="Expected">The phrase the design should print; null when it should print no words.</param>
+/// <param name="Read">The text OCR read, line by line.</param>
+public sealed record DesignTextCheckDto(
+    bool Ok,
+    string? Expected,
+    string Read,
+    IReadOnlyList<string> Missing,
+    IReadOnlyList<string> Extra,
+    IReadOnlyList<string> Repeated)
+{
+    public static DesignTextCheckDto? From(DesignTextCheckResult? result) =>
+        result is null ? null : new(result.Ok, result.Expected, result.Read, result.Missing, result.Extra, result.Repeated);
+}
 
 /// <summary>Per-product state and result inside a batch job (SRS 3.4.10 table, 3.5.12 grid).</summary>
 /// <param name="DesignText">The words the product's designs print, as the product has them now.</param>
@@ -48,7 +68,8 @@ public sealed record BatchJobDetailDto(
     BatchJobCountersDto Counters,
     IReadOnlyList<BatchJobProductResultDto> Products,
     bool? RequireApproval = null,
-    Guid? WorkflowId = null);
+    Guid? WorkflowId = null,
+    bool TextCheckPending = false);
 
 /// <summary>A row in the job list of one batch.</summary>
 /// <param name="WorkflowId">The workflow the job was started from; null when it was started outside one, or before this was recorded.</param>

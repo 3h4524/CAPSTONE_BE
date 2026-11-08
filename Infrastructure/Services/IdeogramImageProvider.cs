@@ -80,23 +80,63 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
             if ((oneK ? OneKSizes : TwoKSizes).TryGetValue(ratio, out var size)) body["resolution"] = size;
         }
 
-        return GenerateCoreAsync(apiKey, model, JsonSerializer.Serialize(body), cancellationToken);
+        var json = JsonSerializer.Serialize(body);
+        return GenerateCoreAsync(apiKey, model, $"{settings.Endpoint.TrimEnd('/')}/{model}",
+            () => new StringContent(json, System.Text.Encoding.UTF8, "application/json"), settings.CostPerImageUsd, cancellationToken);
     }
 
-    // Ideogram's transparent model takes no reference images, so combining images stays with Gemini.
+    /// <summary>
+    /// Edits the first image with Ideogram's precise edit, guided by the others as reference images (a product, an
+    /// artwork). The result keeps the first image's width and height.
+    /// </summary>
     public Task<ImageGenerationResult> ComposeAsync(
         string apiKey,
         string prompt,
         IReadOnlyList<ImageReference> images,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(ImageGenerationResult.Failed("Ideogram is not used to combine images.", options.Value.Model));
+        CancellationToken cancellationToken = default)
+    {
+        var settings = options.Value;
+        var model = settings.EditModel;
+        if (images.Count is < 1 or > 5)
+            return Task.FromResult(ImageGenerationResult.Failed("Ideogram edits one image with up to four reference images.", model));
 
-    private async Task<ImageGenerationResult> GenerateCoreAsync(string apiKey, string model, string body, CancellationToken cancellationToken)
+        // A form can be sent only once, so every attempt builds its own.
+        HttpContent Form()
+        {
+            var form = new MultipartFormDataContent
+            {
+                { new StringContent(prompt), "prompt" },
+                { new StringContent(settings.EditQuality), "quality" },
+                { new StringContent("1"), "num_images" },
+                { new StringContent("true"), "async" },
+                { new StringContent(settings.CopyrightDetection ? "true" : "false"), "enable_copyright_detection" },
+            };
+            for (var i = 0; i < images.Count; i++)
+            {
+                var file = new ByteArrayContent(images[i].Bytes);
+                file.Headers.ContentType = new(images[i].MimeType);
+                form.Add(file, i == 0 ? "image" : "reference_images", $"image-{i}{Extension(images[i].MimeType)}");
+            }
+            return form;
+        }
+
+        return GenerateCoreAsync(apiKey, model, $"{settings.EditEndpoint.TrimEnd('/')}/{model}", Form, settings.EditCostPerImageUsd, cancellationToken);
+    }
+
+    private static string Extension(string mimeType) => mimeType switch
+    {
+        "image/jpeg" => ".jpg",
+        "image/webp" => ".webp",
+        _ => ".png"
+    };
+
+    private async Task<ImageGenerationResult> GenerateCoreAsync(
+        string apiKey, string model, string url, Func<HttpContent> content, decimal fallbackCost, CancellationToken cancellationToken)
     {
         var client = clients.CreateClient("Ideogram");
         var started = Stopwatch.GetTimestamp();
 
-        var (accepted, refused) = await SubmitAsync(client, apiKey, model, body, cancellationToken);
+        var (accepted, refused) = await SubmitAsync(client, apiKey, model, url, content, cancellationToken);
         if (refused is not null) return refused;
 
         // An answer that already holds the image (Ideogram ran it straight away) needs no polling.
@@ -124,7 +164,7 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
         var download = await DownloadAsync(client, apiKey, model, image.Url, accepted.GenerationId, cancellationToken);
         if (download.Error is not null) return ImageGenerationResult.Failed(download.Error, model);
 
-        var cost = costMicros is long micros ? micros / 1_000_000m : options.Value.CostPerImageUsd;
+        var cost = costMicros is long micros ? micros / 1_000_000m : fallbackCost;
         return ImageGenerationResult.Success(download.Bytes!, download.MimeType!, model, cost) with
         {
             GenerateTime = generateTime,
@@ -136,16 +176,16 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
 
     // Asks Ideogram to make the image. A busy answer is sent again; anything else ends here or hands back the generation.
     private async Task<(Accepted? Accepted, ImageGenerationResult? Refused)> SubmitAsync(
-        HttpClient client, string apiKey, string model, string body, CancellationToken cancellationToken)
+        HttpClient client, string apiKey, string model, string url, Func<HttpContent> content, CancellationToken cancellationToken)
     {
         HttpResponseMessage response;
         string payload;
         for (var attempt = 0; ; attempt++)
         {
             // A request can be sent only once, so every attempt builds its own.
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"{options.Value.Endpoint.TrimEnd('/')}/{model}");
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Add("Api-Key", apiKey);
-            request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+            request.Content = content();
 
             try
             {

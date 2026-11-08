@@ -431,7 +431,7 @@ public sealed class DesignGenerationServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_PhraseTemplate_KeepsThePhraseOutOfTheMotifsAndDescription_AndMovesTheFeelToTheMood()
+    public async Task StartAsync_PhraseTemplate_KeepsThePhraseOutOfTheMotifsAndDescription_AndTheOtherKeywordsAsWritten()
     {
         var template = new DesignTemplate
         {
@@ -449,8 +449,8 @@ public sealed class DesignGenerationServiceTests
 
         result.IsSuccess.Should().BeTrue();
         var prompt = fixture.AddedPrompts.Should().ContainSingle().Which.GeneratedPrompt;
-        prompt.Should().Contain("use coding as small supporting motifs")
-            .And.Contain("playful feel")
+        prompt.Should().Contain("use coding, funny as small supporting motifs")
+            .And.NotContain("playful")
             .And.Contain("Additional guidance: A steaming mug.")
             .And.NotContain("the text Coffee Then Code");
     }

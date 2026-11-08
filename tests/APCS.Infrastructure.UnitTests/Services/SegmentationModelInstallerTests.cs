@@ -111,7 +111,22 @@ public sealed class SegmentationModelInstallerTests
             .Should().Be(Path.GetFullPath(Path.Combine(_contentRoot, "models", "model.onnx")));
     }
 
-    private SegmentationModelInstaller Installer(FakeHandler handler, string sha256, string url = "https://models.test/model.onnx")
+    [TestMethod]
+    public async Task StartAsync_ClothesModelMissing_DownloadsItToo()
+    {
+        Directory.CreateDirectory(Path.Combine(_contentRoot, "models"));
+        File.WriteAllBytes(Path.Combine(_contentRoot, "models", "model.onnx"), [9]);
+        var handler = new FakeHandler(Model);
+
+        await Installer(handler, Sha256(Model), clothesUrl: "https://models.test/clothes.onnx").StartAsync(CancellationToken.None);
+
+        handler.Requests.Should().Be(1);
+        var installed = BiRefNetGarmentSegmenter.ResolvePath("models/clothes.onnx", _contentRoot);
+        installed.Should().NotBeNull();
+        File.ReadAllBytes(installed!).Should().Equal(Model);
+    }
+
+    private SegmentationModelInstaller Installer(FakeHandler handler, string sha256, string url = "https://models.test/model.onnx", string clothesUrl = "")
     {
         var clients = new Mock<IHttpClientFactory>();
         clients.Setup(f => f.CreateClient(SegmentationModelInstaller.HttpClientName)).Returns(() => new HttpClient(handler, disposeHandler: false));
@@ -119,7 +134,10 @@ public sealed class SegmentationModelInstallerTests
         {
             SegmentationModelPath = "models/model.onnx",
             SegmentationModelUrl = url,
-            SegmentationModelSha256 = sha256
+            SegmentationModelSha256 = sha256,
+            ClothesModelPath = "models/clothes.onnx",
+            ClothesModelUrl = clothesUrl,
+            ClothesModelSha256 = sha256
         });
         return new SegmentationModelInstaller(clients.Object, options, new FakeEnvironment(_contentRoot), _segmenter, NullLogger<SegmentationModelInstaller>.Instance);
     }

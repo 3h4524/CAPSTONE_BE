@@ -22,4 +22,18 @@ public sealed class MockupOptions
 
     /// <summary>The SHA-256 the downloaded file must have to be installed.</summary>
     public string SegmentationModelSha256 { get; set; } = "1e0da42f0fde010e32e938bad388457ecefe35806fde9d923421997861ae9391";
+
+    /// <summary>
+    /// The SegFormer B2 clothes model (ONNX, quantized), which finds the garment on a photo of a person so a model
+    /// photo needs no garment selected by hand. Looked up and downloaded like <see cref="SegmentationModelPath"/>;
+    /// without it the garment is selected by hand. Its weights are for non-commercial use only.
+    /// </summary>
+    public string ClothesModelPath { get; set; } = "models/segformer-b2-clothes-quantized.onnx";
+
+    /// <summary>Where a missing clothes model is downloaded from on startup. Empty turns the download off.</summary>
+    public string ClothesModelUrl { get; set; } =
+        "https://huggingface.co/Xenova/segformer_b2_clothes/resolve/main/onnx/model_quantized.onnx";
+
+    /// <summary>The SHA-256 the downloaded clothes model must have to be installed.</summary>
+    public string ClothesModelSha256 { get; set; } = "2b18fbdd196a7ee12702c2fceaa6f812fe70d1154573a43bd62667b9157ee48d";
 }

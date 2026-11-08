@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.DesignTemplates.Common;
 using APCS.Domain.Entities;
@@ -11,7 +12,7 @@ namespace APCS.Application.Features.BatchProductPrompts.Common;
 /// <see cref="APCS.Application.Features.DesignGeneration.DesignGenerationService"/> (the actual
 /// prompt synthesized and sent to the AI provider), so both stay in sync.
 /// </summary>
-public static class PromptDefaultsResolver
+public static partial class PromptDefaultsResolver
 {
     public static async Task<PromptComponents> ResolveAsync(
         Product? product,
@@ -40,8 +41,8 @@ public static class PromptDefaultsResolver
             Subject(product, template),
             // Without a style preset the template's own art style fills {style}, rather than leaving a gap in the sentence.
             styleName.Length > 0 ? styleName : TemplateStyle(template),
-            // Keywords about the feel ("funny", "vintage") become the default mood, which the Seller sees and can change.
-            keywords.Mood,
+            // The feel the keywords name ("vintage") stays in them; the mood is the Seller's to add.
+            string.Empty,
             string.Empty,
             string.Empty,
             template?.BasePrompt ?? string.Empty,
@@ -92,24 +93,25 @@ public static class PromptDefaultsResolver
             ? label.ToLowerInvariant()
             : string.Empty;
 
-    private static readonly string[] ProductTypeWords =
-        ["t-shirt", "t shirt", "tshirt", "hoodie", "mug", "poster", "tote bag", "tote_bag", "phone case", "phone_case"];
-
-    // The subject is the product name, but a trailing product word ("... T-Shirt") makes the image
-    // model draw the product instead of just the artwork, so it is stripped when something remains.
+    // The subject is the product name, but a word for the product anywhere in it ("Plant Lady Market Tote") makes the
+    // image model draw the product instead of just the artwork, and a lettering template prints it: it is taken out,
+    // with a copy number after it ("T-Shirt 2"), when something remains.
     private static string CleanSubject(Product? product)
     {
         var name = product?.Name?.Trim() ?? string.Empty;
-        foreach (var word in ProductTypeWords)
-        {
-            if (name.EndsWith(word, StringComparison.OrdinalIgnoreCase))
-            {
-                var stripped = name[..^word.Length].TrimEnd(' ', '-', ',');
-                if (stripped.Length > 0) return stripped;
-            }
-        }
-        return name;
+        var stripped = ProductTypeWord().Replace(name, " ");
+        if (stripped == name) return name;
+
+        stripped = Regex.Replace(stripped, @"\s{2,}", " ");
+        stripped = Regex.Replace(stripped, @"\s+([,;:|])", "$1");
+        stripped = Regex.Replace(stripped, @"(?:\s*[-–—,;:|])+\s*$|^\s*(?:[-–—,;:|]\s*)+", string.Empty).Trim();
+        return stripped.Any(char.IsLetterOrDigit) ? stripped : name;
     }
+
+    // What a product is called in its own name: the product types this app prints on.
+    [GeneratedRegex(@"\b(?:t[\s-]?shirts?|tshirts?|tees?|hoodies?|sweatshirts?|sweaters?|mugs?|posters?|tote[\s_-]?bags?|totes?|phone[\s_-]?cases?)\b(?:\s+#?\d+\b)?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ProductTypeWord();
 
     // BatchService stores a generated "name; type: ...; niche: ...; keywords: ..." fallback when the
     // Seller left the description empty; that carries no extra information, so it is skipped.

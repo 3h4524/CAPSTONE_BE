@@ -74,10 +74,13 @@ public static class DependencyInjection
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
+        services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
+        services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
@@ -91,6 +94,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();
+        services.AddScoped<Features.Workflows.IModelPhotoMockupService, Features.Workflows.ModelPhotoMockupService>();
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
