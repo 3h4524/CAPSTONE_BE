@@ -109,7 +109,7 @@ is tagged on its own (the versions do not have to match). Every release touches 
 |---|---|---|
 | `release.sh fe <tag>` | frontend tag | `fe` only |
 | `release.sh api <tag>` | backend tag | renders the env files, takes a pre-deploy backup, runs `flyway migrate`, then restarts `api` and `media-worker` only |
-| `release.sh infra` | backend tag when `deploy/compose.yml`, `deploy/Caddyfile`, `deploy/backup`, `deploy/postgres` or an infrastructure env template changed since the previous tag, or by hand (`workflow_dispatch`, target `infra`) | recreates Dozzle, Uptime Kuma and the backup container when their definition changed and reloads Caddy in place; Postgres and Redis are only started when stopped, never recreated |
+| `release.sh infra` | backend tag when `deploy/compose.yml`, `deploy/Caddyfile`, `deploy/backup`, `deploy/postgres` or an infrastructure env template changed since the previous tag, or by hand (`workflow_dispatch`, target `infra`) | recreates Dozzle, Uptime Kuma and the backup container when their definition changed and reloads Caddy in place (deployment files are synced with `rsync --inplace` because Caddy bind-mounts the single `Caddyfile`, and a replaced file would leave it reading the old one; if the mounted copy still differs, Caddy is restarted instead); Postgres and Redis are only started when stopped, never recreated |
 | `dev-db.sh up` | by hand | the shared dev database (project `apcs-dev`), only when someone runs it |
 
 `deploy.sh` rolls the image back by itself when the new container does not become healthy. A lock

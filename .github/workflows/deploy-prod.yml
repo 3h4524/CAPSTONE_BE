@@ -170,7 +170,7 @@ jobs:
         run: |
           tar czf - deploy migrations | gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" \
             --tunnel-through-iap --quiet --command \
-            "sudo -u deploy bash -c 'set -e; rm -rf /opt/apcs/incoming/*; tar xzf - -C /opt/apcs/incoming; rsync -a --delete --exclude .env /opt/apcs/incoming/deploy/ /opt/apcs/deploy/; rsync -a --delete /opt/apcs/incoming/migrations/ /opt/apcs/migrations/'"
+            "sudo -u deploy bash -c 'set -e; rm -rf /opt/apcs/incoming/*; tar xzf - -C /opt/apcs/incoming; rsync -a --inplace --delete --exclude .env /opt/apcs/incoming/deploy/ /opt/apcs/deploy/; rsync -a --delete /opt/apcs/incoming/migrations/ /opt/apcs/migrations/'"
 
       - name: Release infrastructure (Caddy, Dozzle, Uptime Kuma, backup)
         if: steps.plan.outputs.target == 'infra' || steps.plan.outputs.target == 'all'
