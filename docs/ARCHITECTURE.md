@@ -7,7 +7,7 @@ This document is the source of truth for architecture, the Service/Repository pa
 - .NET 8 / ASP.NET Core controller-based Web API.
 - Feature services (`I{Feature}Service`) for use cases, backed by a generic `IRepository<T>` plus focused repositories.
 - FluentValidation for request validation, invoked directly by the service method it guards.
-- Entity Framework Core 8 with Npgsql and a database-first PostgreSQL model reverse-engineered from Neon schema `public`.
+- Entity Framework Core 8 with Npgsql and a database-first PostgreSQL model reverse-engineered from schema `public`, whose changes are Flyway migrations in `migrations/`.
 - Direct EF account persistence with GUID `User` identifiers, ASP.NET Core's `PasswordHasher<User>`, role codes, and a permission catalogue; ASP.NET Identity stores are not used.
 - Custom JWT access tokens and hashed, rotating refresh tokens.
 - Redis through `IDistributedCache` and the Application `ICacheService` abstraction.
@@ -76,7 +76,7 @@ A use case that changes state persists through a focused repository (or `IReposi
 
 ### Infrastructure
 
-Infrastructure owns the generated EF Core `AppDbContext`, custom partial mappings, focused repository implementations, the direct account adapter, JWT generation, Redis, email, storage, messaging, and external API adapters. It does not own or apply migrations: Neon schema `public` is the persistence source of truth.
+Infrastructure owns the generated EF Core `AppDbContext`, custom partial mappings, focused repository implementations, the direct account adapter, JWT generation, Redis, email, storage, messaging, and external API adapters. It does not own or apply migrations: the Flyway SQL files in `migrations/` define schema `public`, and CI applies them.
 
 Register implementations in `Infrastructure/DependencyInjection.cs`. Infrastructure types must not leak into Domain or API response contracts.
 
@@ -107,7 +107,7 @@ Create a focused repository, on top of `IRepository<T>`, only when an operation 
 
 ### Database-first schema workflow
 
-Neon schema `public` is authoritative. Generated POCOs live in `Domain/Entities/Generated`, and the generated context lives in `Infrastructure/Persistence/Generated`. Regenerate both with `./scripts/Scaffold-Database.ps1` after an approved database change. The script reads its named connection from configuration, stages the scaffold, and replaces only those two generated directories. Never put custom behavior in them, add an EF migration, or run `dotnet ef database update` for this repository.
+The Flyway migrations in `migrations/` are authoritative for schema `public`. Generated POCOs live in `Domain/Entities/Generated`, and the generated context lives in `Infrastructure/Persistence/Generated`. Regenerate both with `./scripts/Scaffold-Database.ps1` after a migration reaches the dev database. The script reads its named connection from configuration, stages the scaffold, and replaces only those two generated directories. Never put custom behavior in them, add an EF migration, or run `dotnet ef database update` for this repository.
 
 ## Type placement
 

@@ -1,6 +1,6 @@
 # APCS Backend
 
-APCS (AI-Powered POD Content Studio) is a graduation-project backend for creating and managing Print-on-Demand content. The backend is an ASP.NET Core 8 Web API organized with Clean Architecture, feature services backed by a generic repository, database-first Entity Framework Core, PostgreSQL on Neon, custom JWT authentication, and Redis caching.
+APCS (AI-Powered POD Content Studio) is a graduation-project backend for creating and managing Print-on-Demand content. The backend is an ASP.NET Core 8 Web API organized with Clean Architecture, feature services backed by a generic repository, database-first Entity Framework Core, PostgreSQL (pgvector) self-hosted with Docker, custom JWT authentication, and Redis caching.
 
 ## Current capabilities
 
@@ -9,7 +9,7 @@ APCS (AI-Powered POD Content Studio) is a graduation-project backend for creatin
 - Hashed refresh-token storage, revocation, and optimistic concurrency handling.
 - Feature services (`I{Feature}Service`) backed by `IRepository<T>` and focused repositories, with FluentValidation invoked directly by each service method.
 - Global exception handling and `ProblemDetails` responses.
-- Fifty database-first EF Core entities reverse-engineered from Neon schema `public`.
+- Fifty database-first EF Core entities reverse-engineered from schema `public`.
 - Redis-backed `ICacheService`, Swagger/OpenAPI, CORS, and a health endpoint.
 - Five MSTest unit-test projects with a behavioral coverage gate in CI.
 
@@ -49,7 +49,7 @@ dotnet restore Capstone.sln
 
 Edit `.env` with a reachable PostgreSQL connection and a development-only JWT signing key. `.env` is ignored by Git; never commit it.
 
-Neon schema `public` is the source of truth; the API never applies migrations. After an approved database schema change, regenerate only the checked-in database model:
+Schema changes are Flyway migrations in [`migrations/`](migrations/README.md); the API never applies them itself. After a migration reaches the dev database, regenerate only the checked-in database model:
 
 ```powershell
 ./scripts/Scaffold-Database.ps1
