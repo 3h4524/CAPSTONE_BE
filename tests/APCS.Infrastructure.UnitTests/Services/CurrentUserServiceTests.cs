@@ -37,6 +37,29 @@ public sealed class CurrentUserServiceTests
     }
 
     [TestMethod]
+    public void Properties_InABackgroundScope_AreTheSellerTheWorkerActsFor()
+    {
+        var acting = new ActingUserContext();
+        acting.ActAs(UserId);
+        var service = new CurrentUserService(new HttpContextAccessor(), acting);
+
+        service.UserId.Should().Be(UserId);
+        service.IsAuthenticated.Should().BeTrue();
+        service.Email.Should().BeNull();
+    }
+
+    [TestMethod]
+    public void ActAs_AnotherSellerInTheSameScope_IsRefused()
+    {
+        var acting = new ActingUserContext();
+        acting.ActAs(UserId);
+
+        var act = () => acting.ActAs(FallbackUserId);
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [TestMethod]
     public void UserId_WithMalformedClaim_ReturnsNull()
     {
         CreateService(new Claim(ClaimTypes.NameIdentifier, "not-a-guid"))

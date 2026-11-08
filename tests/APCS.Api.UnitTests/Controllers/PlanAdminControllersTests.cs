@@ -147,7 +147,7 @@ public sealed class PlanAdminControllersTests
     {
         var service = new Mock<IPlanToolsService>();
         var page = Dto<PagedResult<PlanHistoryEntryDto>>();
-        service.Setup(x => x.GetHistoryAsync(3, 50, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(page));
+        service.Setup(x => x.GetHistoryAsync(3, 50, It.IsAny<CancellationToken>(), null)).ReturnsAsync(Result.Success(page));
 
         ShouldBeOk(await new AdminPlanToolsController(service.Object).GetHistory(3, 50, default), page);
     }

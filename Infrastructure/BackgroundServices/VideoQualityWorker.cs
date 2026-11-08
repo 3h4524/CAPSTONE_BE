@@ -8,11 +8,18 @@ using Microsoft.Extensions.Options;
 namespace APCS.Infrastructure.BackgroundServices;
 
 /// <summary>Runs expensive VBench and OCR evidence outside the seller's HTTP request.</summary>
+/// <remarks>
+/// The queue is a database table, so finding a job means querying it. While jobs keep coming the worker
+/// polls every <see cref="VideoQualityOptions.PollIntervalSeconds"/>; each empty poll doubles the wait up to
+/// <see cref="VideoQualityOptions.MaxIdlePollSeconds"/>, so an idle database is left alone long enough to
+/// suspend. Any claimed job resets the wait.
+/// </remarks>
 public sealed class VideoQualityWorker(IServiceScopeFactory scopes, IOptions<VideoQualityOptions> options,
     ILogger<VideoQualityWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var idlePolls = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
             var settings = options.Value;
@@ -20,7 +27,7 @@ public sealed class VideoQualityWorker(IServiceScopeFactory scopes, IOptions<Vid
             // runner invokes local scripts; disabled tooling produces a completed "skipped" result.
             if (!settings.AutoEvaluate)
             {
-                await DelayAsync(settings, stoppingToken);
+                await Task.Delay(IdleDelay(settings, 0), stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                 continue;
             }
 
@@ -28,7 +35,11 @@ public sealed class VideoQualityWorker(IServiceScopeFactory scopes, IOptions<Vid
             {
                 using var scope = scopes.CreateScope();
                 var jobs = scope.ServiceProvider.GetRequiredService<IVideoQualityJobService>();
-                if (!await jobs.ProcessNextAsync(stoppingToken)) await DelayAsync(settings, stoppingToken);
+                if (await jobs.ProcessNextAsync(stoppingToken))
+                {
+                    idlePolls = 0;
+                    continue;
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -37,11 +48,21 @@ public sealed class VideoQualityWorker(IServiceScopeFactory scopes, IOptions<Vid
             catch (Exception exception)
             {
                 logger.LogError(exception, "Video-quality worker iteration failed.");
-                await DelayAsync(settings, stoppingToken);
             }
+
+            // An empty queue and a failed poll both back off: a database that is down or over quota
+            // is not helped by being asked again every few seconds.
+            await Task.Delay(IdleDelay(settings, idlePolls), stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            idlePolls = Math.Min(idlePolls + 1, 30);
         }
     }
 
-    private static Task DelayAsync(VideoQualityOptions settings, CancellationToken cancellationToken) =>
-        Task.Delay(TimeSpan.FromSeconds(Math.Clamp(settings.PollIntervalSeconds, 1, 60)), cancellationToken);
+    /// <summary>The poll interval doubled once per consecutive empty poll, capped at the idle maximum.</summary>
+    internal static TimeSpan IdleDelay(VideoQualityOptions settings, int idlePolls)
+    {
+        var baseSeconds = Math.Clamp(settings.PollIntervalSeconds, 1, 60);
+        var maxSeconds = Math.Max(baseSeconds, settings.MaxIdlePollSeconds);
+        var seconds = Math.Min(maxSeconds, baseSeconds * Math.Pow(2, idlePolls));
+        return TimeSpan.FromSeconds(seconds);
+    }
 }

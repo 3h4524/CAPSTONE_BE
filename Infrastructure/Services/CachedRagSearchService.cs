@@ -40,6 +40,9 @@ public sealed class CachedRagSearchService(
         return activated;
     }
 
+    public Task<IReadOnlyList<RagKnownItemSource>> GetKnownItemSourcesAsync(CancellationToken cancellationToken = default) =>
+        inner.GetKnownItemSourcesAsync(cancellationToken);
+
     public Task<IReadOnlyList<RagAdminDocumentDto>> GetAdminDocumentsAsync(string? status, string? sourceId, CancellationToken cancellationToken = default) =>
         inner.GetAdminDocumentsAsync(status, sourceId, cancellationToken);
 

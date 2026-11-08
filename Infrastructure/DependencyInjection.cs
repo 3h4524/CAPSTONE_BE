@@ -189,6 +189,8 @@ public static class DependencyInjection
         services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
+        services.AddOptions<PrintifyOptions>()
+            .Bind(configuration.GetSection(PrintifyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
             .Bind(configuration.GetSection(MarketResearchOptions.SectionName))
             .ValidateDataAnnotations()
@@ -212,6 +214,37 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-MarketResearch/1.0");
         });
         services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
+        // A seller's own shop: the same app key, plus the seller's bearer token on each call.
+        services.AddHttpClient(EtsyShopClient.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+            if (!string.IsNullOrWhiteSpace(options.ApiKeyHeader))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKeyHeader);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Shop/1.0");
+        });
+        services.AddScoped<IEtsyShopClient, EtsyShopClient>();
+        // Printify with the seller's own token; the User-Agent is required on every call.
+        services.AddHttpClient(PrintifyClient.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<PrintifyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 10, 180));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
+        });
+        services.AddScoped<IPrintifyClient, PrintifyClient>();
+        services.AddHttpClient(EtsyShopClient.MediaDownloadClientName, client => client.Timeout = TimeSpan.FromMinutes(2));
+        services.AddHttpClient(EtsyShopClient.UploadClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromMinutes(3);
+            if (!string.IsNullOrWhiteSpace(options.ApiKeyHeader))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKeyHeader);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Shop/1.0");
+        });
+        services.AddScoped<IMarketListingQueries, MarketListingQueries>();
         services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
         services.AddScoped<IMarketInsightScheduleService, MarketInsightScheduleService>();
 
@@ -235,6 +268,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
+        services.AddSingleton<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();
 
         return services;
     }
@@ -276,6 +311,8 @@ public static class DependencyInjection
         services.AddHttpClient("ApiKeyValidation", client => client.Timeout = TimeSpan.FromSeconds(15))
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
             .RedactLoggedHeaders(new[] { "Authorization" });
+        // A background worker sets the acting seller on its scope; a request reads the signed-in user.
+        services.AddScoped<ActingUserContext>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();

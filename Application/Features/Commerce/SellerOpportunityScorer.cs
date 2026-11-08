@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace APCS.Application.Features.Commerce;
 
 /// <summary>Seller-owned context used by the deterministic opportunity ranking step.</summary>
@@ -52,6 +54,8 @@ public static class SellerOpportunityThresholds
 /// </summary>
 public static class SellerOpportunityScorer
 {
+    private const int KeywordsForFullFit = 3;
+
     public static SellerOpportunityScore Score(
         MarketOpportunityCandidate opportunity,
         SellerResearchProfileSnapshot profile)
@@ -63,15 +67,13 @@ public static class SellerOpportunityScorer
         var preferredCategories = NormalizeSet(profile.PreferredCategories);
         var productCategories = NormalizeSet(profile.ProductCategories);
         var excludedCategories = NormalizeSet(profile.ExcludedCategories);
-        var opportunityKeywords = NormalizeSet(opportunity.Keywords);
-        var productKeywords = NormalizeSet(profile.ProductKeywords);
 
         var categoryScore = category is null
             ? 0.5
             : excludedCategories.Contains(category)
                 ? 0
                 : preferredCategories.Contains(category) || productCategories.Contains(category) ? 1 : 0.35;
-        var keywordScore = MatchRatio(opportunityKeywords, productKeywords);
+        var keywordScore = KeywordCoverage(opportunity.Keywords, profile.ProductKeywords);
         var priceScore = PriceFit(opportunity.TypicalPrice, profile.MinimumPrice, profile.MaximumPrice);
         var excludedPenalty = category is not null && excludedCategories.Contains(category) ? 1d : 0d;
         var evidenceQuality = EvidenceQuality(opportunity);
@@ -171,11 +173,26 @@ public static class SellerOpportunityScorer
         return 1;
     }
 
-    private static double MatchRatio(IReadOnlySet<string> source, IReadOnlySet<string> target)
+    /// <summary>
+    /// Share of the seller's keywords found in the opportunity text, where <see cref="KeywordsForFullFit"/>
+    /// matches give the full score. Dividing by the opportunity's own word count punished real Etsy
+    /// titles (20-30 words) against short ones. Keywords match as phrases, so "graphic tee" and
+    /// "t-shirt" ("t shirt") match, and a plural "s" is accepted.
+    /// </summary>
+    private static double KeywordCoverage(IEnumerable<string> opportunityWords, IEnumerable<string> sellerKeywords)
     {
-        if (source.Count == 0 || target.Count == 0) return 0;
-        return (double)source.Intersect(target, StringComparer.Ordinal).Count() / source.Count;
+        var text = $" {Words(string.Join(' ', opportunityWords))} ";
+        var keywords = sellerKeywords.Select(Words).Where(keyword => keyword.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
+        if (keywords.Length == 0 || string.IsNullOrWhiteSpace(text))
+            return 0;
+
+        var matched = keywords.Count(keyword =>
+            text.Contains($" {keyword} ", StringComparison.Ordinal) || text.Contains($" {keyword}s ", StringComparison.Ordinal));
+        return Math.Min(1, (double)matched / Math.Min(KeywordsForFullFit, keywords.Length));
     }
+
+    private static string Words(string value) =>
+        string.Join(' ', Regex.Split(value.ToLowerInvariant(), @"[^\p{L}\p{N}]+").Where(word => word.Length > 0));
 
     private static HashSet<string> NormalizeSet(IEnumerable<string> values) =>
         values.Select(Normalize).OfType<string>().ToHashSet(StringComparer.Ordinal);

@@ -16,7 +16,7 @@ namespace APCS.Api.Controllers;
 public sealed class AssistantController(IAssistantService assistant) : ControllerBase
 {
     [HttpPost("chat")]
-    [EnableRateLimiting(AssistantRateLimiting.ChatPolicy)]
+    [EnableRateLimiting(ApiRateLimiting.AssistantChatPolicy)]
     [Produces("text/event-stream")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]

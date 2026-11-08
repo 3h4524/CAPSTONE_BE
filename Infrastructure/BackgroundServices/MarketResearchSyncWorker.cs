@@ -10,6 +10,10 @@ public sealed class MarketResearchSyncWorker(
     TimeProvider timeProvider,
     ILogger<MarketResearchSyncWorker> logger) : BackgroundService
 {
+    // The UTC day and query list whose collection is complete. Until either changes, a tick needs no
+    // database query to learn there is nothing left; without this the finished day was re-checked every minute.
+    private (DateOnly Day, string Queries)? completed;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1), timeProvider);
@@ -43,6 +47,11 @@ public sealed class MarketResearchSyncWorker(
         if (schedule.NextRunAtUtc is not null && schedule.NextRunAtUtc > now)
             return;
 
+        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        var queries = string.Join('\n', schedule.Queries);
+        if (completed is { } done && done.Day == today && done.Queries == queries)
+            return;
+
         var batchSize = Math.Max(1, schedule.BatchSize);
         try
         {
@@ -52,10 +61,13 @@ public sealed class MarketResearchSyncWorker(
             var pending = await research.SelectUnobservedQueriesAsync(
                 schedule.Platform,
                 schedule.Queries,
-                DateOnly.FromDateTime(now.UtcDateTime),
+                today,
                 cancellationToken);
             if (pending.Count == 0)
+            {
+                completed = (today, queries);
                 return;
+            }
 
             var batch = pending.Take(batchSize).ToArray();
             var result = await research.RetrieveAndIngestAsync(new MarketResearchRequest(
