@@ -6,8 +6,10 @@ role used by CI can create, alter, or drop objects.
 
 ## Writing a migration
 
-1. Name it `V<yyyyMMddHHmm>__<what_it_does>.sql`, using the current Vietnam time, for example
-   `V202611081030__add_listing_language.sql`. Timestamps keep versions unique across branches;
+1. Create the file with `./scripts/New-Migration.ps1 -Name add_listing_language`. It is named
+   `V<yyyyMMddHHmm>__<what_it_does>.sql` from the current Vietnam time, for example
+   `V202611081030__add_listing_language.sql`, and is empty: Flyway does not generate SQL, so write
+   the DDL yourself (try it on a local Postgres first if it is not trivial). Timestamps keep versions unique across branches;
    Flyway runs with `outOfOrder = true`, so a branch merged later still applies.
 2. Never edit a migration that has been merged. Flyway checksums every applied file and refuses to
    run when one changes. Fix a mistake with a new migration.
