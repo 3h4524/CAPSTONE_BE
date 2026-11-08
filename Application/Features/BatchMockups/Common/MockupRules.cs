@@ -49,6 +49,406 @@ public static class MockupRules
     public static string SerializePrintArea(MockupPosition position) =>
         JsonSerializer.Serialize(new { x = position.X, y = position.Y, width = position.Width, height = position.Height, unit = "px" });
 
+    // ---- Print areas: a template's main area and up to three more, such as a sleeve or the back of the neck ----
+
+    /// <summary>The key of a template's main print area: the one kept at the top of its JSON, which code reading a single area uses.</summary>
+    public const string MainAreaKey = "main";
+    public const int MaximumPrintAreas = 4;
+    public const int MaximumAreaNameLength = 40;
+    public const string AreaKeyPattern = "^[a-z0-9][a-z0-9_-]{0,23}$";
+    public const double MaximumRotation = 180;
+
+    /// <summary>What a job prints in each print area of a template, by template id and then area key.</summary>
+    public const string AreaSourcesConfigKey = "mockupAreaSources";
+
+    /// <summary>The design the mock-up is made of.</summary>
+    public const string SourceSame = "same";
+    /// <summary>Another design, named by id.</summary>
+    public const string SourceDesign = "design";
+    /// <summary>Nothing.</summary>
+    public const string SourceNone = "none";
+
+    public const string ViewFront = "front";
+    public const string ViewBack = "back";
+    public const string ViewLeft = "left";
+    public const string ViewRight = "right";
+    public const string ViewSide = "side";
+    public static readonly IReadOnlyList<string> Views = [ViewFront, ViewBack, ViewLeft, ViewRight, ViewSide];
+
+    /// <summary>The other sides a template can have photos of, besides its own front photo.</summary>
+    public static readonly IReadOnlyList<string> OtherViews = [ViewBack, ViewLeft, ViewRight];
+
+    // ---- Views: one template, a photo of each side ----
+    // A template's photo is its front. Each other side (back, left sleeve, right sleeve) is a template of its own,
+    // hidden from lists and kept with its main template: the main one's config names it under "views", and its own
+    // config names the main one under "mainTemplateId". Each side has its own photo, helper images and print areas.
+
+    private const string ViewLinksKey = "views";
+    private const string MainTemplateKey = "mainTemplateId";
+
+    /// <summary>The templates of a template's other sides, by side.</summary>
+    public static IReadOnlyDictionary<string, Guid> ViewTemplateIds(string? json)
+    {
+        var result = new Dictionary<string, Guid>();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(json) || JsonNode.Parse(json)?[ViewLinksKey] is not JsonObject links)
+                return result;
+            foreach (var (view, value) in links)
+            {
+                if (OtherViews.Contains(view) && value is JsonValue text && text.TryGetValue<string>(out var id) && Guid.TryParse(id, out var templateId))
+                    result[view] = templateId;
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            result.Clear();
+        }
+        return result;
+    }
+
+    /// <summary>The template this one is another side of, or <see langword="null"/> for a template of its own.</summary>
+    public static Guid? MainTemplateId(string? json)
+    {
+        try
+        {
+            return !string.IsNullOrWhiteSpace(json) && JsonNode.Parse(json) is JsonObject node
+                && ReadString(node, MainTemplateKey) is { } id && Guid.TryParse(id, out var mainId) ? mainId : null;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Whether a template is only another side of a template, shown with it rather than on its own.</summary>
+    public static bool IsOtherView(MockupTemplate template) => MainTemplateId(template.PrintAreaConfig) is not null;
+
+    /// <summary>The config with its links to other sides set: the main template's sides, or the template it is a side of.</summary>
+    public static string WithViewLinks(string json, IReadOnlyDictionary<string, Guid>? views, Guid? mainTemplateId)
+    {
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(json) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+        root.Remove(ViewLinksKey);
+        root.Remove(MainTemplateKey);
+        if (views is { Count: > 0 })
+        {
+            var links = new JsonObject();
+            foreach (var view in OtherViews.Where(views.ContainsKey))
+                links[view] = views[view].ToString();
+            root[ViewLinksKey] = links;
+        }
+        if (mainTemplateId is Guid mainId)
+            root[MainTemplateKey] = mainId.ToString();
+        return root.ToJsonString();
+    }
+
+    /// <summary>The config with the side its photo shows set.</summary>
+    public static string WithView(string json, string view)
+    {
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(json) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+        if (view == ViewFront)
+            root.Remove("view");
+        else
+            root["view"] = view;
+        return root.ToJsonString();
+    }
+
+    /// <summary>A new config keeps the links to other sides the old one had.</summary>
+    public static string KeepViewLinks(string oldJson, string newJson)
+    {
+        var views = ViewTemplateIds(oldJson);
+        var mainId = MainTemplateId(oldJson);
+        return views.Count == 0 && mainId is null ? newJson : WithViewLinks(newJson, views, mainId);
+    }
+
+    /// <summary>Which side of the garment a template photo shows, and its print areas, the main one first.</summary>
+    public sealed record MockupPrintLayout(string View, IReadOnlyList<MockupAreaDto> Areas)
+    {
+        public MockupAreaDto Main => Areas[0];
+    }
+
+    /// <summary>A print area as it is used for one mock-up: where it goes and what is printed in it.</summary>
+    public sealed record ResolvedArea(MockupAreaDto Area, string Source, Guid? DesignImageId)
+    {
+        public MockupPosition Position => AreaPosition(Area);
+    }
+
+    public static MockupPosition AreaPosition(MockupAreaDto area) => new(area.X, area.Y, area.Width, area.Height);
+
+    /// <summary>
+    /// Every print area of a template's <c>print_area_config</c>, the main one first. A config of one rectangle, as
+    /// every template had before, is one main area on the front. Null when not even the main area can be read.
+    /// </summary>
+    public static MockupPrintLayout? ParsePrintLayout(string? json)
+    {
+        if (ParsePrintArea(json) is not { } main)
+            return null;
+
+        var mainArea = new MockupAreaDto(MainAreaKey, null, main.X, main.Y, main.Width, main.Height, Source: SourceSame);
+        try
+        {
+            var node = JsonNode.Parse(json!) as JsonObject;
+            var view = ReadString(node, "view") is { } given && Views.Contains(given) ? given : ViewFront;
+            var areas = new List<MockupAreaDto>
+            {
+                mainArea with { Name = ReadName(node), Rotation = ReadRotation(node), Source = ReadTemplateSource(node, SourceSame) },
+            };
+            if (node?["areas"] is JsonArray more)
+            {
+                foreach (var item in more)
+                {
+                    if (areas.Count >= MaximumPrintAreas)
+                        break;
+                    if (item is not JsonObject area || ReadString(area, "key") is not { } key
+                        || !System.Text.RegularExpressions.Regex.IsMatch(key, AreaKeyPattern) || areas.Any(known => known.Key == key))
+                        continue;
+                    if (ReadInt(area, "x") is not int x || ReadInt(area, "y") is not int y
+                        || ReadInt(area, "width") is not (> 0 and var width) || ReadInt(area, "height") is not (> 0 and var height))
+                        continue;
+                    areas.Add(new MockupAreaDto(key, ReadName(area), x, y, width, height, ReadRotation(area), ReadTemplateSource(area, SourceNone)));
+                }
+            }
+            return new MockupPrintLayout(view, areas);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            return new MockupPrintLayout(ViewFront, [mainArea]);
+        }
+    }
+
+    /// <summary>
+    /// The <c>print_area_config</c> of a template with these print areas. The main one stays at the top as a plain
+    /// rectangle, so a template of one straight area on the front is stored exactly as before.
+    /// </summary>
+    public static string SerializePrintLayout(string? view, IReadOnlyList<MockupAreaDto> areas)
+    {
+        var main = areas.First(area => area.Key == MainAreaKey);
+        var root = new JsonObject
+        {
+            ["x"] = main.X,
+            ["y"] = main.Y,
+            ["width"] = main.Width,
+            ["height"] = main.Height,
+            ["unit"] = "px",
+        };
+        if (!string.IsNullOrWhiteSpace(main.Name))
+            root["name"] = main.Name.Trim();
+        if (NormalizeRotation(main.Rotation) is var rotation and not 0)
+            root["rotation"] = rotation;
+        if (main.Source == SourceNone)
+            root["source"] = SourceNone;
+        if (view is not null && view != ViewFront && Views.Contains(view))
+            root["view"] = view;
+
+        var more = areas.Where(area => area.Key != MainAreaKey).ToList();
+        if (more.Count > 0)
+        {
+            root["areas"] = new JsonArray(more.Select(area =>
+            {
+                var item = new JsonObject { ["key"] = area.Key };
+                if (!string.IsNullOrWhiteSpace(area.Name))
+                    item["name"] = area.Name.Trim();
+                item["x"] = area.X;
+                item["y"] = area.Y;
+                item["width"] = area.Width;
+                item["height"] = area.Height;
+                if (NormalizeRotation(area.Rotation) is var turned and not 0)
+                    item["rotation"] = turned;
+                item["source"] = area.Source == SourceSame ? SourceSame : SourceNone;
+                return (JsonNode?)item;
+            }).ToArray());
+        }
+        return root.ToJsonString();
+    }
+
+    /// <summary>Which side of the garment a template photo shows: front unless it is marked otherwise.</summary>
+    public static string ParseView(string? json) => ParsePrintLayout(json)?.View ?? ViewFront;
+
+    /// <summary>Degrees rounded to a tenth and kept within -180 to 180.</summary>
+    public static double NormalizeRotation(double degrees)
+    {
+        if (!double.IsFinite(degrees))
+            return 0;
+        var turned = Math.Round(degrees % 360, 1);
+        if (turned > MaximumRotation) turned -= 360;
+        if (turned < -MaximumRotation) turned += 360;
+        return turned == 0 ? 0 : turned;
+    }
+
+    /// <summary>Whether a print area, turned as it is, lies wholly on a photo of this size.</summary>
+    public static bool AreaFits(MockupAreaDto area, int photoWidth, int photoHeight)
+    {
+        if (area.Width <= 0 || area.Height <= 0)
+            return false;
+        var box = MockupGeometry.RotatedBounds(AreaPosition(area), NormalizeRotation(area.Rotation));
+        return box.X >= 0 && box.Y >= 0 && box.X + box.Width <= photoWidth && box.Y + box.Height <= photoHeight;
+    }
+
+    /// <summary>
+    /// Why these print areas can't be kept, or <see langword="null"/> when they can. A template's are all its areas
+    /// with the main one among them, and print the mock-up's design or nothing by default; a mock-up's own may name
+    /// some of its template's areas and print another design.
+    /// </summary>
+    public static string? AreasProblem(IReadOnlyList<MockupAreaDto>? areas, bool forTemplate)
+    {
+        if (areas is null || areas.Count == 0)
+            return "Add at least one print area.";
+        if (areas.Count > MaximumPrintAreas)
+            return $"A template has at most {MaximumPrintAreas} print areas.";
+        if (areas.Any(area => area?.Key is null || !System.Text.RegularExpressions.Regex.IsMatch(area.Key, AreaKeyPattern)))
+            return "Each print area needs a short key of lowercase letters, digits, '-' or '_'.";
+        if (areas.Select(area => area.Key).Distinct().Count() != areas.Count)
+            return "Print areas must not repeat.";
+        if (forTemplate && areas.All(area => area.Key != MainAreaKey))
+            return "A template needs its main print area.";
+        foreach (var area in areas)
+        {
+            if (area.X < 0 || area.Y < 0 || area.Width <= 0 || area.Height <= 0)
+                return "A print area needs a position of 0 or more and a size above 0.";
+            if (!double.IsFinite(area.Rotation) || Math.Abs(area.Rotation) > MaximumRotation)
+                return $"A print area can be turned from -{MaximumRotation} to {MaximumRotation} degrees.";
+            if (area.Name is { Length: > MaximumAreaNameLength })
+                return $"A print area's name has at most {MaximumAreaNameLength} characters.";
+            switch (area.Source)
+            {
+                case null or SourceSame or SourceNone when area.DesignImageId is null:
+                    break;
+                case SourceDesign when !forTemplate && area.DesignImageId is Guid id && id != Guid.Empty:
+                    break;
+                case SourceDesign when !forTemplate:
+                    return "Choose the design to print in the area.";
+                default:
+                    return forTemplate
+                        ? "A template's print area prints the mock-up's design or nothing."
+                        : "A print area prints the mock-up's design, another design or nothing.";
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Why what a job prints in a print area can't be kept, or <see langword="null"/> when it can.</summary>
+    public static string? AreaSourceProblem(string areaKey, MockupAreaSourceDto? source) =>
+        !System.Text.RegularExpressions.Regex.IsMatch(areaKey ?? "", AreaKeyPattern) ? "Each print area needs a short key of lowercase letters, digits, '-' or '_'."
+        : source is null ? "Choose what is printed in each print area."
+        : source.Kind is SourceSame or SourceNone && source.DesignImageId is null ? null
+        : source.Kind == SourceDesign && source.DesignImageId is Guid id && id != Guid.Empty ? null
+        : source.Kind == SourceDesign ? "Choose the design to print in the area."
+        : "A print area prints the mock-up's design, another design or nothing.";
+
+    /// <summary>
+    /// The template's print areas as used for one mock-up: each where the mock-up's own settings put it, else where
+    /// the template has it, printing what the mock-up's own settings say, else what the job chose for it, else the
+    /// template's default.
+    /// </summary>
+    public static IReadOnlyList<ResolvedArea> ResolveAreas(MockupPrintLayout layout, MockupOverrideDto? custom,
+        IReadOnlyDictionary<string, MockupAreaSourceDto>? jobSources)
+    {
+        var result = new List<ResolvedArea>();
+        foreach (var area in layout.Areas)
+        {
+            var own = custom?.Areas?.FirstOrDefault(item => item.Key == area.Key);
+            var placed = own is not null
+                ? area with { X = own.X, Y = own.Y, Width = own.Width, Height = own.Height, Rotation = NormalizeRotation(own.Rotation) }
+                : area.Key == MainAreaKey && custom?.PrintArea is { } moved
+                    ? area with { X = moved.X, Y = moved.Y, Width = moved.Width, Height = moved.Height }
+                    : area with { Rotation = NormalizeRotation(area.Rotation) };
+
+            var (source, designId) = own?.Source is { } chosen ? (chosen, own.DesignImageId)
+                : jobSources is not null && jobSources.TryGetValue(area.Key, out var job) ? (job.Kind, job.DesignImageId)
+                : (area.Source ?? (area.Key == MainAreaKey ? SourceSame : SourceNone), (Guid?)null);
+            result.Add(new ResolvedArea(placed, source, source == SourceDesign ? designId : null));
+        }
+        return result;
+    }
+
+    /// <summary>What a job prints in the print areas of its templates, by template id and then area key. Entries that can't be read are skipped.</summary>
+    public static IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>> ReadAreaSources(string config)
+    {
+        var result = new Dictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>>();
+        try
+        {
+            if (JsonNode.Parse(config)?[AreaSourcesConfigKey] is not JsonObject byTemplate)
+                return result;
+            foreach (var (templateKey, value) in byTemplate)
+            {
+                if (!Guid.TryParse(templateKey, out var templateId) || value is not JsonObject byArea)
+                    continue;
+                var sources = new Dictionary<string, MockupAreaSourceDto>();
+                foreach (var (areaKey, item) in byArea)
+                {
+                    if (item is not JsonObject entry || ReadString(entry, "kind") is not { } kind)
+                        continue;
+                    var designId = Guid.TryParse(ReadString(entry, "designImageId"), out var id) ? id : (Guid?)null;
+                    var source = new MockupAreaSourceDto(kind, designId);
+                    if (AreaSourceProblem(areaKey, source) is null)
+                        sources[areaKey] = source;
+                }
+                if (sources.Count > 0)
+                    result[templateId] = sources;
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            result.Clear();
+        }
+        return result;
+    }
+
+    /// <summary>The job's config with what it prints in its templates' print areas; none removes the entry.</summary>
+    public static void WriteAreaSources(JsonObject root, IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>> sources)
+    {
+        if (sources.Count == 0)
+        {
+            root.Remove(AreaSourcesConfigKey);
+            return;
+        }
+        var byTemplate = new JsonObject();
+        foreach (var (templateId, byArea) in sources)
+        {
+            var areas = new JsonObject();
+            foreach (var (areaKey, source) in byArea)
+            {
+                var entry = new JsonObject { ["kind"] = source.Kind };
+                if (source.DesignImageId is Guid id)
+                    entry["designImageId"] = id.ToString();
+                areas[areaKey] = entry;
+            }
+            byTemplate[templateId.ToString()] = areas;
+        }
+        root[AreaSourcesConfigKey] = byTemplate;
+    }
+
+    private static string? ReadString(JsonObject? node, string name) =>
+        node?[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    private static int? ReadInt(JsonObject node, string name) =>
+        node[name] is JsonValue value && value.TryGetValue<double>(out var number) && double.IsFinite(number) ? (int)Math.Round(number) : null;
+
+    private static string? ReadName(JsonObject? node) =>
+        ReadString(node, "name") is { } name && !string.IsNullOrWhiteSpace(name) ? name.Trim()[..Math.Min(name.Trim().Length, MaximumAreaNameLength)] : null;
+
+    private static double ReadRotation(JsonObject? node) =>
+        node?["rotation"] is JsonValue value && value.TryGetValue<double>(out var degrees) ? NormalizeRotation(degrees) : 0;
+
+    private static string ReadTemplateSource(JsonObject? node, string fallback) =>
+        ReadString(node, "source") is (SourceSame or SourceNone) and var source ? source : fallback;
+
     public static string BaseImageKey(Guid templateId) => $"mockup-templates/{templateId:N}";
 
     /// <summary>

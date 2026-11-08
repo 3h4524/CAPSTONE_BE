@@ -2345,6 +2345,436 @@ public sealed class MockupTemplateServiceTests
         return (CompletedJob(batchJobId, userId, templateId), row, product, image, templateId);
     }
 
+    // ---- Several print areas ----
+
+    private const string ChestAndSleeve =
+        "{\"x\":0,\"y\":0,\"width\":100,\"height\":100,\"unit\":\"px\",\"areas\":[{\"key\":\"sleeve\",\"x\":500,\"y\":500,\"width\":200,\"height\":200,\"source\":\"none\"}]}";
+
+    // Records every composite, whichever way it is asked for, as the designs and areas it lays.
+    private static (Mock<IMockupCompositor> Compositor, List<IReadOnlyList<MockupPlacement>> Calls) RecordingCompositor()
+    {
+        var calls = new List<IReadOnlyList<MockupPlacement>>();
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, key, position, layers) =>
+            {
+                calls.Add([new MockupPlacement(key, position, layers?.DesignWidthPx, layers?.DesignHeightPx)]);
+                return $"https://cdn/{Guid.NewGuid():N}.jpg";
+            });
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<IReadOnlyList<MockupPlacement>>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, IReadOnlyList<MockupPlacement>, MockupLayers?>((_, placements, _) =>
+            {
+                calls.Add(placements);
+                return $"https://cdn/{Guid.NewGuid():N}.jpg";
+            });
+        return (compositor, calls);
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_SleeveSetToAnotherDesignOfTheJob_PrintsItBesideEachMockupsOwnDesign()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var (logoRow, logoProduct, logo) = MakeProductRow(userId, batchJobId, "tshirt");
+        logo.StorageKey = "design-images/logo";
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"],\"mockupAreaSources\":{{\"{templateId:D}\":{{\"sleeve\":{{\"kind\":\"design\",\"designImageId\":\"{logo.Id:D}\"}}}}}}}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+        var (compositor, calls) = RecordingCompositor();
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: batches, rows: MockRows(row, logoRow),
+                products: MockProducts(product, logoProduct), designImages: MockDesignImages(image, logo), mockupImages: mockupImages, compositor: compositor)
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().HaveCount(2);
+        calls.Should().HaveCount(2).And.OnlyContain(placements => placements.Count == 2);
+        var chest = calls.Single(placements => placements[0].OverlayStorageKey == image.StorageKey);
+        chest[0].Area.Should().Be(new MockupPosition(0, 0, 100, 100));
+        chest[1].OverlayStorageKey.Should().Be("design-images/logo");
+        chest[1].Area.Should().Be(new MockupPosition(500, 500, 200, 200));
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_SleeveDesignNoLongerInTheJob_LeavesTheSleeveEmptyAndSaysSo()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"],\"mockupAreaSources\":{{\"{templateId:D}\":{{\"sleeve\":{{\"kind\":\"design\",\"designImageId\":\"{Guid.NewGuid():D}\"}}}}}}}}"
+        });
+        var (compositor, calls) = RecordingCompositor();
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo<MockupImage>(), compositor: compositor)
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GeneratedCount.Should().Be(1);
+        calls.Should().ContainSingle().Which.Should().ContainSingle().Which.OverlayStorageKey.Should().Be(image.StorageKey);
+        result.Value.Errors.Should().ContainSingle().Which.Should().Contain("no longer in this job");
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_TemplateOfTheBack_MakesMockupsOfAnotherAngle()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = "{\"x\":0,\"y\":0,\"width\":100,\"height\":100,\"view\":\"back\"}";
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: MockBatches(CompletedJob(batchJobId, userId, templateId)),
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: StubCompositor())
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().ContainSingle().Which.Role.Should().Be("AlternativeAngle");
+    }
+
+    [TestMethod]
+    public async Task SaveOverrideAsync_WithItsOwnAreas_TurnsTheDesignAndKeepsTheAreas()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var (compositor, calls) = RecordingCompositor();
+        var slot = MockupRules.SlotKey(image.Id, templateId, null);
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: MockBatches(job), rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo<MockupImage>(), compositor: compositor)
+            .SaveOverrideAsync(job.Id, new(slot, new(templateId, null, null, null,
+                Areas: [new MockupAreaDto(MockupRules.MainAreaKey, null, 200, 200, 400, 400, 15, MockupRules.SourceSame),
+                        new MockupAreaDto("sleeve", null, 500, 500, 200, 200, Source: MockupRules.SourceSame)])));
+
+        result.IsSuccess.Should().BeTrue();
+        var placements = calls.Should().ContainSingle().Subject;
+        placements.Should().HaveCount(2);
+        placements[0].Rotation.Should().Be(15);
+        placements[0].Area.Should().Be(new MockupPosition(200, 200, 400, 400));
+        placements[1].OverlayStorageKey.Should().Be(image.StorageKey);
+        MockupRules.ReadOverrides(job.Config)[slot].Areas.Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    public async Task SaveOverrideAsync_AreaTheTemplateDoesNotHaveOrADesignFromAnotherJob_IsRefused()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var slot = MockupRules.SlotKey(image.Id, templateId, null);
+        MockupTemplateService Service() => CreateService(userId, templates: TemplateRepository(template),
+            batches: MockBatches(job), rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image));
+
+        (await Service().SaveOverrideAsync(job.Id, new(slot, new(templateId, null, null, null,
+                Areas: [new MockupAreaDto("collar", null, 0, 0, 10, 10)]))))
+            .Error.Code.Should().Be(APCS.Common.Constants.ErrorCodes.Validation);
+        (await Service().SaveOverrideAsync(job.Id, new(slot, new(templateId, null, null, null,
+                Areas: [new MockupAreaDto("sleeve", null, 500, 500, 200, 200, Source: MockupRules.SourceDesign, DesignImageId: Guid.NewGuid())]))))
+            .Error.Code.Should().Be("BatchMockups.AreaDesignNotFound");
+        job.Config.Should().NotContain("mockupOverrides");
+    }
+
+    [TestMethod]
+    public async Task SaveOverrideAsync_DesignOfAnotherProductOfTheJob_IsRefused()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var (otherRow, otherProduct, otherDesign) = MakeProductRow(userId, job.Id, "tshirt");
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var slot = MockupRules.SlotKey(image.Id, templateId, null);
+
+        // The product's listing is written for its own designs, so another product's can't go on its mock-up.
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: MockBatches(job), rows: MockRows(row, otherRow),
+                products: MockProducts(product, otherProduct), designImages: MockDesignImages(image, otherDesign))
+            .SaveOverrideAsync(job.Id, new(slot, new(templateId, null, null, null,
+                Areas: [new MockupAreaDto("sleeve", null, 500, 500, 200, 200, Source: MockupRules.SourceDesign, DesignImageId: otherDesign.Id)])));
+
+        result.Error.Code.Should().Be("BatchMockups.AreaDesignNotFound");
+        job.Config.Should().NotContain("mockupOverrides");
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithSeveralAreasOnTheBack_StoresThemAll()
+    {
+        var userId = Guid.NewGuid();
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+        var images = MockImages(uploadResult: new PublicImageUploadResult("https://cdn/x.jpg", 2000, 2000));
+
+        var result = await CreateService(userId, templates: templates, images: images)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Back Tee", "tshirt", 0, 0, 0, 0, SampleFile(), View: MockupRules.ViewBack,
+                Areas: [new MockupAreaDto("neck", "Neck", 900, 200, 200, 100), new MockupAreaDto(MockupRules.MainAreaKey, "Back", 600, 400, 800, 900)]));
+
+        result.IsSuccess.Should().BeTrue();
+        var layout = MockupRules.ParsePrintLayout(added.Should().ContainSingle().Subject.PrintAreaConfig)!;
+        layout.View.Should().Be(MockupRules.ViewBack);
+        layout.Areas.Select(area => (area.Key, area.Name, area.Source)).Should().Equal(
+            (MockupRules.MainAreaKey, "Back", MockupRules.SourceSame), ("neck", "Neck", MockupRules.SourceNone));
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_TurnedAreaReachingOffThePhoto_IsRejected()
+    {
+        var images = MockImages(uploadResult: new PublicImageUploadResult("https://cdn/x.jpg", 1000, 1000));
+
+        var result = await CreateService(Guid.NewGuid(), templates: TemplateRepository(), images: images)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Turned", "tshirt", 0, 0, 0, 0, SampleFile(),
+                Areas: [new MockupAreaDto(MockupRules.MainAreaKey, null, 0, 0, 400, 400, 45)]));
+
+        result.Error.Code.Should().Be(APCS.Common.Constants.ErrorCodes.Validation);
+        images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_KeepsWhatEachPrintAreaPrintsOnlyForAreasTheTemplateHas()
+    {
+        var userId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var template = MakeTemplate(templateId, "tshirt");
+        template.PrintAreaConfig = ChestAndSleeve;
+        var (batches, job, rows, products) = DraftJobWithATee(userId);
+
+        var result = await CreateService(userId, templates: TemplateRepository(template), batches: batches, rows: rows, products: products)
+            .ApplyAsync(job.Id, new ApplyMockupTemplatesRequestDto([templateId], AreaSources: new Dictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>>
+            {
+                [templateId] = new Dictionary<string, MockupAreaSourceDto> { ["sleeve"] = new(MockupRules.SourceSame), ["collar"] = new(MockupRules.SourceSame) },
+            }));
+
+        result.IsSuccess.Should().BeTrue();
+        MockupRules.ReadAreaSources(job.Config)[templateId].Keys.Should().Equal("sleeve");
+        result.Value.AreaSources![templateId].Keys.Should().Equal("sleeve");
+    }
+
+    // ---- Photos of the other sides of a template ----
+
+    // A tee whose front is `front` and whose back photo is a template of its own, kept with it.
+    private static (MockupTemplate Front, MockupTemplate Back) TeeWithABack(Guid userId)
+    {
+        var front = MakeTemplate(Guid.NewGuid(), "tshirt");
+        var back = MakeTemplate(Guid.NewGuid(), "tshirt");
+        front.UserId = back.UserId = userId;
+        front.Name = "Tee";
+        back.Name = "Tee - Back";
+        back.BaseImageUrl = "https://cdn/back.jpg";
+        front.PrintAreaConfig = MockupRules.WithViewLinks(front.PrintAreaConfig, new Dictionary<string, Guid> { [MockupRules.ViewBack] = back.Id }, null);
+        back.PrintAreaConfig = MockupRules.WithViewLinks(MockupRules.WithView(back.PrintAreaConfig, MockupRules.ViewBack), null, front.Id);
+        return (front, back);
+    }
+
+    [TestMethod]
+    public void ViewLinks_AreKeptThroughAChangeOfThePrintAreas()
+    {
+        var backId = Guid.NewGuid();
+        var linked = MockupRules.WithViewLinks("{\"x\":0,\"y\":0,\"width\":10,\"height\":10}", new Dictionary<string, Guid> { [MockupRules.ViewBack] = backId, ["top"] = Guid.NewGuid() }, null);
+
+        var changed = MockupRules.KeepViewLinks(linked, MockupRules.SerializePrintArea(new MockupPosition(5, 5, 20, 20)));
+
+        MockupRules.ViewTemplateIds(changed).Should().Equal(new Dictionary<string, Guid> { [MockupRules.ViewBack] = backId });
+        MockupRules.ParsePrintArea(changed).Should().Be(new MockupPosition(5, 5, 20, 20));
+        MockupRules.MainTemplateId(changed).Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ListAsync_PhotoOfAnotherSide_IsListedWithItsTemplateOnly()
+    {
+        var userId = Guid.NewGuid();
+        var (front, back) = TeeWithABack(userId);
+
+        var result = await CreateService(userId, templates: TemplateRepository(front, back)).ListAsync("tshirt");
+
+        var listed = result.Value.Should().ContainSingle().Subject;
+        listed.Id.Should().Be(front.Id);
+        listed.Views.Should().ContainSingle().Which.BaseImageUrl.Should().Be("https://cdn/back.jpg");
+    }
+
+    [TestMethod]
+    public async Task SetViewAsync_LinksTheSideBothWaysAndMarksWhatItShows()
+    {
+        var userId = Guid.NewGuid();
+        var front = MakeTemplate(Guid.NewGuid(), "tshirt");
+        var side = MakeTemplate(Guid.NewGuid(), "tshirt");
+        front.UserId = side.UserId = userId;
+        var templates = TemplateRepository(front, side);
+        SetupGetById(templates, front.Id, front);
+        SetupGetById(templates, side.Id, side);
+
+        var result = await CreateService(userId, templates: templates).SetViewAsync(front.Id, MockupRules.ViewLeft, side.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        MockupRules.ViewTemplateIds(front.PrintAreaConfig)[MockupRules.ViewLeft].Should().Be(side.Id);
+        MockupRules.MainTemplateId(side.PrintAreaConfig).Should().Be(front.Id);
+        MockupRules.ParseView(side.PrintAreaConfig).Should().Be(MockupRules.ViewLeft);
+        result.Value.Views.Should().ContainSingle().Which.Id.Should().Be(side.Id);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_AnotherSide_IsLinkedToItsTemplateInTheSameSave()
+    {
+        var userId = Guid.NewGuid();
+        var (front, oldBack) = TeeWithABack(userId);
+        // A back photo left on its own by an earlier failed save keeps the name the new one gets.
+        var loose = MakeTemplate(Guid.NewGuid(), "tshirt");
+        loose.UserId = userId;
+        loose.Name = "Tee - Back";
+        var templates = TemplateRepository(front, oldBack, loose);
+        SetupGetById(templates, front.Id, front);
+        SetupGetById(templates, oldBack.Id, oldBack);
+        var added = CaptureAdded(templates);
+        var images = MockImages(uploadResult: new PublicImageUploadResult("https://cdn/x.jpg", 2000, 2000));
+
+        var result = await CreateService(userId, templates: templates, images: images)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Tee - Back", "tshirt", 100, 100, 500, 500, SampleFile(),
+                View: MockupRules.ViewBack, MainTemplateId: front.Id));
+
+        result.IsSuccess.Should().BeTrue();
+        var side = added.Should().ContainSingle().Subject;
+        // Names are unique in the whole table, so the new side's name can't be the loose one's.
+        side.Name.Should().Be($"Tee - Back ({side.Id.ToString("N")[..8]})");
+        MockupRules.MainTemplateId(side.PrintAreaConfig).Should().Be(front.Id);
+        MockupRules.ParseView(side.PrintAreaConfig).Should().Be(MockupRules.ViewBack);
+        MockupRules.ViewTemplateIds(front.PrintAreaConfig)[MockupRules.ViewBack].Should().Be(side.Id);
+        oldBack.IsActive.Should().BeFalse();
+        templates.Verify(r => r.AddAsync(side, false, It.IsAny<CancellationToken>()), Times.Once);
+        templates.Verify(r => r.UpdateAsync(front, true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_SideOfAnotherSellersTemplateOrAFront_IsRefusedBeforeUpload()
+    {
+        var userId = Guid.NewGuid();
+        var foreign = MakeTemplate(Guid.NewGuid(), "tshirt");
+        foreign.UserId = Guid.NewGuid();
+        var templates = TemplateRepository(foreign);
+        SetupGetById(templates, foreign.Id, foreign);
+        var images = MockImages();
+        MockupTemplateService Service() => CreateService(userId, templates: templates, images: images);
+
+        (await Service().CreateAsync(new CreateMockupTemplateRequestDto("Back", "tshirt", 0, 0, 100, 100, SampleFile(),
+                View: MockupRules.ViewBack, MainTemplateId: foreign.Id)))
+            .Error.Code.Should().Be(MockupErrors.UpdateNotOwner().Code);
+        (await Service().CreateAsync(new CreateMockupTemplateRequestDto("Front", "tshirt", 0, 0, 100, 100, SampleFile(),
+                View: MockupRules.ViewFront, MainTemplateId: foreign.Id)))
+            .Error.Code.Should().Be(APCS.Common.Constants.ErrorCodes.Validation);
+        images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SetViewAsync_TakingTheSideOff_RemovesItsPhoto()
+    {
+        var userId = Guid.NewGuid();
+        var (front, back) = TeeWithABack(userId);
+        var templates = TemplateRepository(front, back);
+        SetupGetById(templates, front.Id, front);
+        SetupGetById(templates, back.Id, back);
+
+        var result = await CreateService(userId, templates: templates).SetViewAsync(front.Id, MockupRules.ViewBack, null);
+
+        result.IsSuccess.Should().BeTrue();
+        MockupRules.ViewTemplateIds(front.PrintAreaConfig).Should().BeEmpty();
+        back.IsActive.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task SetViewAsync_FrontOrASideOfAnotherTemplateOrAnotherSellers_IsRefused()
+    {
+        var userId = Guid.NewGuid();
+        var (front, back) = TeeWithABack(userId);
+        var other = MakeTemplate(Guid.NewGuid(), "tshirt");
+        var foreign = MakeTemplate(Guid.NewGuid(), "tshirt");
+        other.UserId = userId;
+        foreign.UserId = Guid.NewGuid();
+        var templates = TemplateRepository(front, back, other, foreign);
+        foreach (var item in new[] { front, back, other, foreign })
+            SetupGetById(templates, item.Id, item);
+        MockupTemplateService Service() => CreateService(userId, templates: templates);
+
+        (await Service().SetViewAsync(other.Id, MockupRules.ViewFront, front.Id)).Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        (await Service().SetViewAsync(other.Id, MockupRules.ViewBack, back.Id)).Error.Code.Should().Be("BatchMockups.ViewTaken");
+        (await Service().SetViewAsync(other.Id, MockupRules.ViewBack, foreign.Id)).Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
+        MockupRules.ViewTemplateIds(other.PrintAreaConfig).Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_TemplateWithOtherSides_RemovesThemToo()
+    {
+        var userId = Guid.NewGuid();
+        var (front, back) = TeeWithABack(userId);
+        var templates = TemplateRepository(front, back);
+        SetupGetById(templates, front.Id, front);
+
+        (await CreateService(userId, templates: templates).DeleteAsync(front.Id)).IsSuccess.Should().BeTrue();
+
+        front.IsActive.Should().BeFalse();
+        back.IsActive.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_TemplateWithABackPhoto_MakesTheBackInTheSameColorsAsAnotherAngle()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var (front, back) = TeeWithABack(userId);
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{front.Id:D}\"]}}"
+        });
+        var mockupImages = MockRepo<MockupImage>();
+        var added = CaptureAdded(mockupImages);
+        var (compositor, calls) = RecordingCompositor();
+
+        var result = await CreateService(userId, templates: TemplateRepository(front, back), batches: batches, rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: mockupImages, compositor: compositor)
+            .GenerateAllAsync(batchJobId);
+
+        result.IsSuccess.Should().BeTrue();
+        added.Should().HaveCount(2);
+        added.Single(item => item.MockupTemplateId == front.Id).Role.Should().Be(MockupSources.DefaultRole);
+        added.Single(item => item.MockupTemplateId == back.Id).Role.Should().Be("AlternativeAngle");
+        // The back prints the same design.
+        calls.Should().HaveCount(2).And.OnlyContain(placements => placements.Single().OverlayStorageKey == image.StorageKey);
+    }
+
+    [TestMethod]
+    public async Task SaveOverrideAsync_MockupOfTheBackOfASelectedTemplate_CanBeChanged()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var (front, back) = TeeWithABack(userId);
+        var job = CompletedJob(batchJobId, userId, front.Id);
+        var slot = MockupRules.SlotKey(image.Id, back.Id, null);
+
+        var result = await CreateService(userId, templates: TemplateRepository(front, back), batches: MockBatches(job), rows: MockRows(row),
+                products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo<MockupImage>(), compositor: StubCompositor())
+            .SaveOverrideAsync(job.Id, new(slot, new(back.Id, null, null, new(5, 6, 50, 60))));
+
+        result.IsSuccess.Should().BeTrue();
+        job.Config.Should().Contain(slot);
+    }
+
     private static (BatchJobProduct Row, Product Product, DesignImage Image) MakeProductRow(Guid userId, Guid batchJobId, string productType)
     {
         var productId = Guid.NewGuid();

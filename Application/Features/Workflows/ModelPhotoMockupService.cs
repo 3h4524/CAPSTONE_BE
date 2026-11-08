@@ -118,6 +118,9 @@ public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Produ
         if (design is null || design.DeletedAt != null || garmentTemplate is null
             || MockupRules.ParsePrintArea(garmentTemplate.PrintAreaConfig) is not { } templateArea)
             return Result.Failure<Composed>(Error.Conflict("MockupNotReusable", "This mock-up's design or template is no longer available. Choose another mock-up."));
+        // A model photo shows the front of the garment; only its main print area is carried onto it.
+        if (MockupRules.ParseView(garmentTemplate.PrintAreaConfig) != MockupRules.ViewFront)
+            return Result.Failure<Composed>(MockupErrors.NotFrontView());
 
         var model = await templates.Query().SingleOrDefaultAsync(item => item.Id == request.ModelPhotoId && item.IsActive == true
             && item.Kind == MockupRules.ModelKind && (item.UserId == null || item.UserId == userId), ct);
@@ -182,25 +185,36 @@ public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Produ
             || await batches.GetByIdAsync(row.BatchJobId, ct) is not { } batch)
             return templateArea;
 
-        var moved = MockupRules.ReadOverrides(batch.Config)
-            .Where(entry => entry.Value is { Removed: false, PrintArea: not null } && entry.Value.MockupTemplateId == template.Id
+        var mine = MockupRules.ReadOverrides(batch.Config)
+            .Where(entry => entry.Value is { Removed: false } && entry.Value.MockupTemplateId == template.Id
                 && MockupRules.TryReadSlotKey(entry.Key, out var slotDesignId, out _) && slotDesignId == design.Id)
-            .Select(entry => new MockupPosition(entry.Value.PrintArea!.X, entry.Value.PrintArea.Y, entry.Value.PrintArea.Width, entry.Value.PrintArea.Height))
+            .Select(entry => entry.Value)
+            .ToList();
+        var moved = mine.Where(item => item.Areas is null && item.PrintArea is not null)
+            .Select(item => new MockupPosition(item.PrintArea!.X, item.PrintArea.Y, item.PrintArea.Width, item.PrintArea.Height))
             .Distinct()
             .ToList();
-        if (moved.Count == 0)
-            return templateArea;
 
         var layers = MockupRules.Layers(template, design, garment.GarmentColor, garment.BackgroundColor);
         try
         {
-            return moved.FirstOrDefault(area => compositor.BuildCompositeUrl(template.BaseImageUrl, design.StorageKey, area, layers) == garment.MockupImageUrl)
-                ?? templateArea;
+            if (moved.FirstOrDefault(area => compositor.BuildCompositeUrl(template.BaseImageUrl, design.StorageKey, area, layers) == garment.MockupImageUrl) is { } same)
+                return same;
         }
         catch (InvalidOperationException)
         {
             return templateArea;
         }
+
+        // One set up with several print areas is not made with the design alone, so it is told apart by its colors.
+        var withAreas = mine
+            .Where(item => item.Areas?.FirstOrDefault(area => area.Key == MockupRules.MainAreaKey) is not null
+                && string.Equals(item.GarmentColor, garment.GarmentColor, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.BackgroundColor, garment.BackgroundColor, StringComparison.OrdinalIgnoreCase))
+            .Select(item => MockupRules.AreaPosition(item.Areas!.First(area => area.Key == MockupRules.MainAreaKey)))
+            .Distinct()
+            .ToList();
+        return withAreas.Count == 1 ? withAreas[0] : templateArea;
     }
 
     /// <summary>The garment's own color on a template photo, or <see langword="null"/> when it can't be read.</summary>

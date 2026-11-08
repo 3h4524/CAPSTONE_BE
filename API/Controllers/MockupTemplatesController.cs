@@ -26,12 +26,15 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Create([FromForm] CreateMockupTemplateForm form, CancellationToken cancellationToken)
     {
+        if (!TryReadAreas(form.Areas, out var areas))
+            return AreasNotReadable();
         var baseImage = form.BaseImage.ToUploadFileDto();
         try
         {
             var result = await service.CreateAsync(
                 new CreateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage, form.AllowRecolor,
-                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor),
+                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor,
+                    string.IsNullOrWhiteSpace(form.View) ? null : form.View, areas, form.MainTemplateId),
                 cancellationToken);
             return result.ToActionResult(this);
         }
@@ -48,13 +51,16 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Update(Guid id, [FromForm] UpdateMockupTemplateForm form, CancellationToken cancellationToken)
     {
+        if (!TryReadAreas(form.Areas, out var areas))
+            return AreasNotReadable();
         var baseImage = form.BaseImage.ToUploadFileDto();
         try
         {
             var result = await service.UpdateAsync(
                 id,
                 new UpdateMockupTemplateRequestDto(form.Name, form.ProductType, form.X, form.Y, form.Width, form.Height, baseImage, form.AllowRecolor,
-                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor),
+                    string.IsNullOrWhiteSpace(form.GarmentColor) ? null : form.GarmentColor,
+                    string.IsNullOrWhiteSpace(form.View) ? null : form.View, areas),
                 cancellationToken);
             return result.ToActionResult(this);
         }
@@ -62,6 +68,31 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
         {
             baseImage?.Content.Dispose();
         }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions AreasJson = new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    // The print areas sent as one JSON form field; none sent is fine (one area from X/Y/Width/Height).
+    private static bool TryReadAreas(string? json, out IReadOnlyList<MockupAreaDto>? areas)
+    {
+        areas = null;
+        if (string.IsNullOrWhiteSpace(json))
+            return true;
+        try
+        {
+            areas = System.Text.Json.JsonSerializer.Deserialize<List<MockupAreaDto>>(json, AreasJson);
+            return areas is not null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+
+    private IActionResult AreasNotReadable()
+    {
+        ModelState.AddModelError("areas", "The print areas could not be read.");
+        return ValidationProblem(ModelState);
     }
 
     /// <summary>Previews recoloring for a base photo that is not saved yet.</summary>
@@ -81,6 +112,14 @@ public sealed class MockupTemplatesController(IMockupTemplateService service) : 
             photo?.Content.Dispose();
         }
     }
+
+    /// <summary>Gives the template the photo of another side (back, left, right), a template of the Seller's own; null takes it off.</summary>
+    [HttpPut("{id:guid}/views/{view}")]
+    [ProducesResponseType(typeof(MockupTemplateResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetView(Guid id, string view, [FromBody] SetMockupTemplateViewRequest request, CancellationToken cancellationToken) =>
+        (await service.SetViewAsync(id, view, request.TemplateId, cancellationToken)).ToActionResult(this);
 
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

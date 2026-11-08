@@ -47,6 +47,30 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
         ArgumentException.ThrowIfNullOrWhiteSpace(overlayStorageKey);
         ArgumentNullException.ThrowIfNull(position);
 
+        // The same design in every print area; only the first can be warped onto corners.
+        var placements = new List<MockupPlacement>
+        {
+            new(overlayStorageKey, position, layers?.DesignWidthPx, layers?.DesignHeightPx,
+                Corners: layers?.DesignCorners is { Count: 4 } given ? given : null),
+        };
+        placements.AddRange((layers?.MorePlacements ?? []).Select(more =>
+            new MockupPlacement(overlayStorageKey, more, layers?.DesignWidthPx, layers?.DesignHeightPx)));
+        return Build(baseImageUrl, placements, layers);
+    }
+
+    public string BuildCompositeUrl(string baseImageUrl, IReadOnlyList<MockupPlacement> placements, MockupLayers? layers = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseImageUrl);
+        ArgumentNullException.ThrowIfNull(placements);
+        if (placements.Count == 0)
+            throw new ArgumentException("At least one design must be placed.", nameof(placements));
+        foreach (var placement in placements)
+            ArgumentException.ThrowIfNullOrWhiteSpace(placement.OverlayStorageKey);
+        return Build(baseImageUrl, placements, layers);
+    }
+
+    private string Build(string baseImageUrl, IReadOnlyList<MockupPlacement> placements, MockupLayers? layers)
+    {
         var markerIndex = baseImageUrl.IndexOf(UploadMarker, StringComparison.Ordinal);
         if (markerIndex < 0)
         {
@@ -58,7 +82,6 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
         // through (see CloudinaryPaths.BuildPublicId) — a bare storage key alone 404s. Cloudinary's
         // classical transformation syntax then requires "/" to be encoded as ":" once embedded inside
         // a transformation component (it would otherwise be read as another path segment).
-        var overlayToken = LayerToken(overlayStorageKey);
         var components = new List<string>();
 
         // Recolor: the garment is first painted a flat color; its shading is multiplied back on
@@ -72,14 +95,20 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
             components.Add("fl_layer_apply,g_north_west,x_0,y_0");
         }
 
-        // The design once for each print area; only the first can be warped onto corners.
-        AddDesign(position, layers?.DesignCorners is { Count: 4 } given ? given : null);
-        foreach (var more in layers?.MorePlacements ?? [])
-            AddDesign(more, null);
+        foreach (var placement in placements)
+            AddDesign(placement);
 
-        void AddDesign(MockupPosition position, IReadOnlyList<MockupPoint>? corners)
+        void AddDesign(MockupPlacement placement)
         {
-        if ((corners is not null ? CornerBounds(corners) : FitDesign(position, layers)) is { } fitted)
+        var overlayToken = LayerToken(placement.OverlayStorageKey);
+        var position = placement.Area;
+        var fit = FitDesign(position, placement.DesignWidthPx, placement.DesignHeightPx);
+        // A turned design is warped onto its fitted rectangle's turned corners, the same way a design is laid on a
+        // print area marked by its corners.
+        var corners = placement.Corners is { Count: 4 } given ? given
+            : fit is not null && placement.Rotation != 0 ? MockupGeometry.RotateCorners(fit, placement.Rotation)
+            : null;
+        if ((corners is not null ? CornerBounds(corners) : fit) is { } fitted)
         {
             // Scaled to its exact fitted size so the displacement map, cropped to the same
             // rectangle, lines up with it pixel for pixel.
@@ -96,7 +125,7 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
                 })));
                 components.Add($"c_crop,g_north_west,x_0,y_0,w_{fitted.Width},h_{fitted.Height}");
             }
-            if (layers!.DisplacementMapKey is { } displacementKey)
+            if (layers?.DisplacementMapKey is { } displacementKey)
             {
                 components.Add($"l_{LayerToken(displacementKey)}");
                 components.Add($"c_crop,g_north_west,x_{fitted.X},y_{fitted.Y},w_{fitted.Width},h_{fitted.Height}");
@@ -109,14 +138,14 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
 
             // Cut to the garment after bending, so the print ends at the garment's edge instead of
             // carrying on over the background.
-            if (layers.GarmentMaskKey is { } cutKey)
+            if (layers?.GarmentMaskKey is { } cutKey)
             {
                 components.Add($"l_{LayerToken(cutKey)}");
                 components.Add($"c_crop,g_north_west,x_{fitted.X},y_{fitted.Y},w_{fitted.Width},h_{fitted.Height}");
                 components.Add("fl_cutter,fl_layer_apply,g_north_west");
             }
 
-            var blend = layers.MultiplyDesign ? "e_multiply," : "";
+            var blend = layers?.MultiplyDesign == true ? "e_multiply," : "";
             components.Add($"fl_layer_apply,{blend}g_north_west,x_{fitted.X},y_{fitted.Y}");
         }
         else
@@ -176,10 +205,14 @@ public sealed class CloudinaryMockupCompositor(IOptions<CloudinaryOptions> optio
         return new MockupPosition(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
     }
 
-    internal static MockupPosition? FitDesign(MockupPosition area, MockupLayers? layers)
+    internal static MockupPosition? FitDesign(MockupPosition area, MockupLayers? layers) =>
+        FitDesign(area, layers?.DesignWidthPx, layers?.DesignHeightPx);
+
+    internal static MockupPosition? FitDesign(MockupPosition area, int? designWidthPx, int? designHeightPx)
     {
-        if (layers is not { DesignWidthPx: > 0 and var designWidth, DesignHeightPx: > 0 and var designHeight })
+        if (designWidthPx is not > 0 || designHeightPx is not > 0)
             return null;
+        var (designWidth, designHeight) = (designWidthPx.Value, designHeightPx.Value);
 
         var scale = Math.Min((double)area.Width / designWidth, (double)area.Height / designHeight);
         var width = Math.Clamp((int)Math.Round(designWidth * scale), 1, area.Width);

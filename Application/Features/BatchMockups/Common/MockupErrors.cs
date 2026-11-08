@@ -86,6 +86,24 @@ public static class MockupErrors
     public static Error ModelPhotoUnusable(string reason) =>
         Error.Conflict("BatchMockups.ModelPhotoUnusable", $"This model photo can't be used: {reason}");
 
+    public static Error UnknownPrintArea() =>
+        Error.Validation("A print area was not found on the template. Reopen the template and try again.");
+
+    public static Error AreaDesignNotFound() =>
+        Error.NotFound("BatchMockups.AreaDesignNotFound", "A design chosen for a print area was not found. Choose another design.");
+
+    public static Error NothingToPrint() =>
+        Error.Validation("Print a design in at least one print area.");
+
+    public static Error UnknownView() =>
+        Error.Validation("A template's other photos show its back, left sleeve or right sleeve.");
+
+    public static Error ViewTaken() =>
+        Error.Conflict("BatchMockups.ViewTaken", "This photo already belongs to another template or side. Upload it again for this side.");
+
+    public static Error NotFrontView() =>
+        Error.Validation("Choose a mock-up of the front of the garment: only the front is put on a model photo.");
+
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
 }

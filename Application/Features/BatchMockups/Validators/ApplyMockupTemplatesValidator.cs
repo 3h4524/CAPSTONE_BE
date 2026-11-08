@@ -50,5 +50,14 @@ public sealed class ApplyMockupTemplatesValidator : AbstractValidator<ApplyMocku
                 key == MockupRules.DefaultBackgroundKey || System.Text.RegularExpressions.Regex.IsMatch(key, MockupRules.GarmentColorPattern))))
             .WithMessage("A background goes with a garment color like #1F2A44, or with \"default\".")
             .When(request => request.TemplateBackgrounds is not null);
+
+        RuleFor(request => request.AreaSources!)
+            .Must((request, byTemplate) => byTemplate.Keys.All(id => request.TemplateIds is not null && request.TemplateIds.Contains(id)))
+            .WithMessage("What is printed in a print area can only be set for the selected templates.")
+            .Must(byTemplate => byTemplate.Values.All(byArea => byArea is not null && byArea.Count <= MockupRules.MaximumPrintAreas))
+            .WithMessage($"A template has at most {MockupRules.MaximumPrintAreas} print areas.")
+            .Must(byTemplate => byTemplate.Values.All(byArea => byArea is null || byArea.All(entry => MockupRules.AreaSourceProblem(entry.Key, entry.Value) is null)))
+            .WithMessage("A print area prints the mock-up's design, another chosen design or nothing.")
+            .When(request => request.AreaSources is not null);
     }
 }

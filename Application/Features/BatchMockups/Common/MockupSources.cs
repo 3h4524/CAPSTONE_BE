@@ -17,6 +17,13 @@ public static class MockupSources
 
     public const string DefaultRole = "Hero";
 
+    /// <summary>A mock-up of another side of the product, such as its back.</summary>
+    public const string AlternativeAngleRole = "AlternativeAngle";
+
+    /// <summary>The role of a mock-up made on a template photo showing this side of the garment.</summary>
+    public static string RoleForView(string view) =>
+        view == MockupRules.ViewFront ? DefaultRole : AlternativeAngleRole;
+
     /// <summary>No protected regions marked.</summary>
     public const string NoRegions = "{}";
 
