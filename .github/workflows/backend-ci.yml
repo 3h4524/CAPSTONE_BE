@@ -127,7 +127,7 @@ jobs:
       - name: Run media worker tests
         working-directory: media-worker
         run: |
-          npm ci --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           npm run check
           npm test
 
