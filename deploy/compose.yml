@@ -14,6 +14,8 @@ x-defaults: &defaults
 services:
   caddy:
     <<: *defaults
+    labels:
+      dev.dozzle.group: edge
     image: caddy:2
     ports:
       - "80:80"
@@ -34,6 +36,8 @@ services:
 
   fe:
     <<: *defaults
+    labels:
+      dev.dozzle.group: app
     image: ${REGISTRY:?Set REGISTRY}/apcs-fe:${FE_TAG:-unreleased}
     extra_hosts:
       - "${APP_DOMAIN}:host-gateway"
@@ -47,6 +51,8 @@ services:
 
   api:
     <<: *defaults
+    labels:
+      dev.dozzle.group: app
     image: ${REGISTRY:?Set REGISTRY}/apcs-api:${API_TAG:-unreleased}
     env_file: ${ENV_DIR:-/opt/apcs/env}/api.env
     volumes:
@@ -61,6 +67,8 @@ services:
 
   media-worker:
     <<: *defaults
+    labels:
+      dev.dozzle.group: app
     image: ${REGISTRY:?Set REGISTRY}/apcs-media-worker:${API_TAG:-unreleased}
     init: true
     env_file: ${ENV_DIR:-/opt/apcs/env}/media-worker.env
@@ -75,6 +83,8 @@ services:
 
   redis:
     <<: *defaults
+    labels:
+      dev.dozzle.group: data
     image: redis:7-alpine
     env_file: ${ENV_DIR:-/opt/apcs/env}/redis.env
     command: >-
@@ -91,6 +101,8 @@ services:
 
   postgres-prod:
     <<: *defaults
+    labels:
+      dev.dozzle.group: data
     image: pgvector/pgvector:pg18
     env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-prod.env
     command: >-
@@ -111,6 +123,8 @@ services:
 
   postgres-dev:
     <<: *defaults
+    labels:
+      dev.dozzle.group: data
     image: pgvector/pgvector:pg18
     env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-dev.env
     command:
@@ -140,7 +154,9 @@ services:
 
   dozzle:
     <<: *defaults
-    image: amir20/dozzle:v8
+    labels:
+      dev.dozzle.group: ops
+    image: amir20/dozzle:v11
     environment:
       DOZZLE_NO_ANALYTICS: "true"
       DOZZLE_HOSTNAME: apcs-prod
@@ -155,13 +171,17 @@ services:
 
   uptime-kuma:
     <<: *defaults
-    image: louislam/uptime-kuma:1
+    labels:
+      dev.dozzle.group: ops
+    image: louislam/uptime-kuma:2
     volumes:
       - kuma_data:/app/data
     mem_limit: 256m
 
   backup:
     <<: *defaults
+    labels:
+      dev.dozzle.group: ops
     build: ./backup
     image: apcs-backup:local
     env_file: ${ENV_DIR:-/opt/apcs/env}/backup.env

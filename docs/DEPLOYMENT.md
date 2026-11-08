@@ -16,8 +16,8 @@ Secrets live only in Google Secret Manager; the repository holds templates and n
 | `postgres-prod` | `pgvector/pgvector:pg18` | Docker network, and `127.0.0.1:2510` on the VM |
 | `postgres-dev` | `pgvector/pgvector:pg18`, SSL | port 5432, the shared dev database |
 | `backup` | built from `deploy/backup` | nothing; runs `pg_dump` nightly |
-| `dozzle` | `amir20/dozzle:v8` | `logs.<domain>` behind basic auth; reads the Docker socket read-only |
-| `uptime-kuma` | `louislam/uptime-kuma:1` | `status.<domain>` behind basic auth (plus its own login) |
+| `dozzle` | `amir20/dozzle:v11` | `logs.<domain>` behind basic auth; reads the Docker socket read-only |
+| `uptime-kuma` | `louislam/uptime-kuma:2` | `status.<domain>` behind basic auth (plus its own login) |
 
 Caddy routes one hostname by path: `/api/*`, `/hubs/*`, and `/health` go to the API, `/internal/*`
 answers 404, and everything else goes to the frontend. Frontend and API therefore share an origin,
@@ -121,7 +121,7 @@ shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
 
 | Tool | Where | What |
 |---|---|---|
-| Dozzle | `https://logs.<domain>` | live logs of every container, searchable |
+| Dozzle | `https://logs.<domain>` | live logs of every container, searchable, grouped by the `dev.dozzle.group` label (`app`, `data`, `edge`, `ops`) |
 | Uptime Kuma | `https://status.<domain>` | checks the site, `/health`, the certificate, and the dev database every minute and alerts Discord |
 | Cloud Monitoring (Ops Agent on the VM) | Google Cloud console → Monitoring | CPU, memory, disk, network; email alerts from `deploy/provision/create-alerts.sh` (CPU > 90% for 10 min, memory > 90%, disk > 85%) |
 
