@@ -91,6 +91,17 @@ cookies are `Secure`). To move to a real domain:
 integration branch ──PR──▶ production ──git tag vX.Y.Z && git push origin vX.Y.Z──▶ deploy-prod.yml
 ```
 
+Release both repositories with one command once their `production` branches hold what should ship:
+
+```bash
+./deploy/scripts/tag-release.sh v1.2.3
+```
+
+It tags the head of `production` in `3h4524/CAPSTONE_BE` and `3h4524/CAPSTONE_FE` with the same
+version through the GitHub API, so both deploy workflows start at once and build in parallel.
+`release.sh` takes a lock on the VM, so when both reach the release step the second waits for the
+first instead of running alongside it.
+
 There is no approval step: a `v*` tag whose commit is on `production` deploys. Backend:
 `deploy-prod.yml` checks the tag, runs the tests, builds and pushes `apcs-api` and
 `apcs-media-worker`, copies `deploy/` and `migrations/` to the VM over IAP, and runs

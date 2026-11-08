@@ -7,6 +7,13 @@ tag="$2"
 deploy_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$deploy_dir"
 
+lock_file="${RELEASES_DIR:-/opt/apcs/releases}/.release.lock"
+exec 9> "$lock_file"
+if ! flock -n 9; then
+  echo "Another release is running; waiting for it to finish"
+  flock 9
+fi
+
 "$deploy_dir/scripts/render-env.sh"
 docker compose up -d postgres-prod postgres-dev redis dozzle uptime-kuma
 docker compose build backup
