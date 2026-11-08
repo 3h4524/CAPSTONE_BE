@@ -137,7 +137,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             {
                 foreach (var photo in modelPhotos.EnumerateArray())
                 {
-                    var asset = photo.TryGetProperty("mockupId", out var id) && id.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
+                    var asset = photo.TryGetProperty("mockupId", out var photoId) && photoId.TryGetGuid(out var mockupId) ? await assets.GetByIdAsync(mockupId, ct) : null;
                     if (asset == null || asset.DeletedAt != null || asset.ApprovalStatus != "approved"
                         || !photo.TryGetProperty("sourceHash", out var hash) || asset.ContentHash != hash.GetString())
                     { await FailAsync(job.Id, new(token, "A model photo image changed after the package was planned. Export again."), ct); return Result.Success<WorkerJob?>(null); }
