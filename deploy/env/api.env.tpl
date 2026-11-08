@@ -63,6 +63,7 @@ PlanAiReview__FallbackModel=gemini-3.5-flash-lite
 MiniMax__ApiKey=${MINIMAX_API_KEY}
 Etsy__ApiKey=${ETSY_API_KEY}
 Etsy__SharedSecret=${ETSY_SHARED_SECRET}
+Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
 
 DesignTextCheck__Enabled=false
