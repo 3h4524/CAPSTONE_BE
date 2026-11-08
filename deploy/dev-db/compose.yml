@@ -1,0 +1,54 @@
+name: apcs-dev
+
+services:
+  postgres-dev:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    labels:
+      dev.dozzle.group: data
+    env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-dev.env
+    command:
+      - bash
+      - -c
+      - >-
+        install -d -o postgres -g postgres -m 700 /run/pgtls
+        && install -o postgres -g postgres -m 600 /tls-src/server.key /run/pgtls/server.key
+        && install -o postgres -g postgres -m 644 /tls-src/server.crt /run/pgtls/server.crt
+        && exec docker-entrypoint.sh postgres -c shared_buffers=128MB -c max_connections=80
+        -c ssl=on -c ssl_cert_file=/run/pgtls/server.crt -c ssl_key_file=/run/pgtls/server.key
+        -c hba_file=/etc/postgresql/pg_hba.conf -c timezone=UTC
+    ports:
+      - "${DEV_DB_BIND:-0.0.0.0}:5432:5432"
+    volumes:
+      - pg_dev:/var/lib/postgresql
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+      - ${ENV_DIR:-/opt/apcs/env}/tls:/tls-src:ro
+      - ../postgres/dev-pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    networks:
+      apcs:
+        aliases:
+          - postgres-dev
+    mem_limit: 768m
+    shm_size: 128mb
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+networks:
+  apcs:
+    external: true
+    name: apcs_apcs
+
+volumes:
+  pg_dev:
+    external: true
+    name: apcs_pg_dev

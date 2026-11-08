@@ -171,6 +171,13 @@ async function execute(job: WorkerJob) {
       await api(`${job.id}/complete`, { leaseToken: job.leaseToken, ...video, thumbnailStorageKey: thumbnail.storageKey, thumbnailStorageVersion: thumbnail.storageVersion, qa: result.qa }, signal);
     } else {
       const payload = exportPayloadSchema.parse(job.payload);
+      // Model photo images: a mock-up put on a person. The single-ZIP fallback below packs them beside the video's
+      // sources; the product package already carries them among its approved mock-ups.
+      for (const photo of payload.manifest.modelPhotos ?? []) {
+        const source = assets.get(photo.source);
+        if (!source) throw new Error("Missing ZIP source");
+        pngSource(source.data, photo.sourceHash);
+      }
       stage = "Exporting"; progress = 40;
       let zip = join(directory, "package.zip");
       if (payload.storyboard && payload.productName) {

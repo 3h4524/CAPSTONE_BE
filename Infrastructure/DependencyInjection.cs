@@ -119,7 +119,7 @@ public static class DependencyInjection
         services.AddHttpClient("Ideogram", client => client.Timeout = TimeSpan.FromSeconds(120))
             .RedactLoggedHeaders(new[] { "Api-Key" });
         // Every service takes all the image providers and picks one by name: design generation the one its job names,
-        // lifestyle mock-ups and AI Studio frames Gemini, the only provider that can combine images.
+        // lifestyle mock-ups Ideogram (precise edit) and AI Studio frames Gemini.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
@@ -154,6 +154,16 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddOptions<VideoQualityOptions>()
             .Bind(configuration.GetSection(VideoQualityOptions.SectionName));
+        services.AddOptions<DesignTextCheckOptions>()
+            .Bind(configuration.GetSection(DesignTextCheckOptions.SectionName));
+        // Wired in only when on: without the queue, design generation skips the text check and its lookups entirely.
+        if (configuration.GetValue<bool>($"{DesignTextCheckOptions.SectionName}:{nameof(DesignTextCheckOptions.Enabled)}"))
+        {
+            services.AddSingleton<IDesignTextReader, PaddleOcrDesignTextReader>();
+            services.AddSingleton<IDesignTextCheckQueue, APCS.Infrastructure.BackgroundServices.DesignTextCheckQueueChannel>();
+            services.AddScoped<APCS.Application.Features.DesignGeneration.DesignTextCheckService>();
+            services.AddHostedService<APCS.Infrastructure.BackgroundServices.DesignTextCheckWorker>();
+        }
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
         services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
@@ -179,6 +189,8 @@ public static class DependencyInjection
         services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
+        services.AddOptions<PrintifyOptions>()
+            .Bind(configuration.GetSection(PrintifyOptions.SectionName));
         services.AddOptions<MarketResearchOptions>()
             .Bind(configuration.GetSection(MarketResearchOptions.SectionName))
             .ValidateDataAnnotations()
@@ -202,6 +214,37 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-MarketResearch/1.0");
         });
         services.AddScoped<ICommerceMarketDataConnector, EtsyMarketDataConnector>();
+        // A seller's own shop: the same app key, plus the seller's bearer token on each call.
+        services.AddHttpClient(EtsyShopClient.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+            if (!string.IsNullOrWhiteSpace(options.ApiKeyHeader))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKeyHeader);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Shop/1.0");
+        });
+        services.AddScoped<IEtsyShopClient, EtsyShopClient>();
+        // Printify with the seller's own token; the User-Agent is required on every call.
+        services.AddHttpClient(PrintifyClient.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<PrintifyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 10, 180));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
+        });
+        services.AddScoped<IPrintifyClient, PrintifyClient>();
+        services.AddHttpClient(EtsyShopClient.MediaDownloadClientName, client => client.Timeout = TimeSpan.FromMinutes(2));
+        services.AddHttpClient(EtsyShopClient.UploadClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<EtsyOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : $"{options.BaseUrl}/");
+            client.Timeout = TimeSpan.FromMinutes(3);
+            if (!string.IsNullOrWhiteSpace(options.ApiKeyHeader))
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", options.ApiKeyHeader);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Shop/1.0");
+        });
+        services.AddScoped<IMarketListingQueries, MarketListingQueries>();
         services.AddScoped<IMarketResearchScheduleService, MarketResearchScheduleService>();
         services.AddScoped<IMarketInsightScheduleService, MarketInsightScheduleService>();
 
@@ -227,6 +270,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
+        services.AddSingleton<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();
 
         return services;
     }
@@ -268,6 +313,8 @@ public static class DependencyInjection
         services.AddHttpClient("ApiKeyValidation", client => client.Timeout = TimeSpan.FromSeconds(15))
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
             .RedactLoggedHeaders(new[] { "Authorization" });
+        // A background worker sets the acting seller on its scope; a request reads the signed-in user.
+        services.AddScoped<ActingUserContext>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();
@@ -297,6 +344,7 @@ public static class DependencyInjection
             .Validate(options => options.IsValid(), "PlanAiReview settings are out of range.")
             .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
+        services.AddSingleton<IClothesSegmenter, SegFormerClothesSegmenter>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();

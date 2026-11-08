@@ -536,6 +536,7 @@ public sealed class E2EOrchestrator(E2EOptions options)
             ["PayOS__ChecksumKey"] = "",
             ["PayOS__UsdToVndRate"] = "25000",
             ["PayOS__TestAmountVnd"] = "0",
+            ["RateLimiting__Enabled"] = "false",
             ["ASPNETCORE_ENVIRONMENT"] = "E2E",
             ["DOTNET_ENVIRONMENT"] = "E2E",
             ["ASPNETCORE_URLS"] = $"http://localhost:{apiPort}",

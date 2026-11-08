@@ -32,7 +32,8 @@ public sealed record RagEvaluationResponse(
     double AbstentionScore,
     double AverageLatencyMs,
     IReadOnlyList<RagEvaluationCaseResultDto> Cases,
-    IReadOnlyList<RagEvaluationTypeMetricsDto>? TypeMetrics = null);
+    IReadOnlyList<RagEvaluationTypeMetricsDto>? TypeMetrics = null,
+    double MeanReciprocalRank = 0);
 
 public sealed record RagEvaluationCaseResultDto(
     string Id,
@@ -47,4 +48,5 @@ public sealed record RagEvaluationCaseResultDto(
     string? Failure,
     IReadOnlyList<RagSearchDiagnosticResultDto> Results,
     string ContentType = "mixed",
-    RagSearchDiagnosticsDto? Diagnostics = null);
+    RagSearchDiagnosticsDto? Diagnostics = null,
+    int? MatchedRank = null);

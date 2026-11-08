@@ -199,6 +199,48 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_ApproveVideo_PacksTheProductsApprovedModelPhotoImages()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        var video = fixture.VideoRows.Single();
+        var approved = AddModelPhotoImage(fixture, run.ProductId, "approved");
+        var pending = AddModelPhotoImage(fixture, run.ProductId, "pending");
+
+        await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", video.Id, 2), default);
+
+        var manifest = System.Text.Json.Nodes.JsonNode.Parse(fixture.ExportRows.Single().Manifest)!;
+        var photo = manifest["modelPhotos"]!.AsArray().Should().ContainSingle().Subject!;
+        ((string)photo["mockupId"]!).Should().Be(approved.Id.ToString());
+        ((string)photo["source"]!).Should().Be($"model-photos/{approved.Id}.png");
+        ((string)photo["sourceHash"]!).Should().Be(approved.ContentHash);
+        fixture.ExportRows.Single().Manifest.Should().NotContain(pending.Id.ToString());
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ApproveVideoWithoutModelPhotoImages_KeepsTheManifestAsBefore()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+
+        await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", fixture.VideoRows.Single().Id, 2), default);
+
+        fixture.ExportRows.Single().Manifest.Should().NotContain("modelPhotos");
+    }
+
+    private static MockupImage AddModelPhotoImage(WorkflowTestData fixture, Guid productId, string approval)
+    {
+        var image = new MockupImage
+        {
+            Id = Guid.NewGuid(), ProductId = productId, SourceType = "generated", Role = "Lifestyle", StorageProvider = "cloudinary",
+            StorageKey = "mockups/model", StorageVersion = "1", ContentHash = new string('e', 64), MockupWidthPx = 1000, MockupHeightPx = 1500,
+            ApprovalStatus = approval, MetadataRevision = 1, Regions = "{}", CreatedAt = WorkflowTestData.Now.UtcDateTime
+        };
+        fixture.AssetRows.Add(image);
+        return image;
+    }
+
+    [TestMethod]
     public async Task ActionAsync_ApproveExactRevision_CreatesExportFromOnlyApprovedVideo()
     {
         var fixture = new WorkflowTestData();

@@ -12,7 +12,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
-    IRepository<DesignImage>? designImages = null)
+    IRepository<DesignImage>? designImages = null,
+    Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -177,7 +178,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
                             sourceRevision = s.SourceRevision, sourceHash = s.SourceHash, generationStrategy = s.GenerationStrategy, source = $"mockups/{s.MockupImageId}.png" }) };
                     var package = new ExportPackage { Id = Guid.NewGuid(), UserId = run.UserId, WorkflowRunId = run.Id, Type = "zip_package",
-                        Name = "Approved video package", Status = "preparing", Manifest = WorkflowJson.Write(manifest), CreatedAt = time.GetUtcNow().UtcDateTime, ExpiresAt = time.GetUtcNow().AddDays(7).UtcDateTime };
+                        Name = "Approved video package", Status = "preparing", Manifest = await WithModelPhotosAsync(WorkflowJson.Write(manifest), run.ProductId, videoScenes, ct),
+                        CreatedAt = time.GetUtcNow().UtcDateTime, ExpiresAt = time.GetUtcNow().AddDays(7).UtcDateTime };
                     await exports.AddAsync(package, cancellationToken: ct);
                     await exportItems.AddAsync(new() { Id = Guid.NewGuid(), ExportPackageId = package.Id, ProductId = run.ProductId, PromoVideoId = approvedVideo.Id,
                         IncludePromoVideo = true, IncludeMockupImages = true, IncludeDesignImages = false, IncludeListingContent = false, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
@@ -186,6 +188,19 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
                         exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot), ct); return;
             }
+        }
+        // Publishing calls Printify and Etsy for up to minutes, so it runs in the background after this transaction
+        // commits; WorkflowPublishService finishes the step and advances the run again.
+        foreach (var type in WorkflowCapabilityRegistry.PublishSteps)
+        {
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null || node.Status == "succeeded") continue;
+            if (node.Status is "running" or "failed" or "cancelled") return;
+            node.Status = "running"; node.Stage = "Queued"; node.Progress = 5; node.ErrorMessage = null;
+            node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
+            node.UpdatedAt = time.GetUtcNow().UtcDateTime;
+            publishQueue?.Enqueue(node.Id);
+            return;
         }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
     }
@@ -331,6 +346,34 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         return (referenced, direct);
     }
+
+    /// <summary>The most model photo images a package carries, newest first; with the video's scenes the worker fetches at most 20 files.</summary>
+    public const int MaximumExportedModelPhotos = 8;
+
+    /// <summary>
+    /// Adds the product's approved model photo images (a mock-up put on a person, see ModelPhotoMockupService) to a
+    /// package manifest under "modelPhotos", apart from the ones the video already shows. A manifest without any is
+    /// left exactly as before.
+    /// </summary>
+    private async Task<string> WithModelPhotosAsync(string manifest, Guid productId, IReadOnlyCollection<PromoVideoScene> videoScenes, CancellationToken ct)
+    {
+        var inVideo = videoScenes.Select(scene => scene.MockupImageId).OfType<Guid>().ToHashSet();
+        var photos = (await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && x.Role == ModelPhotoMockupService.Role
+                && x.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.Generated && x.ContentHash != null
+                && x.ApprovalStatus == "approved", ct))
+            .Where(x => !inVideo.Contains(x.Id))
+            .OrderByDescending(x => x.CreatedAt)
+            .Take(MaximumExportedModelPhotos)
+            .Select(x => new { mockupId = x.Id, sourceHash = x.ContentHash, source = $"model-photos/{x.Id}.png" })
+            .ToArray();
+        if (photos.Length == 0)
+            return manifest;
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(manifest)!.AsObject();
+        node["modelPhotos"] = JsonSerializer.SerializeToNode(photos, WorkflowJson.Options);
+        return node.ToJsonString(WorkflowJson.Options);
+    }
+
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
     {
         var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == kind, ct)).SingleOrDefault();

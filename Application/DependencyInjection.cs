@@ -21,6 +21,7 @@ using APCS.Application.Features.SystemStatistics;
 using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.Commerce;
 using APCS.Application.Abstractions.Commerce;
+using APCS.Application.Features.Rag;
 using APCS.Application.Features.Translations;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,6 +59,11 @@ public static class DependencyInjection
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanInsightsService, Features.Admin.SubscriptionPlans.PlanInsightsService>();
         services.AddScoped<Features.Admin.SubscriptionPlans.AiReview.IPlanAiReviewService, Features.Admin.SubscriptionPlans.AiReview.PlanAiReviewService>();
         services.AddScoped<IApiKeyService, ApiKeyService>();
+        // One ShopService per request, reached both as IShopService and directly by publishing, which reuses its token handling.
+        services.AddScoped<Features.Shops.ShopService>();
+        services.AddScoped<Features.Shops.IShopService>(provider => provider.GetRequiredService<Features.Shops.ShopService>());
+        services.AddScoped<Features.Shops.IEtsyPublishingService, Features.Shops.EtsyPublishingService>();
+        services.AddScoped<Features.Shops.IPrintifyService, Features.Shops.PrintifyService>();
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
@@ -68,10 +74,13 @@ public static class DependencyInjection
         services.AddScoped<IStyleArtPresetService, StyleArtPresetService>();
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
+        services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
+        services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
@@ -79,12 +88,14 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IVideoPromptPreparationService, Features.Workflows.VideoPromptPreparationService>();
         services.AddScoped<Features.Workflows.IVideoExperienceContextService, Features.Workflows.VideoExperienceContextService>();
         services.AddScoped<Features.Workflows.WorkflowRuntime>();
+        services.AddScoped<Features.Workflows.IWorkflowPublishService, Features.Workflows.WorkflowPublishService>();
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
         services.AddScoped<Features.Workflows.IWorkflowRunReconciler, Features.Workflows.WorkflowRunReconciler>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();
+        services.AddScoped<Features.Workflows.IModelPhotoMockupService, Features.Workflows.ModelPhotoMockupService>();
         services.AddScoped<Features.Workflows.IAiStudioFrameService, Features.Workflows.AiStudioFrameService>();
         services.AddScoped<Features.Workflows.IMediaJobService, Features.Workflows.MediaJobService>();
         services.AddScoped<Features.Workflows.IVideoArtifactService, Features.Workflows.VideoArtifactService>();
@@ -135,6 +146,7 @@ public static class DependencyInjection
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
         services.AddScoped<ITranslationService, TranslationService>();
+        services.AddScoped<IRagBenchmarkService, RagBenchmarkService>();
 
         return services;
     }

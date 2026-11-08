@@ -203,7 +203,28 @@ public sealed class BatchProductPromptService(
             effectivePrompt.Length,
             customized,
             loaded.CanEdit,
-            loaded.Product?.CustomPrompt);
+            loaded.Product?.CustomPrompt)
+        {
+            // A design made from the Seller's own prompt draws on no keywords.
+            Motifs = defaults.OwnPrompt ? null : DrawnMotifs(defaults, effective),
+            IgnoredKeywords = defaults.OwnPrompt ? null : IgnoredKeywords(loaded.Product, defaults, effective)
+        };
+    }
+
+    // The motifs the prompt asks for, fitted to the phrase as Compose fits them.
+    private static string DrawnMotifs(PromptComponents defaults, PromptComponents components) =>
+        ArtworkPromptRules.Fit(defaults with { Subject = components.Subject }).Keywords;
+
+    // What of the product's keywords the design leaves out: what SplitKeywords drops, and motifs the phrase already says.
+    private static IReadOnlyList<string> IgnoredKeywords(Product? product, PromptComponents defaults, PromptComponents effective)
+    {
+        var split = ArtworkPromptRules.SplitKeywords(product?.MainKeywords);
+        var drawn = DrawnMotifs(defaults, effective)
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var saidByPhrase = split.Motifs.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Where(motif => !drawn.Contains(motif));
+        return [.. split.Ignored, .. saidByPhrase];
     }
 
     private sealed record LoadedRow(BatchJobProduct Row, BatchJob Batch, Product? Product, bool CanEdit);

@@ -30,7 +30,7 @@ public static class WorkflowNodeCatalog
     public static readonly IReadOnlyList<string> RunOrder =
     [
         "product-input", "prompt-synthesis", "design-image", "design-approval", "apply-mockup",
-        "approval-gate", "generate-video", "review-video", "export-zip"
+        "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy"
     ];
 
     public static readonly IReadOnlyList<string> ConnectionRules =
@@ -99,7 +99,18 @@ public static class WorkflowNodeCatalog
             new("tone", "select", "Tone", [new("friendly", "Friendly"), new("professional", "Professional"), new("playful", "Playful")]),
             new("includeSeoScore", "switch", "SEO score")
         ]),
-        new("export-zip", "Export ZIP", "Packages the final assets into a ZIP file.", Order("export-zip"), [])
+        new("export-zip", "Export ZIP", "Packages the final assets into a ZIP file.", Order("export-zip"), []),
+        new("publish-printify", "Push to Printify", "Creates the product on Printify, which publishes it to Etsy and prints each order.", Order("publish-printify"),
+        [
+            new("targetProfit", "number", "Profit per item (USD)", Min: 0, Max: 500),
+            new("publishToEtsy", "switch", "Publish to Etsy"),
+            new("addMockups", "switch", "Add APCS mock-ups to the listing")
+        ], "The product type, print provider, colors and sizes come from the Printify catalog and are chosen in the UI."),
+        new("publish-etsy", "Publish to Etsy", "Creates an Etsy draft listing; a digital download delivers the approved designs.", Order("publish-etsy"),
+        [
+            new("listingType", "select", "Listing type", [new("download", "Digital download"), new("physical", "Physical item")]),
+            new("includeVideo", "switch", "Attach the approved video")
+        ], "Price, Etsy category and shipping profile are set in the UI.")
     ];
 
     public static readonly Lazy<string> CompactJson = new(() => JsonSerializer.Serialize(

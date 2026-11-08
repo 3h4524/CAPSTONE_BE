@@ -1346,6 +1346,41 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("version_count");
         });
 
+        modelBuilder.Entity<ImageEvalRun>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pk_image_eval_runs");
+
+            entity.ToTable("image_eval_runs");
+
+            entity.HasIndex(e => e.CreatedAt, "ix_image_eval_runs_created_at").IsDescending();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ImageCount)
+                .HasDefaultValue(0)
+                .HasColumnName("image_count");
+            entity.Property(e => e.Name)
+                .HasMaxLength(200)
+                .HasColumnName("name");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+            entity.Property(e => e.ProductCount)
+                .HasDefaultValue(0)
+                .HasColumnName("product_count");
+            entity.Property(e => e.Report)
+                .HasColumnType("jsonb")
+                .HasColumnName("report");
+            entity.Property(e => e.UploadedBy)
+                .HasMaxLength(320)
+                .HasColumnName("uploaded_by");
+            entity.Property(e => e.VersionCount)
+                .HasDefaultValue(0)
+                .HasColumnName("version_count");
+        });
+
         modelBuilder.Entity<Invoice>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("invoices_pkey");
@@ -2068,6 +2103,12 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
+            entity.Property(e => e.AgeGroup)
+                .HasMaxLength(8)
+                .HasColumnName("age_group");
+            entity.Property(e => e.AiGenerated)
+                .HasDefaultValue(false)
+                .HasColumnName("ai_generated");
             entity.Property(e => e.AllowRecolor)
                 .HasDefaultValue(false)
                 .HasColumnName("allow_recolor");
@@ -2084,17 +2125,30 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.GarmentIsLight)
                 .HasDefaultValue(false)
                 .HasColumnName("garment_is_light");
+            entity.Property(e => e.Gender)
+                .HasMaxLength(8)
+                .HasColumnName("gender");
+            entity.Property(e => e.GroupType)
+                .HasMaxLength(8)
+                .HasColumnName("group_type");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
             entity.Property(e => e.IsSystemTemplate)
                 .HasDefaultValue(true)
                 .HasColumnName("is_system_template");
+            entity.Property(e => e.Kind)
+                .HasMaxLength(16)
+                .HasDefaultValueSql("'garment'::character varying")
+                .HasColumnName("kind");
             entity.Property(e => e.Name)
                 .HasMaxLength(255)
                 .HasColumnName("name");
             entity.Property(e => e.OutputHeightPx).HasColumnName("output_height_px");
             entity.Property(e => e.OutputWidthPx).HasColumnName("output_width_px");
+            entity.Property(e => e.People)
+                .HasMaxLength(8)
+                .HasColumnName("people");
             entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
             entity.Property(e => e.PrintAreaConfig)
                 .HasDefaultValueSql("'{}'::jsonb")

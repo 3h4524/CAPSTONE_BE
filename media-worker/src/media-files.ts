@@ -69,7 +69,7 @@ export async function uploadFile(grant: Upload, file: string, signal: AbortSigna
 export async function createZip(file: string, assets: Map<string, { file: string; data: Buffer }>, manifest: unknown, signal: AbortSignal) {
   signal.throwIfAborted();
   const safeManifest = exportPayloadSchema.shape.manifest.parse(manifest);
-  for (const name of assets.keys()) if (!/^(video\.mp4|thumbnail\.png|mockups\/[a-f0-9-]{36}\.png)$/.test(name)) throw new Error("Unsafe ZIP entry");
+  for (const name of assets.keys()) if (!/^(video\.mp4|thumbnail\.png|(mockups|model-photos)\/[a-f0-9-]{36}\.png)$/.test(name)) throw new Error("Unsafe ZIP entry");
   const zip = archiver("zip", { zlib: { level: 6 } });
   const output = createWriteStream(file);
   const abort = () => { zip.abort(); output.destroy(new Error("Export cancelled")); };

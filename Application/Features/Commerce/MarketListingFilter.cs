@@ -49,6 +49,10 @@ internal static class MarketListingFilter
 
     private static string? RejectionReason(MarketListingSnapshot snapshot)
     {
+        // Demo rows from scripts/demo have made-up engagement and listing links that do not exist on
+        // Etsy; they must not shape the signals a seller reads as the real market.
+        if (snapshot.IsSynthetic) return "synthetic";
+        if (MarketListingKind.IsDigital(snapshot.RawPayload)) return "digital_download";
         if (string.IsNullOrWhiteSpace(snapshot.Platform)) return "missing_platform";
         if (string.IsNullOrWhiteSpace(snapshot.ExternalListingId)) return "missing_listing_id";
         if (string.IsNullOrWhiteSpace(snapshot.Title)) return "missing_title";

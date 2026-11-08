@@ -14,7 +14,9 @@ public interface IMockupMapGenerator
     /// How the garment's folds shift a print, at the photo's own size: R holds the sideways shift
     /// and G the vertical one, 128 is none. Neutral off the garment.
     /// </summary>
-    byte[] GenerateDisplacementMap(byte[] baseImage);
+    /// <param name="baseImage">The photo.</param>
+    /// <param name="garmentSelection">For a photo of a person, the part that is the garment (see <see cref="GenerateGarmentMask"/>).</param>
+    byte[] GenerateDisplacementMap(byte[] baseImage, byte[]? garmentSelection = null);
 
     /// <summary>
     /// Separates the garment from a plain background. The PNG's alpha is the garment and its gray
@@ -23,7 +25,21 @@ public interface IMockupMapGenerator
     /// </summary>
     /// <param name="baseImage">The photo.</param>
     /// <param name="maxOutputSide">Scales the result down to this longest side, for a quick preview.</param>
-    GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null);
+    /// <param name="garmentSelection">
+    /// For a photo of a person: an image the size of the photo (or a scaled copy of it) whose alpha
+    /// is the part the seller selected as the garment. The garment is then only that part of the
+    /// person, so skin, hair and other clothes are never recolored or printed on.
+    /// </param>
+    GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null, byte[]? garmentSelection = null);
+
+    /// <summary>
+    /// The garment a person wears on their upper body, found without a click: a PNG whose alpha is the garment,
+    /// usable as the garment selection of <see cref="GenerateGarmentMask"/>. <see langword="null"/> when the
+    /// clothes model is not installed, or found no such garment.
+    /// </summary>
+    /// <param name="photo">The photo of a person.</param>
+    /// <param name="maxOutputSide">Scales the result down to this longest side.</param>
+    byte[]? GenerateWornGarmentMask(byte[] photo, int? maxOutputSide = null);
 
     /// <summary>
     /// The garment mask with its edge pulled in by a pixel, for lifting the garment onto another

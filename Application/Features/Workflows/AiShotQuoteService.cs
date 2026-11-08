@@ -99,6 +99,7 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
     private async Task<Result<(Storyboard Board, decimal Cost, int Count)>> EvaluateAsync(WorkflowRun run, GenerateVideoConfig config, bool regenerate, int? sceneOrder, CancellationToken ct)
     {
         if (config.Mode != "ai_shot") return Result.Failure<(Storyboard, decimal, int)>(Error.Validation("Choose AI Shot to request a quote."));
+        // Every paid AI video action is quoted or verified here, so this one check gates them all.
         var planCheck = await entitlements.RequireFeatureAsync(run.UserId, PlanFeatures.AiVideo, ct);
         if (planCheck.IsFailure) return Result.Failure<(Storyboard, decimal, int)>(planCheck.Error);
         var planned = await runtime.PlanAsync(run, config, ct);

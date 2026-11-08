@@ -23,35 +23,40 @@ internal sealed class SegmentationModelInstaller(
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await InstallIfMissingAsync(cancellationToken);
+        var settings = options.Value;
+        await InstallIfMissingAsync("Segmentation model", "about 180 MB", settings.SegmentationModelPath, settings.SegmentationModelUrl,
+            settings.SegmentationModelSha256, "mock-up photos cannot be processed until it is installed (restart to retry, or run scripts/Get-SegmentationModel.ps1)",
+            cancellationToken);
+        await InstallIfMissingAsync("Clothes model", "about 30 MB", settings.ClothesModelPath, settings.ClothesModelUrl,
+            settings.ClothesModelSha256, "the garment on a model photo is selected by hand until it is installed (restart to retry)",
+            cancellationToken);
         // Loading the model takes several seconds. Done now, in the background, startup does not
         // wait for it and neither does the first photo.
         _ = Task.Run(() => segmenter.IsAvailable, CancellationToken.None);
     }
 
-    private async Task InstallIfMissingAsync(CancellationToken cancellationToken)
+    private async Task InstallIfMissingAsync(string name, string size, string path, string url, string sha256, string withoutIt,
+        CancellationToken cancellationToken)
     {
-        var settings = options.Value;
-        if (string.IsNullOrWhiteSpace(settings.SegmentationModelUrl) || string.IsNullOrWhiteSpace(settings.SegmentationModelPath))
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(path))
             return;
-        if (BiRefNetGarmentSegmenter.ResolvePath(settings.SegmentationModelPath, environment.ContentRootPath) is not null)
+        if (BiRefNetGarmentSegmenter.ResolvePath(path, environment.ContentRootPath) is not null)
             return;
 
-        var target = InstallPath(settings.SegmentationModelPath, environment.ContentRootPath);
+        var target = InstallPath(path, environment.ContentRootPath);
         var temporary = target + ".download";
         try
         {
             logger.LogInformation(
-                "Segmentation model not found; downloading it to '{Target}' (about 180 MB, once). The application starts when this is done.", target);
+                "{Name} not found; downloading it to '{Target}' ({Size}, once). The application starts when this is done.", name, target, size);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await DownloadAsync(settings.SegmentationModelUrl, settings.SegmentationModelSha256, temporary, cancellationToken);
+            await DownloadAsync(url, sha256, temporary, cancellationToken);
             File.Move(temporary, target, overwrite: true);
-            logger.LogInformation("Segmentation model installed.");
+            logger.LogInformation("{Name} installed.", name);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogError(ex,
-                "The segmentation model could not be downloaded; mock-up photos cannot be processed until it is installed (restart to retry, or run scripts/Get-SegmentationModel.ps1).");
+            logger.LogError(ex, "The {Name} could not be downloaded; {WithoutIt}.", name.ToLowerInvariant(), withoutIt);
         }
         finally
         {

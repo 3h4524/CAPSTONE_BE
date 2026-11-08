@@ -79,6 +79,11 @@ otherwise ASP.NET's host defaults apply. Configure host-level key-at-rest protec
 and back up the ring. Losing the ring requires sellers to replace their saved keys.
 Pipeline implementations can inject IApiKeyCredentials to decrypt an owner-scoped,
 active, non-deleted credential on the server; no credential read endpoint is exposed.
+Printify publishing (Shop feature, PrintifyService) is such a consumer: it uses the seller's printify row only
+while it is active, its last check passed and it has not expired, and never writes api_keys. It records the
+Printify store it publishes through on printify_integrations with an empty token column, because upload logs
+reference that row; the key itself is not copied there. The Shop page shows the connection read-only and links
+here to add, replace or check the key.
 Legacy ciphertext in an unknown format fails validation safely and must be replaced.
 
 Database/timeout failures use MSG16 with user-safe text. The supplied specification

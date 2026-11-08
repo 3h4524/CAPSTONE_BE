@@ -8,7 +8,8 @@ namespace APCS.Infrastructure.Services;
 public sealed class MarketResearchScheduleService(ICacheService cache, IOptions<MarketResearchOptions> options, TimeProvider timeProvider) : IMarketResearchScheduleService
 {
     private const string CacheKey = "admin:market-research:schedule";
-    private const int MaximumQueries = 100;
+    // Each query costs one Etsy request a day, so the limit is about collection time, not quota.
+    private const int MaximumQueries = 300;
     private const int DefaultBatchSize = 5;
     private const int DefaultRunWindowMinutes = 120;
     // A daily collection is only useful as a time series, so the window may cover a month of days.

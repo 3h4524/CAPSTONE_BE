@@ -1,0 +1,147 @@
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 25MB
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+
+	handle /internal/* {
+		respond 404
+	}
+
+	@backend path /api/* /hubs/* /health
+	handle @backend {
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy fe:3000
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+www.{$APP_DOMAIN} {
+	redir https://{$APP_DOMAIN}{uri} permanent
+}
+
+api.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 25MB
+	}
+
+	handle /internal/* {
+		respond 404
+	}
+
+	@unprefixed path /health /hubs/* /api/*
+	handle @unprefixed {
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	handle {
+		rewrite * /api{uri}
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+logs.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	basic_auth {
+		{$OPS_USER} {$OPS_PASSWORD_HASH}
+	}
+
+	reverse_proxy dozzle:8080
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+status.{$APP_DOMAIN} {
+	encode zstd gzip
+
+	basic_auth {
+		{$OPS_USER} {$OPS_PASSWORD_HASH}
+	}
+
+	reverse_proxy uptime-kuma:3001
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete access_token
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}

@@ -28,6 +28,9 @@ public interface IMockupCompositor
 /// <summary>A print-area rectangle in pixels, relative to the top-left corner of the base image.</summary>
 public sealed record MockupPosition(int X, int Y, int Width, int Height);
 
+/// <summary>A point in pixels, relative to the top-left corner of the base image.</summary>
+public sealed record MockupPoint(double X, double Y);
+
 /// <summary>
 /// Extra layers for a realistic composite. Every part is optional and is skipped when missing.
 /// </summary>
@@ -54,6 +57,15 @@ public sealed record MockupPosition(int X, int Y, int Width, int Height);
 /// <param name="BackgroundColor">'#RRGGBB' to replace the photo's background with.</param>
 /// <param name="BasePhotoWidthPx">The base photo's width; a replaced background is cropped back to the photo's size.</param>
 /// <param name="BasePhotoHeightPx">The base photo's height.</param>
+/// <param name="DesignCorners">
+/// Where the design's four corners go (top-left, top-right, bottom-right, bottom-left), for a print area that is
+/// not square to the photo, such as a chest turned slightly away. The design is warped onto them instead of
+/// being fitted into the print-area rectangle.
+/// </param>
+/// <param name="MorePlacements">
+/// More print areas the same design goes in, each fitted as the first one is: one per person on a photo of several
+/// people all wearing the mock-up. The garment is recolored once for all of them.
+/// </param>
 public sealed record MockupLayers(
     int? DesignWidthPx,
     int? DesignHeightPx,
@@ -65,4 +77,6 @@ public sealed record MockupLayers(
     string? CutMaskKey = null,
     string? BackgroundColor = null,
     int? BasePhotoWidthPx = null,
-    int? BasePhotoHeightPx = null);
+    int? BasePhotoHeightPx = null,
+    IReadOnlyList<MockupPoint>? DesignCorners = null,
+    IReadOnlyList<MockupPosition>? MorePlacements = null);

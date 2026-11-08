@@ -110,26 +110,34 @@ internal static class MarketSupplyCalculator
         var percentiles = known.Where(item => item.SizePercentile is not null).Select(item => item.SizePercentile!.Value).Order().ToArray();
         var changes = known.Where(item => item.ChangePercent is not null).Select(item => item.ChangePercent!.Value).ToArray();
         double? change = changes.Length == 0 ? null : Math.Round(changes.Average(), 2);
+        var count = counts[counts.Length / 2];
         return new MarketSupplySignal(
-            counts[counts.Length / 2],
+            count,
             change is null ? "unknown" : TrendLabel(change.Value),
             change,
             known.Max(item => item.ObservationDayCount),
             known.Max(item => item.LatestObservedOn),
             percentiles.Length == 0 ? null : percentiles[percentiles.Length / 2],
-            CombineHistory(known));
+            CombineHistory(known, count));
     }
 
-    /// <summary>Per day, the median count of the keywords observed that day, like the niche's own count.</summary>
-    private static IReadOnlyList<MarketSupplyPoint> CombineHistory(IEnumerable<MarketSupplySignal> keywords) =>
+    /// <summary>
+    /// The niche's count over time, compared like for like. Keywords are collected in batches and new ones
+    /// join later, so the median raw count of whichever keywords a day happened to observe moves with that
+    /// mix rather than with the market. Each keyword is instead read relative to its own latest count; the
+    /// median of those ratios on a day, scaled to the niche's current count, follows the same keywords'
+    /// change, which is also what <see cref="MarketSupplySignal.ChangePercent"/> reports.
+    /// </summary>
+    private static IReadOnlyList<MarketSupplyPoint> CombineHistory(IEnumerable<MarketSupplySignal> keywords, int nicheCount) =>
         keywords
-            .SelectMany(item => item.History ?? [])
+            .Where(item => item.ActiveListingCount is > 0)
+            .SelectMany(item => (item.History ?? []).Select(point => (point.Day, Ratio: (double)point.ActiveListingCount / item.ActiveListingCount!.Value)))
             .GroupBy(item => item.Day)
             .OrderBy(group => group.Key)
             .Select(group =>
             {
-                var counts = group.Select(item => item.ActiveListingCount).Order().ToArray();
-                return new MarketSupplyPoint(group.Key, counts[counts.Length / 2]);
+                var ratios = group.Select(item => item.Ratio).Order().ToArray();
+                return new MarketSupplyPoint(group.Key, (int)Math.Round(nicheCount * ratios[ratios.Length / 2]));
             })
             .ToArray();
 

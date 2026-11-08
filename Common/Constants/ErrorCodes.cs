@@ -8,6 +8,7 @@ public static class ErrorCodes
     public const string Validation = "validation.failed";
     public const string Unexpected = "system.unexpected";
     public const string ExternalServiceUnavailable = "system.external_service_unavailable";
+    public const string TooManyRequests = "system.too_many_requests";
     public const string Unauthorized = "auth.unauthorized";
     public const string Forbidden = "auth.forbidden";
     public const string EmailAlreadyExists = "auth.email_already_exists";
@@ -54,4 +55,6 @@ public static class ErrorCodes
     public const string TestReportNotFound = "test_reports.not_found";
     public const string TestReportRunInProgress = "test_reports.run_in_progress";
     public const string TestReportRunFailed = "test_reports.run_failed";
+    public const string ImageEvaluationNotFound = "image_quality.evaluation_not_found";
+    public const string ImageEvaluationThumbnailUploadFailed = "image_quality.thumbnail_upload_failed";
 }

@@ -527,8 +527,8 @@ public sealed class VideoStoryboardPlanner
         var motion = concept switch
         {
             "material_detail" => "A smooth macro camera glide across the visible product material and printed artwork.",
-            "lifestyle_motion" => "The adult person already visible in the image moves naturally and subtly while wearing the same product.",
-            "product_in_use" => "The adult person already visible in the image naturally uses the same product, with gentle camera motion.",
+            "lifestyle_motion" => "The person or people already visible in the image move naturally and subtly while wearing the same product.",
+            "product_in_use" => "The person or people already visible in the image naturally use the same product, with gentle camera motion.",
             _ => "A cinematic, smooth, subtle camera dolly and gentle angle reveal of the product."
         };
         return $"{motion} Start from the supplied image. Keep the exact visible product, colors, print, text and composition unchanged. " +

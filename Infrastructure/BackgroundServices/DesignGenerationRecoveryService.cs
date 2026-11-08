@@ -15,7 +15,7 @@ namespace APCS.Infrastructure.BackgroundServices;
 /// <remarks>
 /// <para>
 /// When the application starts, every queued or running job is put back. After that the jobs are looked at
-/// again every minute, and the ones nobody has reported on for a while are put back too: a job whose worker
+/// again every <see cref="CheckEvery"/>, and the ones nobody has reported on for a while are put back too: a job whose worker
 /// stopped only counts as abandoned after <see cref="BatchJobClaims.AbandonedAfter"/>, so right after a
 /// restart it is still too early to resume it.
 /// </para>
@@ -32,11 +32,12 @@ public sealed class DesignGenerationRecoveryService(
     TimeProvider timeProvider,
     ILogger<DesignGenerationRecoveryService> logger) : BackgroundService
 {
-    internal static readonly TimeSpan CheckEvery = TimeSpan.FromMinutes(1);
+    // Longer than BatchJobClaims.AbandonedAfter, and long enough for an idle database to suspend in between.
+    internal static readonly TimeSpan CheckEvery = TimeSpan.FromMinutes(10);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Created first, so the minute is counted from the start rather than from the end of the first pass.
+        // Created first, so the interval is counted from the start rather than from the end of the first pass.
         using var timer = new PeriodicTimer(CheckEvery, timeProvider);
         await RequeueAsync(onlyAbandoned: false, stoppingToken);
 
