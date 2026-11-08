@@ -1,7 +1,6 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
-using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -11,12 +10,11 @@ public interface IMockupAssetService
 {
     Task<Result<IReadOnlyList<MockupResponse>>> ListAsync(Guid productId, CancellationToken ct);
     Task<Result<MockupResponse>> UploadAsync(Guid productId, Stream content, string name, long length, CancellationToken ct);
-    Task<Result<MockupResponse>> UpdateAsync(Guid id, MockupMetadataRequest request, CancellationToken ct);
     Task<Result<MockupResponse>> ReviewAsync(Guid id, MockupReviewRequest request, CancellationToken ct);
 }
 
 public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
-    IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, MockupMetadataValidator validator,
+    IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage,
     VideoStoryboardPlanner planner, TimeProvider time) : IMockupAssetService
 {
     public async Task<Result<IReadOnlyList<MockupResponse>>> ListAsync(Guid productId, CancellationToken ct)
@@ -51,19 +49,6 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
         };
         await assets.AddAsync(entity, cancellationToken: ct); await uow.SaveChangesAsync(ct);
         return Result.Success(Map(entity));
-    }
-    public async Task<Result<MockupResponse>> UpdateAsync(Guid id, MockupMetadataRequest request, CancellationToken ct)
-    {
-        var validation = await validator.ValidateAsync(request, ct);
-        if (!validation.IsValid) return Result.Failure<MockupResponse>(Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage))));
-        await using var tx = await uow.BeginTransactionAsync(ct);
-        var entity = await state.LockMockupAsync(id, ct);
-        if (entity is null || entity.DeletedAt != null || !await OwnsAsync(entity.ProductId, ct)) return Result.Failure<MockupResponse>(Missing());
-        if (entity.MetadataRevision != request.ExpectedRevision) return Result.Failure<MockupResponse>(Error.Conflict("StaleRevision", "Mockup changed. Reload before editing."));
-        entity.Role = request.Role; entity.ArtworkGroupKey = request.ArtworkGroupKey.Trim(); entity.VariantKey = request.VariantKey;
-        entity.Regions = WorkflowJson.Write(request.Regions); entity.MetadataRevision++; entity.ApprovalStatus = "pending";
-        entity.ApprovedRevision = null; entity.ApprovedAt = null; entity.ApprovedBy = null;
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(Map(entity));
     }
     public async Task<Result<MockupResponse>> ReviewAsync(Guid id, MockupReviewRequest request, CancellationToken ct)
     {

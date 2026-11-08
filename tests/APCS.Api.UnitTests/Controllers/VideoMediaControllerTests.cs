@@ -205,18 +205,15 @@ public sealed class VideoMediaControllerTests
     }
 
     [TestMethod]
-    public async Task AssetReadUpdateAndReview_ForwardRevisionRequestsAndCancellation()
+    public async Task AssetReadAndReview_ForwardRevisionRequestsAndCancellation()
     {
         var asset = VideoWorkflowTestData.Mockup(); using var cancellation = new CancellationTokenSource();
-        var metadata = new MockupMetadataRequest(2, "Hero", "artwork", "red", new());
         var review = new MockupReviewRequest(2, true);
         var service = new Mock<IMockupAssetService>(MockBehavior.Strict);
         service.Setup(x => x.ListAsync(asset.ProductId, cancellation.Token)).ReturnsAsync(Result.Success<IReadOnlyList<MockupResponse>>([asset]));
-        service.Setup(x => x.UpdateAsync(asset.Id, metadata, cancellation.Token)).ReturnsAsync(Result.Success(asset));
         service.Setup(x => x.ReviewAsync(asset.Id, review, cancellation.Token)).ReturnsAsync(Result.Success(asset));
         var controller = new VideoMediaController(service.Object, Mock.Of<IVideoArtifactService>(), Mock.Of<IVideoPlanningService>(), Mock.Of<ILifestyleMockupService>(), Mock.Of<IAiStudioFrameService>());
         (await controller.List(asset.ProductId, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeAssignableTo<IReadOnlyList<MockupResponse>>().Which.Should().ContainSingle(x => x.Id == asset.Id);
-        (await controller.Update(asset.Id, metadata, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(asset);
         (await controller.Review(asset.Id, review, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(asset);
         service.VerifyAll();
     }

@@ -101,8 +101,6 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
         return result.IsSuccess ? StatusCode(StatusCodes.Status201Created, result.Value) : result.ToActionResult(this);
     }
 
-    [HttpPut("mockup-assets/{id:guid}")]
-    public async Task<IActionResult> Update(Guid id, MockupMetadataRequest request, CancellationToken ct) => (await mockups.UpdateAsync(id, request, ct)).ToActionResult(this);
     [HttpPost("mockup-assets/{id:guid}/review")]
     public async Task<IActionResult> Review(Guid id, MockupReviewRequest request, CancellationToken ct) => (await mockups.ReviewAsync(id, request, ct)).ToActionResult(this);
     [HttpGet("promo-videos/{id:guid}/download")]

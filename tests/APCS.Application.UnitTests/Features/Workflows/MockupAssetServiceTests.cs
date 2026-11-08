@@ -23,34 +23,6 @@ public sealed class MockupAssetServiceTests
     }
 
     [TestMethod]
-    public async Task UpdateAsync_InvalidCrop_RejectsBeforeLockOrMutation()
-    {
-        var fixture = new WorkflowTestData();
-        var asset = fixture.AddAsset(fixture.AddProduct());
-        var result = await fixture.MockupService.UpdateAsync(asset.Id, new(3, "Hero", "group", null, new(Product: new(.9, .9, .2, .2))), default);
-        result.IsFailure.Should().BeTrue();
-        asset.MetadataRevision.Should().Be(3);
-        asset.ApprovalStatus.Should().Be("approved");
-        fixture.State.Verify(x => x.LockMockupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-
-    [TestMethod]
-    public async Task UpdateAsync_ForeignMockup_DoesNotChangeMetadataOrApproval()
-    {
-        var fixture = new WorkflowTestData();
-        var product = fixture.AddProduct(); product.UserId = Guid.NewGuid();
-        var asset = fixture.AddAsset(product);
-        var result = await fixture.MockupService.UpdateAsync(asset.Id, new(3, "Variant", "another-group", "red", new()), default);
-        result.Error.Code.Should().Be("MockupNotFound");
-        asset.Role.Should().Be("Hero");
-        asset.ArtworkGroupKey.Should().Be("artwork-main");
-        asset.ApprovalStatus.Should().Be("approved");
-        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-
-    [TestMethod]
     public async Task ListAsync_OwnProduct_FiltersDeletedAndOtherProductAndOrdersByRecency()
     {
         var fixture = new WorkflowTestData();
@@ -143,40 +115,6 @@ public sealed class MockupAssetServiceTests
         result.Error.Code.Should().Be("MockupNotFound");
         stream.Position.Should().Be(0);
         fixture.Storage.Verify(x => x.UploadMockupAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-    }
-
-    [TestMethod]
-    public async Task UpdateAsync_ApprovedMetadata_ChangesRevisionAndInvalidatesAllApprovalFields()
-    {
-        var fixture = new WorkflowTestData();
-        var asset = fixture.AddAsset(fixture.AddProduct());
-        asset.ApprovedBy = WorkflowTestData.Owner; asset.ApprovedAt = WorkflowTestData.Now.UtcDateTime;
-        var regions = new MockupRegions(new(.4, .6), new(.2, .1, .5, .7), new(.3, .3, .2, .2));
-        var result = await fixture.MockupService.UpdateAsync(asset.Id, new(3, "ArtworkDetail", " design-2 ", "blue", regions), default);
-        result.Value.Revision.Should().Be(4);
-        asset.Role.Should().Be("ArtworkDetail");
-        asset.ArtworkGroupKey.Should().Be("design-2");
-        asset.VariantKey.Should().Be("blue");
-        WorkflowJson.Read<MockupRegions>(asset.Regions).Should().Be(regions);
-        asset.ApprovalStatus.Should().Be("pending");
-        asset.ApprovedRevision.Should().BeNull();
-        asset.ApprovedAt.Should().BeNull();
-        asset.ApprovedBy.Should().BeNull();
-        fixture.Transaction.Verify(x => x.CommitAsync(It.IsAny<CancellationToken>()), Times.Once);
-    }
-
-    [TestMethod]
-    public async Task UpdateAsync_StaleRevision_DoesNotChangeCropOrApproval()
-    {
-        var fixture = new WorkflowTestData();
-        var asset = fixture.AddAsset(fixture.AddProduct());
-        var regions = asset.Regions;
-        var result = await fixture.MockupService.UpdateAsync(asset.Id, new(2, "Variant", "group", "red", new()), default);
-        result.Error.Code.Should().Be("StaleRevision");
-        asset.MetadataRevision.Should().Be(3);
-        asset.Regions.Should().Be(regions);
-        asset.ApprovalStatus.Should().Be("approved");
-        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

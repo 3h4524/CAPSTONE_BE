@@ -1,4 +1,5 @@
 using APCS.Application.Features.Workflows;
+using APCS.Application.Features.Workflows.Validators;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -626,6 +627,49 @@ public sealed class VideoStoryboardPlannerTests
         moved.AiShots![0].Fingerprint.Should().Be(square.AiShots![0].Fingerprint).And.Be(portrait.AiShots![0].Fingerprint);
         VideoOutputFormats.AiSourceAspect("square").Should().Be("9:16");
         VideoOutputFormats.AiSourceAspect("landscape").Should().Be("16:9");
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Plan_AiStartFrameCrop_UsesSelectedPixelsAndChangesClipFingerprint(bool useStudioFrame)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var frame = CreateStudioFrame(source);
+        var scene = new AiVideoSceneOptions(MockupId: source.Id, DurationSeconds: 5,
+            StartFrameMode: useStudioFrame ? "studio" : "direct",
+            StudioLayout: AiStudioFrameIdentity.HangingWindow, StudioFrameId: useStudioFrame ? frame.Id : null);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5, AiScenes: [scene]);
+        var original = _planner.Plan(product, [source, frame], config).Value;
+        var crop = new Region(.2, .25, .4, .5);
+
+        var edited = _planner.Plan(product, [source, frame], config with { AiScenes = [scene with { AiStartFrameCrop = crop }] }).Value;
+
+        edited.AiShots![0].MockupId.Should().Be(useStudioFrame ? frame.Id : source.Id);
+        edited.AiShots[0].SourceCrop.Should().Be(crop);
+        edited.Scenes[0].SourceCrop.Should().Be(crop);
+        edited.AiShots[0].Fingerprint.Should().NotBe(original.AiShots![0].Fingerprint);
+    }
+
+    [TestMethod]
+    [DataRow(-.1, 0, .5, .5)]
+    [DataRow(.8, 0, .5, .5)]
+    [DataRow(0, 0, 0, .5)]
+    public void Plan_InvalidAiStartFrameCrop_RejectsOutOfBoundsGeometry(double x, double y, double width, double height)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5,
+            AiScenes: [new(MockupId: source.Id, DurationSeconds: 5, AiStartFrameCrop: new(x, y, width, height))]);
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("crop must stay inside");
+        new GenerateVideoConfigValidator().Validate(config).IsValid.Should().BeFalse();
     }
 
     [TestMethod]

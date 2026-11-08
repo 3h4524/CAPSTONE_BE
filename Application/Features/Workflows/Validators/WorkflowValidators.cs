@@ -41,6 +41,8 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             double.IsFinite(scene.AiCropPosition.X) && double.IsFinite(scene.AiCropPosition.Y) &&
             scene.AiCropPosition.X is >= 0 and <= 1 && scene.AiCropPosition.Y is >= 0 and <= 1))
             .WithMessage("AI scene crop position must be between 0 and 1.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => ValidSourceCrop(scene.AiStartFrameCrop)))
+            .WithMessage("AI start frame crop must stay inside the source image.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
             .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
             .WithMessage("Choose an approved product image or keyframe for every scene.");
@@ -99,6 +101,9 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }
 
+    private static bool ValidSourceCrop(Region? region) => region is null ||
+        double.IsFinite(region.X + region.Y + region.Width + region.Height) && region.X >= 0 && region.Y >= 0 &&
+        region.Width > 0 && region.Height > 0 && region.X + region.Width <= 1 && region.Y + region.Height <= 1;
     private static bool ValidCrop(Region? region) => region is null ||
         double.IsFinite(region.X + region.Y + region.Width + region.Height) && region.X is >= -1 and <= 1 && region.Y is >= -1 and <= 1 &&
         region.Width > 0 && region.Height > 0 && region.Width <= 1 && region.Height <= 1;
@@ -136,21 +141,4 @@ public sealed class SaveWorkflowValidator : AbstractValidator<SaveWorkflowReques
         JsonValueKind.Undefined => false,
         _ => true
     };
-}
-
-public sealed class MockupMetadataValidator : AbstractValidator<MockupMetadataRequest>
-{
-    public MockupMetadataValidator()
-    {
-        RuleFor(x => x.ExpectedRevision).GreaterThan(0);
-        RuleFor(x => x.Role).Must(x => new[] { "Hero", "ArtworkDetail", "AlternativeAngle", "Lifestyle", "Variant" }.Contains(x));
-        RuleFor(x => x.ArtworkGroupKey).NotEmpty().MaximumLength(100);
-        RuleFor(x => x.VariantKey).MaximumLength(100);
-        RuleFor(x => x.Regions).NotNull();
-        RuleFor(x => x.Regions).Must(x => x != null && Valid(x.Product) && Valid(x.Artwork) && Valid(x.Detail) &&
-            (x.FocalPoint == null || double.IsFinite(x.FocalPoint.X) && double.IsFinite(x.FocalPoint.Y) &&
-             x.FocalPoint.X is >= 0 and <= 1 && x.FocalPoint.Y is >= 0 and <= 1));
-    }
-    private static bool Valid(Region? r) => r is null || double.IsFinite(r.X + r.Y + r.Width + r.Height) &&
-        r.X >= 0 && r.Y >= 0 && r.Width > 0 && r.Height > 0 && r.X + r.Width <= 1 && r.Y + r.Height <= 1;
 }

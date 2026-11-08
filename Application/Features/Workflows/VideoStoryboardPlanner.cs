@@ -32,6 +32,8 @@ public sealed class VideoStoryboardPlanner
         if (config.AiScenes?.Any(scene => scene.AiCropPosition is { } p &&
             (!double.IsFinite(p.X) || !double.IsFinite(p.Y) || p.X is < 0 or > 1 || p.Y is < 0 or > 1)) == true)
             return Result.Failure<Storyboard>(Error.Validation("AI scene crop position must be between 0 and 1."));
+        if (config.AiScenes?.Any(scene => !ValidSourceCrop(scene.AiStartFrameCrop)) == true)
+            return Result.Failure<Storyboard>(Error.Validation("AI start frame crop must stay inside the source image."));
         var eligible = assets.Where(x => x.ProductId == product.Id && x.DeletedAt == null && x.ApprovalStatus == "approved" &&
             x.ApprovedRevision == x.MetadataRevision && !string.IsNullOrEmpty(x.ContentHash)).ToList();
         var hasSceneTimeline = config.AiScenes is { Count: > 0 } &&
@@ -252,9 +254,9 @@ public sealed class VideoStoryboardPlanner
             var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
             var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
             var useStudioFrame = startFrameMode == "studio";
-            var sourceCrop = definition.RequiresDetail && !useStudioFrame
+            var sourceCrop = requested.AiStartFrameCrop ?? (definition.RequiresDetail && !useStudioFrame
                 ? detailRegions.FirstOrDefault(region => Math.Min(region.Width * source.MockupWidthPx, region.Height * source.MockupHeightPx) >= 512)
-                : null;
+                : null);
 
             MockupImage? studioFrame = null;
             MockupImage? studioSource = null;
@@ -333,7 +335,7 @@ public sealed class VideoStoryboardPlanner
                 definition.Code,
                 definition.PromptVersion,
                 // Timeline trims and boundary transitions alter the final composition only; they must not spend for a new AI clip.
-                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null, AiVideoModelKey = null, AiCropPosition = null },
+                Settings = settings with { DisplayDurationFrames = null, TrimStartFrames = null, TrimEndFrames = null, TransitionIn = null, TransitionDurationFrames = null, AiVideoModelKey = null, AiCropPosition = null, AiStartFrameCrop = null },
                 prompt,
                 Provider = AiVideoModel.ProviderKey,
                 ModelKey = modelKey,
@@ -680,6 +682,9 @@ public sealed class VideoStoryboardPlanner
         inner.X + inner.Width <= outer.X + outer.Width + 1e-9 && inner.Y + inner.Height <= outer.Y + outer.Height + 1e-9;
     private static bool ValidRegion(Region? region) => region is null || double.IsFinite(region.X + region.Y + region.Width + region.Height) &&
         region.X is >= -1 and <= 1 && region.Y is >= -1 and <= 1 && region.Width > 0 && region.Height > 0 && region.Width <= 1 && region.Height <= 1;
+    private static bool ValidSourceCrop(Region? region) => region is null ||
+        double.IsFinite(region.X + region.Y + region.Width + region.Height) && region.X >= 0 && region.Y >= 0 &&
+        region.Width > 0 && region.Height > 0 && region.X + region.Width <= 1 && region.Y + region.Height <= 1;
     private static bool ValidScale(double? scale) => scale is null || double.IsFinite(scale.Value) && scale is >= .01 and <= 5;
     private static bool ValidScale(double scale) => double.IsFinite(scale) && scale is >= .01 and <= 5;
     private static bool ValidRotation(double? rotation) => rotation is null || double.IsFinite(rotation.Value) && rotation is >= -9999 and <= 9999;

@@ -96,7 +96,6 @@ public static class DependencyInjection
         services.AddScoped<APCS.Application.Abstractions.AI.IAiVideoGenerationStrategyFactory, Features.Workflows.AiVideoGenerationStrategyFactory>();
         services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();
-        services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
         services.AddScoped<Features.Assistant.IAssistantService, Features.Assistant.AssistantService>();
         services.AddScoped<Features.Assistant.AssistantAgentLoop>();
         services.AddScoped<Features.Assistant.AssistantKnowledgeBase>();

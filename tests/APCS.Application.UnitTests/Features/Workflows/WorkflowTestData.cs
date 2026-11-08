@@ -93,7 +93,7 @@ internal sealed class WorkflowTestData
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll());
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
-        MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
+        MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), Time);
         ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Nodes.Object, Jobs.Object, Storage.Object, Time);
         foreach (var version in new[] { 1, 2 })
         foreach (var code in new[] { "product_showcase", "design_detail", "variant_showcase" })

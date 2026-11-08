@@ -269,37 +269,6 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    [DataRow("Hero")]
-    [DataRow("ArtworkDetail")]
-    [DataRow("AlternativeAngle")]
-    [DataRow("Lifestyle")]
-    [DataRow("Variant")]
-    public void Metadata_SupportedRoleAndBoundaryRegions_AcceptsNormalizedGeometry(string role)
-    {
-        new MockupMetadataValidator().Validate(new MockupMetadataRequest(1, role, "group", null, new(new(0, 1), new(0, 0, 1, 1))))
-            .IsValid.Should().BeTrue();
-    }
-
-    [TestMethod]
-    [DataRow(-.01, .5, .2, .2)]
-    [DataRow(.9, .5, .2, .2)]
-    [DataRow(.2, .2, 0, .2)]
-    [DataRow(.2, .9, .2, .2)]
-    [DataRow(double.NaN, .2, .2, .2)]
-    public void Metadata_InvalidRegions_RejectsUnsafeGeometry(double x, double y, double width, double height)
-    {
-        var result = new MockupMetadataValidator().Validate(new MockupMetadataRequest(1, "Hero", "group", null, new(Product: new(x, y, width, height))));
-        result.Errors.Should().Contain(e => e.PropertyName == "Regions");
-    }
-
-    [TestMethod]
-    public void Metadata_InvalidRevisionRoleAndFocalPoint_ReportsIndependentFailures()
-    {
-        var result = new MockupMetadataValidator().Validate(new MockupMetadataRequest(0, "unknown", "", null, new(new(double.PositiveInfinity, .5))));
-        result.Errors.Select(x => x.PropertyName).Should().Contain(["ExpectedRevision", "Role", "ArtworkGroupKey", "Regions"]);
-    }
-
-    [TestMethod]
     public void SaveWorkflow_LegacySchemaAndOversizedName_RejectsRequest()
     {
         var product = new WorkflowTestData().AddProduct();

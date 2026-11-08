@@ -78,7 +78,9 @@ public sealed record AiVideoSceneOptions(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? AiVideoModelKey = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Point? AiCropPosition = null);
+    Point? AiCropPosition = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Region? AiStartFrameCrop = null);
 public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
     string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
 public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
@@ -137,7 +139,6 @@ public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, st
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes);
 /// <summary>Identifies a previous workflow run that still has generated video versions available.</summary>
 public sealed record VideoRunSummaryResponse(Guid Id, string Status, DateTimeOffset CreatedAt, int VideoCount, int LatestVersion);
-public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings);
 public sealed record AiStudioFrameReferenceInput(byte[] Bytes, string MimeType);
