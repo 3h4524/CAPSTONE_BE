@@ -36,6 +36,14 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
         return rows.SingleOrDefault();
     }
 
+    public async Task<IReadOnlyList<FailedMediaJob>> FindFailedJobsOfRunningRunsAsync(int limit, CancellationToken ct) =>
+        await db.MediaJobs.AsNoTracking()
+            .Where(job => job.Status == "failed" && (job.Kind == "render" || job.Kind == "export_zip") && job.WorkflowRun.Status == "running")
+            .OrderBy(job => job.UpdatedAt)
+            .Select(job => new FailedMediaJob(job.WorkflowRunId, job.WorkflowNodeRunId, job.ErrorMessage))
+            .Take(limit)
+            .ToListAsync(ct);
+
     public async Task<string> GetMediaClaimStatusAsync(Guid jobId, long queueVersion, DateTime now, CancellationToken ct) =>
         await db.Database.SqlQuery<string>($"SELECT COALESCE((SELECT CASE WHEN status = 'leased' THEN 'busy' WHEN status = 'queued' AND available_at > {now} AND attempt < maximum_attempts THEN 'not_due' ELSE 'obsolete' END FROM media_jobs WHERE id = {jobId} AND queue_version = {queueVersion} AND kind IN ('render', 'export_zip')), 'obsolete') AS \"Value\"").SingleAsync(ct);
 }
