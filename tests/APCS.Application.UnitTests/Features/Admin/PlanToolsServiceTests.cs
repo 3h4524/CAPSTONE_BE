@@ -121,6 +121,28 @@ public sealed class PlanToolsServiceTests
     }
 
     [TestMethod]
+    public async Task GetHistoryAsync_KeepsOnlyTheChosenAction()
+    {
+        void Log(string actionType, string? oldValue, string? newValue) => auditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(), ActionType = actionType, ResourceType = "SubscriptionPlan", ResourceId = pro.Id,
+            OldValue = oldValue, NewValue = newValue, CreatedAt = SubscriptionTestData.UtcNow.UtcDateTime,
+        });
+        Log("ChangePlanFeature", """{"isEnabled":false}""", """{"code":"auto_approval","isEnabled":true}""");
+        Log("ChangePlanFeature", """{"isEnabled":true}""", """{"code":"auto_approval","isEnabled":false}""");
+        Log(PlanChangeActions.Create, null, """{"name":"New"}""");
+        Log(PlanChangeActions.Delete, """{"name":"Old"}""", null);
+        Log(PlanChangeActions.Update, """{"name":"Pro"}""", """{"name":"Pro"}""");
+        Log("ReorderPlans", null, """{"order":["Pro"]}""");
+        var service = CreateService();
+
+        (await service.GetHistoryAsync(1, 10, action: "add")).Value.TotalCount.Should().Be(2);
+        (await service.GetHistoryAsync(1, 10, action: "delete")).Value.TotalCount.Should().Be(2);
+        (await service.GetHistoryAsync(1, 10, action: "edit")).Value.TotalCount.Should().Be(2);
+        (await service.GetHistoryAsync(1, 10)).Value.TotalCount.Should().Be(6);
+    }
+
+    [TestMethod]
     public async Task GetHistoryAsync_ReturnsOnePageAndTheTotal()
     {
         var at = SubscriptionTestData.UtcNow.UtcDateTime;
