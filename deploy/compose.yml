@@ -21,7 +21,6 @@ services:
       - "443:443/udp"
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -33,7 +32,7 @@ services:
 
   fe:
     <<: *defaults
-    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-fe:${FE_TAG:?Set FE_TAG}
+    image: ${REGISTRY:?Set REGISTRY}/apcs-fe:${FE_TAG:-unreleased}
     extra_hosts:
       - "${APP_DOMAIN}:host-gateway"
     mem_limit: 512m
@@ -46,7 +45,7 @@ services:
 
   api:
     <<: *defaults
-    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-api:${API_TAG:?Set API_TAG}
+    image: ${REGISTRY:?Set REGISTRY}/apcs-api:${API_TAG:-unreleased}
     env_file: ${ENV_DIR:-/opt/apcs/env}/api.env
     volumes:
       - keyring:/data/keyring
@@ -60,7 +59,7 @@ services:
 
   media-worker:
     <<: *defaults
-    image: ${REGISTRY:-ghcr.io/3h4524}/apcs-media-worker:${API_TAG:?Set API_TAG}
+    image: ${REGISTRY:?Set REGISTRY}/apcs-media-worker:${API_TAG:-unreleased}
     init: true
     env_file: ${ENV_DIR:-/opt/apcs/env}/media-worker.env
     environment:

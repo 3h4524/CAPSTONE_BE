@@ -1,82 +1,153 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PROJECT_ID:?Set PROJECT_ID, e.g. apcs-prod-123456}"
-: "${ADMIN_IP:?Set ADMIN_IP to your public IP, e.g. 203.0.113.7}"
-: "${BUCKET:?Set BUCKET (globally unique), e.g. apcs-backups-x7k2}"
+deploy_dir="$(cd "$(dirname "$0")/.." && pwd)"
+set -a
+. "$deploy_dir/env/common.env"
+set +a
 
-REGION="${REGION:-asia-southeast1}"
-ZONE="${ZONE:-asia-southeast1-b}"
+GITHUB_REPOS="${GITHUB_REPOS:-3h4524/CAPSTONE_BE 3h4524/CAPSTONE_FE}"
+BACKEND_REPO="${BACKEND_REPO:-3h4524/CAPSTONE_BE}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-2}"
-VM_NAME="${VM_NAME:-vm-apcs-prod}"
 IP_NAME="${IP_NAME:-ip-apcs-prod}"
-ADMIN_USER="${ADMIN_USER:-apcsadmin}"
-SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-$HOME/.ssh/apcs_gcp.pub}"
+AR_REPO="${AR_REPO:-apcs}"
 OPEN_DEV_DB="${OPEN_DEV_DB:-true}"
-BACKUP_SA="apcs-backup"
-BACKUP_SA_EMAIL="$BACKUP_SA@$PROJECT_ID.iam.gserviceaccount.com"
+EXTRA_OWNER="${EXTRA_OWNER:-}"
+IAP_RANGE=35.235.240.0/20
 
-[ -f "$SSH_PUBLIC_KEY" ] || { echo "Missing $SSH_PUBLIC_KEY (ssh-keygen -t ed25519 -f ${SSH_PUBLIC_KEY%.pub})" >&2; exit 1; }
-
-gcloud config set project "$PROJECT_ID" > /dev/null
-gcloud services enable compute.googleapis.com storage.googleapis.com iam.googleapis.com
-
+p=(--project "$GCP_PROJECT" --quiet)
 exists() { "$@" > /dev/null 2>&1; }
+sa() { echo "$1@$GCP_PROJECT.iam.gserviceaccount.com"; }
+VM_SA="$(sa apcs-vm)"
+DEPLOYER_SA="$(sa apcs-deployer)"
+MIGRATOR_SA="$(sa apcs-dev-migrator)"
+PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
+POOL="projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github"
 
-exists gcloud compute addresses describe "$IP_NAME" --region "$REGION" \
-  || gcloud compute addresses create "$IP_NAME" --region "$REGION" --network-tier PREMIUM
+echo "Account: $(gcloud config get-value account 2> /dev/null)  Project: $GCP_PROJECT ($PROJECT_NUMBER)"
 
-rule() {
-  local name="$1" port="$2" source="$3"
-  if exists gcloud compute firewall-rules describe "$name"; then
-    gcloud compute firewall-rules update "$name" --allow "tcp:$port" --source-ranges "$source" --quiet
-  else
-    gcloud compute firewall-rules create "$name" --network default --direction INGRESS \
-      --allow "tcp:$port" --source-ranges "$source" --target-tags apcs --quiet
-  fi
-}
+gcloud services enable compute.googleapis.com iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \
+  iap.googleapis.com secretmanager.googleapis.com artifactregistry.googleapis.com oslogin.googleapis.com \
+  storage.googleapis.com "${p[@]}"
 
-rule apcs-allow-ssh-admin 22 "$ADMIN_IP/32"
-rule apcs-allow-http 80 0.0.0.0/0
-rule apcs-allow-https 443 0.0.0.0/0
-if [ "$OPEN_DEV_DB" = true ]; then
-  rule apcs-allow-dev-postgres 5432 0.0.0.0/0
-else
-  exists gcloud compute firewall-rules describe apcs-allow-dev-postgres \
-    && gcloud compute firewall-rules delete apcs-allow-dev-postgres --quiet
+for name in apcs-vm apcs-deployer apcs-dev-migrator; do
+  exists gcloud iam service-accounts describe "$(sa "$name")" "${p[@]}" \
+    || gcloud iam service-accounts create "$name" --display-name "$name" "${p[@]}"
+done
+
+bind_project() { gcloud projects add-iam-policy-binding "$GCP_PROJECT" --member "$1" --role "$2" --condition None --quiet > /dev/null; }
+bind_project "serviceAccount:$VM_SA" roles/logging.logWriter
+bind_project "serviceAccount:$VM_SA" roles/monitoring.metricWriter
+for member in "serviceAccount:$DEPLOYER_SA" "serviceAccount:$MIGRATOR_SA"; do
+  bind_project "$member" roles/iap.tunnelResourceAccessor
+  bind_project "$member" roles/compute.viewer
+done
+gcloud iam service-accounts add-iam-policy-binding "$VM_SA" --member "serviceAccount:$DEPLOYER_SA" \
+  --role roles/iam.serviceAccountUser "${p[@]}" > /dev/null
+if [ -n "$EXTRA_OWNER" ]; then
+  bind_project "user:$EXTRA_OWNER" roles/owner
 fi
 
-exists gcloud iam service-accounts describe "$BACKUP_SA_EMAIL" \
-  || gcloud iam service-accounts create "$BACKUP_SA" --display-name "APCS VM and backups"
+exists gcloud compute addresses describe "$IP_NAME" --region "$GCP_REGION" "${p[@]}" \
+  || gcloud compute addresses create "$IP_NAME" --region "$GCP_REGION" --network-tier PREMIUM "${p[@]}"
 
-exists gcloud storage buckets describe "gs://$BUCKET" \
-  || gcloud storage buckets create "gs://$BUCKET" --location "$REGION" --uniform-bucket-level-access --public-access-prevention
+for rule in default-allow-ssh default-allow-rdp; do
+  exists gcloud compute firewall-rules describe "$rule" "${p[@]}" && gcloud compute firewall-rules delete "$rule" "${p[@]}"
+done
+
+firewall() {
+  local name="$1" ports="$2" source="$3"
+  if exists gcloud compute firewall-rules describe "$name" "${p[@]}"; then
+    gcloud compute firewall-rules update "$name" --allow "$ports" --source-ranges "$source" "${p[@]}"
+  else
+    gcloud compute firewall-rules create "$name" --network default --direction INGRESS \
+      --allow "$ports" --source-ranges "$source" --target-tags apcs "${p[@]}"
+  fi
+}
+firewall apcs-allow-web tcp:80,tcp:443,udp:443 0.0.0.0/0
+firewall apcs-allow-iap tcp:22,tcp:5432 "$IAP_RANGE"
+if [ "$OPEN_DEV_DB" = true ]; then
+  firewall apcs-allow-dev-postgres tcp:5432 0.0.0.0/0
+else
+  exists gcloud compute firewall-rules describe apcs-allow-dev-postgres "${p[@]}" \
+    && gcloud compute firewall-rules delete apcs-allow-dev-postgres "${p[@]}"
+fi
+
+exists gcloud artifacts repositories describe "$AR_REPO" --location "$GCP_REGION" "${p[@]}" \
+  || gcloud artifacts repositories create "$AR_REPO" --repository-format docker --location "$GCP_REGION" "${p[@]}"
+cleanup="$(mktemp)"
+cat > "$cleanup" <<'JSON'
+[
+  {"name": "keep-latest-5", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 5}},
+  {"name": "delete-older", "action": {"type": "Delete"}, "condition": {"tagState": "any", "olderThan": "1d"}}
+]
+JSON
+gcloud artifacts repositories set-cleanup-policies "$AR_REPO" --location "$GCP_REGION" --policy "$cleanup" --no-dry-run "${p[@]}" > /dev/null
+rm -f "$cleanup"
+gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" --location "$GCP_REGION" \
+  --member "serviceAccount:$DEPLOYER_SA" --role roles/artifactregistry.writer "${p[@]}" > /dev/null
+gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" --location "$GCP_REGION" \
+  --member "serviceAccount:$VM_SA" --role roles/artifactregistry.reader "${p[@]}" > /dev/null
+
+exists gcloud storage buckets describe "gs://$BACKUP_BUCKET" "${p[@]}" \
+  || gcloud storage buckets create "gs://$BACKUP_BUCKET" --location "$GCP_REGION" \
+       --uniform-bucket-level-access --public-access-prevention "${p[@]}"
 lifecycle="$(mktemp)"
 echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":35}}]}' > "$lifecycle"
-gcloud storage buckets update "gs://$BUCKET" --lifecycle-file "$lifecycle" > /dev/null
+gcloud storage buckets update "gs://$BACKUP_BUCKET" --lifecycle-file "$lifecycle" "${p[@]}" > /dev/null
 rm -f "$lifecycle"
-gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
-  --member "serviceAccount:$BACKUP_SA_EMAIL" --role roles/storage.objectAdmin > /dev/null
+gcloud storage buckets add-iam-policy-binding "gs://$BACKUP_BUCKET" \
+  --member "serviceAccount:$VM_SA" --role roles/storage.objectAdmin "${p[@]}" > /dev/null
 
-if ! exists gcloud compute instances describe "$VM_NAME" --zone "$ZONE"; then
-  gcloud compute instances create "$VM_NAME" --zone "$ZONE" --machine-type "$MACHINE_TYPE" \
+for secret in apcs-prod-secrets apcs-dev-secrets apcs-dev-migrator-password; do
+  exists gcloud secrets describe "$secret" "${p[@]}" \
+    || gcloud secrets create "$secret" --replication-policy automatic "${p[@]}"
+  gcloud secrets add-iam-policy-binding "$secret" --member "serviceAccount:$VM_SA" \
+    --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
+done
+gcloud secrets add-iam-policy-binding apcs-dev-migrator-password --member "serviceAccount:$MIGRATOR_SA" \
+  --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
+
+exists gcloud iam workload-identity-pools describe github --location global "${p[@]}" \
+  || gcloud iam workload-identity-pools create github --location global --display-name "GitHub Actions" "${p[@]}"
+repo_list="$(printf "'%s'," $GITHUB_REPOS)"
+condition="assertion.repository in [${repo_list%,}] && assertion.event_name in ['push', 'workflow_dispatch']"
+mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repo_ref=assertion.repository + '@' + assertion.ref_type"
+if exists gcloud iam workload-identity-pools providers describe github-actions --workload-identity-pool github --location global "${p[@]}"; then
+  gcloud iam workload-identity-pools providers update-oidc github-actions --workload-identity-pool github --location global \
+    --attribute-mapping "$mapping" --attribute-condition "$condition" "${p[@]}"
+else
+  gcloud iam workload-identity-pools providers create-oidc github-actions --workload-identity-pool github --location global \
+    --issuer-uri https://token.actions.githubusercontent.com \
+    --attribute-mapping "$mapping" --attribute-condition "$condition" "${p[@]}"
+fi
+for repo in $GITHUB_REPOS; do
+  gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" --role roles/iam.workloadIdentityUser \
+    --member "principalSet://iam.googleapis.com/$POOL/attribute.repo_ref/$repo@tag" "${p[@]}" > /dev/null
+done
+gcloud iam service-accounts add-iam-policy-binding "$MIGRATOR_SA" --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/$POOL/attribute.repo_ref/$BACKEND_REPO@branch" "${p[@]}" > /dev/null
+
+if ! exists gcloud compute instances describe "$VM_NAME" --zone "$GCP_ZONE" "${p[@]}"; then
+  gcloud compute instances create "$VM_NAME" --zone "$GCP_ZONE" --machine-type "$MACHINE_TYPE" \
     --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud \
     --boot-disk-size 64GB --boot-disk-type pd-balanced \
     --address "$IP_NAME" --tags apcs \
-    --service-account "$BACKUP_SA_EMAIL" --scopes cloud-platform \
-    --metadata "ssh-keys=$ADMIN_USER:$(cat "$SSH_PUBLIC_KEY")"
+    --service-account "$VM_SA" --scopes cloud-platform \
+    --metadata enable-oslogin=TRUE \
+    --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring "${p[@]}"
 fi
+gcloud compute instances add-iam-policy-binding "$VM_NAME" --zone "$GCP_ZONE" \
+  --member "serviceAccount:$DEPLOYER_SA" --role roles/compute.osAdminLogin "${p[@]}" > /dev/null
 
-ip="$(gcloud compute addresses describe "$IP_NAME" --region "$REGION" --format 'value(address)')"
+ip="$(gcloud compute addresses describe "$IP_NAME" --region "$GCP_REGION" --format 'value(address)' "${p[@]}")"
 cat <<INFO
 
 Done.
-  VM public IP : $ip
-  Temporary domain (until a real one): $ip.sslip.io  -> APP_DOMAIN=$ip.sslip.io
-  SSH          : ssh -i ${SSH_PUBLIC_KEY%.pub} $ADMIN_USER@$ip
-  Backups      : the VM's service account writes to gs://$BUCKET; in backup.env set
-                 RCLONE_CONFIG_GCS_TYPE=google cloud storage
-                 RCLONE_CONFIG_GCS_ENV_AUTH=true
-                 RCLONE_CONFIG_GCS_BUCKET_POLICY_ONLY=true
-                 BACKUP_REMOTES=gcs:$BUCKET gdrive:apcs-backups
+  VM public IP          : $ip   (set APP_DOMAIN=$ip.sslip.io in deploy/env/common.env until a domain exists)
+  SSH                   : gcloud compute ssh $VM_NAME --zone $GCP_ZONE --tunnel-through-iap --project $GCP_PROJECT
+  Registry              : $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO
+  WIF provider          : $POOL/providers/github-actions
+  Deployer / migrator   : $DEPLOYER_SA / $MIGRATOR_SA
+  Secrets to fill       : apcs-prod-secrets, apcs-dev-secrets, apcs-dev-migrator-password
 INFO

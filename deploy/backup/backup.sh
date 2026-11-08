@@ -83,6 +83,10 @@ if [ -d "$root/predeploy" ]; then
 fi
 
 for remote in ${BACKUP_REMOTES:-}; do
+  if [ "${remote%%:*}" = gdrive ] && [ -z "${RCLONE_CONFIG_GDRIVE_TOKEN:-}" ]; then
+    echo "Skipping $remote: no Google Drive token configured"
+    continue
+  fi
   step="upload $remote"
   rclone copy "$root" "$remote" --transfers 2 --no-traverse
   step="remote retention $remote"

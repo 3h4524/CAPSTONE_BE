@@ -9,15 +9,20 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: migrate-dev
   cancel-in-progress: false
 
+env:
+  WIF_PROVIDER: projects/1035893227434/locations/global/workloadIdentityPools/github/providers/github-actions
+  MIGRATOR_SA: apcs-dev-migrator@apcs-prod.iam.gserviceaccount.com
+
 jobs:
   migrate:
     name: Apply pending migrations to the shared dev database
-    if: vars.DEV_MIGRATION_BRANCH != '' && github.ref_name == vars.DEV_MIGRATION_BRANCH
+    if: vars.DEV_MIGRATION_BRANCH != '' && github.ref_type == 'branch' && github.ref_name == vars.DEV_MIGRATION_BRANCH
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -25,23 +30,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up SSH
-        uses: ./.github/actions/setup-ssh
-        with:
-          host: ${{ secrets.DEV_SSH_HOST }}
-          user: ${{ secrets.DEV_SSH_USER }}
-          key: ${{ secrets.DEV_SSH_KEY }}
-          known-hosts: ${{ secrets.DEV_SSH_KNOWN_HOSTS }}
+      - name: Load deployment settings
+        run: grep -vE '^\s*(#|$)' deploy/env/common.env >> "$GITHUB_ENV"
 
-      - name: Open a tunnel to the dev database
-        run: ssh -o ExitOnForwardFailure=yes -fN -L 15432:127.0.0.1:5432 apcs
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.MIGRATOR_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Open an IAP tunnel to the dev database
+        run: |
+          gcloud compute start-iap-tunnel "$VM_NAME" 5432 --local-host-port=localhost:15432 \
+            --zone "$GCP_ZONE" --project "$GCP_PROJECT" > /tmp/iap-tunnel.log 2>&1 &
+          for _ in $(seq 1 30); do
+            nc -z localhost 15432 && exit 0
+            sleep 2
+          done
+          cat /tmp/iap-tunnel.log
+          exit 1
 
       - name: Migrate
-        env:
-          FLYWAY_URL: jdbc:postgresql://127.0.0.1:15432/apcs
-          FLYWAY_USER: apcs_migrator
-          FLYWAY_PASSWORD: ${{ secrets.FLYWAY_DEV_PASSWORD }}
         run: |
+          FLYWAY_PASSWORD="$(gcloud secrets versions access latest --secret apcs-dev-migrator-password --project "$GCP_PROJECT")"
+          echo "::add-mask::$FLYWAY_PASSWORD"
+          export FLYWAY_PASSWORD FLYWAY_USER=apcs_migrator FLYWAY_URL="jdbc:postgresql://127.0.0.1:15432/apcs?sslmode=require"
           ./deploy/scripts/flyway.sh migrate
           {
             echo "### Dev database after migrating \`${GITHUB_REF_NAME}\`"
