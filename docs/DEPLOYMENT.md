@@ -14,7 +14,7 @@ Secrets live only in Google Secret Manager; the repository holds templates and n
 | `media-worker` | `.../apcs-media-worker:<tag>` (`media-worker/Dockerfile`) | nothing; it polls the API |
 | `redis` | `redis:7-alpine`, AOF and password | Docker network only |
 | `postgres-prod` | `pgvector/pgvector:pg18` | Docker network, and `127.0.0.1:2510` on the VM |
-| `postgres-dev` | `pgvector/pgvector:pg18`, SSL | port 5432, the shared dev database |
+| `postgres-dev` | `pgvector/pgvector:pg18`, SSL, **own compose project `apcs-dev`** (`deploy/dev-db/compose.yml`) | port 5432, the shared dev database; no release touches it |
 | `backup` | built from `deploy/backup` | nothing; runs `pg_dump` nightly |
 | `dozzle` | `amir20/dozzle:v11` | `logs.<domain>` behind basic auth; reads the Docker socket read-only |
 | `uptime-kuma` | `louislam/uptime-kuma:2` | `status.<domain>` behind basic auth (plus its own login) |
@@ -97,13 +97,19 @@ To release, tag the head of `production` with the same `vX.Y.Z` in both `3h4524/
 takes a lock on the VM, so when both reach the release step the second waits for the first instead
 of running alongside it.
 
-There is no approval step: a `v*` tag whose commit is on `production` deploys. Backend:
-`deploy-prod.yml` checks the tag, runs the tests, builds and pushes `apcs-api` and
-`apcs-media-worker`, copies `deploy/` and `migrations/` to the VM over IAP, and runs
-`deploy/scripts/release.sh api <tag>`: render the env files, take a pre-deploy backup, `flyway
-migrate` production (`deploy/scripts/migrate.sh`), roll out with `deploy/scripts/deploy.sh` (it rolls
-the image back by itself when the API does not become healthy), and prune old images. Frontend: the
-same with `release.sh fe <tag>`, build arguments from `deploy/fe.build.env`.
+There is no approval step: a `v*` tag whose commit is on `production` deploys, and each repository
+is tagged on its own (the versions do not have to match). Every release touches only its own part:
+
+| Command on the VM | Run by | Restarts |
+|---|---|---|
+| `release.sh fe <tag>` | frontend tag | `fe` only |
+| `release.sh api <tag>` | backend tag | renders the env files, takes a pre-deploy backup, runs `flyway migrate`, then restarts `api` and `media-worker` only |
+| `release.sh infra` | backend tag when `deploy/compose.yml`, `deploy/Caddyfile`, `deploy/backup`, `deploy/postgres` or an infrastructure env template changed since the previous tag, or by hand (`workflow_dispatch`, target `infra`) | recreates Dozzle, Uptime Kuma and the backup container when their definition changed and reloads Caddy in place; Postgres and Redis are only started when stopped, never recreated |
+| `dev-db.sh up` | by hand | the shared dev database (project `apcs-dev`), only when someone runs it |
+
+`deploy.sh` rolls the image back by itself when the new container does not become healthy. A lock
+on the VM makes concurrent releases wait for each other. When an API change is needed by the
+frontend, release the backend first or keep the API backward compatible.
 
 Migrations are never rolled back. To return to an older release, run the workflow by hand with the
 older tag selected as the ref (images are reused, migrations already applied are kept), or run
@@ -162,4 +168,4 @@ Restore with `deploy/scripts/restore-db.sh <prod|dev> <file.dump>` and
 
 1. `deploy/provision/create-gcp-resources.sh`.
 2. `gcloud compute ssh vm-apcs-prod --tunnel-through-iap --command 'sudo bash -s' < deploy/provision/bootstrap-vm.sh`.
-3. Copy `deploy/` and `migrations/` to `/opt/apcs`, restore the latest backups, and tag a release.
+3. Copy `deploy/` and `migrations/` to `/opt/apcs`, run `release.sh infra` and `dev-db.sh up`, restore the latest backups, and tag a release.

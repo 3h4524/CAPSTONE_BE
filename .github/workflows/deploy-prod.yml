@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      target:
+        description: What to release from the selected tag
+        type: choice
+        options: [api, infra, all]
+        default: api
 
 permissions:
   contents: read
@@ -124,6 +130,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Decide what to release
+        id: plan
+        env:
+          REQUESTED: ${{ inputs.target }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            target="$REQUESTED"
+          else
+            previous="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2> /dev/null || true)"
+            if [ -z "$previous" ] || ! git diff --quiet "$previous" HEAD -- \
+                deploy/compose.yml deploy/Caddyfile deploy/backup deploy/postgres \
+                deploy/env/compose.env.tpl deploy/env/backup.env.tpl deploy/env/redis.env.tpl deploy/env/postgres-prod.env.tpl; then
+              target=all
+            else
+              target=api
+            fi
+            echo "Previous release: ${previous:-none}"
+          fi
+          echo "Release target: $target"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
 
       - name: Load deployment settings
         run: grep -vE '^\s*(#|$)' deploy/env/common.env >> "$GITHUB_ENV"
@@ -143,7 +172,14 @@ jobs:
             --tunnel-through-iap --quiet --command \
             "sudo -u deploy bash -c 'set -e; rm -rf /opt/apcs/incoming/*; tar xzf - -C /opt/apcs/incoming; rsync -a --delete --exclude .env /opt/apcs/incoming/deploy/ /opt/apcs/deploy/; rsync -a --delete /opt/apcs/incoming/migrations/ /opt/apcs/migrations/'"
 
+      - name: Release infrastructure (Caddy, Dozzle, Uptime Kuma, backup)
+        if: steps.plan.outputs.target == 'infra' || steps.plan.outputs.target == 'all'
+        run: |
+          gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --tunnel-through-iap --quiet \
+            --command "sudo -iu deploy /opt/apcs/deploy/scripts/release.sh infra"
+
       - name: Release the API and media worker
+        if: steps.plan.outputs.target == 'api' || steps.plan.outputs.target == 'all'
         run: |
           gcloud compute ssh "$VM_NAME" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --tunnel-through-iap --quiet \
             --command "sudo -iu deploy /opt/apcs/deploy/scripts/release.sh api $RELEASE_TAG"

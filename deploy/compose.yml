@@ -121,37 +121,6 @@ services:
       timeout: 5s
       retries: 12
 
-  postgres-dev:
-    <<: *defaults
-    labels:
-      dev.dozzle.group: data
-    image: pgvector/pgvector:pg18
-    env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-dev.env
-    command:
-      - bash
-      - -c
-      - >-
-        install -d -o postgres -g postgres -m 700 /run/pgtls
-        && install -o postgres -g postgres -m 600 /tls-src/server.key /run/pgtls/server.key
-        && install -o postgres -g postgres -m 644 /tls-src/server.crt /run/pgtls/server.crt
-        && exec docker-entrypoint.sh postgres -c shared_buffers=128MB -c max_connections=80
-        -c ssl=on -c ssl_cert_file=/run/pgtls/server.crt -c ssl_key_file=/run/pgtls/server.key
-        -c hba_file=/etc/postgresql/pg_hba.conf -c timezone=UTC
-    ports:
-      - "${DEV_DB_BIND:-0.0.0.0}:5432:5432"
-    volumes:
-      - pg_dev:/var/lib/postgresql
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
-      - ${ENV_DIR:-/opt/apcs/env}/tls:/tls-src:ro
-      - ./postgres/dev-pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-    mem_limit: 768m
-    shm_size: 128mb
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
   dozzle:
     <<: *defaults
     labels:
@@ -194,8 +163,6 @@ services:
     depends_on:
       postgres-prod:
         condition: service_healthy
-      postgres-dev:
-        condition: service_healthy
 
 networks:
   apcs:
@@ -210,6 +177,5 @@ volumes:
   models:
   redis_data:
   pg_prod:
-  pg_dev:
   backups:
   kuma_data:
