@@ -120,7 +120,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 [$"{ConfigurationSections.Cloudinary}:ApiSecret"] = string.Empty,
                 [$"{ConfigurationSections.PayOs}:ClientId"] = string.Empty,
                 [$"{ConfigurationSections.PayOs}:ApiKey"] = string.Empty,
-                [$"{ConfigurationSections.PayOs}:ChecksumKey"] = string.Empty
+                [$"{ConfigurationSections.PayOs}:ChecksumKey"] = string.Empty,
+                ["RateLimiting:Enabled"] = "false"
             };
 
             configuration.AddInMemoryCollection(overrides);
