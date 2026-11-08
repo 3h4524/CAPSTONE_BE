@@ -23,8 +23,11 @@ Caddy routes one hostname by path: `/api/*`, `/hubs/*`, and `/health` go to the 
 answers 404, and everything else goes to the frontend. Frontend and API therefore share an origin,
 which the host-only `__Host-apcs_access` cookie and the frontend's server-side session check rely
 on. SSE is not buffered (`flush_interval -1`) and long AI calls get a 10-minute timeout.
-`api.<domain>` is an alias that serves only the API (for Postman, documentation and external
-webhooks); the browser app keeps using `<domain>/api` so the session cookies stay on one host.
+`api.<domain>` is an alias of `<domain>/api` that serves only the API (for Postman, documentation
+and external callbacks): `api.<domain>/auth/login` reaches `/api/auth/login`, while `/health`,
+`/hubs/*` and already prefixed `/api/*` paths pass through unchanged. The browser app keeps using
+`<domain>/api` so the session cookies stay on one host. The Etsy OAuth callback is
+`https://api.<domain>/etsy/oauth/callback`.
 
 The API runs exactly one instance: its work queues are in-memory channels, its scheduled jobs have
 no distributed lock, and SignalR has no backplane.

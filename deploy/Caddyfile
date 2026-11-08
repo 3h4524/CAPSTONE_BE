@@ -61,7 +61,19 @@ api.{$APP_DOMAIN} {
 		respond 404
 	}
 
+	@unprefixed path /health /hubs/* /api/*
+	handle @unprefixed {
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
 	handle {
+		rewrite * /api{uri}
 		reverse_proxy api:8080 {
 			flush_interval -1
 			transport http {
