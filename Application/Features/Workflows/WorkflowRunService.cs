@@ -22,7 +22,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
-    IPlanEntitlementService entitlements, ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunService
+    IPlanEntitlementService entitlements, WorkflowPublishConnections publishConnections, ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -57,6 +57,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         {
             var publishCheck = await entitlements.RequireFeatureAsync(user.UserId!.Value, PlanFeatures.WorkflowPublish, ct);
             if (publishCheck.IsFailure) return Result.Failure<RunResponse>(publishCheck.Error);
+            // Checked now rather than when the run reaches publishing, after every paid step and both approvals.
+            if (await publishConnections.CheckAsync(definition, ct) is { } connectionError)
+                return Result.Failure<RunResponse>(connectionError);
         }
         var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
         var product = await products.GetByIdAsync(input.ProductId, ct);

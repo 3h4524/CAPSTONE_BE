@@ -84,6 +84,7 @@ public static class DependencyInjection
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
+        services.AddScoped<Features.Workflows.WorkflowPublishConnections>();
         services.AddScoped<Features.Workflows.VideoStoryboardPlanner>();
         services.AddScoped<Features.Workflows.IVideoPromptPreparationService, Features.Workflows.VideoPromptPreparationService>();
         services.AddScoped<Features.Workflows.IVideoExperienceContextService, Features.Workflows.VideoExperienceContextService>();
