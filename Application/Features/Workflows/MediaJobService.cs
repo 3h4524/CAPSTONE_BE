@@ -23,7 +23,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
     IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null,
     ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null,
-    ISceneVideoNotifier? sceneNotifier = null) : IMediaJobService
+    ISceneVideoNotifier? sceneNotifier = null, IMediaLeaseRecovery? leaseRecovery = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
         => await ClaimCoreAsync(null, null, ct);
@@ -41,6 +41,10 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
 
     private async Task<Result<WorkerJob?>> ClaimCoreAsync(Guid? jobId, long? queueVersion, CancellationToken ct)
     {
+        // A polling worker claims from the database, so expired leases are settled first, each with its run. The
+        // Streams dispatcher does this on its own recovery pass.
+        if (jobId is null && leaseRecovery != null)
+            await leaseRecovery.RecoverExpiredAsync(time.GetUtcNow().UtcDateTime, ct);
         await using var tx = await uow.BeginTransactionAsync(ct);
         var token = Guid.NewGuid();
         var job = jobId is Guid id && queueVersion is long version

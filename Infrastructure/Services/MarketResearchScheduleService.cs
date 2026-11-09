@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure.Services;
 
-public sealed class MarketResearchScheduleService(ICacheService cache, IOptions<MarketResearchOptions> options, TimeProvider timeProvider) : IMarketResearchScheduleService
+public sealed class MarketResearchScheduleService(ICacheService cache, IOptions<MarketResearchOptions> options, TimeProvider timeProvider,
+    APCS.Infrastructure.BackgroundServices.MarketScheduleSignal? signal = null) : IMarketResearchScheduleService
 {
     private const string CacheKey = "admin:market-research:schedule";
     // Each query costs one Etsy request a day, so the limit is about collection time, not quota.
@@ -46,6 +47,8 @@ public sealed class MarketResearchScheduleService(ICacheService cache, IOptions<
             request.RunWindowMinutes,
             0);
         await cache.SetAsync(CacheKey, updated, TimeSpan.FromDays(365), cancellationToken);
+        // The worker sleeps until the next run is due; the saved schedule may start sooner.
+        signal?.Research.Notify();
         return ToResponse(updated);
     }
 

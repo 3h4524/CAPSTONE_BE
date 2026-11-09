@@ -7,6 +7,9 @@ using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.Shops;
+using APCS.Application.Features.Shops.Common;
+using APCS.Application.Features.Shops.Dtos.Response;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -51,6 +54,8 @@ internal sealed class WorkflowTestData
     public Mock<IListingContentService> ListingContent { get; } = new();
     public Mock<IMediaStorage> Storage { get; } = new();
     public Mock<ILocalExportStore> LocalExports { get; } = new();
+    public Mock<IShopService> Shops { get; } = new();
+    public Mock<IPrintifyService> Printify { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
     public WorkflowService WorkflowService { get; }
@@ -84,13 +89,16 @@ internal sealed class WorkflowTestData
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
         Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
             It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        EtsyIs(ShopConnectionStatuses.Connected);
+        PrintifyIs(PrintifyStatuses.Connected);
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
             Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time);
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
-            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll());
+            Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
+            new(Shops.Object, Printify.Object));
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
@@ -120,6 +128,31 @@ internal sealed class WorkflowTestData
             Revision = 4, SchemaVersion = 2, Definition = WorkflowJson.Write(Definition(product, config)),
             CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
         WorkflowRows.Add(workflow);
+        return workflow;
+    }
+
+    /// <summary>Sets what the Shop page would show for the seller's Etsy connection.</summary>
+    public void EtsyIs(string status) => Shops.Setup(x => x.GetMyShopAsync(It.IsAny<CancellationToken>()))
+        .ReturnsAsync(Result.Success(new GetMyShopResponseDto(status, true, null, null, null, null)));
+
+    /// <summary>Sets what the Shop page would show for the seller's Printify key.</summary>
+    public void PrintifyIs(string status) => Printify.Setup(x => x.GetConnectionAsync(It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+        .ReturnsAsync(Result.Success(new PrintifyConnectionDto(status, null, null, null, null, null, 0)));
+
+    /// <summary>A video workflow with Push to Printify then Publish to Etsy after Export ZIP.</summary>
+    public Workflow AddPublishWorkflow(Product product)
+    {
+        var workflow = AddWorkflow(product);
+        var definition = Definition(product);
+        var printify = new WorkflowNode("publish-printify", "publish-printify", "Push to Printify", new(1400, 0), JsonSerializer.SerializeToElement(
+            new { blueprintId = 6, printProviderId = 99, colors = new[] { "White" }, sizes = new[] { "M" }, targetProfit = 10 }));
+        var etsy = new WorkflowNode("publish-etsy", "publish-etsy", "Publish to Etsy", new(1600, 0), JsonSerializer.SerializeToElement(
+            new { listingType = "download", price = 4.99, taxonomyId = 2078 }));
+        workflow.Definition = WorkflowJson.Write(definition with
+        {
+            Nodes = [.. definition.Nodes, printify, etsy],
+            Edges = [.. definition.Edges, new("edge-printify", definition.Nodes[^1].Id, printify.Id), new("edge-etsy", printify.Id, etsy.Id)],
+        });
         return workflow;
     }
 

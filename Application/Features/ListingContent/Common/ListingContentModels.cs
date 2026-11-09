@@ -23,7 +23,7 @@ public static class ListingContentPolicyDefaults
         Listing content standards:
         - Use accurate, buyer-focused language based only on the supplied product data.
         - Write a clear, concise, keyword-relevant title without keyword stuffing.
-        - Generate exactly 13 unique tags when the marketplace supports 13 tags; keep each tag concise (20 characters or fewer for Etsy).
+        - Fill all 13 tag slots with unique tags when the marketplace supports 13 tags; keep each tag concise (20 characters or fewer for Etsy).
         - Use diverse tags that describe the product, audience, style, use case, occasion, and gift intent where relevant.
         - Do not repeat attributes already covered by marketplace fields unless the phrase adds useful search meaning.
         - Keep the description readable and helpful: explain what the product is, who it is for, and the relevant use or occasion.
