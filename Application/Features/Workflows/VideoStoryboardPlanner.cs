@@ -246,9 +246,6 @@ public sealed class VideoStoryboardPlanner
             if (usesP1Rules && source.Role != "Lifestyle")
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs an approved Lifestyle image with a person for P1 prompt rules."));
 
-            if (definition.RequiresLifestyle && !settings.RightsConfirmed)
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires confirmation that you have rights to use the selected image with people."));
-
             var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
             var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
             var useStudioFrame = startFrameMode == "studio";
@@ -439,8 +436,6 @@ public sealed class VideoStoryboardPlanner
         source ??= options.Concept == "material_detail" ? eligible.FirstOrDefault(HasMarkedDetail) ?? eligible[0] : eligible[0];
         if (source == null || !eligible.Any(x => x.Id == source.Id))
             return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
-        if (options.Concept is "lifestyle_motion" or "product_in_use" && !options.RightsConfirmed)
-            return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need image-rights confirmation for the selected image."));
         var modelKey = config.AiVideoModelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelKey : AiVideoModel.ModelKey;
         var model = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
         var modelPrice = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LitePricePerSecondUsd : AiVideoModel.PricePerSecondUsd;

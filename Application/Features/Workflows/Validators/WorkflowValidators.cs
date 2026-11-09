@@ -75,7 +75,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x).Must(x => x.Template != "product_on_model_pack" || x.Mode == "ai_shot" &&
             x.AiScenes is { Count: 3 } && x.AiScenes.All(scene => scene.Mode == "ai" &&
                 scene.StartFrameMode == "studio" && scene.StudioFrameId is Guid frame && frame != Guid.Empty &&
-                scene.MockupId == x.SharedMockupId && scene.RightsConfirmed))
+                scene.MockupId == x.SharedMockupId))
             .WithMessage("Product on Model needs three AI scenes with current reviewed start frames from the shared mockup.");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
@@ -93,8 +93,6 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             (x.FullSceneMockupIds is null || x.FullSceneMockupIds.Count <= 2 && x.FullSceneMockupIds.All(id => id != Guid.Empty)));
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
             .WithMessage("Full AI videos must be 8 or 15 seconds.");
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
-            .WithMessage("Confirm rights to use the people in the Lifestyle image for AI video generation, with a parent's or guardian's consent for anyone under 18.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
             .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }
