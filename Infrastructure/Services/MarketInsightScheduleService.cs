@@ -10,7 +10,8 @@ public sealed class MarketInsightScheduleService(
     ICacheService cache,
     ICurrentUser currentUser,
     IMarketResearchQueue queue,
-    TimeProvider timeProvider) : IMarketInsightScheduleService
+    TimeProvider timeProvider,
+    APCS.Infrastructure.BackgroundServices.MarketScheduleSignal? signal = null) : IMarketInsightScheduleService
 {
     private const int DefaultLimitPerQuery = 25;
     private const int DefaultTopN = 3;
@@ -57,6 +58,8 @@ public sealed class MarketInsightScheduleService(
             lastJobId);
         await cache.SetAsync(CacheKey(userId), stored, TimeSpan.FromDays(365), cancellationToken);
         await UpdateIndexAsync(userId, request.Enabled, cancellationToken);
+        // The worker sleeps until the next schedule is due; this one may be due sooner.
+        signal?.Insights.Notify();
         return ToResponse(stored);
     }
 

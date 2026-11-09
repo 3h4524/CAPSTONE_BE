@@ -10,12 +10,14 @@ namespace APCS.Infrastructure.BackgroundServices;
 /// <summary>
 /// Processes the publish steps of workflow runs one at a time, each in a fresh scope that acts as the run's owner,
 /// so the Printify and Etsy use cases see the seller they serve. Steps left running by a restart are found again
-/// at start and every few minutes.
+/// at start, then every few minutes while any is unfinished; with none, the recovery waits for
+/// <see cref="WorkflowActivitySignal.Publish"/> instead of querying an idle database.
 /// </summary>
 public sealed class WorkflowPublishWorker(
-    IWorkflowPublishQueue queue,
+    WorkflowPublishQueueChannel queue,
     IServiceProvider services,
-    ILogger<WorkflowPublishWorker> logger) : BackgroundService
+    ILogger<WorkflowPublishWorker> logger,
+    WorkflowActivitySignal? activity = null) : BackgroundService
 {
     private static readonly TimeSpan RecoverEvery = TimeSpan.FromMinutes(5);
 
@@ -63,16 +65,23 @@ public sealed class WorkflowPublishWorker(
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
             while (!stoppingToken.IsCancellationRequested)
             {
+                var seen = activity?.Publish.Version ?? 0;
+                var unfinished = true;
                 try
                 {
                     using var scope = services.CreateScope();
-                    foreach (var nodeRunId in await scope.ServiceProvider.GetRequiredService<IWorkflowPublishService>().UnfinishedAsync(stoppingToken))
+                    var steps = await scope.ServiceProvider.GetRequiredService<IWorkflowPublishService>().UnfinishedAsync(stoppingToken);
+                    foreach (var nodeRunId in steps)
                         queue.Enqueue(nodeRunId);
+                    unfinished = steps.Count > 0;
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
                     logger.LogWarning(exception, "Looking for unfinished publish steps failed.");
                 }
+                // Nothing to recover: a newly queued step wakes this; it is looked at once it has had time to fail.
+                if (activity is not null && !unfinished)
+                    await activity.Publish.WaitAsync(seen, WorkflowActivitySignal.IdleSafetyCheck, stoppingToken);
                 await Task.Delay(RecoverEvery, stoppingToken);
             }
         }

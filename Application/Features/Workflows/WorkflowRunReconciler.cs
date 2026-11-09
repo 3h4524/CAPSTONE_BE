@@ -6,16 +6,19 @@ public interface IWorkflowRunReconciler
 {
     /// <summary>Fails the step of every running run whose render or export job has failed. Returns how many runs it failed.</summary>
     Task<int> FailRunsWithFailedJobsAsync(CancellationToken ct);
+
+    /// <summary>Whether a render or export job touched since <paramref name="updatedSince"/> could still fail.</summary>
+    Task<bool> HasMediaWorkInFlightAsync(DateTime updatedSince, CancellationToken ct);
 }
 
 /// <summary>
 /// Catches a run up with a job that failed without the worker saying so.
 /// </summary>
 /// <remarks>
-/// A worker that reports its failure fails the run at once (<see cref="MediaJobService.FailAsync"/>). A worker
-/// that stops without a word leaves a lease that expires: the next claim marks the job failed after its last
-/// attempt, but the claim cannot reach the run, which would show "running" for ever. Reading a run used to fix
-/// that, which made every poll lock the run; this does it in the background instead.
+/// A worker that reports its failure fails the run at once (<see cref="MediaJobService.FailAsync"/>), and a worker
+/// that stops without a word has its expired lease settled together with its run by <see cref="MediaLeaseRecovery"/>.
+/// No known path leaves a failed job under a running run any more; this is the safety net for one that does (a bug,
+/// a manual change), run by <c>WorkflowRunFailureSweeper</c> only while media work is in flight.
 /// </remarks>
 public sealed class WorkflowRunReconciler(IWorkflowStateRepository state, IUnitOfWork uow, WorkflowRuntime runtime,
     ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunReconciler
@@ -44,4 +47,7 @@ public sealed class WorkflowRunReconciler(IWorkflowStateRepository state, IUnitO
         }
         return failed;
     }
+
+    public Task<bool> HasMediaWorkInFlightAsync(DateTime updatedSince, CancellationToken ct) =>
+        state.HasMediaWorkInFlightAsync(updatedSince, ct);
 }

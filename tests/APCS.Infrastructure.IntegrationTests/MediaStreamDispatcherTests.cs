@@ -121,6 +121,7 @@ public sealed class MediaStreamDispatcherTests
             registrations.AddScoped<IUnitOfWork>(p => p.GetRequiredService<AppDbContext>());
             registrations.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
             registrations.AddScoped(p => new WorkflowRuntime(new Repository<WorkflowNodeRun>(p.GetRequiredService<AppDbContext>()), null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, TimeProvider.System));
+            registrations.AddScoped<IMediaLeaseRecovery, MediaLeaseRecovery>();
             var services = registrations.BuildServiceProvider();
             await using var provider = services;
             using var redis = await ConnectionMultiplexer.ConnectAsync(redisConnection);

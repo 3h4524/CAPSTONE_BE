@@ -250,8 +250,15 @@ public static class DependencyInjection
 
         var connectionString = configuration.GetRequiredConnectionStringValue(
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
-        services.AddDbContext<AppDbContext>(options =>
-            options.UseNpgsql(connectionString, npgsql => npgsql.UseVector()));
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowActivitySignal>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.MarketScheduleSignal>();
+        services.AddSingleton<APCS.Infrastructure.Persistence.AfterCommitInterceptor>();
+        services.AddSingleton<APCS.Infrastructure.Persistence.MediaJobQueuedInterceptor>();
+        services.AddDbContext<AppDbContext>((provider, options) => options
+            .UseNpgsql(connectionString, npgsql => npgsql.UseVector())
+            .AddInterceptors(
+                provider.GetRequiredService<APCS.Infrastructure.Persistence.AfterCommitInterceptor>(),
+                provider.GetRequiredService<APCS.Infrastructure.Persistence.MediaJobQueuedInterceptor>()));
 
         services.AddRepositories();
         services.AddApplicationServices(configuration);
@@ -270,7 +277,9 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
-        services.AddSingleton<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
+        // Use cases queue steps through the transaction they run in; the worker reads the channel itself.
+        services.AddScoped<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.TransactionalWorkflowPublishQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();
 
         return services;
