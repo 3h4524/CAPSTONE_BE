@@ -86,6 +86,20 @@ public sealed class ListingContentServiceTests
         result.Error.Code.Should().Be("ListingContent.GenerationFailed");
     }
 
+    [TestMethod]
+    public async Task GenerateAsync_SpareTagCandidates_KeepThirteenWhenOneIsTooLong_AndAskForTheJsonShape()
+    {
+        var tags = string.Join(",", Enumerable.Range(1, 15).Select(i => $$"""{"value":"tag {{i}}","type":"primary"}"""));
+        Answer($$"""{"title":"Road trip tee","description":"A soft tee.","tags":[{"value":"vintage camping adventure","type":"long_tail"},{{tags}}]}""");
+
+        var result = await Service().GenerateAsync(product.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Tags.Should().HaveCount(13);
+        result.Value.Tags.Select(tag => tag.Value).Should().NotContain("vintage camping adventure");
+        generator.Verify(x => x.GenerateAsync(It.Is<GeminiTextGenerationRequest>(request => request.ResponseSchema != null), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private void Answer(string text) =>
         generator.Setup(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeminiTextGenerationResult(text, "text-model", 10, 20, "request-1"));

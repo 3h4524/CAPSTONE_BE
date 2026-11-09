@@ -1,3 +1,5 @@
+using APCS.Application.Features.Shops;
+using APCS.Application.Features.Shops.Common;
 using APCS.Application.Features.Workflows;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -73,6 +75,70 @@ public sealed class WorkflowRunServiceTests
         fixture.JobRows.Should().BeEmpty();
         fixture.State.Verify(x => x.LockOwnerAsync(WorkflowTestData.Owner, cancellation.Token), Times.Once);
         fixture.Transaction.Verify(x => x.CommitAsync(cancellation.Token), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PrintifyNotConnected_RefusesBeforeCreatingRun()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.PrintifyIs(PrintifyStatuses.NotConnected);
+        var workflow = fixture.AddPublishWorkflow(fixture.AddProduct());
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "no-printify"), default);
+        result.Error.Code.Should().Be("shop.printify_not_connected");
+        fixture.RunRows.Should().BeEmpty();
+        fixture.NodeRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow(PrintifyStatuses.KeyInvalid, "shop.printify_key_invalid")]
+    [DataRow(PrintifyStatuses.NoStore, "shop.printify_no_store")]
+    public async Task StartAsync_PrintifyNotUsable_NamesWhatToFix(string status, string code)
+    {
+        var fixture = new WorkflowTestData();
+        fixture.PrintifyIs(status);
+        var workflow = fixture.AddPublishWorkflow(fixture.AddProduct());
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "printify-" + status), default);
+        result.Error.Code.Should().Be(code);
+        fixture.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    [DataRow(ShopConnectionStatuses.NotConnected, "shop.not_connected")]
+    [DataRow(ShopConnectionStatuses.ReconnectRequired, "shop.reconnect_required")]
+    public async Task StartAsync_EtsyNotConnected_RefusesBeforeCreatingRun(string status, string code)
+    {
+        var fixture = new WorkflowTestData();
+        fixture.EtsyIs(status);
+        var workflow = fixture.AddPublishWorkflow(fixture.AddProduct());
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "etsy-" + status), default);
+        result.Error.Code.Should().Be(code);
+        result.Error.Message.Should().Contain("Shop page");
+        fixture.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ShopsConnectedOrOnlyUnreachable_StartsRun()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.PrintifyIs(PrintifyStatuses.Unavailable);
+        var workflow = fixture.AddPublishWorkflow(fixture.AddProduct());
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-run"), default);
+        result.IsSuccess.Should().BeTrue();
+        fixture.RunRows.Should().ContainSingle();
+        fixture.NodeRows.Should().Contain(x => x.NodeType == "publish-etsy" && x.Status == "pending");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithoutPublishSteps_DoesNotAskShops()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.EtsyIs(ShopConnectionStatuses.NotConnected);
+        fixture.PrintifyIs(PrintifyStatuses.NotConnected);
+        var workflow = fixture.AddWorkflow(fixture.AddProduct());
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "no-publish"), default);
+        result.IsSuccess.Should().BeTrue();
+        fixture.Shops.Verify(x => x.GetMyShopAsync(It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Printify.Verify(x => x.GetConnectionAsync(It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

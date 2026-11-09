@@ -64,6 +64,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-media:
+        condition: service_healthy
 
   media-worker:
     <<: *defaults
@@ -99,6 +101,24 @@ services:
       timeout: 5s
       retries: 6
 
+  redis-media:
+    <<: *defaults
+    labels:
+      dev.dozzle.group: data
+    image: redis:7-alpine
+    env_file: ${ENV_DIR:-/opt/apcs/env}/redis-media.env
+    command: >-
+      sh -c 'exec docker-entrypoint.sh redis-server --appendonly yes --appendfsync everysec
+      --requirepass "$$REDIS_MEDIA_PASSWORD" --maxmemory 64mb --maxmemory-policy noeviction'
+    volumes:
+      - redis_media_data:/data
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_MEDIA_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   postgres-prod:
     <<: *defaults
     labels:
@@ -129,6 +149,7 @@ services:
     environment:
       DOZZLE_NO_ANALYTICS: "true"
       DOZZLE_HOSTNAME: apcs-prod
+      DOZZLE_FILTER: label=dev.dozzle.group
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     mem_limit: 128m
@@ -176,6 +197,7 @@ volumes:
   keyring:
   models:
   redis_data:
+  redis_media_data:
   pg_prod:
   backups:
   kuma_data:
