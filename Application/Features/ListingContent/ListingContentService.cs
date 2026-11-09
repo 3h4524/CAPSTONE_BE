@@ -84,7 +84,7 @@ public sealed class ListingContentService(
         GeminiTextGenerationResult generated;
         try
         {
-            generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt), cancellationToken);
+            generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema()), cancellationToken);
         }
         catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout)
         {
@@ -266,7 +266,7 @@ SEO feedback from the previous listing version:
 - Description score: {feedback.DescriptionScore}/100
 - Keyword optimization score: {feedback.KeywordOptimizationScore}/100
 - Tag relevance score: {feedback.TagRelevanceScore}/100
-- Keyword density: {feedback.KeywordDensity}/100
+- Keyword density: {feedback.KeywordDensity}% of description words (keep it at or below {ListingSeoScorer.MaxKeywordDensity}%)
 - Recommendation: {feedback.Recommendation}
 
 Improve these weak areas in the new listing:
@@ -332,43 +332,10 @@ Regeneration rules:
             return Result.Failure<ListingSeoScoreResponseDto>(Error.Failure("ListingContent.InvalidState", "Listing content is incomplete."));
 
         var tagRows = await tagItems.Query().Where(item => item.ListingTagId == tagSet.Id).OrderBy(item => item.Position).ToListAsync(cancellationToken);
-        var keywords = ParseKeywords(product.MainKeywords).SelectMany(Tokenize).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var titleTokens = Tokenize(title.CurrentTitle).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var descriptionTokens = Tokenize(description.CurrentDescription).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var tagsList = tagRows.Select(item => item.TagValue.Trim()).Where(item => item.Length > 0).ToArray();
-        var tagTokens = tagsList.SelectMany(Tokenize).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var suggestions = new List<string>();
-
-        var titleScore = 0m;
-        if (title.CurrentTitle.Length is >= 40 and <= 140) titleScore += 35;
-        else if (title.CurrentTitle.Length is >= 20 and <= 140) titleScore += 20;
-        else suggestions.Add("Keep the title between 40 and 140 characters with the main product keyword near the beginning.");
-        if (keywords.Any(titleTokens.Contains)) titleScore += 35;
-        else suggestions.Add("Add a relevant primary keyword to the title.");
-        if (!title.CurrentTitle.Contains("  ") && !title.CurrentTitle.EndsWith('.') && !title.CurrentTitle.EndsWith('!')) titleScore += 30;
-
-        var tagsScore = Math.Min(100m, tagsList.Length == 13 ? 55m : tagsList.Length * 55m / 13m);
-        tagsScore += tagsList.All(tag => tag.Length <= 20) ? 25m : 0m;
-        tagsScore += tagsList.Distinct(StringComparer.OrdinalIgnoreCase).Count() == tagsList.Length ? 20m : 0m;
-        if (tagsList.Length != 13) suggestions.Add("Use exactly 13 unique tags.");
-        if (tagsList.Any(tag => tag.Length > 20)) suggestions.Add("Shorten tags to 20 characters or fewer.");
-
-        var wordCount = Tokenize(description.CurrentDescription).Count();
-        var descriptionScore = wordCount >= 80 ? 45m : wordCount >= 40 ? 25m : 10m;
-        descriptionScore += keywords.Count(keyword => descriptionTokens.Contains(keyword)) >= Math.Min(3, keywords.Length) ? 35m : 10m;
-        descriptionScore += description.CurrentDescription.Contains('.', StringComparison.Ordinal) ? 20m : 0m;
-        if (wordCount < 80) suggestions.Add("Expand the description with useful buyer-facing details without inventing product claims.");
-
-        var matchedKeywords = keywords.Count(keyword => titleTokens.Contains(keyword) || descriptionTokens.Contains(keyword) || tagTokens.Contains(keyword));
-        var keywordOptimizationScore = keywords.Length == 0 ? 70m : Math.Round(matchedKeywords * 100m / keywords.Length, 2);
-        if (keywordOptimizationScore < 70) suggestions.Add("Cover more of the product keywords naturally across the title, tags, and description.");
-        var tagRelevanceScore = keywords.Length == 0 ? 70m : Math.Round(tagsList.Count(tag => Tokenize(tag).Any(keywords.Contains)) * 100m / Math.Max(1, tagsList.Length), 2);
-        if (tagRelevanceScore < 60) suggestions.Add("Make more tags directly relevant to the product keywords.");
-        var keywordDensity = descriptionTokens.Count == 0 ? 0m : Math.Round(keywords.Count(descriptionTokens.Contains) * 100m / Math.Max(1, descriptionTokens.Count), 2);
-        var overall = Math.Round(titleScore * .25m + tagsScore * .25m + descriptionScore * .25m + keywordOptimizationScore * .15m + tagRelevanceScore * .10m, 2);
-        var shouldRegenerate = overall < 70 || titleScore < 50 || tagsScore < 60;
-        var recommendation = shouldRegenerate ? "regenerate" : overall >= 85 ? "keep" : "review";
-        if (suggestions.Count == 0) suggestions.Add("The listing meets the current SEO quality thresholds.");
+        var tagValues = tagRows.Select(item => item.TagValue).ToArray();
+        var (overall, titleScore, tagsScore, descriptionScore, keywordOptimizationScore, tagRelevanceScore, keywordDensity,
+            suggestions, recommendation, shouldRegenerate) = ListingSeoScorer.Evaluate(
+                title.CurrentTitle, description.CurrentDescription, tagValues, ParseKeywords(product.MainKeywords));
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var score = await seoScores.Query().Where(item => item.ListingContentId == listing.Id).SingleOrDefaultAsync(cancellationToken);
@@ -377,15 +344,19 @@ Regeneration rules:
         score.DescriptionScore = descriptionScore; score.KeywordOptimizationScore = keywordOptimizationScore;
         score.TagRelevanceScore = tagRelevanceScore; score.KeywordDensity = keywordDensity;
         score.ImprovementSuggestions = JsonSerializer.Serialize(suggestions);
-        score.ScoringAlgorithmVersion = "v1"; score.CalculatedAt = now; score.UpdatedAt = now;
+        score.ScoringAlgorithmVersion = ListingSeoScorer.Version; score.CalculatedAt = now; score.UpdatedAt = now;
         if (score.Id == Guid.Empty) score.Id = Guid.NewGuid();
         if (score.ListingContentId == Guid.Empty) score.ListingContentId = listing.Id;
         if (await seoScores.Query().AnyAsync(item => item.Id == score.Id, cancellationToken)) await seoScores.UpdateAsync(score, cancellationToken: cancellationToken);
         else await seoScores.AddAsync(score, cancellationToken: cancellationToken);
+        title.SeoScore = titleScore; description.SeoScore = descriptionScore; tagSet.SeoScore = tagsScore;
+        await titles.UpdateAsync(title, cancellationToken: cancellationToken);
+        await descriptions.UpdateAsync(description, cancellationToken: cancellationToken);
+        await tags.UpdateAsync(tagSet, cancellationToken: cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
         return Result.Success(new ListingSeoScoreResponseDto(productId, listing.Id, overall, titleScore, tagsScore, descriptionScore,
-            keywordOptimizationScore, tagRelevanceScore, keywordDensity, suggestions, recommendation, shouldRegenerate, "v1", now));
+            keywordOptimizationScore, tagRelevanceScore, keywordDensity, suggestions, recommendation, shouldRegenerate, ListingSeoScorer.Version, now));
     }
 
     private async Task<int> NextVersionAsync(Guid listingContentId, CancellationToken cancellationToken)
@@ -412,9 +383,6 @@ Regeneration rules:
 
     private static string BuildRetrievalQuery(ListingContentInput input) =>
         $"{input.Name}; {input.ProductType}; {input.Niche}; {input.TargetAudience}; {string.Join(", ", input.Keywords)}; {input.Description}; {input.Notes}";
-
-    private static IEnumerable<string> Tokenize(string value) => value.Split([' ', ',', '.', '-', '_', '/', '|', ':', ';', '!', '?', '(', ')'], StringSplitOptions.RemoveEmptyEntries)
-        .Select(token => token.Trim().ToLowerInvariant()).Where(token => token.Length > 2);
 
     private static string NormalizeTagType(string? value) => value?.Trim().ToLowerInvariant() switch
     {
