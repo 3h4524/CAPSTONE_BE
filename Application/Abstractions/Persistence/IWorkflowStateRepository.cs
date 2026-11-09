@@ -20,7 +20,19 @@ public interface IWorkflowStateRepository
     /// locking or tracking anything.
     /// </summary>
     Task<IReadOnlyList<FailedMediaJob>> FindFailedJobsOfRunningRunsAsync(int limit, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether a render or export job is queued or leased and was touched at or after <paramref name="updatedSince"/>:
+    /// while one is, a worker could still fail it or let its lease expire.
+    /// </summary>
+    Task<bool> HasMediaWorkInFlightAsync(DateTime updatedSince, CancellationToken cancellationToken);
+
+    /// <summary>Leased render and export jobs whose lease expired before <paramref name="now"/>, oldest first, read without locking.</summary>
+    Task<IReadOnlyList<ExpiredMediaLease>> FindExpiredMediaLeasesAsync(DateTime now, int limit, CancellationToken cancellationToken);
 }
 
 /// <summary>A failed render or export job, with the step it belongs to.</summary>
 public sealed record FailedMediaJob(Guid RunId, Guid NodeRunId, string? ErrorMessage);
+
+/// <summary>A render or export job whose worker stopped renewing its lease.</summary>
+public sealed record ExpiredMediaLease(Guid JobId, Guid RunId);

@@ -38,7 +38,7 @@ public sealed class MediaJobRepositoryTests
     }
 
     [TestMethod]
-    public async Task ClaimAsync_PostgreSql_ExpiredLeaseGetsNewTokenAndExhaustedJobFails()
+    public async Task ClaimAsync_PostgreSql_ExpiredLeaseGetsNewTokenAndExhaustedJobIsLeftForLeaseRecovery()
     {
         await using var fixture = await CreateAsync();
         if (fixture == null) return;
@@ -53,10 +53,10 @@ public sealed class MediaJobRepositoryTests
         Assert.AreEqual(2, claimed.Attempt);
         Assert.AreEqual(replacement, claimed.LeaseToken);
         Assert.AreNotEqual(oldToken, claimed.LeaseToken);
-        var failed = await fixture.Db.MediaJobs.AsNoTracking().SingleAsync(x => x.Id == exhausted.Id);
-        Assert.AreEqual("failed", failed.Status);
-        Assert.AreEqual(3, failed.Attempt);
-        Assert.AreEqual("Worker lease expired after maximum attempts.", failed.ErrorMessage);
+        // Failing it here could not reach its run; IMediaLeaseRecovery settles it together with the run before a claim.
+        var left = await fixture.Db.MediaJobs.AsNoTracking().SingleAsync(x => x.Id == exhausted.Id);
+        Assert.AreEqual("leased", left.Status);
+        Assert.AreEqual(3, left.Attempt);
     }
 
     [TestMethod]

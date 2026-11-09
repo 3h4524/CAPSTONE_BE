@@ -24,7 +24,9 @@ public sealed class ListingPromptBuilderTests
         var prompt = ListingPromptBuilder.Build(Input(), [], []);
 
         prompt.Should().Contain("Default marketplace listing standards");
-        prompt.Should().Contain("exactly 13 unique tags");
+        prompt.Should().Contain("Fill all 13 tag slots");
+        prompt.Should().Contain("Generate 16 unique tag candidates");
+        prompt.Should().Contain("Start with the first keyword phrase");
         prompt.Should().Contain("20 characters or fewer for Etsy");
         prompt.Should().Contain("Never invent materials");
         prompt.Should().Contain("Return JSON only");

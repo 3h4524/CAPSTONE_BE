@@ -6,9 +6,9 @@ namespace APCS.Infrastructure.BackgroundServices;
 
 /// <summary>
 /// In-process queue of publish steps. Items are lost on restart; <see cref="WorkflowPublishWorker"/> finds the steps
-/// still running when it starts, and every few minutes, and puts them back.
+/// still running when it starts, and while any is unfinished, and puts them back.
 /// </summary>
-public sealed class WorkflowPublishQueueChannel : IWorkflowPublishQueue
+public sealed class WorkflowPublishQueueChannel(WorkflowActivitySignal? activity = null) : IWorkflowPublishQueue
 {
     private readonly Channel<Guid> channel = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true });
 
@@ -19,6 +19,7 @@ public sealed class WorkflowPublishQueueChannel : IWorkflowPublishQueue
     {
         if (!waiting.TryAdd(nodeRunId, 0))
             return;
+        activity?.Publish.Notify();
         if (delay is not { } wait || wait <= TimeSpan.Zero)
         {
             channel.Writer.TryWrite(nodeRunId);

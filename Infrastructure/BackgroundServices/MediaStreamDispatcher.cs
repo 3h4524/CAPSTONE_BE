@@ -14,9 +14,16 @@ using System.Diagnostics.Metrics;
 namespace APCS.Infrastructure.BackgroundServices;
 
 /// <summary>Dispatches committed media outbox records and recovers expired leases.</summary>
+/// <remarks>
+/// With an <see cref="WorkflowActivitySignal"/> it goes idle once no outbox record is pending and no render or export
+/// job is in flight: it closes its connections and waits for <see cref="WorkflowActivitySignal.Media"/>, so the
+/// database is not queried and can scale to zero. Scaling to zero would end a <c>LISTEN</c> session anyway, and the
+/// reconnect would wake the database again. Without a signal (tests) it never goes idle.
+/// </remarks>
 public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfiguration configuration,
-    ILogger<MediaStreamDispatcher> logger) : BackgroundService
+    ILogger<MediaStreamDispatcher> logger, WorkflowActivitySignal? activity = null) : BackgroundService
 {
+
     private sealed record Outbox(Guid EventId, Guid JobId, long Version, string Kind, int Attempts, Guid Token);
     private static readonly Meter Meter = new("APCS.MediaQueue", "1.0.0");
     private static readonly Counter<long> Published = Meter.CreateCounter<long>("media_queue_published");
@@ -42,9 +49,11 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
         if (string.IsNullOrWhiteSpace(redisConfig) || string.IsNullOrWhiteSpace(stream))
             throw new InvalidOperationException("MediaQueue:RedisConnectionString and MediaQueue:Stream are required in streams mode.");
 
+        WarnWhenListeningThroughPooler(postgres);
         var failures = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
+            long? idleSince = null;
             try
             {
                 await using var listener = new NpgsqlConnection(postgres);
@@ -56,6 +65,7 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
                 var nextRecovery = DateTime.MinValue;
                 while (!stoppingToken.IsCancellationRequested)
                 {
+                    var seen = activity?.Media.Version ?? 0;
                     if (DateTime.UtcNow >= nextRecovery)
                     {
                         await RecoverAsync(stoppingToken);
@@ -64,7 +74,13 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
                     }
                     var count = await DispatchAsync(redis.GetDatabase(), stream, stoppingToken);
                     if (count == 100) continue;
-                    var delay = await NextDelayAsync(nextRecovery, stoppingToken);
+                    var (delay, outboxPending) = await NextDelayAsync(nextRecovery, stoppingToken);
+                    // The signal is raised after the commit, so a job it announced is already visible to these queries.
+                    if (activity is not null && !outboxPending && !await MediaWorkInFlightAsync(stoppingToken))
+                    {
+                        idleSince = seen;
+                        break;
+                    }
                     await listener.WaitAsync(delay, stoppingToken);
                 }
             }
@@ -75,7 +91,17 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
                 failures++;
                 var seconds = Math.Min(30, Math.Pow(2, Math.Min(failures, 5)) + Random.Shared.NextDouble());
                 await Task.Delay(TimeSpan.FromSeconds(seconds), stoppingToken);
+                continue;
             }
+
+            if (activity is null || idleSince is not { } idleVersion) continue;
+            // The connections are closed: nothing queries the database until a job is queued or the safety check is due.
+            logger.LogInformation("Media stream dispatcher idle: no outbox record or media job in flight.");
+            try
+            {
+                await activity.Media.WaitAsync(idleVersion, WorkflowActivitySignal.IdleSafetyCheck, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
         }
     }
 
@@ -131,13 +157,37 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
         return events.Count;
     }
 
-    private async Task<TimeSpan> NextDelayAsync(DateTime nextRecovery, CancellationToken ct)
+    /// <summary>
+    /// A transaction pooler (PgBouncer in transaction mode, such as Neon's <c>-pooler</c> host) does not deliver
+    /// <c>LISTEN</c> notifications: jobs from other processes would then wait for the 30-second pass. Say so.
+    /// </summary>
+    private void WarnWhenListeningThroughPooler(string connectionString)
+    {
+        string? host;
+        try { host = new NpgsqlConnectionStringBuilder(connectionString).Host; }
+        catch (ArgumentException) { return; }
+        if (host is null || !host.Contains("-pooler", StringComparison.OrdinalIgnoreCase)) return;
+        logger.LogWarning(
+            "Media stream dispatcher listens through the connection pooler host {Host}, which does not deliver LISTEN notifications. " +
+            "Set MediaQueue__ListenerConnectionString to a direct connection (the same host without -pooler).", host);
+    }
+
+    /// <summary>How long to wait before the next pass, and whether any outbox record is still unpublished.</summary>
+    private async Task<(TimeSpan Delay, bool OutboxPending)> NextDelayAsync(DateTime nextRecovery, CancellationToken ct)
     {
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var next = await db.Database.SqlQuery<DateTime?>($"SELECT MIN(GREATEST(next_attempt_at, COALESCE(claim_until, next_attempt_at))) AS \"Value\" FROM public.media_job_outbox WHERE published_at IS NULL").SingleAsync(ct);
         var target = next.HasValue && next.Value < nextRecovery ? next.Value : nextRecovery;
-        return TimeSpan.FromMilliseconds(Math.Clamp((target - DateTime.UtcNow).TotalMilliseconds, 100, 30000));
+        return (TimeSpan.FromMilliseconds(Math.Clamp((target - DateTime.UtcNow).TotalMilliseconds, 100, 30000)), next.HasValue);
+    }
+
+    /// <summary>Whether a queued or leased job could still need a republish or a lease recovery.</summary>
+    private async Task<bool> MediaWorkInFlightAsync(CancellationToken ct)
+    {
+        using var scope = scopes.CreateScope();
+        var state = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
+        return await state.HasMediaWorkInFlightAsync(DateTime.UtcNow - WorkflowActivitySignal.InFlightWindow, ct);
     }
 
     private async Task RecoverAsync(CancellationToken ct)
@@ -153,31 +203,9 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
         var now = DateTime.UtcNow;
         // A queued event may have disappeared after Redis lost data. Republishing the same generation is safe.
         await db.Database.ExecuteSqlInterpolatedAsync($"WITH stale AS (SELECT o.event_id FROM public.media_job_outbox o JOIN public.media_jobs j ON o.job_id = j.id AND o.queue_version = j.queue_version WHERE j.kind IN ('render', 'export_zip') AND j.status = 'queued' AND j.available_at <= {now} AND o.published_at < {now.AddMinutes(-2)} ORDER BY o.published_at LIMIT 100 FOR UPDATE OF o SKIP LOCKED) UPDATE public.media_job_outbox o SET published_at = NULL, next_attempt_at = {now} FROM stale WHERE o.event_id = stale.event_id", ct);
-        var expired = await db.MediaJobs.AsNoTracking().Where(j => (j.Kind == "render" || j.Kind == "export_zip") && j.Status == "leased" && j.LeaseExpiresAt < now)
-            .OrderBy(j => j.LeaseExpiresAt).Select(j => new { j.Id, j.WorkflowRunId }).Take(100).ToListAsync(ct);
-        foreach (var candidate in expired)
-        {
-            using var jobScope = scopes.CreateScope();
-            var state = jobScope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
-            var unit = jobScope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            var runtime = jobScope.ServiceProvider.GetRequiredService<WorkflowRuntime>();
-            await using var transaction = await unit.BeginTransactionAsync(ct);
-            var run = await state.LockRunAsync(candidate.WorkflowRunId, ct);
-            var job = await state.LockJobAsync(candidate.Id, ct);
-            if (job is null || job.Status != "leased" || job.LeaseExpiresAt >= now) continue;
-            job.LeaseToken = null; job.LeaseExpiresAt = null; job.UpdatedAt = now;
-            if (run is null || run.Status != "running") job.Status = "cancelled";
-            else if (job.Attempt >= job.MaximumAttempts)
-            {
-                job.Status = "failed";
-                job.ErrorMessage = "Worker lease expired after maximum attempts.";
-                await runtime.FailAsync(run, job.WorkflowNodeRunId, job.ErrorMessage, ct);
-            }
-            else { job.Status = "queued"; job.AvailableAt = now; }
-            await unit.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
-            RecoveredLeases.Add(1);
-        }
+        // Expired leases are settled with their runs in one place, shared with the polling claim.
+        using (var recoveryScope = scopes.CreateScope())
+            RecoveredLeases.Add(await recoveryScope.ServiceProvider.GetRequiredService<IMediaLeaseRecovery>().RecoverExpiredAsync(now, ct));
         }
         finally
         {
