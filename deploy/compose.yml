@@ -149,6 +149,7 @@ services:
     environment:
       DOZZLE_NO_ANALYTICS: "true"
       DOZZLE_HOSTNAME: apcs-prod
+      DOZZLE_FILTER: label=dev.dozzle.group
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     mem_limit: 128m
