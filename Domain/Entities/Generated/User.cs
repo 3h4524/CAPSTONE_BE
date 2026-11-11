@@ -67,6 +67,8 @@ public partial class User
 
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 
+    public virtual ICollection<MockupTemplatePrintifyLink> MockupTemplatePrintifyLinks { get; set; } = new List<MockupTemplatePrintifyLink>();
+
     public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
 
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();

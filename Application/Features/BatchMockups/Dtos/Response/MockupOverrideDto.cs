@@ -26,10 +26,17 @@ public sealed record MockupOverrideDto(
 public sealed record MockupPrintAreaDto(int X, int Y, int Width, int Height);
 
 /// <summary>A mock-up the job's shared settings would make, which was removed for its product alone.</summary>
+/// <param name="MockupImageUrl">What the mock-up looks like as it was set up, so it can be shown before it is put back.</param>
+/// <param name="Override">
+/// How it was set up apart from the job's settings when it was removed (color, background, print areas), or null when
+/// it was made with the job's settings. Putting it back with this keeps it looking like the sides made with it.
+/// </param>
 public sealed record RemovedMockupSlotDto(
     string SlotKey,
     Guid ProductId,
     Guid DesignImageId,
     Guid MockupTemplateId,
     string TemplateName,
-    string? GarmentColor);
+    string? GarmentColor,
+    string? MockupImageUrl = null,
+    MockupOverrideDto? Override = null);

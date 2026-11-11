@@ -291,6 +291,19 @@ public static class MockupRules
         return turned == 0 ? 0 : turned;
     }
 
+    /// <summary>
+    /// Whether a print area, turned as it is, lies inside another area (a Printify template's print area), allowing a
+    /// pixel for rounding.
+    /// </summary>
+    public static bool LiesWithin(MockupAreaDto area, MockupPosition frame)
+    {
+        if (area.Width <= 0 || area.Height <= 0)
+            return false;
+        var box = MockupGeometry.RotatedBounds(AreaPosition(area), NormalizeRotation(area.Rotation));
+        return box.X >= frame.X - 1 && box.Y >= frame.Y - 1
+            && box.X + box.Width <= frame.X + frame.Width + 1 && box.Y + box.Height <= frame.Y + frame.Height + 1;
+    }
+
     /// <summary>Whether a print area, turned as it is, lies wholly on a photo of this size.</summary>
     public static bool AreaFits(MockupAreaDto area, int photoWidth, int photoHeight)
     {
@@ -496,6 +509,43 @@ public static class MockupRules
     /// </summary>
     public static string SlotKey(Guid designImageId, Guid templateId, string? garmentColor) =>
         $"{designImageId:N}.{templateId:N}.{(garmentColor is null ? "own" : garmentColor.TrimStart('#').ToUpperInvariant())}";
+
+    /// <summary>
+    /// Garment colors added to one design on one template in its own edit, beside the colors the job's settings make.
+    /// Each is a slot kept only by its own change: one that was removed again is not made.
+    /// </summary>
+    public static IReadOnlyList<string> AddedSlotColors(IReadOnlyDictionary<string, MockupOverrideDto> overrides,
+        Guid designImageId, Guid templateId, IEnumerable<string?> madeColors)
+    {
+        var prefix = $"{designImageId:N}.{templateId:N}.";
+        var made = madeColors.Select(color => color is null ? "own" : color.TrimStart('#').ToUpperInvariant()).ToHashSet();
+        return overrides
+            .Where(entry => !entry.Value.Removed && entry.Key.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(entry => entry.Key[prefix.Length..])
+            .Where(color => color != "own" && !made.Contains(color))
+            .Order(StringComparer.Ordinal)
+            .Select(color => $"#{color}")
+            .ToList();
+    }
+
+    /// <summary>
+    /// Sides added to one design's mock-up alone: its slots, not removed, on a template the job does not make (such as
+    /// the back of the template one of its mock-ups was moved to), with the garment color each names.
+    /// </summary>
+    public static IReadOnlyList<(string SlotKey, Guid TemplateId, string? Color)> AddedSideSlots(
+        IReadOnlyDictionary<string, MockupOverrideDto> overrides, Guid designImageId, IReadOnlySet<Guid> jobTemplateIds)
+    {
+        var slots = new List<(string SlotKey, Guid TemplateId, string? Color)>();
+        foreach (var (slotKey, change) in overrides)
+        {
+            if (change.Removed || !TryReadSlotKey(slotKey, out var designId, out var templateId)
+                || designId != designImageId || jobTemplateIds.Contains(templateId))
+                continue;
+            var color = slotKey.Split('.')[2];
+            slots.Add((slotKey, templateId, color == "own" ? null : $"#{color}"));
+        }
+        return slots.OrderBy(slot => slot.SlotKey, StringComparer.Ordinal).ToList();
+    }
 
     /// <summary>The design image and template a slot key names, or false for anything else.</summary>
     public static bool TryReadSlotKey(string? slotKey, out Guid designImageId, out Guid templateId)

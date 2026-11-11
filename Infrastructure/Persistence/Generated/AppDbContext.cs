@@ -82,6 +82,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<MockupTemplate> MockupTemplates { get; set; }
 
+    public virtual DbSet<MockupTemplatePrintifyLink> MockupTemplatePrintifyLinks { get; set; }
+
     public virtual DbSet<MusicTrack> MusicTracks { get; set; }
 
     public virtual DbSet<NotificationAlert> NotificationAlerts { get; set; }
@@ -99,6 +101,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<PlanFeature> PlanFeatures { get; set; }
 
     public virtual DbSet<PlanSetting> PlanSettings { get; set; }
+
+    public virtual DbSet<PrintifyColorMap> PrintifyColorMaps { get; set; }
 
     public virtual DbSet<PrintifyIntegration> PrintifyIntegrations { get; set; }
 
@@ -2173,6 +2177,43 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
+        modelBuilder.Entity<MockupTemplatePrintifyLink>(entity =>
+        {
+            entity.HasKey(e => e.MockupTemplateId).HasName("mockup_template_printify_links_pkey");
+
+            entity.ToTable("mockup_template_printify_links");
+
+            entity.HasIndex(e => e.BlueprintId, "idx_mockup_template_printify_links_blueprint");
+
+            entity.Property(e => e.MockupTemplateId)
+                .ValueGeneratedNever()
+                .HasColumnName("mockup_template_id");
+            entity.Property(e => e.BlueprintId).HasColumnName("blueprint_id");
+            entity.Property(e => e.BlueprintImageUrl).HasColumnName("blueprint_image_url");
+            entity.Property(e => e.BlueprintTitle).HasColumnName("blueprint_title");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefaultSizes)
+                .HasDefaultValueSql("'{}'::text[]")
+                .HasColumnName("default_sizes");
+            entity.Property(e => e.PrintProviderId).HasColumnName("print_provider_id");
+            entity.Property(e => e.PrintProviderTitle).HasColumnName("print_provider_title");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.MockupTemplate).WithOne(p => p.MockupTemplatePrintifyLink)
+                .HasForeignKey<MockupTemplatePrintifyLink>(d => d.MockupTemplateId)
+                .HasConstraintName("mockup_template_printify_links_mockup_template_id_fkey");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.MockupTemplatePrintifyLinks)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("mockup_template_printify_links_updated_by_fkey");
+        });
+
         modelBuilder.Entity<MusicTrack>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("music_tracks_pkey");
@@ -2509,6 +2550,37 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.UpdatedBy)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_plan_settings_updated_by");
+        });
+
+        modelBuilder.Entity<PrintifyColorMap>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("printify_color_map_pkey");
+
+            entity.ToTable("printify_color_map");
+
+            entity.HasIndex(e => new { e.Hex, e.BlueprintId }, "uq_printify_color_map_blueprint")
+                .IsUnique()
+                .HasFilter("(blueprint_id IS NOT NULL)");
+
+            entity.HasIndex(e => e.Hex, "uq_printify_color_map_shared")
+                .IsUnique()
+                .HasFilter("(blueprint_id IS NULL)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.BlueprintId).HasColumnName("blueprint_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Hex)
+                .HasMaxLength(7)
+                .IsFixedLength()
+                .HasColumnName("hex");
+            entity.Property(e => e.PrintifyName).HasColumnName("printify_name");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<PrintifyIntegration>(entity =>
