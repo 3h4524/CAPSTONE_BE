@@ -1,0 +1,13 @@
+[
+  {
+    "package": "SixLabors.ImageSharp 3.1.12",
+    "ids": [
+      "GHSA-v76p-62qx-wwq2", "CVE-2026-106118",
+      "GHSA-j3p4-wp97-rph4", "CVE-2026-106113",
+      "GHSA-j9gm-c75j-xc9q", "CVE-2026-106110",
+      "GHSA-jjfr-hcj7-qf5w", "CVE-2026-106115"
+    ],
+    "reason": "Fixed only in 3.2.0, which needs a paid Six Labors license key to build. Not reachable: every Image.Load checks the PNG signature or limits decoders to PNG/JPEG/WebP, so the TIFF codecs never run, and HistogramEqualization is unused.",
+    "expires": "2027-01-31"
+  }
+]

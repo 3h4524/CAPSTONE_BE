@@ -134,19 +134,23 @@ shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
 
 ### Security gate
 
-A tag deploys only after both checks pass; a failure stops the workflow before anything reaches the VM.
+A tag deploys only after every check passes; a failure stops the workflow before anything reaches the VM.
 
 | Check | Tool | Blocks the release when |
 |---|---|---|
 | Code | SonarQube Cloud (free, public repositories), job `sonar` | new code since the previous release has an open security issue (low severity or higher) or an unreviewed security hotspot. The rest of the quality gate (coverage, duplication) is shown in the job summary but does not block |
+| Dependencies | `deploy/scripts/security-audit.sh`, job `audit`: `dotnet list API/API.csproj package --vulnerable --include-transitive` and `npm audit --omit=dev` in `media-worker` (GitHub Advisory Database) | a high or critical advisory that is not accepted |
 | Images | Trivy, in job `images` before the push | an image has a HIGH or CRITICAL vulnerability that already has a fix, or a leaked secret. Images are pushed only after the scan passes |
 
 - Sonar analyzes only its main branch on the free plan, so the Sonar project's main branch is named
   `production`; `sonar.projectVersion` is the tag and the new-code period is *Previous version*.
 - The `sonar` job is skipped with a warning while `SONAR_PROJECT_KEY` in `deploy/env/common.env` is
   empty.
-- Accepted vulnerabilities go in `.trivyignore`, each with a reason and an `exp:` date so it expires.
-- A rollback (`workflow_dispatch` on an older tag) skips both checks, since that tag already passed
+- Accepted vulnerabilities go in `security-acceptances.json` (`package`, `ids` with both the GHSA and
+  CVE IDs, `reason`, `expires`). The audit and Trivy read the same file; after `expires` an entry stops
+  applying and the release is blocked again. Trivy and the audits use different advisory sources (Trivy
+  misses some npm advisories; the audits do not see OS packages or binaries), so both run.
+- A rollback (`workflow_dispatch` on an older tag) skips the checks, since that tag already passed
   them.
 - Dependabot (`.github/dependabot.yml`) opens weekly update PRs against the integration branch; change
   `target-branch` when a new `merge-version-scN` starts.

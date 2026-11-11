@@ -1,6 +1,0 @@
-# SixLabors.ImageSharp 3.1.12: fixed only in 3.2.0, which requires a paid Six Labors license key.
-# Not reachable: no TIFF input (PNG signature checked or decoders limited to PNG/JPEG/WebP), no HistogramEqualization.
-CVE-2026-106110 exp:2027-01-31
-CVE-2026-106113 exp:2027-01-31
-CVE-2026-106115 exp:2027-01-31
-CVE-2026-106118 exp:2027-01-31

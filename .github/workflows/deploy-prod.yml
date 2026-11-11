@@ -51,6 +51,32 @@ jobs:
             exit 1
           fi
 
+  audit:
+    name: Dependency audit
+    needs: guard
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Restore the API
+        run: dotnet restore API/API.csproj
+
+      - name: Audit NuGet and media worker packages
+        run: ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker
+
   sonar:
     name: Sonar security gate
     needs: guard
@@ -168,14 +194,15 @@ jobs:
 
       - name: Scan images for vulnerabilities and secrets
         run: |
+          ./deploy/scripts/security-audit.sh trivyignore > /tmp/trivyignore
           failed=0
           for image in apcs-api apcs-media-worker; do
-            trivy image --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            trivy image --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --ignorefile /tmp/trivyignore \
               --format table --output "/tmp/$image.txt" "$REGISTRY/$image:$RELEASE_TAG" || failed=1
             { echo "## Trivy: $image"; echo '```'; cat "/tmp/$image.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
           if [ "$failed" -ne 0 ]; then
-            echo "::error::Trivy found fixable HIGH/CRITICAL vulnerabilities or leaked secrets. Upgrade the package or base image, or add a justified entry with an expiry to .trivyignore."
+            echo "::error::Trivy found fixable HIGH/CRITICAL vulnerabilities or leaked secrets. Upgrade the package or base image, or add an entry with a reason and an expiry date to security-acceptances.json."
             exit 1
           fi
 
@@ -186,11 +213,11 @@ jobs:
 
   deploy:
     name: Release on the VM
-    needs: [guard, sonar, images]
+    needs: [guard, audit, sonar, images]
     if: >-
       always() && needs.guard.result == 'success' && (
-        (needs.sonar.result == 'success' && needs.images.result == 'success') ||
-        (github.event_name == 'workflow_dispatch' && needs.sonar.result == 'skipped' && needs.images.result == 'skipped')
+        (needs.audit.result == 'success' && needs.sonar.result == 'success' && needs.images.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && needs.audit.result == 'skipped' && needs.sonar.result == 'skipped' && needs.images.result == 'skipped')
       )
     runs-on: ubuntu-latest
     timeout-minutes: 25
