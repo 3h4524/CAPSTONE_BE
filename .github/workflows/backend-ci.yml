@@ -191,8 +191,8 @@ jobs:
     env:
       TRIVY_VERSION: 0.76.2
       TRIVY_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
-      AUDIT_REPORT: /tmp/security-audit.md
-      TRIVY_REPORT: /tmp/security-trivy.md
+      SECURITY_AUDIT_REPORT: /tmp/security-audit.md
+      SECURITY_TRIVY_REPORT: /tmp/security-trivy.md
 
     steps:
       - name: Checkout
@@ -216,8 +216,8 @@ jobs:
         continue-on-error: true
         run: |
           status=0
-          GITHUB_STEP_SUMMARY="$AUDIT_REPORT" ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker || status=$?
-          cat "$AUDIT_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          GITHUB_STEP_SUMMARY="$SECURITY_AUDIT_REPORT" ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker || status=$?
+          cat "$SECURITY_AUDIT_REPORT" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
       - name: Install Trivy
@@ -234,8 +234,8 @@ jobs:
           status=0
           trivy fs --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
             --ignorefile /tmp/trivyignore --format table --output /tmp/trivy-fs.txt . || status=$?
-          { echo "## Trivy: repository"; echo '```'; cat /tmp/trivy-fs.txt; echo '```'; } > "$TRIVY_REPORT"
-          cat "$TRIVY_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          { echo "## Trivy: repository"; echo '```'; cat /tmp/trivy-fs.txt; echo '```'; } > "$SECURITY_TRIVY_REPORT"
+          cat "$SECURITY_TRIVY_REPORT" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
       - name: Comment on the pull request
