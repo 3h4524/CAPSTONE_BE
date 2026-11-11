@@ -35,8 +35,8 @@ if [ "$status" != SUCCESS ]; then
   exit 1
 fi
 
-issues="$(sonar_get "issues/search?componentKeys=$project_key&inNewCodePeriod=true&impactSoftwareQualities=SECURITY&impactSeverities=LOW,MEDIUM,HIGH,BLOCKER&issueStatuses=OPEN,CONFIRMED&ps=20")"
-hotspots="$(sonar_get "hotspots/search?project=$project_key&inNewCodePeriod=true&status=TO_REVIEW&ps=20")"
+issues="$(sonar_get "issues/search?componentKeys=$project_key&sinceLeakPeriod=true&impactSoftwareQualities=SECURITY&impactSeverities=LOW,MEDIUM,HIGH,BLOCKER&issueStatuses=OPEN,CONFIRMED&ps=20")"
+hotspots="$(sonar_get "hotspots/search?projectKey=$project_key&sinceLeakPeriod=true&status=TO_REVIEW&ps=20")"
 gate="$(sonar_get "qualitygates/project_status?projectKey=$project_key")"
 
 issue_count="$(jq -r .paging.total <<< "$issues")"
