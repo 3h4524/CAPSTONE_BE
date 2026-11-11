@@ -968,6 +968,23 @@ public sealed class DesignGenerationService(
         }
     }
 
+    // A product keeps one approved design. Automatic approval approves every design as it is made, so once the product is
+    // done the first of the new ones stays approved and the others, earlier ones included, are rejected.
+    private async Task KeepOneApprovedDesignAsync(BatchJobProduct row, int lastVariation, CancellationToken cancellationToken)
+    {
+        var approved = await designImages.Query()
+            .Where(image => image.BatchJobProductId == row.Id && image.DeletedAt == null && image.ApprovalStatus == ApprovalStatuses.Approved)
+            .ToListAsync(cancellationToken);
+        var kept = approved.Where(image => image.VariationIndex > lastVariation)
+            .OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).FirstOrDefault();
+        if (kept is null) return;
+        foreach (var image in approved.Where(image => image.Id != kept.Id))
+        {
+            image.ApprovalStatus = ApprovalStatuses.Rejected;
+            await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+        }
+    }
+
     // Records how one product came out once all its variations are done. Called through WithDbAsync.
     private async Task CompleteRowAsync(JobRun run, BatchJobProduct row, Product? product, IReadOnlyList<VariationOutcome> outcomes,
         RowHistory? history, CancellationToken cancellationToken)
@@ -990,6 +1007,8 @@ public sealed class DesignGenerationService(
         if (successCount == 0 && history is not null)
             await LogAsync(job.Id, row.Id, "warning", "regenerate_failed",
                 run.Stop.Reason ?? "No new design could be made; the earlier ones are kept.", cancellationToken);
+        if (run.RequireApproval == false && successCount > 0)
+            await KeepOneApprovedDesignAsync(row, history?.LastVariation ?? 0, cancellationToken);
 
         if (product is not null)
         {
@@ -1476,16 +1495,28 @@ public sealed class DesignGenerationService(
             .Where(image => image.BatchJobId == job.Id && image.DeletedAt == null)
             .ToListAsync(cancellationToken);
 
+        var approving = status == ApprovalStatuses.Approved;
         List<DesignImage> targets;
         if (requestedIds is null)
         {
-            targets = images.Where(image => image.ApprovalStatus == ApprovalStatuses.Pending).ToList();
+            var pending = images.Where(image => image.ApprovalStatus == ApprovalStatuses.Pending);
+            // A product keeps one approved design: "every remaining one" approves the first design of each product
+            // that has none approved yet.
+            targets = approving
+                ? pending
+                    .Where(image => !images.Any(other => other.ProductId == image.ProductId && other.ApprovalStatus == ApprovalStatuses.Approved))
+                    .GroupBy(image => image.ProductId)
+                    .Select(group => group.OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).First())
+                    .ToList()
+                : pending.ToList();
         }
         else
         {
             targets = images.Where(image => requestedIds.Contains(image.Id)).ToList();
             if (targets.Count != requestedIds.Count)
                 return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.ImageNotFound());
+            if (approving && targets.GroupBy(image => image.ProductId).Any(group => group.Count() > 1))
+                return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.OneDesignPerProduct());
         }
 
         var changed = targets.Where(image => image.ApprovalStatus != status).ToList();
@@ -1493,6 +1524,20 @@ public sealed class DesignGenerationService(
         {
             image.ApprovalStatus = status;
             await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+        }
+
+        // Approving a design chooses it for its product: the product's other designs are rejected.
+        if (approving)
+        {
+            var chosenProducts = targets.Select(image => image.ProductId).ToHashSet();
+            var chosenIds = targets.Select(image => image.Id).ToHashSet();
+            foreach (var image in images.Where(image => chosenProducts.Contains(image.ProductId) && !chosenIds.Contains(image.Id)
+                         && image.ApprovalStatus != ApprovalStatuses.Rejected))
+            {
+                image.ApprovalStatus = ApprovalStatuses.Rejected;
+                await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+                changed.Add(image);
+            }
         }
 
         await RefreshReviewStatusAsync(images, changed, cancellationToken);
@@ -1505,7 +1550,7 @@ public sealed class DesignGenerationService(
             images.Count(image => image.ApprovalStatus == ApprovalStatuses.Rejected)));
     }
 
-    // A product counts as approved while at least one of its images is, and goes back to waiting for review when
+    // A product counts as approved while one of its images is, and goes back to waiting for review when
     // the last approved one is taken back. Products that failed or are still being generated are left alone.
     private async Task RefreshReviewStatusAsync(IReadOnlyList<DesignImage> images, IReadOnlyList<DesignImage> changed, CancellationToken cancellationToken)
     {

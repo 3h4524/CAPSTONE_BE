@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -24,7 +25,9 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
         if (!await OwnsAsync(productId, ct)) return Result.Failure<IReadOnlyList<MockupResponse>>(Missing());
         // A composited mock-up is only a Cloudinary URL until it is imported as a video source (see GeneratedMockupSourceService):
         // before that it has no stored file to preview, approve or render from.
-        return Result.Success<IReadOnlyList<MockupResponse>>((await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && (x.SourceType != "generated" || x.ContentHash != null), ct)).OrderByDescending(x => x.CreatedAt).Select(Map).ToArray());
+        // A composite made again after its template changed replaces the older one here (MockupSources.Superseded).
+        var listed = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null && (x.SourceType != "generated" || x.ContentHash != null), ct);
+        return Result.Success<IReadOnlyList<MockupResponse>>(MockupSources.Current(listed).OrderByDescending(x => x.CreatedAt).Select(Map).ToArray());
     }
     public async Task<Result<MockupResponse>> UploadAsync(Guid productId, Stream content, string name, long length, CancellationToken ct)
     {
@@ -78,7 +81,8 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
     private async Task<bool> OwnsAsync(Guid id, CancellationToken ct) => await products.GetByIdAsync(id, ct) is { DeletedAt: null } p && p.UserId == user.UserId;
     private MockupResponse Map(MockupImage x) => new(x.Id, x.ProductId, x.SourceType, x.Role, x.ArtworkGroupKey, x.VariantKey, x.MetadataRevision,
         x.ApprovalStatus, x.ApprovedRevision, x.MockupWidthPx, x.MockupHeightPx, WorkflowJson.Read<MockupRegions>(x.Regions),
-        storage.SignRead(x.StorageKey, "image", x.StorageVersion), planner.CreateScene(x, "tshirt", new(), 0, 90).Warnings);
+        storage.SignRead(x.StorageKey, "image", x.StorageVersion), planner.CreateScene(x, "tshirt", new(), 0, 90).Warnings,
+        x.MockupTemplateId, x.DesignImageId);
     private static Error Missing() => Error.NotFound("MockupNotFound", "Product or mockup not found.");
     public static bool IsStaticImage(byte[] bytes)
     {

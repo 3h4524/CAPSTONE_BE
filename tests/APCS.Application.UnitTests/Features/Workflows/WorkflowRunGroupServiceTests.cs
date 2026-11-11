@@ -1,0 +1,728 @@
+using System.Text.Json;
+using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.BatchMockups.Common;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.Workflows;
+using APCS.Application.UnitTests.TestSupport;
+using APCS.Common.Models;
+using APCS.Domain.Entities;
+using FluentAssertions;
+using Moq;
+
+namespace APCS.Application.UnitTests.Features.Workflows;
+
+[TestClass]
+public sealed class WorkflowRunGroupServiceTests
+{
+    [TestMethod]
+    public async Task StartAsync_StandardScenes_WaitsForTheDesignsToBeChosen()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow();
+
+        var result = await data.Service.StartAsync(workflow.Id, new(4, "group-1"), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be("waiting_for_targets");
+        data.GroupRows.Should().ContainSingle().Which.BatchId.Should().Be(data.BatchId);
+        data.Base.RunRows.Should().BeEmpty();
+        data.Entitlements.AllowancesRequested.Should().Contain((UsageAllowances.FullRuns, 1));
+    }
+
+    [TestMethod]
+    public async Task StartAsync_SameKeyTwice_ReturnsTheSameGroup()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow();
+        var first = await data.Service.StartAsync(workflow.Id, new(4, "same"), default);
+        var second = await data.Service.StartAsync(workflow.Id, new(4, "same"), default);
+        second.Value.Id.Should().Be(first.Value.Id);
+        data.GroupRows.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AiScenes_MakeAVideoForEveryDesign()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.AiConfig());
+
+        var result = await data.Service.StartAsync(workflow.Id, new(4, "ai"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        data.GroupRows.Should().ContainSingle();
+    }
+
+
+    [TestMethod]
+    public async Task GetAsync_WaitingGroup_ListsEveryDesignWithItsScenesResolved()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var other = data.AddProduct("Birth Month Blooms");
+        var (design, mockups) = data.AddDesign(other, 1, approved: true);
+        data.AddDesign(other, 2, approved: false);
+
+        var result = (await data.Service.GetAsync(group.Id, default)).Value;
+
+        result.Targets.Should().HaveCount(3);
+        var target = result.Targets.Single(x => x.ArtworkGroupKey == design.Id.ToString());
+        target.DesignLabel.Should().Be("Design 1");
+        target.Selected.Should().BeTrue();
+        target.Scenes.Select(x => x.MockupId).Should().Equal(mockups[0].Id, mockups[1].Id);
+        result.Targets.Single(x => x.ProductId == other.Id && x.DesignLabel == "Design 2").Selected.Should().BeFalse();
+        result.SelectedCount.Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ProductWithAnApprovedDesign_ListsOnlyThatDesignsMockups()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var other = data.AddProduct("Birth Month Blooms");
+        var (earlier, _) = data.AddDesign(other, 1, approved: true);
+        var (chosen, _) = data.AddDesign(other, 2, approved: false);
+        earlier.ApprovalStatus = "rejected";
+
+        var result = (await data.Service.GetAsync(group.Id, default)).Value;
+
+        result.Targets.Where(x => x.ProductId == other.Id).Should().ContainSingle()
+            .Which.ArtworkGroupKey.Should().Be(chosen.Id.ToString());
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_ApprovedDesigns_CreatesOneQueuedRunEachPastMockupApproval()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var other = data.AddProduct("Birth Month Blooms");
+        var (design, mockups) = data.AddDesign(other, 0, approved: true);
+
+        var result = await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Status.Should().Be("running");
+        data.Base.RunRows.Should().HaveCount(2).And.OnlyContain(run => run.Status == "queued" && run.RunGroupId == group.Id);
+        var run = data.Base.RunRows.Single(x => x.ProductId == other.Id);
+        run.ArtworkGroupKey.Should().Be(design.Id.ToString());
+        var steps = data.Base.NodeRows.Where(x => x.WorkflowRunId == run.Id).ToArray();
+        steps.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+        steps.Single(x => x.NodeType == "generate-video").Status.Should().Be("pending");
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(steps.Single(x => x.NodeType == "generate-video").InputSnapshot);
+        generate.AiScenes!.Select(x => x.MockupId).Should().Equal(mockups[0].Id, mockups[1].Id);
+        var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
+        WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input")).ProductId.Should().Be(other.Id);
+        WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup")).ArtworkGroupKey.Should().Be(design.Id.ToString());
+        data.Entitlements.AllowancesRequested.Should().Contain((UsageAllowances.Videos, 2));
+        data.Planner.Verify(x => x.Signal(), Times.Once);
+        data.Notifier.Verify(x => x.GroupChangedAsync(group.Id, It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_ScenesSavedWhileWaiting_AreTheOnesUsed()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var workflow = data.Base.WorkflowRows.Single(x => x.Id == group.WorkflowId);
+        var changed = data.SharedConfig() with { DurationSeconds = 5, AiScenes = [data.SharedConfig().AiScenes![1]] };
+        workflow.Definition = WorkflowJson.Write(WorkflowTestData.Definition(data.Preview, changed));
+        workflow.Revision = 5;
+
+        (await data.Service.ConfirmAsync(group.Id, new(1), default)).IsSuccess.Should().BeTrue();
+
+        var run = data.Base.RunRows.Single();
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.AiScenes.Should().ContainSingle().Which.MockupId.Should().Be(data.PreviewMockups[1].Id);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_AiVideos_ConfirmWhatEveryDesignCostsTogether()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.AiConfig());
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "ai"), default)).Value;
+        data.AddDesign(data.AddProduct("Birth Month Blooms"), 0, approved: true);
+
+        var result = await data.Service.ConfirmAsync(group.Id, new(1, "quote-token"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        data.Base.Quotes.Verify(x => x.VerifyBatchAsync(group.Id,
+            It.Is<IReadOnlyList<PlannedVideo>>(plans => plans.Count == 2 && plans.All(plan => plan.Config.Mode == "ai_shot")),
+            "quote-token", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_AiCostNotConfirmed_MakesNoVideo()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.AiConfig());
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "ai"), default)).Value;
+        data.Base.Quotes.Setup(x => x.VerifyBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<string?>(),
+            It.IsAny<CancellationToken>())).ReturnsAsync(Result.Failure(Error.Validation("Confirm what the AI videos of this run cost before starting them.")));
+
+        var result = await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        result.IsFailure.Should().BeTrue();
+        data.Base.RunRows.Should().BeEmpty();
+        data.GroupRows.Single().Status.Should().Be("waiting_for_targets");
+    }
+
+    [TestMethod]
+    public async Task QuoteAiAsync_WaitingGroup_QuotesEveryDesignWithTheRunItWouldGet()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.AiConfig());
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "ai"), default)).Value;
+        data.Base.Quotes.Setup(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new AiShotQuoteResponse("token", 1.2m, 2, WorkflowTestData.Now.AddMinutes(10), "MiniMax-H3-Lite", "Estimate")));
+
+        var result = await data.Service.QuoteAiAsync(group.Id, new(1), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.EstimatedCostUsd.Should().Be(1.2m);
+        data.Base.Quotes.Verify(x => x.QuoteBatchAsync(group.Id, It.Is<IReadOnlyList<PlannedVideo>>(plans =>
+            plans.Single().Run.ProductId == data.Preview.Id && plans.Single().Label.Contains("DAVIES")), It.IsAny<CancellationToken>()), Times.Once);
+        data.Base.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_NoApprovedDesign_WaitsForApproval()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var group = await data.StartAsync();
+        var result = await data.Service.ConfirmAsync(group.Id, new(1), default);
+        result.Error.Code.Should().Be("WaitingForInput");
+        data.Base.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_MoreDesignsThanTheLimit_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var product = data.AddProduct("Many designs");
+        for (var index = 0; index < WorkflowRunGroupService.MaximumTargets; index++) data.AddDesign(product, index, approved: true);
+
+        var result = await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        result.Error.Message.Should().Contain($"at most {WorkflowRunGroupService.MaximumTargets}");
+        data.Base.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_VideosUsedUp_CreatesNoRun()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        data.Entitlements.AllowancesUsedUp.Add(UsageAllowances.Videos);
+
+        var result = await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        result.IsFailure.Should().BeTrue();
+        data.Base.RunRows.Should().BeEmpty();
+        data.GroupRows.Single().Status.Should().Be("waiting_for_targets");
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_StaleRevision_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        (await data.Service.ConfirmAsync(group.Id, new(9), default)).Error.Code.Should().Be("StaleRevision");
+    }
+
+    [TestMethod]
+    public async Task UpdateOverrideAsync_PickedImage_IsUsedByThatDesignsRun()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var picked = data.PreviewMockups[1];
+
+        var updated = await data.Service.UpdateOverrideAsync(group.Id,
+            new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), [new SceneMockupOverride(0, picked.Id)]), default);
+        updated.Value.Targets.Single().HasOverride.Should().BeTrue();
+        updated.Value.Targets.Single().Scenes[0].Overridden.Should().BeTrue();
+
+        (await data.Service.ConfirmAsync(group.Id, new(2), default)).IsSuccess.Should().BeTrue();
+        var run = data.Base.RunRows.Single();
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.AiScenes![0].MockupId.Should().Be(picked.Id);
+    }
+
+    [TestMethod]
+    public async Task UpdateOverrideAsync_ImageOfAnotherDesign_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var other = data.AddProduct("Other");
+        var (_, foreign) = data.AddDesign(other, 0, approved: true);
+
+        var result = await data.Service.UpdateOverrideAsync(group.Id,
+            new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), [new SceneMockupOverride(0, foreign[0].Id)]), default);
+
+        result.IsFailure.Should().BeTrue();
+        data.GroupRows.Single().TargetOverrides.Should().Be("{}");
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_OwnSettings_AreTheOnesThatDesignsRunUses()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var own = data.SharedConfig() with { DurationSeconds = 6, OutputFormat = "square", AiScenes = [data.SharedConfig().AiScenes![1] with { DurationSeconds = 6 }] };
+
+        var updated = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), own), default);
+
+        var target = updated.Value.Targets.Single();
+        target.HasOwnConfig.Should().BeTrue();
+        target.Config!.DurationSeconds.Should().Be(6);
+        target.Scenes.Should().ContainSingle().Which.MockupId.Should().Be(data.PreviewMockups[1].Id);
+        (await data.Service.ConfirmAsync(group.Id, new(2), default)).IsSuccess.Should().BeTrue();
+        var run = data.Base.RunRows.Single();
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.DurationSeconds.Should().Be(6);
+        generate.OutputFormat.Should().Be("square");
+        generate.AiScenes.Should().ContainSingle().Which.MockupId.Should().Be(data.PreviewMockups[1].Id);
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_Null_PutsTheDesignBackOnTheSharedSettingsAndKeepsItsScenePicks()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var key = data.PreviewDesign.Id.ToString();
+        await data.Service.UpdateOverrideAsync(group.Id, new(1, data.Preview.Id, key, [new SceneMockupOverride(0, data.PreviewMockups[1].Id)]), default);
+        await data.Service.UpdateConfigAsync(group.Id, new(2, data.Preview.Id, key, data.SharedConfig() with { DurationSeconds = 6, AiScenes = [data.SharedConfig().AiScenes![0] with { DurationSeconds = 6 }] }), default);
+
+        var reset = await data.Service.UpdateConfigAsync(group.Id, new(3, data.Preview.Id, key, null), default);
+
+        var target = reset.Value.Targets.Single();
+        target.HasOwnConfig.Should().BeFalse();
+        target.Config.Should().BeNull();
+        target.HasOverride.Should().BeTrue();
+        target.Scenes.Should().HaveCount(2);
+    }
+
+    [TestMethod]
+    public async Task UpdateOverrideAsync_ScenePick_KeepsTheDesignsOwnSettings()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var key = data.PreviewDesign.Id.ToString();
+        await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, key, data.SharedConfig() with { DurationSeconds = 7 }), default);
+
+        var updated = await data.Service.UpdateOverrideAsync(group.Id, new(2, data.Preview.Id, key, [new SceneMockupOverride(0, data.PreviewMockups[1].Id)]), default);
+
+        updated.Value.Targets.Single().Config!.DurationSeconds.Should().Be(7);
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_AiScene_IsStoredForTheDesign()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), data.AiConfig()), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Targets.Single().Config!.Mode.Should().Be("ai_shot");
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_SettingsOfOneProductOnly_AreRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var pack = data.AiConfig() with { Template = "product_on_model_pack" };
+
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), pack), default);
+
+        result.IsFailure.Should().BeTrue();
+        data.GroupRows.Single().TargetOverrides.Should().Be("{}");
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_AfterTheVideosStarted_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(2, data.Preview.Id, data.PreviewDesign.Id.ToString(), data.SharedConfig()), default);
+
+        result.Error.Code.Should().Be("TargetsConfirmed");
+    }
+
+    [TestMethod]
+    public async Task GetAsync_StartedGroup_GivesEachDesignTheSettingsItsRunRendersWith()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        var started = await data.Service.GetAsync(group.Id, default);
+
+        var target = started.Value.Targets.Single();
+        target.Config.Should().NotBeNull();
+        target.Config!.AiScenes!.Select(scene => scene.MockupId).Should().Equal(data.PreviewMockups[0].Id, data.PreviewMockups[1].Id);
+        target.HasOwnConfig.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApproval_ApprovesTheWaitingMockupsAndStartsTheVideos()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+
+        var group = await data.StartAsync(gateMode: "auto");
+
+        group.Status.Should().Be("running");
+        data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision);
+        data.Base.RunRows.Should().ContainSingle().Which.Status.Should().Be("queued");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApproval_LeavesARejectedMockupRejected()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.PreviewMockups[1].ApprovalStatus = "rejected";
+
+        var group = await data.StartAsync(gateMode: "auto");
+
+        group.Status.Should().Be("running");
+        data.PreviewMockups[0].ApprovalStatus.Should().Be("approved");
+        data.PreviewMockups[1].ApprovalStatus.Should().Be("rejected");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalThatCannotStart_WaitsAtMockupApprovalWithTheMockupsApproved()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        for (var index = 0; index < WorkflowRunGroupService.MaximumTargets; index++) data.AddDesign(data.Preview, index + 2, approved: false);
+
+        var group = await data.StartAsync(gateMode: "auto");
+
+        group.Status.Should().Be("waiting_for_targets");
+        data.Base.RunRows.Should().BeEmpty();
+        data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ManualMockupApproval_WaitsForTheSeller()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+
+        var group = await data.StartAsync();
+
+        group.Status.Should().Be("waiting_for_targets");
+        data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "pending");
+    }
+
+    [TestMethod]
+    public async Task CancelAsync_ConfirmedGroup_CancelsEveryUnfinishedRun()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        var result = await data.Service.CancelAsync(group.Id, new(2), default);
+
+        result.Value.Status.Should().Be("cancelled");
+        data.Base.RunRows.Should().OnlyContain(run => run.Status == "cancelled");
+    }
+
+    [TestMethod]
+    public async Task PlannerAdvanceNextAsync_QueuedRun_PlansItAsTheOwnerAndQueuesTheRender()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        Guid? actingAs = null;
+
+        var advanced = await data.GroupPlanner.AdvanceNextAsync(owner => actingAs = owner, default);
+
+        advanced.Should().BeTrue();
+        actingAs.Should().Be(WorkflowTestData.Owner);
+        var run = data.Base.RunRows.Single();
+        run.Status.Should().Be("running");
+        data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task RerenderOfAChildRun_SettingsOfThePreviewProduct_AreRewrittenForItsDesign()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var other = data.AddProduct("Other");
+        var (_, mockups) = data.AddDesign(other, 0, approved: true);
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        var run = data.Base.RunRows.Single(x => x.ProductId == other.Id);
+        run.Status = "failed";
+
+        var result = await data.RunService.ActionAsync(run.Id, new(run.Revision, "retry", Config: data.SharedConfig()), default);
+
+        result.IsSuccess.Should().BeTrue();
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.AiScenes!.Select(x => x.MockupId).Should().Equal(mockups[0].Id, mockups[1].Id);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ScenesWithAPerson_GeminiMakesOneModelPhotoPerDesignFromItsHeroAndTheSystemModel()
+    {
+        var data = new RunGroupTestData();
+        var model = data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig());
+
+        (await data.Service.StartAsync(workflow.Id, new(4, "person", AiBudgetUsd: 5m), default)).IsSuccess.Should().BeTrue();
+
+        // Both scenes show a person; one image is made and both use it.
+        data.PersonConfig().AiScenes.Should().HaveCountGreaterThan(1);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, model.Id, It.IsAny<CancellationToken>()), Times.Once);
+        data.Base.AssetRows.Should().ContainSingle(x => x.Role == ModelPhotoMockupService.Role).Which.ApprovalStatus.Should().Be("pending");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_RunCostNotConfirmed_MakesNoPaidModelPhoto()
+    {
+        var data = new RunGroupTestData();
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+
+        (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "unconfirmed"), default)).IsSuccess.Should().BeTrue();
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ScenesWithoutAPerson_MakeNoModelPhoto()
+    {
+        var data = new RunGroupTestData();
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+
+        (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "ai", AiBudgetUsd: 5m), default)).IsSuccess.Should().BeTrue();
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_DesignWithAModelPhotoAlready_GetsNoSecondOne()
+    {
+        var data = new RunGroupTestData();
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig());
+        await data.Service.StartAsync(workflow.Id, new(4, "first", AiBudgetUsd: 5m), default);
+
+        await data.Service.StartAsync(workflow.Id, new(4, "second", AiBudgetUsd: 5m), default);
+
+        data.Base.AssetRows.Count(x => x.Role == ModelPhotoMockupService.Role).Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalWithinTheConfirmedAiBudget_StartsTheVideosWithTheirModelPhoto()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        data.QuotesCost(3.20m);
+        var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "budget", AiBudgetUsd: 5m), default)).Value;
+
+        group.Status.Should().Be("running");
+        data.Base.AssetRows.Single(x => x.Role == ModelPhotoMockupService.Role).ApprovalStatus.Should().Be("approved");
+        data.Base.RunRows.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalOverTheConfirmedAiBudget_WaitsAtMockupApproval()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.QuotesCost(9.60m);
+        var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "over", AiBudgetUsd: 5m), default)).Value;
+
+        group.Status.Should().Be("waiting_for_targets");
+        data.Base.RunRows.Should().BeEmpty();
+        data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalWithoutAnAiBudget_WaitsForTheCostToBeConfirmed()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.QuotesCost(1m);
+        var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "no-budget"), default)).Value;
+
+        group.Status.Should().Be("waiting_for_targets");
+        data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ListAsync_NamesTheDesignJobOfEachGroup_SoReopeningTheJobFindsItsVideos()
+    {
+        var data = new RunGroupTestData();
+        var job = new BatchJob { Id = Guid.NewGuid(), BatchId = data.BatchId, UserId = WorkflowTestData.Owner };
+        data.BatchJobRows.Add(job);
+        var workflow = data.AddWorkflow();
+        var fromJob = (await data.Service.StartAsync(workflow.Id, new(4, "job", job.Id), default)).Value;
+        var fromBatch = (await data.Service.StartAsync(workflow.Id, new(4, "batch"), default)).Value;
+
+        var listed = (await data.Service.ListAsync(workflow.Id, default)).Value;
+
+        listed.Single(x => x.Id == fromJob.Id).BatchJobId.Should().Be(job.Id);
+        listed.Single(x => x.Id == fromBatch.Id).BatchJobId.Should().BeNull();
+    }
+
+    private sealed class RunGroupTestData
+    {
+        public WorkflowTestData Base { get; } = new();
+        public List<WorkflowRunGroup> GroupRows { get; } = [];
+        public List<BatchJob> BatchJobRows { get; } = [];
+        public List<BatchJobProduct> JobProductRows { get; } = [];
+        public List<DesignImage> DesignRows { get; } = [];
+        public TestEntitlements Entitlements { get; } = TestEntitlements.AllowAll();
+        public Mock<IRunGroupPlannerQueue> Planner { get; } = new();
+        public Mock<IWorkflowRunNotifier> Notifier { get; } = new();
+        public Mock<ILifestyleMockupService> Lifestyle { get; } = new();
+        public List<MockupTemplate> TemplateRows { get; } = [];
+        public WorkflowRunGroupService Service { get; }
+        public RunGroupPlanner GroupPlanner { get; }
+        public WorkflowRunService RunService { get; }
+        public Guid BatchId { get; } = Guid.NewGuid();
+        public Guid FrontTemplate { get; } = Guid.NewGuid();
+        public Guid BackTemplate { get; } = Guid.NewGuid();
+        public Product Preview { get; }
+        public DesignImage PreviewDesign { get; }
+        public IReadOnlyList<MockupImage> PreviewMockups { get; }
+
+        public RunGroupTestData(bool previewApproved = true)
+        {
+            var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
+            Base.State.Setup(x => x.LockRunGroupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((Guid id, CancellationToken _) => GroupRows.SingleOrDefault(x => x.Id == id));
+            Base.State.Setup(x => x.ClaimQueuedGroupRunAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync((CancellationToken _) => Base.RunRows.Where(x => x.Status == "queued" && x.RunGroupId != null)
+                    .OrderBy(x => x.CreatedAt).FirstOrDefault());
+            Base.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>()))
+                .Returns((string key, string _, string? _, bool _) => $"https://cdn.test/{key}");
+            var user = new Mock<ICurrentUser>();
+            user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
+            var resolver = new RunTargetConfigResolver(Base.Assets.Object, Base.Products.Object, groups.Object);
+            Service = new(user.Object, Base.Workflows.Object, groups.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object,
+                Base.Assets.Object, WorkflowTestData.Repository(BatchJobRows, x => x.Id).Object,
+                WorkflowTestData.Repository(JobProductRows, x => x.Id).Object, WorkflowTestData.Repository(DesignRows, x => x.Id).Object,
+                Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
+                Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
+                lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object);
+            GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
+            RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
+                Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,
+                Base.Quotes.Object, Base.Time, TestEntitlements.AllowAll(), new(Base.Shops.Object, Base.Printify.Object),
+                targetResolver: resolver);
+            Preview = AddProduct("DAVIES T-Shirt");
+            (PreviewDesign, PreviewMockups) = AddDesign(Preview, 0, previewApproved);
+        }
+
+        public Product AddProduct(string name)
+        {
+            var product = Base.AddProduct();
+            product.BatchId = BatchId; product.Name = name; product.ProductType = "tshirt";
+            return product;
+        }
+
+        /// <summary>A design placed on the front and back templates, in white.</summary>
+        public (DesignImage Design, IReadOnlyList<MockupImage> Mockups) AddDesign(Product product, int variation, bool approved)
+        {
+            var design = new DesignImage { Id = Guid.NewGuid(), ProductId = product.Id, VariationIndex = variation, ApprovalStatus = "approved" };
+            DesignRows.Add(design);
+            var mockups = new[] { FrontTemplate, BackTemplate }.Select((template, index) => new MockupImage
+            {
+                Id = Guid.NewGuid(), ProductId = product.Id, DesignImageId = design.Id, MockupTemplateId = template, VariantKey = "white",
+                Role = "Hero", ArtworkGroupKey = design.Id.ToString(), MetadataRevision = 1, ApprovedRevision = approved ? 1 : null,
+                ApprovalStatus = approved ? "approved" : "pending", ContentHash = new string('a', 64), MockupWidthPx = 1080, MockupHeightPx = 1920,
+                Regions = WorkflowJson.Write(new MockupRegions(new(.5, .5), new(.25, .2, .5, .6))), StorageKey = $"mockups/{Guid.NewGuid():N}",
+                StorageVersion = "1", SourceType = "generated", CreatedAt = WorkflowTestData.Now.UtcDateTime.AddSeconds(index)
+            }).ToArray();
+            Base.AssetRows.AddRange(mockups);
+            return (design, mockups);
+        }
+
+        /// <summary>Two Standard scenes picked on the preview product: front, then back.</summary>
+        public GenerateVideoConfig SharedConfig() => new(Mode: "standard", DurationSeconds: 10, AiScenes:
+        [
+            new(MockupId: PreviewMockups[0].Id, Mode: "standard", DurationSeconds: 5, StandardMotionPreset: "zoom"),
+            new(MockupId: PreviewMockups[1].Id, Mode: "standard", DurationSeconds: 5, StandardMotionPreset: "pan")
+        ]);
+
+        /// <summary>The same two scenes rendered by AI, with a template that films the product, not a person.</summary>
+        public GenerateVideoConfig AiConfig() => SharedConfig() with
+        {
+            Mode = "ai_shot",
+            AiScenes = SharedConfig().AiScenes!.Select(scene => scene with { Mode = "ai", TemplateCode = "cinematic_product_showcase" }).ToArray()
+        };
+
+        public Workflow AddWorkflow(GenerateVideoConfig? config = null, string gateMode = "manual") =>
+            Base.AddWorkflow(Preview, config ?? SharedConfig(), gateMode);
+
+        public void QuotesCost(decimal cost)
+        {
+            Base.Quotes.Setup(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success(new AiShotQuoteResponse("budget-token", cost, 2, WorkflowTestData.Now.AddMinutes(10), "MiniMax-H3", "note")));
+            Base.Quotes.Setup(x => x.VerifyBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((Guid _, IReadOnlyList<PlannedVideo> _, string? token, CancellationToken _) =>
+                    token == "budget-token" ? Result.Success() : Result.Failure(Error.Validation("Confirm what the AI videos of this run cost before starting them.")));
+        }
+
+        /// <summary>AI scenes that all show a person (Product On Model).</summary>
+        public GenerateVideoConfig PersonConfig() => AiConfig() with
+        {
+            AiScenes = AiConfig().AiScenes!.Select(scene => scene with { TemplateCode = "lifestyle_in_use" }).ToArray()
+        };
+
+        /// <summary>A model photo of the shared library for t-shirts, usable for compositing.</summary>
+        public MockupTemplate AddSystemModel(string name = "Ava")
+        {
+            var model = new MockupTemplate
+            {
+                Id = Guid.NewGuid(), Name = name, ProductType = "tshirt", Kind = MockupRules.ModelKind, IsActive = true, AllowRecolor = true,
+                BaseImageUrl = "https://cdn.test/model.png", PrintAreaConfig = "{}", PrintMapsSourceUrl = "https://cdn.test/model.png", PrintMapsVersion = 1
+            };
+            TemplateRows.Add(model);
+            return model;
+        }
+
+        /// <summary>Gemini's model photo is stored as a Lifestyle image of the design, waiting for review, as the real service does.</summary>
+        public void ModelPhotosSucceed() => Lifestyle
+            .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid productId, Guid garmentId, Guid modelId, CancellationToken _) =>
+            {
+                var garment = Base.AssetRows.Single(x => x.Id == garmentId);
+                var photo = new MockupImage
+                {
+                    Id = Guid.NewGuid(), ProductId = productId, DesignImageId = garment.DesignImageId,
+                    Role = ModelPhotoMockupService.Role, ArtworkGroupKey = garment.ArtworkGroupKey, VariantKey = "#FFFFFF", MetadataRevision = 1,
+                    ApprovalStatus = "pending", ContentHash = new string('b', 64), MockupWidthPx = 1080, MockupHeightPx = 1920,
+                    Regions = WorkflowJson.Write(new MockupRegions()), StorageKey = $"mockups/{Guid.NewGuid():N}", StorageVersion = "1",
+                    SourceType = "uploaded", CreatedAt = WorkflowTestData.Now.UtcDateTime
+                };
+                Base.AssetRows.Add(photo);
+                return Result.Success(new MockupResponse(photo.Id, productId, photo.SourceType, photo.Role, photo.ArtworkGroupKey, photo.VariantKey,
+                    1, "pending", null, 1080, 1920, new MockupRegions(), "https://cdn.test/photo.png", []));
+            });
+
+        public async Task<RunGroupResponse> StartAsync(string gateMode = "manual")
+        {
+            var workflow = AddWorkflow(gateMode: gateMode);
+            var result = await Service.StartAsync(workflow.Id, new(4, Guid.NewGuid().ToString()), default);
+            result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+            return result.Value;
+        }
+    }
+}

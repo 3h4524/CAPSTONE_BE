@@ -276,6 +276,8 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
+        services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
         // Use cases queue steps through the transaction they run in; the worker reads the channel itself.

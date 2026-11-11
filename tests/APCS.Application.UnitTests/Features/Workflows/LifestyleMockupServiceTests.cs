@@ -22,6 +22,7 @@ public sealed class LifestyleMockupServiceTests
 
     private readonly WorkflowTestData fixture = new();
     private readonly Mock<IImageGenerationProvider> provider = new();
+    private readonly Mock<IImageGenerationProvider> gemini = new(MockBehavior.Strict);
     private readonly Mock<IApiKeyRepository> keys = new();
     private readonly Mock<IRepository<ApiUsageRecord>> usage = new();
     private readonly Mock<IRepository<DesignImage>> designs = new();
@@ -144,7 +145,8 @@ public sealed class LifestyleMockupServiceTests
         var result = await Service(connected: false).GenerateAsync(product.Id, garment.Id, new MemoryStream(Png), Png.Length, default);
 
         result.Error.Code.Should().Be("MissingApiKey");
-        provider.VerifyNoOtherCalls();
+        result.Error.Message.Should().Contain("Ideogram");
+        provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
@@ -221,6 +223,33 @@ public sealed class LifestyleMockupServiceTests
         provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [TestMethod]
+    public async Task GenerateForVideoAsync_SendsTheLibraryModelAndTheMockupToGeminiWithTheSellersGeminiKey()
+    {
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var model = new MockupTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Ava", ProductType = "tshirt", BaseImageUrl = "https://cdn/ava.jpg", PrintAreaConfig = "{}",
+            IsActive = true, Kind = MockupRules.ModelKind, UserId = null
+        };
+        modelPhotos.Add(model);
+        maps.Setup(x => x.DownloadAsync("https://cdn/ava.jpg", It.IsAny<CancellationToken>())).ReturnsAsync(Png);
+        IReadOnlyList<ImageReference>? sent = null;
+        gemini.Setup(x => x.ComposeAsync("gemini-key", It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
+            .Callback((string _, string _, IReadOnlyList<ImageReference> images, CancellationToken _) => sent = images)
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "gemini-image", 0.068m));
+        var service = Service();
+
+        var result = await service.GenerateForVideoAsync(product.Id, hero.Id, model.Id, default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        sent!.Select(x => x.Bytes).Should().BeEquivalentTo(new[] { Png, Garment }, x => x.WithStrictOrdering());
+        fixture.AssetRows.Should().ContainSingle(x => x.Role == "Lifestyle").Which.ApprovalStatus.Should().Be("pending");
+        usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.Provider == "gemini" && r.CostUsd == 0.068m), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private LifestyleMockupService Service(bool connected = true)
     {
         templates.Setup(x => x.Query()).Returns(() => modelPhotos.AsQueryable().BuildMock());
@@ -228,6 +257,7 @@ public sealed class LifestyleMockupServiceTests
         current.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
         var credentials = new Mock<IApiKeyCredentials>();
         credentials.Setup(x => x.Unprotect("encrypted")).Returns("plain-key");
+        credentials.Setup(x => x.Unprotect("gemini-encrypted")).Returns("gemini-key");
         keys.Setup(x => x.ListOwnedAsync(WorkflowTestData.Owner, It.IsAny<CancellationToken>())).ReturnsAsync(
             [new ApiKey { ServiceProvider = "gemini", IsActive = true, LastCheckSucceeded = true, KeyValueEncrypted = "gemini-encrypted" },
              new ApiKey { ServiceProvider = "ideogram", IsActive = true, LastCheckSucceeded = connected, KeyValueEncrypted = "encrypted" }]);
@@ -237,7 +267,6 @@ public sealed class LifestyleMockupServiceTests
         fixture.Storage.Setup(x => x.SignRead(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>())).Returns("https://signed.example/preview");
         // Gemini comes first, as nothing about the order picks the provider: Ideogram edits the photo.
         provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
-        var gemini = new Mock<IImageGenerationProvider>(MockBehavior.Strict);
         gemini.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Gemini);
         var service = new LifestyleMockupService(current.Object, fixture.Products.Object, fixture.Assets.Object, designs.Object, usage.Object, keys.Object,
             credentials.Object, [gemini.Object, provider.Object], fixture.Storage.Object, fixture.MockupService, fixture.Unit.Object,

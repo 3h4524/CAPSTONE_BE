@@ -109,6 +109,13 @@ public static class AiVideoPromptCompiler
 
     private static readonly IReadOnlyDictionary<string, AiVideoTemplateDefinition> BuiltIns = CreateBuiltIns();
 
+    /// <summary>
+    /// Whether a template shows a person using or wearing the product, so its scene has to start from a photo that
+    /// already has one: the design's Lifestyle mock-up, made from a model photo at Mockup Approval.
+    /// </summary>
+    public static bool RequiresPerson(string? templateCode) =>
+        BuiltIns.GetValueOrDefault(AiStudioFrameIdentity.NormalizeTemplateCode(templateCode))?.RequiresLifestyle ?? false;
+
     public static IReadOnlyList<AiVideoTemplateDefinition> Catalog(IEnumerable<VideoTemplate>? persisted = null)
     {
         var stored = ReadPersisted(persisted);

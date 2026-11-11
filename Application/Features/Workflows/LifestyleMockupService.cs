@@ -21,13 +21,20 @@ public interface ILifestyleMockupService
     /// instead of an uploaded photo. Everyone on a photo of several people is dressed in the mock-up.
     /// </summary>
     Task<Result<MockupResponse>> GenerateFromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct);
+
+    /// <summary>
+    /// As <see cref="GenerateFromModelPhotoAsync"/>, made by Gemini with the Seller's Gemini key: the image a batch
+    /// video run makes by itself for a design whose AI scenes show a person (<see cref="PersonModelPhotos"/>).
+    /// </summary>
+    Task<Result<MockupResponse>> GenerateForVideoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct);
 }
 
 /// <summary>
-/// Dresses the person (or people) in a photo in the product of an existing mock-up, using the Seller's Ideogram key.
+/// Dresses the person (or people) in a photo in the product of an existing mock-up, using the Seller's Ideogram key, or
+/// their Gemini key for the image a video run makes by itself (<see cref="GenerateForVideoAsync"/>).
 /// </summary>
 /// <remarks>
-/// Ideogram edits the person photo with two reference images: the mock-up, for the cut and colour of the garment, and
+/// The model edits the person photo with two reference images: the mock-up, for the cut and colour of the garment, and
 /// the design the mock-up was made from, so the print is copied from the clean artwork rather than from the mock-up.
 /// The result is stored like an uploaded mock-up with the Lifestyle role, in the garment's artwork
 /// group, so a lifestyle AI Shot can use it. It stays pending: the seller still reviews the generated
@@ -39,8 +46,9 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
     ILogger<LifestyleMockupService> logger, IRepository<MockupTemplate> templates, IMockupMapService maps,
     IPlanEntitlementService entitlements) : ILifestyleMockupService
 {
-    // Ideogram edits the photo, the same provider the designs are made with.
-    private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Ideogram);
+    // Ideogram edits the photo the seller asks for; Gemini the one a video run makes by itself.
+    private readonly IImageGenerationProvider? ideogram = imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Ideogram);
+    private readonly IImageGenerationProvider? gemini = imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Gemini);
 
     public const int MaximumPersonBytes = 8 * 1024 * 1024;
 
@@ -94,10 +102,17 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         if (!MockupAssetService.IsStaticImage(personBytes)) return Result.Failure<MockupResponse>(Error.Validation("Use a static JPEG, PNG or WebP image."));
 
         var (userId, product, garment) = found.Value;
-        return await DressAsync(userId, product, garment, personBytes, group: false, ct);
+        return await DressAsync(userId, product, garment, personBytes, group: false, ideogram, ct);
     }
 
-    public async Task<Result<MockupResponse>> GenerateFromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct)
+    public Task<Result<MockupResponse>> GenerateFromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct) =>
+        FromModelPhotoAsync(productId, garmentMockupId, modelPhotoId, ideogram, ct);
+
+    public Task<Result<MockupResponse>> GenerateForVideoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct) =>
+        FromModelPhotoAsync(productId, garmentMockupId, modelPhotoId, gemini, ct);
+
+    private async Task<Result<MockupResponse>> FromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId,
+        IImageGenerationProvider? provider, CancellationToken ct)
     {
         var found = await FindAsync(productId, garmentMockupId, ct);
         if (found.IsFailure) return Result.Failure<MockupResponse>(found.Error);
@@ -115,7 +130,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
             return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Could not read the model photo. Try again."));
         }
 
-        return await DressAsync(userId, product, garment, personBytes, group: model.People == ModelPeople.Group, ct);
+        return await DressAsync(userId, product, garment, personBytes, group: model.People == ModelPeople.Group, provider, ct);
     }
 
     // The Seller's own product, and a mock-up of it that can be worn, when the Seller's plan includes lifestyle images.
@@ -133,12 +148,15 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         return Result.Success((userId, product, garment));
     }
 
-    private async Task<Result<MockupResponse>> DressAsync(Guid userId, Product product, MockupImage garment, byte[] personBytes, bool group, CancellationToken ct)
+    private async Task<Result<MockupResponse>> DressAsync(Guid userId, Product product, MockupImage garment, byte[] personBytes, bool group,
+        IImageGenerationProvider? images, CancellationToken ct)
     {
         var productId = product.Id;
+        if (images is null) return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Lifestyle images are not available."));
+        var name = images.Provider == ImageGenerationProviders.Gemini ? "Gemini" : "Ideogram";
         var key = (await keys.ListOwnedAsync(userId, ct)).FirstOrDefault(x =>
-            x.ServiceProvider == ImageGenerationProviders.Ideogram && x.IsActive == true && x.LastCheckSucceeded == true);
-        if (key is null) return Result.Failure<MockupResponse>(Error.Conflict("MissingApiKey", "Connect a valid Ideogram API key before generating a lifestyle image."));
+            x.ServiceProvider == images.Provider && x.IsActive == true && x.LastCheckSucceeded == true);
+        if (key is null) return Result.Failure<MockupResponse>(Error.Conflict("MissingApiKey", $"Connect a valid {name} API key before generating a lifestyle image."));
 
         // An uploaded mock-up has no design: its own print is all there is to copy.
         var design = garment.DesignImageId is Guid designId && await designs.GetByIdAsync(designId, ct) is { DeletedAt: null } found ? found : null;
@@ -163,8 +181,8 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         {
             logger.LogWarning("Lifestyle image for product {ProductId} was not generated: {Reason}", productId, generated.ErrorMessage);
             return Result.Failure<MockupResponse>(generated.IsBlocked
-                ? Error.Validation("Ideogram declined to edit this photo. Use a different photo.")
-                : Error.Failure("LifestyleGenerationFailed", "Ideogram could not generate the lifestyle image. Try again."));
+                ? Error.Validation($"{name} declined to edit this photo. Use a different photo.")
+                : Error.Failure("LifestyleGenerationFailed", $"{name} could not generate the lifestyle image. Try again."));
         }
 
         var id = Guid.NewGuid();
@@ -176,7 +194,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
 
         await usage.AddAsync(new ApiUsageRecord
         {
-            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = ImageGenerationProviders.Ideogram, Feature = UsageFeatures.Mockup,
+            Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = images.Provider, Feature = UsageFeatures.Mockup,
             ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
         }, cancellationToken: ct);
         await assets.AddAsync(new MockupImage

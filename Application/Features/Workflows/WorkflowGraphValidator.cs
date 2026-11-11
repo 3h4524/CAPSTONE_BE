@@ -6,7 +6,11 @@ namespace APCS.Application.Features.Workflows;
 
 public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, GenerateVideoConfigValidator videoValidator)
 {
-    public Error? Validate(WorkflowDefinition definition)
+    /// <param name="requireProduct">
+    /// False for a batch video run: its videos are for the designs confirmed at Mockup Approval, so Product Input
+    /// only needs the batch (its product, when set, is the preview product of the scene editor).
+    /// </param>
+    public Error? Validate(WorkflowDefinition definition, bool requireProduct = true)
     {
         if (definition.Version != 2 || definition.Edges.Count != definition.Nodes.Count - 1)
             return Error.Validation("A video run needs Product Input → Apply Mockup → Mockup Approval → Generate Video → Review Video → Export ZIP in one line. The design steps may come before Apply Mockup.");
@@ -49,8 +53,12 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         }
         try
         {
-            var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
-            if (input.BatchId == Guid.Empty || input.ProductId == Guid.Empty) return Error.Validation("Select a batch and one product.");
+            if (requireProduct)
+            {
+                var input = WorkflowJson.Config<ProductInputConfig>(definition.Nodes.Single(x => x.Type == "product-input"));
+                if (input.BatchId == Guid.Empty || input.ProductId == Guid.Empty) return Error.Validation("Select a batch and one product.");
+            }
+            else if (BatchIdOf(definition) == Guid.Empty) return Error.Validation("Select a batch in Product Input.");
             if (hasVideo)
             {
                 var config = WorkflowJson.Config<GenerateVideoConfig>(definition.Nodes.Single(x => x.Type == "generate-video"));
@@ -71,4 +79,25 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         catch (JsonException) { return Error.Validation("Invalid node configuration."); }
         return null;
     }
+
+    /// <summary>The batch chosen in Product Input, read without requiring a product, or <see cref="Guid.Empty"/>.</summary>
+    public static Guid BatchIdOf(WorkflowDefinition definition) =>
+        definition.Nodes.SingleOrDefault(x => x.Type == "product-input") is { } input &&
+        input.Config.ValueKind == JsonValueKind.Object &&
+        input.Config.TryGetProperty("batchId", out var value) && value.ValueKind == JsonValueKind.String &&
+        Guid.TryParse(value.GetString(), out var batchId) ? batchId : Guid.Empty;
+
+    /// <summary>
+    /// Whether one scene list can make the video of every design. AI scenes are billed per clip, so the run confirms
+    /// their total cost once for the whole group; the pack template is left out because it renders one product's
+    /// shared mock-up and character.
+    /// </summary>
+    public static bool SupportsBatchVideos(GenerateVideoConfig config) =>
+        config.Template != "product_on_model_pack" && config.Mode switch
+        {
+            "standard" => config.AiScenes is null || config.AiScenes.All(scene => scene.Mode == "standard"),
+            // The legacy single-shot settings name one product's mock-up, so only a scene list maps to every design.
+            "ai_shot" => config.AiScenes is { Count: > 0 },
+            _ => false,
+        };
 }

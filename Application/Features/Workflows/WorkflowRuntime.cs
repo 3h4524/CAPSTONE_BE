@@ -75,7 +75,10 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             {
                 case "product-input": node.OutputSnapshot = WorkflowJson.Write(new { productId = run.ProductId }); node.Status = "succeeded"; break;
                 case "apply-mockup": node.Status = "succeeded"; break;
-                case "approval-gate": node.Status = "waiting_for_input"; run.Status = "waiting_for_input"; return;
+                case "approval-gate":
+                    // Auto mode approves the mock-ups itself and goes on, unless the video still needs the seller.
+                    if (MockupAutoApproval.IsAuto(definition) && await AutoApproveAsync(run, definition, checkpoints, node, ct)) break;
+                    node.Status = "waiting_for_input"; run.Status = "waiting_for_input"; return;
                 case "generate-video":
                     var config = WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
                     var plan = await PlanAsync(run, config, ct);
@@ -138,6 +141,14 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     return;
                 case "review-video":
                     node.OutputSnapshot = checkpoints.Single(x => x.NodeType == "generate-video").OutputSnapshot;
+                    // Auto mode approves the finished video itself and goes on to export, unless it cannot be listed.
+                    if (VideoAutoApproval.IsAuto(definition) &&
+                        await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(node.OutputSnapshot).VideoId, ct) is { } candidate &&
+                        VideoAutoApproval.Approve(candidate, run.UserId, time.GetUtcNow().UtcDateTime))
+                    {
+                        node.Status = "succeeded";
+                        break;
+                    }
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;
                 case "export-zip":
                     var pointer = WorkflowJson.Read<VideoPointer>(checkpoints.Single(x => x.NodeType == "review-video").OutputSnapshot);
@@ -253,6 +264,29 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             run.Status = "failed";
             run.ErrorMessage = listing.ErrorMessage;
         }
+    }
+
+    /// <summary>
+    /// Mockup Approval in auto mode: approves this run's mock-ups waiting for review (of its design, when it has one)
+    /// and passes the step when the video has an image and needs no paid confirmation. False keeps the run waiting.
+    /// </summary>
+    private async Task<bool> AutoApproveAsync(WorkflowRun run, WorkflowDefinition definition, IReadOnlyList<WorkflowNodeRun> checkpoints,
+        WorkflowNodeRun gate, CancellationToken ct)
+    {
+        var mockupConfig = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
+        var stored = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null && x.ContentHash != null, ct);
+        var design = run.ArtworkGroupKey ?? VideoStoryboardPlanner.KnownArtworkGroup(stored, mockupConfig.ArtworkGroupKey);
+        MockupAutoApproval.Approve(design is null ? stored : stored.Where(x => x.ArtworkGroupKey == design).ToArray(),
+            run.UserId, time.GetUtcNow().UtcDateTime);
+
+        var generate = checkpoints.Single(x => x.NodeType == "generate-video");
+        var videoConfig = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+        if (!MockupAutoApproval.NeedsNoConsent(videoConfig)) return false;
+        var approved = await ApprovedAssetsAsync(run, mockupConfig, videoConfig, ct);
+        if (approved.Count == 0) return false;
+        gate.Status = "succeeded";
+        gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision), automatic = true });
+        return true;
     }
 
     public Task<IReadOnlyList<MockupImage>> ApprovedAssetsAsync(WorkflowRun run, MockupConfig config, CancellationToken ct) =>

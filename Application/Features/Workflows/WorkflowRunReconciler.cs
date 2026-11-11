@@ -21,7 +21,7 @@ public interface IWorkflowRunReconciler
 /// a manual change), run by <c>WorkflowRunFailureSweeper</c> only while media work is in flight.
 /// </remarks>
 public sealed class WorkflowRunReconciler(IWorkflowStateRepository state, IUnitOfWork uow, WorkflowRuntime runtime,
-    ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunReconciler
+    ISceneVideoNotifier? sceneNotifier = null, IWorkflowRunNotifier? runNotifier = null) : IWorkflowRunReconciler
 {
     /// <summary>Runs handled in one pass, so a pass stays short; the rest follow on the next one.</summary>
     public const int MaximumPerPass = 50;
@@ -33,10 +33,11 @@ public sealed class WorkflowRunReconciler(IWorkflowStateRepository state, IUnitO
         var failed = 0;
         foreach (var job in candidates)
         {
+            Domain.Entities.WorkflowRun? run;
             await using (var tx = await uow.BeginTransactionAsync(ct))
             {
                 // The run may have moved on (a retry, a cancel) since it was read.
-                var run = await state.LockRunAsync(job.RunId, ct);
+                run = await state.LockRunAsync(job.RunId, ct);
                 if (run is not { Status: "running" }) continue;
                 await runtime.FailAsync(run, job.NodeRunId, job.ErrorMessage ?? "Render failed.", ct);
                 await uow.SaveChangesAsync(ct);
@@ -44,6 +45,7 @@ public sealed class WorkflowRunReconciler(IWorkflowStateRepository state, IUnitO
             }
             failed++;
             if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.RunId, ct);
+            if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
         }
         return failed;
     }

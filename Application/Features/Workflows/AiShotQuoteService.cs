@@ -12,12 +12,29 @@ public sealed record AiShotQuoteRequest(GenerateVideoConfig? Config = null, bool
     string? ExpectedStoryboardFingerprint = null);
 /// <summary>A quote bound to one run, storyboard, and set of missing AI clips.</summary>
 public sealed record AiShotQuoteResponse(string Token, decimal EstimatedCostUsd, int NewClips, DateTimeOffset ExpiresAtUtc,
-    string Model, string Note);
+    string Model, string Note, IReadOnlyList<AiShotQuoteItem>? Items = null);
+
+/// <summary>One design's part of a batch quote: its new AI clips, how long they are together, and their cost.</summary>
+public sealed record AiShotQuoteItem(string Label, int Clips, decimal Seconds, decimal EstimatedCostUsd);
+
+/// <summary>
+/// One design of a batch video run, before its run exists: the run it would get, the settings resolved for it, and
+/// the state of the images those settings name.
+/// </summary>
+/// <param name="Label">The design in a message, as "<c>Product · Design 1</c>".</param>
+/// <param name="SourceFingerprint">The design's approved images with their revisions, so a changed image voids the quote.</param>
+public sealed record PlannedVideo(WorkflowRun Run, GenerateVideoConfig Config, string Label, string SourceFingerprint);
 
 public interface IAiShotQuoteService
 {
     Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct);
     Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct);
+
+    /// <summary>What every AI clip of a batch video run costs together, quoted once for the whole group.</summary>
+    Task<Result<AiShotQuoteResponse>> QuoteBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, CancellationToken ct);
+
+    /// <summary>Whether the seller confirmed the cost of exactly these designs and settings.</summary>
+    Task<Result> VerifyBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, string? token, CancellationToken ct);
 }
 
 public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<WorkflowNodeRun> nodes,
@@ -92,6 +109,67 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             ? Result.Success()
             : Result.Failure(Error.Conflict("AiShotQuoteChanged", "The estimated AI Shot cost increased. Review the updated cost before continuing."));
     }
+
+    public async Task<Result<AiShotQuoteResponse>> QuoteBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, CancellationToken ct)
+    {
+        var paid = plans.Where(plan => NeedsConsent(plan.Config)).ToArray();
+        if (paid.Length == 0)
+            return Result.Failure<AiShotQuoteResponse>(Error.Validation("No design of this run makes an AI video clip."));
+        var planCheck = await entitlements.RequireFeatureAsync(paid[0].Run.UserId, PlanFeatures.AiVideo, ct);
+        if (planCheck.IsFailure) return Result.Failure<AiShotQuoteResponse>(planCheck.Error);
+
+        var cost = 0m;
+        var clips = 0;
+        var models = new List<string>();
+        var items = new List<AiShotQuoteItem>(paid.Length);
+        foreach (var plan in paid)
+        {
+            // The run does not exist yet, so this plans the design's storyboard exactly as its run would.
+            var planned = await runtime.PlanAsync(plan.Run, plan.Config, ct);
+            if (planned.IsFailure)
+                return Result.Failure<AiShotQuoteResponse>(Error.Validation($"{plan.Label}: {planned.Error.Message}"));
+            var shots = planned.Value.AiShots ?? [];
+            foreach (var provider in shots.Select(shot => shot.ProviderKey).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (await videoCredentials.ResolveAsync(plan.Run.UserId, provider, ct) is not null) continue;
+                return Result.Failure<AiShotQuoteResponse>(Error.Validation(string.Equals(provider, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase)
+                    ? "AI video is temporarily unavailable because the system MiniMax API key is not configured."
+                    : $"Connect a valid {ProviderName(provider)} API key before generating AI video."));
+            }
+            var designCost = shots.Sum(shot => shot.DurationSeconds * shot.PricePerSecondUsd);
+            items.Add(new(plan.Label, shots.Count, shots.Sum(shot => (decimal)shot.DurationSeconds), designCost));
+            cost += designCost;
+            clips += shots.Count;
+            models.AddRange(shots.Select(shot => shot.Model));
+        }
+
+        var fingerprint = BatchFingerprint(plans);
+        var expires = time.GetUtcNow().AddMinutes(10);
+        return Result.Success(new AiShotQuoteResponse(
+            signer.Sign(new(groupId, fingerprint, false, cost, expires, null, fingerprint, null)),
+            cost, clips, expires, string.Join(", ", models.Distinct(StringComparer.Ordinal)),
+            $"Estimate only for {paid.Length} video{(paid.Length == 1 ? "" : "s")}. The system MiniMax account is billed for successful generations.", items));
+    }
+
+    public Task<Result> VerifyBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, string? token, CancellationToken ct)
+    {
+        if (!plans.Any(plan => NeedsConsent(plan.Config))) return Task.FromResult(Result.Success());
+        var claims = string.IsNullOrWhiteSpace(token) ? null : signer.Read(token);
+        if (claims is null || claims.ExpiresAtUtc <= time.GetUtcNow() || claims.RunId != groupId || claims.Regenerate || claims.SceneOrder is not null)
+            return Task.FromResult(Result.Failure(Error.Validation("Confirm what the AI videos of this run cost before starting them.")));
+        return Task.FromResult(string.Equals(claims.ConfigFingerprint, BatchFingerprint(plans), StringComparison.Ordinal)
+            ? Result.Success()
+            : Result.Failure(Error.Conflict("AiShotQuoteChanged",
+                "The designs, their settings or their images changed after the cost was confirmed. Review the new cost, then start the run.")));
+    }
+
+    /// <summary>What a confirmed cost is bound to: every design that gets a video, with its settings and its images.</summary>
+    private static string BatchFingerprint(IReadOnlyList<PlannedVideo> plans) => WorkflowJson.Hash(WorkflowJson.Write(plans
+        .Select(plan => new { plan.Run.ProductId, plan.Run.ArtworkGroupKey, plan.Config, plan.SourceFingerprint })
+        .OrderBy(plan => plan.ProductId).ThenBy(plan => plan.ArtworkGroupKey, StringComparer.Ordinal).ToArray()));
+
+    /// <summary>Whether these settings make paid AI clips, so the seller has to confirm their cost.</summary>
+    private static bool NeedsConsent(GenerateVideoConfig config) => config.Mode == "ai_shot" && HasAiVideoScene(config);
 
     private static bool HasAiVideoScene(GenerateVideoConfig config) =>
         config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard");
