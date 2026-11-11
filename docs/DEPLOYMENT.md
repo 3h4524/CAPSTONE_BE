@@ -67,13 +67,14 @@ port 22 is not open to the internet.
 
 | File | Content |
 |---|---|
-| `deploy/env/common.env` | non-secret settings shared by scripts and workflows: project, zone, VM, registry, backup bucket, `APP_DOMAIN` |
+| `deploy/env/common.env` | non-secret settings shared by scripts and workflows: project, zone, VM, registry, backup bucket, `APP_DOMAIN`, Sonar organization and project key |
 | `deploy/env/*.env.tpl` | one template per service; plain values are written in, secrets are `${NAME}` |
 | Secret `apcs-prod-secrets` | JSON of generated values nobody edits by hand: database, Redis, JWT and media-worker secrets |
 | Secret `apcs-prod-external` | JSON of the external keys people upload as a whole file: Google client ID, SMTP, Cloudinary, PayOS, Gemini, assistant keys (`;`-separated, rotated on rate limits), MiniMax, Etsy, translation, Google Drive token, Discord webhook |
 | Secret `apcs-ops-auth` | basic-auth user, password, and the base64 bcrypt hash Caddy checks for `logs.` and `status.` |
 | Secret `apcs-dev-secrets` | `DEV_POSTGRES_PASSWORD`, `DEV_BACKUP_PASSWORD` |
 | Secret `apcs-dev-migrator-password` | the dev database `apcs_migrator` password |
+| Secret `sonar-token` | SonarQube Cloud token the deploy workflow reads through `apcs-deployer` (one token analyzes both repositories) |
 
 `deploy/scripts/render-env.sh` runs on the VM at every release: it reads the secrets with the VM's
 service account, fills the templates, and writes `/opt/apcs/env/*.env` and `/opt/apcs/deploy/.env`
@@ -130,6 +131,29 @@ older tag selected as the ref (images are reused, migrations already applied are
 
 The repository variable `DEV_MIGRATION_BRANCH` names the integration branch whose pushes migrate the
 shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
+
+### Security gate
+
+A tag deploys only after every check passes; a failure stops the workflow before anything reaches the VM.
+
+| Check | Tool | Blocks the release when |
+|---|---|---|
+| Code | SonarQube Cloud (free, public repositories), job `sonar` | new code since the previous release has an open security issue (low severity or higher) or an unreviewed security hotspot. The rest of the quality gate (coverage, duplication) is shown in the job summary but does not block |
+| Dependencies | `deploy/scripts/security-audit.sh`, job `audit`: `dotnet list API/API.csproj package --vulnerable --include-transitive` and `npm audit --omit=dev` in `media-worker` (GitHub Advisory Database) | a high or critical advisory that is not accepted |
+| Images | Trivy, in job `images` before the push | an image has a HIGH or CRITICAL vulnerability that already has a fix, or a leaked secret. Images are pushed only after the scan passes |
+
+- Sonar analyzes only its main branch on the free plan, so the Sonar project's main branch is named
+  `production`; `sonar.projectVersion` is the tag and the new-code period is *Previous version*.
+- The `sonar` job is skipped with a warning while `SONAR_PROJECT_KEY` in `deploy/env/common.env` is
+  empty.
+- Accepted vulnerabilities go in `security-acceptances.json` (`package`, `ids` with both the GHSA and
+  CVE IDs, `reason`, `expires`). The audit and Trivy read the same file; after `expires` an entry stops
+  applying and the release is blocked again. Trivy and the audits use different advisory sources (Trivy
+  misses some npm advisories; the audits do not see OS packages or binaries), so both run.
+- A rollback (`workflow_dispatch` on an older tag) skips the checks, since that tag already passed
+  them.
+- Dependabot (`.github/dependabot.yml`) opens weekly update PRs against the integration branch; change
+  `target-branch` when a new `merge-version-scN` starts.
 
 ## Observability
 
