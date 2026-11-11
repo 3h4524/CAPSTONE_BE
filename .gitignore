@@ -490,3 +490,4 @@ media-worker/artifacts/
 
 # Test reports written by the admin test-run button
 /test-reports/
+.sonarqube/

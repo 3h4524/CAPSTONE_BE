@@ -12,16 +12,16 @@
   },
   "dependencies": {
     "@apcs/video-composition": "file:../shared/video-composition",
-    "@remotion/bundler": "4.0.533",
-    "@remotion/cli": "4.0.533",
-    "@remotion/renderer": "4.0.533",
+    "@remotion/bundler": "4.0.542",
+    "@remotion/cli": "4.0.542",
+    "@remotion/renderer": "4.0.542",
     "archiver": "7.0.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "redis": "4.7.1",
-    "remotion": "4.0.533",
-    "tsx": "4.20.6",
-    "zod": "4.5.4"
+    "remotion": "4.0.542",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/archiver": "6.0.3",
@@ -31,5 +31,10 @@
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "css-loader": {
+      "@rspack/core": "2.3.0"
+    }
   }
 }
