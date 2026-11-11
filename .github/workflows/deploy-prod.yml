@@ -188,7 +188,7 @@ jobs:
 
       - name: Install Trivy
         run: |
-          curl -fsSLo /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --proto "=https" --tlsv1.2 -fsSLo /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  /tmp/trivy.tar.gz" | sha256sum -c -
           sudo tar xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
 
