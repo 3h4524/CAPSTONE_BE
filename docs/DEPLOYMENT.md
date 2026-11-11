@@ -152,7 +152,8 @@ A tag deploys only after every check passes; a failure stops the workflow before
   misses some npm advisories; the audits do not see OS packages or binaries), so both run.
 - Pull requests run the same dependency audit plus `trivy fs` on the repository (job `security` in
   `backend-ci.yml`), so a vulnerable package or a committed secret shows up as a red check before the
-  release. Sonar runs only at release: the free plan analyzes only the `production` branch.
+  release. On a finding the job also posts one comment on the pull request and edits it on later pushes,
+  marking it resolved once the check passes. Sonar runs only at release: the free plan analyzes only the `production` branch.
 - A rollback (`workflow_dispatch` on an older tag) skips the checks, since that tag already passed
   them.
 - Dependabot (`.github/dependabot.yml`) opens weekly update PRs against the integration branch; change

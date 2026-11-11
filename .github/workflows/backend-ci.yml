@@ -185,9 +185,14 @@ jobs:
     name: Dependency audit and Trivy
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       TRIVY_VERSION: 0.76.2
       TRIVY_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+      AUDIT_REPORT: /tmp/security-audit.md
+      TRIVY_REPORT: /tmp/security-trivy.md
 
     steps:
       - name: Checkout
@@ -207,7 +212,13 @@ jobs:
         run: dotnet restore API/API.csproj
 
       - name: Audit NuGet and media worker packages
-        run: ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker
+        id: audit
+        continue-on-error: true
+        run: |
+          status=0
+          GITHUB_STEP_SUMMARY="$AUDIT_REPORT" ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker || status=$?
+          cat "$AUDIT_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Install Trivy
         run: |
@@ -216,13 +227,30 @@ jobs:
           sudo tar xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
 
       - name: Scan the repository for vulnerabilities and secrets
+        id: trivy
+        continue-on-error: true
         run: |
           ./deploy/scripts/security-audit.sh trivyignore > /tmp/trivyignore
-          failed=0
+          status=0
           trivy fs --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
-            --ignorefile /tmp/trivyignore --format table --output /tmp/trivy-fs.txt . || failed=1
-          { echo "## Trivy: repository"; echo '```'; cat /tmp/trivy-fs.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$failed" -ne 0 ]; then
-            echo "::error::Trivy found fixable HIGH/CRITICAL vulnerabilities or leaked secrets. Upgrade the package, or add an entry with a reason and an expiry date to security-acceptances.json."
-            exit 1
-          fi
+            --ignorefile /tmp/trivyignore --format table --output /tmp/trivy-fs.txt . || status=$?
+          { echo "## Trivy: repository"; echo '```'; cat /tmp/trivy-fs.txt; echo '```'; } > "$TRIVY_REPORT"
+          cat "$TRIVY_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+        run: ./deploy/scripts/security-pr-comment.sh
+
+      - name: Fail on findings
+        if: steps.audit.outcome == 'failure' || steps.trivy.outcome == 'failure'
+        run: |
+          echo "::error::High or critical findings. Upgrade the package, or add an entry with a reason and an expiry date to security-acceptances.json."
+          exit 1
