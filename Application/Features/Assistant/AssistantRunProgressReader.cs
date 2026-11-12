@@ -106,7 +106,7 @@ public sealed class AssistantRunProgressReader(
             {
                 Stage = AssistantRunStages.DesignApproval,
                 State = AssistantRunStates.WaitingForUser,
-                NextStep = $"Designs of {waiting} products wait for approval. {OnScreen}",
+                NextStep = $"Designs of {waiting} products wait for approval. They can be approved or rejected in this chat or on the workflow screen, then the run continues to the mock-ups.",
                 WaitingCount = waiting,
                 Error = failed
             });
@@ -116,7 +116,7 @@ public sealed class AssistantRunProgressReader(
         {
             Stage = AssistantRunStages.DesignsReady,
             State = AssistantRunStates.WaitingForUser,
-            NextStep = $"Designs are ready. The workflow screen makes the mock-ups and starts the next part. {OnScreen}",
+            NextStep = "Designs are reviewed. The run continues to the mock-ups with Continue, from this chat when the workflow is open or on the workflow screen.",
             Error = failed
         });
     }
@@ -133,7 +133,7 @@ public sealed class AssistantRunProgressReader(
         var targets = group.Targets
             .Where(target => target.Selected || group.Status == "waiting_for_targets")
             .Take(MaxTargets)
-            .Select(target => new AssistantRunTargetResponseDto(target.DesignLabel, target.ProductName, target.RunStatus, target.CurrentStep, target.RunError))
+            .Select(target => new AssistantRunTargetResponseDto(target.DesignLabel, target.ProductName, target.RunStatus, target.CurrentStep, target.RunError, target.RunId))
             .ToArray();
         var progress = new AssistantRunProgressResponseDto(workflowId, name, AssistantRunStages.Video, AssistantRunStates.Working,
             "The videos are being made. Nothing to do yet.", counts.Completed, counts.Total,
@@ -146,7 +146,7 @@ public sealed class AssistantRunProgressReader(
             {
                 Stage = AssistantRunStages.MockupApproval,
                 State = AssistantRunStates.WaitingForUser,
-                NextStep = $"Mock-ups wait for approval ({pending} not reviewed). The user approves the mock-ups of each design that should get a video, then presses Continue. {OnScreen}",
+                NextStep = $"Mock-ups wait for approval ({pending} not reviewed). The mock-ups of each design that should get a video are approved in this chat or on the workflow screen, then Continue starts the videos.",
                 WaitingCount = pending,
                 Done = null,
                 Total = group.Targets.Count
@@ -160,7 +160,7 @@ public sealed class AssistantRunProgressReader(
             {
                 Stage = AssistantRunStages.VideoReview,
                 State = AssistantRunStates.WaitingForUser,
-                NextStep = $"{counts.WaitingForReview} videos wait for review. {OnScreen}",
+                NextStep = $"{counts.WaitingForReview} videos wait for review. Each can be approved or rejected in this chat (the targets list their runs) or on the workflow screen.",
                 WaitingCount = counts.WaitingForReview
             });
         }
@@ -208,7 +208,7 @@ public sealed class AssistantRunProgressReader(
             {
                 Stage = AssistantRunStages.MockupApproval,
                 State = AssistantRunStates.WaitingForUser,
-                NextStep = $"Mock-ups wait for approval, then Continue. {OnScreen}"
+                NextStep = "Mock-ups wait for approval. They can be approved in this chat or on the workflow screen, then Continue starts the video."
             },
             "waiting_for_review" => progress with
             {

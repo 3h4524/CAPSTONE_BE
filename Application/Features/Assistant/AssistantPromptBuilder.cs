@@ -44,8 +44,10 @@ public sealed class AssistantPromptBuilder(TimeProvider timeProvider)
         - If start_workflow_run returns another error, explain the reason it gave and the next step for the user. Do not investigate further.
         - When the user asks how a run is going, whether it is done or what to do next, call get_run_progress and say in plain words where the run is and the next step. When the next step is on the workflow screen and app_context shows another page, call navigate to /workflows?id=<workflow id>.
         - To save the open workflow, call save_workflow. It is not needed before run_workflow.
+        - Reviews during a run: when designs wait for approval, call review_designs (every waiting product, or the products the user names). When mock-ups wait for approval, call review_mockups (every design, or the designs the user names). Both prepare a confirmation: set moreRequests to true on it and then call continue_run in the same turn, so the user can confirm the review and press Continue; continue_run needs the workflow open, otherwise call navigate to /workflows?id=<workflow id>.
+        - When videos wait for review, use workflow_run_action with approve_video or reject_video and the runId of each video from get_run_progress targets, one call per video.
         - When app_context contains the canvas, use it and do not call get_workflow for it. When a <node_catalog> block is present, take step settings, valid values and connection rules from it.
-        - edit_workflow_canvas, arrange_workflow_canvas, run_workflow, save_workflow, start_workflow_run, workflow_run_action, navigate and offer_choices take a reply or question argument: put the one short sentence for the user there, in the user's language. That sentence is shown to the user, so do not repeat it in text.
+        - edit_workflow_canvas, arrange_workflow_canvas, run_workflow, save_workflow, continue_run, review_designs, review_mockups, start_workflow_run, workflow_run_action, navigate and offer_choices take a reply or question argument: put the one short sentence for the user there, in the user's language. That sentence is shown to the user, so do not repeat it in text.
 
         Conversation:
         - When the user asks a question, answer it first in plain text. Call an action tool only when the user asks for a change or an action, not to answer a question.

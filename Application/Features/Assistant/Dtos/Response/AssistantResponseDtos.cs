@@ -26,7 +26,7 @@ public sealed record AssistantActionResultResponseDto(
     AssistantPendingActionResponseDto Action,
     AssistantMessageResponseDto Message);
 
-public sealed record AssistantRunTargetResponseDto(string Design, string Product, string? Status, string? Step, string? Error);
+public sealed record AssistantRunTargetResponseDto(string Design, string Product, string? Status, string? Step, string? Error, Guid? RunId = null);
 
 public sealed record AssistantRunProgressResponseDto(
     Guid WorkflowId,

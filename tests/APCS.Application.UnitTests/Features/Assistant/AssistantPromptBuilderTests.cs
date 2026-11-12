@@ -118,6 +118,9 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("If it returns needs_workflow_screen, call navigate")]
     [DataRow("call get_run_progress and say in plain words")]
     [DataRow("call edit_workflow_canvas first and run_workflow after it")]
+    [DataRow("call review_designs (every waiting product")]
+    [DataRow("set moreRequests to true on it and then call continue_run")]
+    [DataRow("the runId of each video from get_run_progress targets")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 
