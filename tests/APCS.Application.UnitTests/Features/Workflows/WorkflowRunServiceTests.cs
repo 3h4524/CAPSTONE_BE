@@ -78,6 +78,56 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task StartAsync_AutoMockupApproval_ApprovesTheWaitingMockupsAndGoesOn()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var waiting = WorkflowTestData.Asset(product.Id);
+        waiting.ApprovalStatus = "pending";
+        waiting.ApprovedRevision = null;
+        fixture.AssetRows.Add(waiting);
+        var workflow = fixture.AddWorkflow(product, gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-run"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+        waiting.ApprovalStatus.Should().Be("approved");
+        waiting.ApprovedRevision.Should().Be(waiting.MetadataRevision);
+        waiting.ApprovedBy.Should().Be(WorkflowTestData.Owner);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalWithAnAiScene_StillWaitsForTheCostToBeConfirmed()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var waiting = WorkflowTestData.Asset(product.Id);
+        waiting.ApprovalStatus = "pending";
+        fixture.AssetRows.Add(waiting);
+        var ai = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 6, AiScenes: [new AiVideoSceneOptions(MockupId: waiting.Id, DurationSeconds: 6)]);
+        var workflow = fixture.AddWorkflow(product, ai, gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-ai-run"), default);
+
+        result.Value.Status.Should().Be("waiting_for_input");
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("waiting_for_input");
+        waiting.ApprovalStatus.Should().Be("approved");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalWithoutAnyMockup_WaitsForOne()
+    {
+        var fixture = new WorkflowTestData();
+        var workflow = fixture.AddWorkflow(fixture.AddProduct(), gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-empty-run"), default);
+
+        result.Value.Status.Should().Be("waiting_for_input");
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("waiting_for_input");
+    }
+
+    [TestMethod]
     public async Task StartAsync_PrintifyNotConnected_RefusesBeforeCreatingRun()
     {
         var fixture = new WorkflowTestData();

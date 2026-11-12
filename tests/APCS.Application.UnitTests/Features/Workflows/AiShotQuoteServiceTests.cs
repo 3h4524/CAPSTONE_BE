@@ -264,6 +264,85 @@ public sealed class AiShotQuoteServiceTests
         snapshot.Storyboard.Fingerprint.Should().Be(context.Claims.PromptSnapshot!.Fingerprint);
     }
 
+    [TestMethod]
+    public async Task QuoteBatchAsync_SeveralDesigns_AddsUpEveryClipAndBindsTheTokenToTheGroup()
+    {
+        var context = CreateContext();
+        var groupId = Guid.NewGuid();
+        var plans = BatchPlans(context);
+
+        var result = await context.Service.QuoteBatchAsync(groupId, plans, default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.NewClips.Should().Be(2);
+        result.Value.EstimatedCostUsd.Should().Be(.96m);
+        result.Value.Note.Should().Contain("2 videos");
+        context.Claims.Should().Match<AiShotQuoteClaims>(x => x.RunId == groupId && x.EstimatedCostUsd == .96m
+            && !x.Regenerate && x.SceneOrder == null && x.ConfigFingerprint != null);
+    }
+
+    [TestMethod]
+    public async Task QuoteBatchAsync_StandardVideosOnly_HasNothingToQuote()
+    {
+        var context = CreateContext();
+        var standard = new PlannedVideo(context.Run, new GenerateVideoConfig(), "Tee · Design 1", "sources");
+
+        var result = await context.Service.QuoteBatchAsync(Guid.NewGuid(), [standard], default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("No design of this run makes an AI video clip");
+    }
+
+    [TestMethod]
+    public async Task VerifyBatchAsync_TheQuotedDesigns_PassOnlyWithTheirOwnToken()
+    {
+        var context = CreateContext();
+        var groupId = Guid.NewGuid();
+        var plans = BatchPlans(context);
+        await context.Service.QuoteBatchAsync(groupId, plans, default);
+
+        var confirmed = await context.Service.VerifyBatchAsync(groupId, plans, "signed-quote", default);
+        var missing = await context.Service.VerifyBatchAsync(groupId, plans, null, default);
+        var otherGroup = await context.Service.VerifyBatchAsync(Guid.NewGuid(), plans, "signed-quote", default);
+        var changedImage = await context.Service.VerifyBatchAsync(groupId,
+            [plans[0] with { SourceFingerprint = "other" }, plans[1]], "signed-quote", default);
+
+        confirmed.IsSuccess.Should().BeTrue();
+        missing.IsFailure.Should().BeTrue();
+        otherGroup.IsFailure.Should().BeTrue();
+        changedImage.Error.Code.Should().Be("AiShotQuoteChanged");
+    }
+
+    [TestMethod]
+    public async Task VerifyBatchAsync_StandardVideosOnly_NeedsNoConfirmedCost()
+    {
+        var context = CreateContext();
+        var standard = new PlannedVideo(context.Run, new GenerateVideoConfig(), "Tee · Design 1", "sources");
+
+        var result = await context.Service.VerifyBatchAsync(Guid.NewGuid(), [standard], null, default);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>Two designs of a batch run: the preview product's, and one whose run does not exist yet.</summary>
+    private static PlannedVideo[] BatchPlans(Context context)
+    {
+        var other = context.Fixture.AddProduct();
+        var otherAsset = context.Fixture.AddAsset(other);
+        var planned = new WorkflowRun
+        {
+            Id = Guid.NewGuid(), WorkflowId = context.Run.WorkflowId, ProductId = other.Id, UserId = WorkflowTestData.Owner,
+            DefinitionSnapshot = context.Run.DefinitionSnapshot, WorkflowRevision = 4, Revision = 1, Status = "queued",
+            IdempotencyKey = "group:1", RequestHash = "group", CreatedAt = WorkflowTestData.Now.UtcDateTime,
+            UpdatedAt = WorkflowTestData.Now.UtcDateTime
+        };
+        return
+        [
+            new(context.Run, Config(context.Asset), "Tee · Design 1", "sources-1"),
+            new(planned, Config(otherAsset), "Mug · Design 1", "sources-2"),
+        ];
+    }
+
     private static GenerateVideoConfig Config(MockupImage source, string coverage = "single_scene", int duration = 12) =>
         new(Mode: "ai_shot", DurationSeconds: duration, AiShotOptions: new(Coverage: coverage, MockupId: source.Id));
 

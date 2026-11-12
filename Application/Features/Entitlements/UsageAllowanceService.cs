@@ -146,11 +146,14 @@ public sealed class UsageAllowanceService(
 
     private Task<int> CountAsync(Guid userId, string code, AllowanceWindow window, CancellationToken cancellationToken) => code switch
     {
-        // A run counts as a full run when it has a video step.
-        UsageAllowances.FullRuns => workflowNodes.Query().CountAsync(
-            node => node.NodeType == VideoNode && node.WorkflowRun.UserId == userId
-                && node.WorkflowRun.CreatedAt >= window.From && node.WorkflowRun.CreatedAt < window.To,
-            cancellationToken),
+        // A run counts as a full run when it has a video step. The runs of one batch video run (one per design)
+        // are one full run together.
+        UsageAllowances.FullRuns => workflowNodes.Query()
+            .Where(node => node.NodeType == VideoNode && node.WorkflowRun.UserId == userId
+                && node.WorkflowRun.CreatedAt >= window.From && node.WorkflowRun.CreatedAt < window.To)
+            .Select(node => node.WorkflowRun.RunGroupId ?? node.WorkflowRun.Id)
+            .Distinct()
+            .CountAsync(cancellationToken),
         UsageAllowances.DesignRuns => batchJobs.Query().CountAsync(
             job => job.UserId == userId && job.JobType == DesignGenerationJob
                 && job.StartedAt >= window.From && job.StartedAt < window.To,

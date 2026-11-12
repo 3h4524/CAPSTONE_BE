@@ -194,8 +194,6 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         var requestedReferences = request.References ?? [];
         if (requestedReferences.Count > MaximumReferenceCount)
             return Result.Failure<StudioFrameContext>(Error.Validation($"Use no more than {MaximumReferenceCount} keyframe reference images."));
-        if (RequiresPersonRights(request.TemplateCode) && !request.ReferenceRightsConfirmed)
-            return Result.Failure<StudioFrameContext>(Error.Validation("Confirm that you have rights to use people visible in the selected images."));
 
         long totalReferenceBytes = 0;
         var referenceMetadata = new List<AiStudioFrameReferenceMetadata>(requestedReferences.Count);

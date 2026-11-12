@@ -113,6 +113,8 @@ public partial class User
 
     public virtual ICollection<UserRole> UserRoleUsers { get; set; } = new List<UserRole>();
 
+    public virtual ICollection<WorkflowRunGroup> WorkflowRunGroups { get; set; } = new List<WorkflowRunGroup>();
+
     public virtual ICollection<WorkflowRun> WorkflowRuns { get; set; } = new List<WorkflowRun>();
 
     public virtual ICollection<Workflow> Workflows { get; set; } = new List<Workflow>();

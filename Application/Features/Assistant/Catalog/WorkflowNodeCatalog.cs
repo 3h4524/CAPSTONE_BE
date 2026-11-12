@@ -92,7 +92,10 @@ public static class WorkflowNodeCatalog
                 [new("none", "None"), new("fade", "Fade"), new("swipe", "Swipe"), new("zoom", "Zoom"), new("flash", "Flash"), new("whip_pan", "Whip pan"), new("blur", "Blur")],
                 Note: "Send as nested config, for example {\"standardOptions\":{\"transition\":\"fade\"}}.")
         ], "Video mode, AI scenes and motion are set in the UI because AI generation costs money."),
-        new("review-video", "Review Video", "Approve the exact video version before export.", Order("review-video"), []),
+        new("review-video", "Review Video", "Approve the exact video version before export.", Order("review-video"),
+        [
+            new("mode", "select", "Approval mode", [new("manual", "Manual review")])
+        ]),
         new("generate-listing", "Listing content", "Writes the SEO title, 13 tags and description for each product.", null,
         [
             new("model", "select", "Language model", [new("gpt-4o", "GPT-4o"), new("gemini", "Gemini")]),

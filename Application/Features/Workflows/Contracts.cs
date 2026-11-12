@@ -78,7 +78,17 @@ public sealed record AiVideoSceneOptions(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     string? AiVideoModelKey = null,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Point? AiCropPosition = null);
+    Point? AiCropPosition = null,
+    // Where a batch run finds this scene's image for each design; resolved to MockupId before planning.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    SceneSource? Source = null);
+/// <summary>
+/// The image of a scene described without naming one product's mock-up, so one scene list fits every design of a
+/// batch run. <see cref="Kind"/> is "template" (the mock-up made from <see cref="TemplateId"/>, in
+/// <see cref="VariantKey"/> when given), "role" (the first approved mock-up with <see cref="Role"/>) or "same_as"
+/// (the image of scene <see cref="RefScene"/>, an earlier scene).
+/// </summary>
+public sealed record SceneSource(string Kind, Guid? TemplateId = null, string? VariantKey = null, string? Role = null, int? RefScene = null);
 public sealed record VideoOverlay(string Id, string Type, string Text, int StartFrame, int EndFrame, double X, double Y,
     string Align, string Preset, double FontScale, string TextColor, string BackgroundColor);
 public sealed record VideoMusicConfig(Guid TrackId, int StartFrame = 0, int SourceOffsetFrames = 0, double Volume = .25,
@@ -111,7 +121,20 @@ public sealed record GenerateVideoConfig(
     Guid? AiStudioSourceMockupId = null, Guid? AiStudioFrameId = null, Guid? AiCharacterModelId = null,
     Guid? SharedMockupId = null,
     IReadOnlyList<StandardSceneOptions>? StandardScenes = null, VideoEditConfig? VideoEdit = null,
-    int DurationPolicyVersion = VideoDurationPolicy.CurrentVersion, string? AiVideoModelKey = null);
+    int DurationPolicyVersion = VideoDurationPolicy.CurrentVersion, string? AiVideoModelKey = null,
+    // A batch run's answer when a design has no image for a scene: "hero" (its first approved mock-up, the default)
+    // or "skip" (leave the scene out).
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? MissingSourcePolicy = null,
+    // Before a batch run, some products' own settings, set in Generate Video: every design of such a product renders
+    // with them instead of the shared ones (see ForProduct).
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<Guid, GenerateVideoConfig>? ProductConfigs = null)
+{
+    /// <summary>The settings one product's videos use: its own when it has them, else these, without the other products'.</summary>
+    public GenerateVideoConfig ForProduct(Guid productId) =>
+        (ProductConfigs?.TryGetValue(productId, out var own) == true ? own : this) with { ProductConfigs = null };
+}
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
     string? PreviewVideoUrl, int DefaultDurationSeconds, string DefaultTransition, string DefaultMotionPreset,
@@ -134,12 +157,14 @@ public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid
     GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null,
     int? SceneOrder = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
-public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes);
+public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes,
+    Guid? RunGroupId = null, string? ArtworkGroupKey = null);
 /// <summary>Identifies a previous workflow run that still has generated video versions available.</summary>
 public sealed record VideoRunSummaryResponse(Guid Id, string Status, DateTimeOffset CreatedAt, int VideoCount, int LatestVersion);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
-public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings);
+public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings,
+    Guid? MockupTemplateId = null, Guid? DesignImageId = null);
 public sealed record AiStudioFrameReferenceInput(byte[] Bytes, string MimeType);
 public sealed record AiStudioFrameRequest(Guid SourceMockupId, string Layout, string OutputFormat, bool Regenerate = false,
     string? ExpectedFingerprint = null, decimal? ConfirmedEstimatedCostUsd = null, string? CustomPrompt = null,

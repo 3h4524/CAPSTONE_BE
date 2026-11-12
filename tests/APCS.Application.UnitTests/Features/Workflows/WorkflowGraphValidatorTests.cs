@@ -214,6 +214,18 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
+    public void SupportsBatchVideos_AiSceneList_IsAllowedButOneProductsSettingsAreNot()
+    {
+        var scenes = new AiVideoSceneOptions[] { new(Mode: "ai", TemplateCode: "cinematic_product_showcase") };
+        var ai = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: scenes);
+
+        WorkflowGraphValidator.SupportsBatchVideos(ai).Should().BeTrue();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { AiScenes = null }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { Template = "product_on_model_pack" }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(new GenerateVideoConfig()).Should().BeTrue();
+    }
+
+    [TestMethod]
     public void Capabilities_StandardAndAiShot_ExcludesAiBackground()
     {
         var capabilities = new WorkflowCapabilityRegistry().Get();

@@ -285,6 +285,30 @@ public sealed class VideoPlanningServiceTests
         fixture.Assets.Verify(x => x.FindAsync(It.IsAny<Expression<Func<MockupImage, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [TestMethod]
+    public async Task PreviewAsync_ForDesign_MovesScenesOfThePreviewProductOntoTheDesignsMockups()
+    {
+        var fixture = new WorkflowTestData();
+        var template = Guid.NewGuid();
+        var preview = fixture.AddProduct();
+        var design = fixture.AddProduct();
+        var previewMockup = fixture.AddAsset(preview); previewMockup.MockupTemplateId = template; previewMockup.VariantKey = "white";
+        var designMockup = fixture.AddAsset(design); designMockup.MockupTemplateId = template; designMockup.VariantKey = "white";
+        var config = new GenerateVideoConfig(Mode: "standard", DurationSeconds: 6,
+            AiScenes: [new(MockupId: previewMockup.Id, Mode: "standard", DurationSeconds: 6, StandardMotionPreset: "zoom")]);
+        var groups = WorkflowTestData.Repository(new List<WorkflowRunGroup>(), x => x.Id);
+        var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
+        var service = new VideoPlanningService(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object,
+            fixture.CharacterModels.Object, new(), new(), new(), targetResolver: new RunTargetConfigResolver(fixture.Assets.Object, fixture.Products.Object, groups.Object));
+
+        var plain = await service.PreviewAsync(design.Id, new(config, [], "artwork-main"), default);
+        var forDesign = await service.PreviewAsync(design.Id, new(config, [], "artwork-main", ForDesign: true), default);
+
+        plain.IsFailure.Should().BeTrue();
+        forDesign.IsSuccess.Should().BeTrue(forDesign.IsFailure ? forDesign.Error.Message : null);
+        forDesign.Value.Scenes.Should().OnlyContain(scene => scene.MockupId == designMockup.Id);
+    }
+
     private static VideoPlanningService Service(WorkflowTestData fixture)
     {
         var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
