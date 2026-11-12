@@ -31,7 +31,11 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         if (product is null || product.UserId != user.UserId || product.DeletedAt != null) return Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."));
         if (request.Config is null || request.MockupIds is null) return Result.Failure<Storyboard>(Error.Validation("Video configuration and mockup selection are required."));
         if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<Storyboard>(new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation));
-        var validation = await validator.ValidateAsync(request.Config, ct);
+        // A design's storyboard is made from the batch run's scene list, whose scenes may leave their image to be
+        // chosen for each design: the resolver below picks them, so the list is checked as a batch run checks it.
+        var validation = request.ForDesign
+            ? await validator.ValidateForBatchAsync(request.Config, ct)
+            : await validator.ValidateAsync(request.Config, ct);
         if (!validation.IsValid || request.MockupIds.Count > 8) return Result.Failure<Storyboard>(Error.Validation("Invalid video configuration or mockup selection."));
         if (request.ForDesign && targetResolver is not null)
         {

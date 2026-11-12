@@ -31,9 +31,17 @@ public sealed record TargetOverride(IReadOnlyList<SceneMockupOverride> Scenes, G
 /// <param name="Config">Null puts the design back on the workflow's shared settings.</param>
 public sealed record UpdateTargetConfigRequest(long ExpectedRevision, Guid ProductId, string ArtworkGroupKey, GenerateVideoConfig? Config);
 
+/// <param name="Notice">
+/// Why a run set to start by itself is waiting for the seller (the cost to confirm, a plan limit...), or which designs
+/// it left out; null when there is nothing to say.
+/// </param>
+/// <param name="Preparing">
+/// The run is being made ready in the background (the model photos of its scenes with a person, then the automatic
+/// start of its videos): nothing for the seller to do yet.
+/// </param>
 public sealed record RunGroupResponse(Guid Id, Guid WorkflowId, Guid BatchId, Guid? BatchJobId, string Status, long Revision,
     long WorkflowRevision, DateTimeOffset CreatedAt, int MaximumTargets, int SelectedCount, RunGroupProgress Progress,
-    IReadOnlyList<RunGroupTargetResponse> Targets);
+    IReadOnlyList<RunGroupTargetResponse> Targets, string? Notice = null, bool Preparing = false);
 
 /// <summary>How many child runs are in each state; all zero before the designs are confirmed.</summary>
 public sealed record RunGroupProgress(int Total, int Queued, int Running, int WaitingForReview, int Completed, int Failed, int Cancelled, int WaitingForInput);
