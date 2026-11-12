@@ -32,6 +32,7 @@ public sealed class PrintifyServiceTests
     private readonly Mock<IRepository<EtsyIntegration>> etsyIntegrations = new();
     private readonly Mock<ICacheService> cache = new();
     private readonly Mock<IMediaStorage> storage = new();
+    private readonly Mock<IPrintFileSource> printFiles = new();
     private readonly FakeTimeProvider clock = new(new DateTimeOffset(2026, 11, 8, 12, 0, 0, TimeSpan.Zero));
     private readonly List<PrintifyIntegration> integrationRows = [];
     private readonly List<ApiKey> keyRows = [];
@@ -41,6 +42,8 @@ public sealed class PrintifyServiceTests
     private readonly List<EtsyIntegration> etsyRows = [];
     private DesignImage design = null!;
     private MockupImage mockup = null!;
+    /// <summary>Approved mock-ups beside <see cref="mockup"/>, such as the other sides of its garment.</summary>
+    private readonly List<MockupImage> moreMockups = [];
 
     private static readonly PrintifyCatalogVariant[] Variants =
     [
@@ -90,7 +93,7 @@ public sealed class PrintifyServiceTests
         var designs = new Mock<IRepository<DesignImage>>();
         designs.Setup(x => x.Query()).Returns(() => new[] { design }.AsQueryable().BuildMock());
         var mockups = new Mock<IRepository<MockupImage>>();
-        mockups.Setup(x => x.Query()).Returns(() => new[] { mockup }.AsQueryable().BuildMock());
+        mockups.Setup(x => x.Query()).Returns(() => new[] { mockup }.Concat(moreMockups).AsQueryable().BuildMock());
         var products = new Mock<IRepository<Product>>();
         products.Setup(x => x.Query()).Returns(() => new[] { new Product { Id = productId, UserId = userId, Name = "Cat tee", InputDescription = "tee" } }.AsQueryable().BuildMock());
         var videos = new Mock<IRepository<PromoVideo>>();
@@ -112,7 +115,7 @@ public sealed class PrintifyServiceTests
         var shops = new ShopService(current.Object, Mock.Of<ICacheService>(), etsy.Object, etsyIntegrations.Object, Mock.Of<IUnitOfWork>(), clock, NullLogger<ShopService>.Instance);
         return new PrintifyService(current.Object, printify.Object, keys.Object, credentials.Object, shops, etsy.Object, Mock.Of<IListingContentService>(), products.Object,
             designs.Object, mockups.Object, videos.Object, integrations.Object, uploads.Object, storage.Object, cache.Object, Mock.Of<IUnitOfWork>(), clock,
-            new CreatePrintifyProductValidator(), new PublishPrintifyProductValidator(), NullLogger<PrintifyService>.Instance);
+            new CreatePrintifyProductValidator(), new PublishPrintifyProductValidator(), NullLogger<PrintifyService>.Instance, printFiles.Object);
     }
 
     private static PrintifyProduct Product(string? external, bool locked = false) => new("p-1", "Cat Tee", locked, external, null,
@@ -245,6 +248,30 @@ public sealed class PrintifyServiceTests
     }
 
     [TestMethod]
+    public async Task PublishAsync_AShopWithoutAProductionPartner_IsRefusedBeforePrintifyPublishes()
+    {
+        var service = Create();
+        etsy.Setup(x => x.GetProductionPartnersAsync("access", "12345", It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var result = await service.PublishAsync(productId, "p-1", new PublishPrintifyProductRequestDto([new(101, 24.99m)]));
+
+        result.Error.Message.Should().Contain("production partner");
+        printify.Verify(x => x.PublishAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_TheDescriptionSaysTheDesignWasMadeWithAi()
+    {
+        var service = Create();
+
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.Description == $"A soft tee.\n\n{EtsyListingText.AiDisclosure}"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
     public async Task SyncAsync_OnceOnEtsy_AddsTheMockupsToTheListingOnlyOnce()
     {
         var service = Create();
@@ -285,6 +312,222 @@ public sealed class PrintifyServiceTests
         var result = await service.SyncAsync(productId, "someone-elses", new SyncPrintifyProductRequestDto([], false));
 
         result.Error.Code.Should().Be("shop.printify_product_not_found");
+    }
+
+    /// <summary>A mock-up of the design on a template whose print area is 400 × 500 at (100, 100), made by a job.</summary>
+    private void ShownOnTemplate(string? box)
+    {
+        var templateId = Guid.NewGuid();
+        mockup.DesignImageId = design.Id;
+        mockup.MockupTemplateId = templateId;
+        mockup.GarmentColor = "#FFFFFF";
+        mockup.MockupTemplate = new MockupTemplate
+        {
+            Id = templateId, Name = "Tee", ProductType = "tshirt", BaseImageUrl = "b", Kind = "garment",
+            PrintAreaConfig = """{"x":100,"y":100,"width":400,"height":500,"unit":"px"}""",
+        };
+        var slot = $"{design.Id:N}.{templateId:N}.FFFFFF";
+        var config = box is null
+            ? "{}"
+            : "{\"mockupOverrides\":{\"" + slot + "\":{\"mockupTemplateId\":\"" + templateId + "\",\"garmentColor\":\"#FFFFFF\",\"printArea\":" + box + "}}}";
+        mockup.BatchJobProduct = new BatchJobProduct { BatchJob = new BatchJob { Config = config } };
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_FollowingAMockup_PrintsTheDesignWhereTheSellerMovedIt()
+    {
+        var service = Create();
+        // Half the template's print area wide, centered across it and 30% down it.
+        ShownOnTemplate("""{"x":200,"y":125,"width":200,"height":250}""");
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        result.IsSuccess.Should().BeTrue();
+        // As large as fits the 4500 × 5100 area is 5100/5400 of its width; half of that.
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.X == 0.5 && product.Y == 0.3 && Math.Abs(product.Scale - 0.4722) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A back photo of the template <see cref="ShownOnTemplate"/> made, linked as its back side, with an approved mock-up
+    /// of the design moved to the top half of its print area.
+    /// </summary>
+    private MockupImage BackSideShown()
+    {
+        var front = mockup.MockupTemplate!;
+        var backId = Guid.NewGuid();
+        front.PrintAreaConfig = """{"x":100,"y":100,"width":400,"height":500,"unit":"px","views":{"back":"BACK"}}""".Replace("BACK", backId.ToString());
+        var back = new MockupImage
+        {
+            Id = Guid.NewGuid(), ProductId = productId, StorageKey = "b", DesignImageId = design.Id, ApprovalStatus = "approved", ApprovedRevision = 1,
+            MetadataRevision = 1, CreatedAt = clock.GetUtcNow().UtcDateTime.AddMinutes(-1), MockupTemplateId = backId, GarmentColor = "#FFFFFF",
+            MockupTemplate = new MockupTemplate
+            {
+                Id = backId, Name = "Tee · Back", ProductType = "tshirt", BaseImageUrl = "bb", Kind = "garment",
+                PrintAreaConfig = """{"x":100,"y":100,"width":400,"height":500,"unit":"px","view":"back","mainTemplateId":"MAIN"}""".Replace("MAIN", front.Id.ToString()),
+            },
+        };
+        var slot = $"{design.Id:N}.{backId:N}.FFFFFF";
+        back.BatchJobProduct = new BatchJobProduct
+        {
+            BatchJob = new BatchJob { Config = "{\"mockupOverrides\":{\"" + slot + "\":{\"mockupTemplateId\":\"" + backId + "\",\"garmentColor\":\"#FFFFFF\",\"printArea\":{\"x\":200,\"y\":100,\"width\":200,\"height\":250}}}}" },
+        };
+        moreMockups.Add(back);
+        return back;
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_FollowingTheMockups_PrintsTheBackTheyShow_AndReadsTheFrontEvenFromABackMockup()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetVariantsAsync("token", 6, 99, It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new PrintifyCatalogVariant(101, "White / S", "White", "S", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+            new PrintifyCatalogVariant(102, "White / M", "White", "M", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+        ]);
+        ShownOnTemplate("""{"x":200,"y":125,"width":200,"height":250}""");
+        var back = BackSideShown();
+
+        // The back mock-up comes first in the listing; the print still follows the front.
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true });
+
+        result.IsSuccess.Should().BeTrue();
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.Position == "front" && product.X == 0.5 && product.Y == 0.3
+            && product.MorePlacements != null && product.MorePlacements.Count == 1
+            && product.MorePlacements[0].Position == "back" && product.MorePlacements[0].X == 0.5 && product.MorePlacements[0].Y == 0.25),
+            It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_AProviderThatDoesNotPrintTheBack_PrintsTheFrontOnly_AndSaysSo()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        BackSideShown();
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id, PrintMockupSides = true });
+
+        result.IsSuccess.Should().BeTrue();
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product => product.MorePlacements == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().ContainSingle(warning => warning.Contains("does not print the back"));
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_WithoutPrintingSides_IgnoresTheBackMockups()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        BackSideShown();
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product => product.MorePlacements == null),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_FollowingAMockupNobodyMoved_FitsTheDesignToThePrintArea()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        // The design is taller than the area, so full width (scale 1) would be cut off at the bottom.
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.X == 0.5 && product.Y == 0.5 && Math.Abs(product.Scale - 0.9444) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_AMockupBoxPastThePrintArea_IsKeptInsideIt_AndSaysSo()
+    {
+        var service = Create();
+        // Wider than the template's print area and pushed past its right edge.
+        ShownOnTemplate("""{"x":300,"y":100,"width":600,"height":750}""");
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            Math.Abs(product.Scale - 0.9444) < 0.0001 && product.X <= 1 - product.Scale / 2 + 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().ContainSingle().Which.Should().Contain("outside Printify's print area");
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_ASmallDesign_IsSentEnlargedToItsPrintWidth_AndWarnsOfASoftPrint()
+    {
+        var service = Create();
+        design.ImageWidthPx = 1500;
+        design.ImageHeightPx = 1800;
+        printFiles.Setup(x => x.Resized("https://cdn.test/design.png", 1500, 1800, 4250)).Returns("https://cdn.test/print.png");
+        printify.Setup(x => x.UploadImageAsync("token", "design-1.png", "https://cdn.test/print.png", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PrintifyUploadedImage("img-big", 4250, 5100));
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { Scale = 0.9444 });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product => product.ImageId == "img-big"), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().ContainSingle().Which.Should().Contain("about 106 DPI").And.Contain("enlarged");
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_AnEnlargedFilePrintifyCannotFetch_SendsTheOriginal()
+    {
+        var service = Create();
+        design.ImageWidthPx = 1500;
+        design.ImageHeightPx = 1800;
+        printFiles.Setup(x => x.Resized(It.IsAny<string>(), 1500, 1800, It.IsAny<int>())).Returns("https://cdn.test/print.png");
+        printify.Setup(x => x.UploadImageAsync("token", "design-1.png", "https://cdn.test/print.png", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PrintifyApiException(PrintifyFailureKind.Rejected, "400", "Could not download"));
+
+        var result = await service.CreateProductAsync(productId, CreateRequest());
+
+        result.IsSuccess.Should().BeTrue();
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product => product.ImageId == "img-1"), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().ContainSingle().Which.Should().NotContain("enlarged");
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_ALargeEnoughDesign_IsSentAsItIs()
+    {
+        var service = Create();
+
+        var result = await service.CreateProductAsync(productId, CreateRequest());
+
+        printFiles.Verify(x => x.Resized(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+        result.Value.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_AfterPrintifysPhoto_AddsTheMockupsBehindIt()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetProductAsync("token", 777, "p-1", It.IsAny<CancellationToken>())).ReturnsAsync(Product(external: "4455"));
+        etsy.Setup(x => x.GetProductionPartnersAsync("access", "12345", It.IsAny<CancellationToken>())).ReturnsAsync([new EtsyOption(1, "Printify")]);
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var result = await service.SyncAsync(productId, "p-1", new SyncPrintifyProductRequestDto([mockup.Id], false, AfterPrintifyPhoto: true));
+
+        etsy.Verify(x => x.UploadListingImageAsync("access", "12345", "4455", It.IsAny<byte[]>(), It.IsAny<string>(), 2, It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value.Warnings.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task SyncAsync_AShopWithoutAProductionPartner_IsToldOnceTheListingExists()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetProductAsync("token", 777, "p-1", It.IsAny<CancellationToken>())).ReturnsAsync(Product(external: "4455"));
+        etsy.Setup(x => x.GetProductionPartnersAsync("access", "12345", It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        await service.CreateProductAsync(productId, CreateRequest());
+        var sync = new SyncPrintifyProductRequestDto([], false);
+
+        var first = await service.SyncAsync(productId, "p-1", sync);
+        var second = await service.SyncAsync(productId, "p-1", sync);
+
+        first.Value.Warnings.Should().ContainSingle().Which.Should().Be(PrintifyService.NoProductionPartner);
+        second.Value.Warnings.Should().BeEmpty();
     }
 
     [TestMethod]

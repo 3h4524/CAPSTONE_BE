@@ -61,9 +61,17 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
                 if (assets.MockupIds is { Count: > 8 } || assets.MockupIds?.Distinct().Count() != assets.MockupIds?.Count)
                     return Error.Validation("Select at most eight distinct mockups.");
             }
-            if (definition.Nodes.SingleOrDefault(x => x.Type == "publish-printify") is { } printifyNode
-                && WorkflowJson.Config<PrintifyPublishConfig>(printifyNode).Problem() is { } printifyProblem)
-                return Error.Validation(printifyProblem);
+            if (definition.Nodes.SingleOrDefault(x => x.Type == "publish-printify") is { } printifyNode)
+            {
+                // The Printify product is set on Apply mock-up, per product type; the product's own type is checked when
+                // the step runs. A workflow saved before that keeps the product on the node itself.
+                var printify = WorkflowJson.Config<PrintifyPublishConfig>(printifyNode);
+                // Read from the approved mock-ups, the product is only known when the step runs.
+                var printifyProblem = MockupPrintifyConfig.From(definition) is { HasProducts: true } || printify.FromMockups
+                    ? printify.ProfitProblem()
+                    : printify.Problem();
+                if (printifyProblem is not null) return Error.Validation(printifyProblem);
+            }
             if (definition.Nodes.SingleOrDefault(x => x.Type == "publish-etsy") is { } etsyNode
                 && WorkflowJson.Config<EtsyPublishConfig>(etsyNode).Problem() is { } etsyProblem)
                 return Error.Validation(etsyProblem);

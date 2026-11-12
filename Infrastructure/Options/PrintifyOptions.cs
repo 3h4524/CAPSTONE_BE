@@ -13,4 +13,10 @@ public sealed class PrintifyOptions
 
     /// <summary>Printify requires a User-Agent naming the client on every request.</summary>
     public string UserAgent { get; set; } = "APCS-Capstone";
+
+    /// <summary>
+    /// Enlarges a design much smaller than its print with Cloudinary's AI upscale instead of plain scaling. Off by
+    /// default: it counts against the Cloudinary plan. A file that fails to deliver falls back to the original design.
+    /// </summary>
+    public bool AiUpscale { get; set; }
 }
