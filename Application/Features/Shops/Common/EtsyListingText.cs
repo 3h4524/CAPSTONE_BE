@@ -24,6 +24,22 @@ public static partial class EtsyListingText
     [GeneratedRegex(@"\s+")]
     private static partial Regex Spaces();
 
+    /// <summary>
+    /// Etsy's Creativity Standards require a listing to say when AI made the item itself. Every APCS design is made by
+    /// an image model from the seller's prompts, so each listing APCS sends ends with this sentence.
+    /// </summary>
+    public const string AiDisclosure =
+        "About this design: it was created with AI image tools from the seller's own ideas and prompts, then chosen and prepared for print by the seller.";
+
+    /// <summary>The description with <see cref="AiDisclosure"/> at the end, once, whatever the seller edited.</summary>
+    public static string WithAiDisclosure(string? description)
+    {
+        var text = (description ?? string.Empty).Trim();
+        return text.Contains(AiDisclosure, StringComparison.OrdinalIgnoreCase)
+            ? text
+            : text.Length == 0 ? AiDisclosure : $"{text}\n\n{AiDisclosure}";
+    }
+
     public static (string Title, IReadOnlyList<string> Warnings) Title(string? value)
     {
         var warnings = new List<string>();

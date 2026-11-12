@@ -176,7 +176,7 @@ internal sealed class WorkflowTestData
     public WorkflowRun AddRun(Product product, string status = "running")
     {
         var workflow = AddWorkflow(product);
-        var run = new WorkflowRun { Id = Guid.NewGuid(), WorkflowId = workflow.Id, ProductId = product.Id, UserId = Owner,
+        var run = new WorkflowRun { Id = Guid.NewGuid(), WorkflowId = workflow.Id, ProductId = product.Id, Product = product, UserId = Owner,
             DefinitionSnapshot = workflow.Definition, WorkflowRevision = 4, Revision = 7, Status = status,
             IdempotencyKey = "existing", RequestHash = "existing", CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
         RunRows.Add(run);

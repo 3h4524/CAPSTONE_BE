@@ -306,6 +306,8 @@ public static class DependencyInjection
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
+        services.AddScoped<IMockupTemplatePrintifyLinkRepository, MockupTemplatePrintifyLinkRepository>();
+        services.AddScoped<IPrintifyColorMapRepository, PrintifyColorMapRepository>();
 
         return services;
     }
@@ -337,6 +339,7 @@ public static class DependencyInjection
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
         services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
+        services.AddSingleton<IPrintFileSource, CloudinaryPrintFileSource>();
         services.AddOptions<MockupOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Mockups));
         // Optional: without the section Free and the Pro trial use the defaults on UsageAllowanceOptions.

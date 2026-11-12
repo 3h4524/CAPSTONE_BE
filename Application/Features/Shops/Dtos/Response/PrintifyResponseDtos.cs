@@ -28,7 +28,11 @@ public sealed record PrintifyCatalogDto(
     IReadOnlyList<string> Sizes,
     IReadOnlyList<string> Positions,
     decimal? UsShippingFirstItem,
-    decimal? UsShippingAdditionalItem);
+    decimal? UsShippingAdditionalItem,
+    IReadOnlyList<PrintifyPrintAreaDto>? PrintAreas = null);
+
+/// <summary>A print area of the provider's product and its size in pixels, the largest any of its variants has.</summary>
+public sealed record PrintifyPrintAreaDto(string Position, int Width, int Height);
 
 public sealed record PrintifyVariantOptionDto(long Id, string Title, string? Color, string? Size);
 

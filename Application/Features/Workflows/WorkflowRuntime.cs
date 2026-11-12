@@ -13,7 +13,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
     IRepository<DesignImage>? designImages = null,
-    Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null)
+    Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
+    IRepository<MockupTemplate>? mockupTemplates = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -156,11 +157,20 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     if (approvedVideo.ApprovalStatus != "approved") { node.Status = "failed"; run.Status = "failed"; run.ErrorMessage = "Export requires the exact approved video."; return; }
                     var videoScenes = (await scenes.FindAsync(x => x.PromoVideoId == approvedVideo.Id, ct)).OrderBy(x => x.SceneOrder).ToArray();
                     var exportProduct = await products.GetByIdAsync(run.ProductId, ct);
-                    var approvedMockups = (await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null &&
-                        x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct))
-                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, x.StorageVersion, x.ContentHash, x.MetadataRevision)).ToArray();
+                    var approvedRows = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null &&
+                        x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
+                    var templateIds = approvedRows.Select(x => x.MockupTemplateId).OfType<Guid>().Distinct().ToArray();
+                    var aiTemplates = mockupTemplates is null || templateIds.Length == 0 ? new HashSet<Guid>()
+                        : (await mockupTemplates.FindAsync(x => templateIds.Contains(x.Id) && x.AiGenerated, ct)).Select(x => x.Id).ToHashSet();
+                    // In the order to upload them to Etsy: a photo not made with AI first, then by when they were made.
+                    var approvedMockups = approvedRows
+                        .Select(x => (Row: x, AiMade: Shops.Common.ListingPhotos.IsAiMade(x) || x.MockupTemplateId is { } id && aiTemplates.Contains(id)))
+                        .OrderBy(x => x.AiMade).ThenBy(x => x.Row.CreatedAt).ThenBy(x => x.Row.Id)
+                        .Select(x => new ExportAssetSnapshot(x.Row.Id, x.Row.StorageKey, x.Row.StorageVersion, x.Row.ContentHash, x.Row.MetadataRevision, AiMade: x.AiMade))
+                        .ToArray();
                     var approvedDesigns = designImages is null ? [] : (await designImages.FindAsync(x => x.ProductId == run.ProductId &&
                         x.DeletedAt == null && x.ApprovalStatus == "approved", ct))
+                        .OrderBy(x => x.VariationIndex).ThenBy(x => x.Id)
                         .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex, x.FileFormat)).ToArray();
                     ExportListingSnapshot? exportListing = null;
                     var listingNode = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing" && x.Status == "succeeded");
@@ -169,8 +179,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         try
                         {
                             var generatedListing = WorkflowJson.Read<ListingContentResponseDto>(listingNode.OutputSnapshot);
-                            exportListing = new(generatedListing.Title, generatedListing.Description,
-                                generatedListing.Tags.OrderBy(tag => tag.Position).Select(tag => tag.Value).ToArray(), generatedListing.VersionNumber);
+                            // The text as APCS would send it to Etsy: within Etsy's rules, and saying AI made the design.
+                            var (exportTitle, _) = Shops.Common.EtsyListingText.Title(generatedListing.Title);
+                            var (exportTags, _) = Shops.Common.EtsyListingText.Tags(generatedListing.Tags.OrderBy(tag => tag.Position).Select(tag => tag.Value));
+                            exportListing = new(exportTitle, Shops.Common.EtsyListingText.WithAiDisclosure(generatedListing.Description),
+                                exportTags, generatedListing.VersionNumber);
                         }
                         catch (JsonException) { }
                     }
@@ -193,11 +206,13 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         CreatedAt = time.GetUtcNow().UtcDateTime, ExpiresAt = time.GetUtcNow().AddDays(7).UtcDateTime };
                     await exports.AddAsync(package, cancellationToken: ct);
                     await exportItems.AddAsync(new() { Id = Guid.NewGuid(), ExportPackageId = package.Id, ProductId = run.ProductId, PromoVideoId = approvedVideo.Id,
-                        IncludePromoVideo = true, IncludeMockupImages = true, IncludeDesignImages = false, IncludeListingContent = false, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
+                        IncludePromoVideo = true, IncludeMockupImages = approvedMockups.Length > 0, IncludeDesignImages = approvedDesigns.Length > 0,
+                        IncludeListingContent = exportListing is not null, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
+                    var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, approvedVideo, exportListing is not null);
                     node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
                     await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
                         approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
-                        exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot), ct); return;
+                        exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot, guide), ct); return;
             }
         }
         // Publishing calls Printify and Etsy for up to minutes, so it runs in the background after this transaction
@@ -389,6 +404,29 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     /// package manifest under "modelPhotos", apart from the ones the video already shows. A manifest without any is
     /// left exactly as before.
     /// </summary>
+    /// <summary>
+    /// The guide for listing the package on Etsy by hand. File names follow the media worker's: <c>mockup/mockup-01.png</c>
+    /// in the order sent, <c>design/design-01.png</c>, and the approved video under <c>video/final/v001__&lt;id&gt;/</c>.
+    /// </summary>
+    private static string EtsyGuide(WorkflowRun run, Product? product, IReadOnlyList<ExportAssetSnapshot> mockups, IReadOnlyList<ExportAssetSnapshot> designs,
+        PromoVideo video, bool hasListing)
+    {
+        WorkflowDefinition? definition = null;
+        try { definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot); }
+        catch (JsonException) { }
+        EtsyPublishConfig? etsy = null;
+        if (definition?.Nodes.FirstOrDefault(x => x.Type == "publish-etsy") is { } etsyNode)
+        {
+            try { etsy = WorkflowJson.Read<EtsyPublishConfig>(etsyNode.Config.GetRawText()); }
+            catch (JsonException) { }
+        }
+        var viaPrintify = definition?.Nodes.Any(x => x.Type == "publish-printify") == true;
+        var photos = mockups.Select((x, index) => new ExportGuidePhoto($"mockup/mockup-{index + 1:00}.png", x.AiMade)).ToArray();
+        var files = designs.Select((x, index) => $"design/design-{index + 1:00}.{(x.FileFormat ?? "png").ToLowerInvariant()}").ToArray();
+        var videoFile = $"video/final/v{video.VersionNumber:000}__{video.Id}/video.mp4";
+        return ExportEtsyGuide.Build(product?.Name ?? "this product", product?.ProductType, photos, files, videoFile, hasListing, etsy, viaPrintify);
+    }
+
     private async Task<string> WithModelPhotosAsync(string manifest, Guid productId, IReadOnlyCollection<PromoVideoScene> videoScenes, CancellationToken ct)
     {
         var inVideo = videoScenes.Select(scene => scene.MockupImageId).OfType<Guid>().ToHashSet();
