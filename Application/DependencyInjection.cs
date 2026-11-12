@@ -154,6 +154,9 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.WorkflowRunActionTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.ReviewDesignsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.ReviewMockupsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.CreateWorkflowTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.CreateBatchTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.AddBatchProductsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.OfferChoicesTool>();
         services.AddScoped<IListingContentService, ListingContentService>();
         // The test reports are files on the machine that ran the suite, so the service keeps
