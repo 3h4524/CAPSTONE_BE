@@ -125,7 +125,16 @@ public sealed record GenerateVideoConfig(
     // A batch run's answer when a design has no image for a scene: "hero" (its first approved mock-up, the default)
     // or "skip" (leave the scene out).
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    string? MissingSourcePolicy = null);
+    string? MissingSourcePolicy = null,
+    // Before a batch run, some products' own settings, set in Generate Video: every design of such a product renders
+    // with them instead of the shared ones (see ForProduct).
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyDictionary<Guid, GenerateVideoConfig>? ProductConfigs = null)
+{
+    /// <summary>The settings one product's videos use: its own when it has them, else these, without the other products'.</summary>
+    public GenerateVideoConfig ForProduct(Guid productId) =>
+        (ProductConfigs?.TryGetValue(productId, out var own) == true ? own : this) with { ProductConfigs = null };
+}
 public sealed record VideoTemplateRequirements(int MinimumAssets, bool RequiresDetail, int MinimumVariants);
 public sealed record VideoTemplateCatalogItem(string Code, int Version, string Name, string Description,
     string? PreviewVideoUrl, int DefaultDurationSeconds, string DefaultTransition, string DefaultMotionPreset,

@@ -67,11 +67,13 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
 
         if (definition.Nodes.SingleOrDefault(x => x.Type == "generate-video") is { } videoNode)
         {
-            var config = WorkflowJson.Config<GenerateVideoConfig>(videoNode);
-            var (clips, seconds, perVideo) = AiCostPerVideo(config);
+            var shared = WorkflowJson.Config<GenerateVideoConfig>(videoNode);
             var withPerson = 0;
             foreach (var product in batch)
             {
+                // A product given settings of its own before the run renders every design with them.
+                var config = shared.ForProduct(product.Id);
+                var (clips, seconds, perVideo) = AiCostPerVideo(config);
                 // A product designed in this run gets every variant; one designed before keeps its approved design,
                 // else every design not rejected.
                 var videos = designsOf.TryGetValue(product.Id, out var own)
@@ -82,10 +84,10 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
                         videos * clips, videos * perVideo));
                 if (PersonModelPhotos.Needs(config)) withPerson += videos;
             }
-            var gemini = imageProviders.FirstOrDefault(x => x.Provider == ImageGenerationProviders.Gemini);
-            if (withPerson > 0 && gemini is not null)
-                items.Add(new("model_photos", "Model photos", "One per design for its scenes with a person: Gemini puts the design on a system model",
-                    withPerson, withPerson * gemini.EstimatedCostPerImageUsd));
+            var ideogram = imageProviders.FirstOrDefault(x => x.Provider == ImageGenerationProviders.Ideogram);
+            if (withPerson > 0 && ideogram is not null)
+                items.Add(new("model_photos", "Model photos", "One per design for its scenes with a person: Ideogram puts the design on a system model",
+                    withPerson, withPerson * ideogram.EstimatedCostPerImageUsd));
         }
 
         var aiBudget = items.Where(x => x.Kind == "ai_video").Sum(x => x.EstimatedCostUsd);

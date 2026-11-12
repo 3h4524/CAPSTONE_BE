@@ -25,8 +25,11 @@ public sealed class RunCostEstimateServiceTests
         var gemini = new Mock<IImageGenerationProvider>();
         gemini.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Gemini);
         gemini.SetupGet(x => x.EstimatedCostPerImageUsd).Returns(0.05m);
+        var ideogram = new Mock<IImageGenerationProvider>();
+        ideogram.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
+        ideogram.SetupGet(x => x.EstimatedCostPerImageUsd).Returns(0.04m);
         return new(user.Object, WorkflowTestData.Repository(_workflows, x => x.Id).Object, WorkflowTestData.Repository(_products, x => x.Id).Object,
-            WorkflowTestData.Repository(_designs, x => x.Id).Object, [gemini.Object]);
+            WorkflowTestData.Repository(_designs, x => x.Id).Object, [gemini.Object, ideogram.Object]);
     }
 
     private Product AddProduct(string name)
@@ -40,14 +43,17 @@ public sealed class RunCostEstimateServiceTests
         new(TemplateCode: template, DurationSeconds: seconds, Mode: mode, AiVideoModelKey: model);
 
     /// <summary>A workflow designing <paramref name="variants"/> variants per product, then a video of these scenes.</summary>
-    private Workflow AddWorkflow(int variants, params AiVideoSceneOptions[] scenes)
+    private Workflow AddWorkflow(int variants, params AiVideoSceneOptions[] scenes) =>
+        AddWorkflow(variants, new GenerateVideoConfig(Mode: "ai_shot", AiScenes: scenes));
+
+    private Workflow AddWorkflow(int variants, GenerateVideoConfig video)
     {
         WorkflowNode Node(string type, object config) => new(type, type, type, new(0, 0), JsonSerializer.SerializeToElement(config, WorkflowJson.Options));
         var definition = new WorkflowDefinition(2,
         [
             Node("product-input", new ProductInputConfig(_batch, Guid.Empty)),
             Node("design-image", new { imageProvider = "gemini", variants }),
-            Node("generate-video", new GenerateVideoConfig(Mode: "ai_shot", AiScenes: scenes)),
+            Node("generate-video", video),
         ], []);
         var workflow = new Workflow { Id = Guid.NewGuid(), UserId = Owner, Name = "w", Definition = WorkflowJson.Write(definition) };
         _workflows.Add(workflow);
@@ -74,7 +80,7 @@ public sealed class RunCostEstimateServiceTests
     }
 
     [TestMethod]
-    public async Task EstimateAsync_ScenesWithAPerson_CountAGeminiModelPhotoPerDesign()
+    public async Task EstimateAsync_ScenesWithAPerson_CountAnIdeogramModelPhotoPerDesign()
     {
         AddProduct("Tee A");
         var workflow = AddWorkflow(2, Scene("ai", template: "lifestyle_in_use"), Scene("ai", template: "lifestyle_in_use"));
@@ -82,7 +88,7 @@ public sealed class RunCostEstimateServiceTests
         var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
 
         // One per design, however many scenes show the person.
-        estimate.Items.Single(x => x.Kind == "model_photos").Should().BeEquivalentTo(new { Quantity = 2, EstimatedCostUsd = 2 * 0.05m });
+        estimate.Items.Single(x => x.Kind == "model_photos").Should().BeEquivalentTo(new { Quantity = 2, EstimatedCostUsd = 2 * 0.04m });
     }
 
     [TestMethod]
@@ -96,6 +102,34 @@ public sealed class RunCostEstimateServiceTests
 
         estimate.Items.Should().NotContain(x => x.Kind == "design_images");
         estimate.Items.Single(x => x.Kind == "ai_video").Should().BeEquivalentTo(new { Quantity = 1, EstimatedCostUsd = 0.40m });
+    }
+
+    [TestMethod]
+    public async Task EstimateAsync_ProductWithItsOwnSettings_IsPricedFromThem()
+    {
+        AddProduct("Tee A");
+        var onModel = AddProduct("Tee B");
+        var shared = new GenerateVideoConfig(Mode: "standard", AiScenes: [Scene("standard")]);
+        var own = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [Scene("ai", template: "lifestyle_in_use", seconds: 5)]);
+        var workflow = AddWorkflow(1, shared with { ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [onModel.Id] = own } });
+
+        var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
+
+        estimate.Items.Where(x => x.Kind == "ai_video").Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new { Label = "Tee B", Quantity = 1, EstimatedCostUsd = 0.40m });
+        estimate.Items.Single(x => x.Kind == "model_photos").Quantity.Should().Be(1);
+    }
+
+    [TestMethod]
+    public void ForProduct_TheProductsOwnSettingsElseTheSharedOnes_NeverTheOtherProducts()
+    {
+        var product = Guid.NewGuid();
+        var own = new GenerateVideoConfig(DurationSeconds: 5);
+        var shared = new GenerateVideoConfig(DurationSeconds: 9, ProductConfigs: new Dictionary<Guid, GenerateVideoConfig> { [product] = own });
+
+        shared.ForProduct(product).Should().Be(own);
+        shared.ForProduct(Guid.NewGuid()).Should().Be(shared with { ProductConfigs = null });
+        WorkflowJson.Write(shared.ForProduct(product)).Should().NotContain("productConfigs");
     }
 
     [TestMethod]

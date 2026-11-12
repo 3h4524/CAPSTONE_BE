@@ -224,7 +224,7 @@ public sealed class LifestyleMockupServiceTests
     }
 
     [TestMethod]
-    public async Task GenerateForVideoAsync_SendsTheLibraryModelAndTheMockupToGeminiWithTheSellersGeminiKey()
+    public async Task GenerateForVideoAsync_SendsTheLibraryModelAndTheMockupToIdeogramWithTheSellersIdeogramKey()
     {
         var product = fixture.AddProduct();
         var hero = fixture.AddAsset(product);
@@ -236,9 +236,9 @@ public sealed class LifestyleMockupServiceTests
         modelPhotos.Add(model);
         maps.Setup(x => x.DownloadAsync("https://cdn/ava.jpg", It.IsAny<CancellationToken>())).ReturnsAsync(Png);
         IReadOnlyList<ImageReference>? sent = null;
-        gemini.Setup(x => x.ComposeAsync("gemini-key", It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
+        provider.Setup(x => x.ComposeAsync("plain-key", It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
             .Callback((string _, string _, IReadOnlyList<ImageReference> images, CancellationToken _) => sent = images)
-            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "gemini-image", 0.068m));
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-image", 0.04m));
         var service = Service();
 
         var result = await service.GenerateForVideoAsync(product.Id, hero.Id, model.Id, default);
@@ -246,8 +246,8 @@ public sealed class LifestyleMockupServiceTests
         result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
         sent!.Select(x => x.Bytes).Should().BeEquivalentTo(new[] { Png, Garment }, x => x.WithStrictOrdering());
         fixture.AssetRows.Should().ContainSingle(x => x.Role == "Lifestyle").Which.ApprovalStatus.Should().Be("pending");
-        usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.Provider == "gemini" && r.CostUsd == 0.068m), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
-        provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
+        usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.Provider == "ideogram" && r.CostUsd == 0.04m), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        gemini.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private LifestyleMockupService Service(bool connected = true)

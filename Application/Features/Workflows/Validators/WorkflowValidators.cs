@@ -5,6 +5,24 @@ namespace APCS.Application.Features.Workflows.Validators;
 
 public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVideoConfig>
 {
+    private const string BatchKey = "batch";
+
+    /// <summary>
+    /// Checks settings that make the video of every design of a batch run, the workflow's shared ones or a product's or
+    /// design's own: a scene may leave its image to be chosen for each design.
+    /// </summary>
+    public FluentValidation.Results.ValidationResult ValidateForBatch(GenerateVideoConfig config) => Validate(BatchContext(config));
+
+    public Task<FluentValidation.Results.ValidationResult> ValidateForBatchAsync(GenerateVideoConfig config, CancellationToken ct) =>
+        ValidateAsync(BatchContext(config), ct);
+
+    private static ValidationContext<GenerateVideoConfig> BatchContext(GenerateVideoConfig config)
+    {
+        var context = new ValidationContext<GenerateVideoConfig>(config);
+        context.RootContextData[BatchKey] = true;
+        return context;
+    }
+
     public GenerateVideoConfigValidator()
     {
         RuleFor(x => x.Mode).Must(x => x is "standard" or "ai_shot");
@@ -41,8 +59,10 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             double.IsFinite(scene.AiCropPosition.X) && double.IsFinite(scene.AiCropPosition.Y) &&
             scene.AiCropPosition.X is >= 0 and <= 1 && scene.AiCropPosition.Y is >= 0 and <= 1))
             .WithMessage("AI scene crop position must be between 0 and 1.");
+        // A batch run picks each design's image for a scene itself (SceneSourceResolver: the matching mock-up, the
+        // design's model photo for a scene with a person, else its main mock-up), so only a video's own settings need one.
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
-            .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
+            .When((x, context) => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 } && !context.RootContextData.ContainsKey(BatchKey))
             .WithMessage("Choose an approved product image or keyframe for every scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode == "standard"
                 ? scene.DurationSeconds is >= 1 and <= VideoDurationPolicy.MaximumVideoSeconds

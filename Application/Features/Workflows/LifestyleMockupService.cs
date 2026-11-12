@@ -23,15 +23,15 @@ public interface ILifestyleMockupService
     Task<Result<MockupResponse>> GenerateFromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct);
 
     /// <summary>
-    /// As <see cref="GenerateFromModelPhotoAsync"/>, made by Gemini with the Seller's Gemini key: the image a batch
+    /// As <see cref="GenerateFromModelPhotoAsync"/>, made by Ideogram with the Seller's Ideogram key: the image a batch
     /// video run makes by itself for a design whose AI scenes show a person (<see cref="PersonModelPhotos"/>).
     /// </summary>
     Task<Result<MockupResponse>> GenerateForVideoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct);
 }
 
 /// <summary>
-/// Dresses the person (or people) in a photo in the product of an existing mock-up, using the Seller's Ideogram key, or
-/// their Gemini key for the image a video run makes by itself (<see cref="GenerateForVideoAsync"/>).
+/// Dresses the person (or people) in a photo in the product of an existing mock-up, using the Seller's Ideogram key, for the
+/// image they ask for and for the one a video run makes by itself (<see cref="GenerateForVideoAsync"/>).
 /// </summary>
 /// <remarks>
 /// The model edits the person photo with two reference images: the mock-up, for the cut and colour of the garment, and
@@ -46,9 +46,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
     ILogger<LifestyleMockupService> logger, IRepository<MockupTemplate> templates, IMockupMapService maps,
     IPlanEntitlementService entitlements) : ILifestyleMockupService
 {
-    // Ideogram edits the photo the seller asks for; Gemini the one a video run makes by itself.
     private readonly IImageGenerationProvider? ideogram = imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Ideogram);
-    private readonly IImageGenerationProvider? gemini = imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Gemini);
 
     public const int MaximumPersonBytes = 8 * 1024 * 1024;
 
@@ -109,7 +107,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         FromModelPhotoAsync(productId, garmentMockupId, modelPhotoId, ideogram, ct);
 
     public Task<Result<MockupResponse>> GenerateForVideoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct) =>
-        FromModelPhotoAsync(productId, garmentMockupId, modelPhotoId, gemini, ct);
+        FromModelPhotoAsync(productId, garmentMockupId, modelPhotoId, ideogram, ct);
 
     private async Task<Result<MockupResponse>> FromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId,
         IImageGenerationProvider? provider, CancellationToken ct)

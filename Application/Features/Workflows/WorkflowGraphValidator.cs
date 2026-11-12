@@ -63,8 +63,10 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
             {
                 var config = WorkflowJson.Config<GenerateVideoConfig>(definition.Nodes.Single(x => x.Type == "generate-video"));
                 if (!registry.IsModeEnabled(config.Mode)) return new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation);
-                var validation = videoValidator.Validate(config);
+                // A batch run chooses each design's images itself, so its scenes may leave them open.
+                var validation = requireProduct ? videoValidator.Validate(config) : videoValidator.ValidateForBatch(config);
                 if (!validation.IsValid) return Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage)));
+                if (ProductConfigsError(config) is { } productError) return productError;
                 var assets = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
                 if (assets.MockupIds is { Count: > 8 } || assets.MockupIds?.Distinct().Count() != assets.MockupIds?.Count)
                     return Error.Validation("Select at most eight distinct mockups.");
@@ -77,6 +79,29 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
                 return Error.Validation(etsyProblem);
         }
         catch (JsonException) { return Error.Validation("Invalid node configuration."); }
+        return null;
+    }
+
+    /// <summary>Products of a batch with video settings of their own at most.</summary>
+    public const int MaximumProductConfigs = 50;
+
+    /// <summary>
+    /// Each product's own settings are checked as the shared ones are, and have to make a video for each of its designs.
+    /// </summary>
+    private Error? ProductConfigsError(GenerateVideoConfig config)
+    {
+        if (config.ProductConfigs is not { Count: > 0 } products) return null;
+        if (products.Count > MaximumProductConfigs)
+            return Error.Validation($"At most {MaximumProductConfigs} products can have video settings of their own.");
+        foreach (var own in products.Values)
+        {
+            if (own is null || own.ProductConfigs is { Count: > 0 } || !SupportsBatchVideos(own))
+                return Error.Validation("A product's own video settings have to be a scene list, without the Product on Model pack.");
+            if (!registry.IsModeEnabled(own.Mode)) return new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation);
+            var validation = videoValidator.ValidateForBatch(own);
+            if (!validation.IsValid)
+                return Error.Validation("A product's own video settings: " + string.Join(" ", validation.Errors.Select(x => x.ErrorMessage)));
+        }
         return null;
     }
 

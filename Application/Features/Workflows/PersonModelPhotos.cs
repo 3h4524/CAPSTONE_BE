@@ -5,7 +5,7 @@ namespace APCS.Application.Features.Workflows;
 
 /// <summary>
 /// The model photo an AI scene that shows a person starts from (<see cref="AiVideoPromptCompiler.RequiresPerson"/>).
-/// A batch video run makes one for each design whose scenes need it and that has none: Gemini dresses the shared
+/// A batch video run makes one for each design whose scenes need it and that has none: Ideogram dresses the shared
 /// library's model photo for its product type in the design's main mock-up (<see cref="LifestyleMockupService"/>).
 /// </summary>
 /// <remarks>

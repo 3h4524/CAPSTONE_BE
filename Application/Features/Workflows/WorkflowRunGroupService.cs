@@ -105,7 +105,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         await uow.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
-        // The model photos are made by Gemini and paid for, so only after the seller confirmed the Run's cost, which lists them.
+        // The model photos are made by Ideogram and paid for, so only after the seller confirmed the Run's cost, which lists them.
         if (request.AiBudgetUsd is > 0) await MakeModelPhotosAsync(group, ct);
         if (MockupAutoApproval.IsAuto(definition)) return Result.Success(await AutoConfirmAsync(group, request.AiBudgetUsd, ct));
         return Result.Success(await MapAsync(group, ct));
@@ -141,9 +141,9 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
 
     /// <summary>
     /// Makes the model photo of every design whose scenes show a person and that has none (<see cref="PersonModelPhotos"/>):
-    /// Gemini dresses the system's model photo for the product type in the design's main mock-up, as an AI lifestyle
+    /// Ideogram dresses the system's model photo for the product type in the design's main mock-up, as an AI lifestyle
     /// image is made at Apply mock-up. A design whose scenes need no person, or that has a model photo already, is left
-    /// alone; one that cannot be made (no Gemini key, no system model, no mock-up) keeps the error that asks the seller
+    /// alone; one that cannot be made (no Ideogram key, no system model, no mock-up) keeps the error that asks the seller
     /// for one. Returns how many were made; they wait for review.
     /// </summary>
     private async Task<int> MakeModelPhotosAsync(WorkflowRunGroup group, CancellationToken ct)
@@ -152,7 +152,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         var (_, shared) = await SharedConfigAsync(group, ct);
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
         var needing = (await TargetsAsync(group, ct))
-            .Where(target => PersonModelPhotos.Needs(ConfigFor(shared, overrides.GetValueOrDefault(target.Key))) && !PersonModelPhotos.Has(target.Mockups))
+            .Where(target => PersonModelPhotos.Needs(ConfigFor(shared, overrides.GetValueOrDefault(target.Key), target.Product.Id)) && !PersonModelPhotos.Has(target.Mockups))
             .ToArray();
         if (needing.Length == 0) return 0;
 
@@ -232,7 +232,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             // Every design of a batch run renders from its own scene list, so settings that fit one product only are refused.
             if (!WorkflowGraphValidator.SupportsBatchVideos(config))
                 return Result.Failure<RunGroupResponse>(Error.Validation("A design's own settings have to be a scene list, without the Product on Model pack."));
-            if (videoValidator != null && await videoValidator.ValidateAsync(config, ct) is { IsValid: false } invalid)
+            if (videoValidator != null && await videoValidator.ValidateForBatchAsync(config, ct) is { IsValid: false } invalid)
                 return Result.Failure<RunGroupResponse>(Error.Validation(string.Join(" ", invalid.Errors.Select(x => x.ErrorMessage))));
         }
         await using var tx = await uow.BeginTransactionAsync(ct);
@@ -276,8 +276,16 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         catch (JsonException) { return null; }
     }
 
-    /// <summary>The settings one design renders with: its own, else the workflow's shared ones.</summary>
-    private static GenerateVideoConfig ConfigFor(GenerateVideoConfig shared, TargetOverride? picked) => picked?.Config ?? shared;
+    /// <summary>
+    /// The settings one design renders with: its own (set at Mockup Approval), else its product's (set before the run),
+    /// else the workflow's shared ones.
+    /// </summary>
+    private static GenerateVideoConfig ConfigFor(GenerateVideoConfig shared, TargetOverride? picked, Guid productId) =>
+        picked?.Config ?? shared.ForProduct(productId);
+
+    /// <summary>The settings the product was given before the run, if any: what its designs show until given their own.</summary>
+    private static GenerateVideoConfig? ProductOwn(GenerateVideoConfig shared, Guid productId) =>
+        shared.ProductConfigs?.ContainsKey(productId) == true ? shared.ForProduct(productId) : null;
 
     /// <summary>One design that gets a video: its mock-ups, the settings resolved for it, and the run it will get.</summary>
     private sealed record TargetPlan(Target Target, GenerateVideoConfig Config, WorkflowDefinition Child, WorkflowRun Run);
@@ -302,7 +310,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         foreach (var target in targets)
         {
             overrides.TryGetValue(target.Key, out var picked);
-            var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, ConfigFor(shared, picked), picked, ct);
+            var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, ConfigFor(shared, picked, target.Product.Id), picked, ct);
             if (resolved.Error != null) { problems.Add($"{Label(target)}: {resolved.Error}"); continue; }
             var child = ForTarget(definition, target.Product.Id, target.ArtworkGroupKey, resolved.Config);
             plans.Add(new(target, resolved.Config, child, ChildRun(group, child, target, now, plans.Count)));
@@ -365,9 +373,9 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         if (fullRun.IsFailure) return Result.Failure<RunGroupResponse>(fullRun.Error);
         var videoCheck = await VideoPlanChecks.CheckAsync(entitlements, group.UserId, config, plans.Count, ct);
         if (videoCheck.IsFailure) return Result.Failure<RunGroupResponse>(videoCheck.Error);
-        // A design with settings of its own may need a feature the shared ones do not (landscape output).
+        // A design or product with settings of its own may need a feature the shared ones do not (landscape output).
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
-        foreach (var own in plans.Select(plan => overrides.GetValueOrDefault(plan.Target.Key)?.Config).OfType<GenerateVideoConfig>().Distinct())
+        foreach (var own in plans.Select(plan => ConfigFor(config, overrides.GetValueOrDefault(plan.Target.Key), plan.Target.Product.Id)).Distinct())
         {
             var ownCheck = await VideoPlanChecks.CheckFeaturesAsync(entitlements, group.UserId, own, ct);
             if (ownCheck.IsFailure) return Result.Failure<RunGroupResponse>(ownCheck.Error);
@@ -548,7 +556,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             string? resolveError = null;
             if (waiting && target.Approved.Count > 0)
             {
-                var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, ConfigFor(config, picked), picked, ct);
+                var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, ConfigFor(config, picked, target.Product.Id), picked, ct);
                 var byId = target.Approved.Concat(target.Frames).ToDictionary(x => x.Id);
                 scenes = resolved.Scenes.Select(scene => new RunGroupScenePreview(scene.SceneIndex, scene.MockupId,
                     scene.MockupId is Guid id && byId.TryGetValue(id, out var asset) ? Preview(asset) : null, scene.Warning, scene.Overridden)).ToArray();
@@ -561,7 +569,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 target.DesignLabel, cover is null ? null : Preview(cover), target.Mockups.Count, target.Approved.Count,
                 target.Mockups.Count(x => x.ApprovalStatus == "pending"), waiting ? target.Approved.Count > 0 : child is not null,
                 hasOverride, scenes, warnings, resolveError, child?.Id, child?.Status, current?.NodeType, current?.Stage, current?.Progress ?? 0,
-                child?.ErrorMessage, child is null ? picked?.Config : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
+                child?.ErrorMessage, child is null ? picked?.Config ?? ProductOwn(config, target.Product.Id) : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
                 picked?.Config is not null));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),

@@ -468,7 +468,7 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_ScenesWithAPerson_GeminiMakesOneModelPhotoPerDesignFromItsHeroAndTheSystemModel()
+    public async Task StartAsync_ScenesWithAPerson_IdeogramMakesOneModelPhotoPerDesignFromItsHeroAndTheSystemModel()
     {
         var data = new RunGroupTestData();
         var model = data.AddSystemModel();
@@ -562,6 +562,65 @@ public sealed class WorkflowRunGroupServiceTests
 
         group.Status.Should().Be("waiting_for_targets");
         data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_ProductGivenItsOwnSettingsBeforeTheRun_RendersEachOfItsDesignsWithThem()
+    {
+        var data = new RunGroupTestData();
+        var other = data.AddProduct("Birth Month Blooms");
+        var (_, mockups) = data.AddDesign(other, 1, approved: true);
+        var own = data.SharedConfig() with { DurationSeconds = 5, AiScenes = [data.SharedConfig().AiScenes![1]] };
+        var workflow = data.AddWorkflow(data.SharedConfig() with
+        {
+            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [other.Id] = own }
+        });
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "own"), default)).Value;
+
+        var waiting = (await data.Service.GetAsync(group.Id, default)).Value;
+        var target = waiting.Targets.Single(x => x.ProductId == other.Id);
+        target.Config!.DurationSeconds.Should().Be(5);
+        target.HasOwnConfig.Should().BeFalse();
+        target.Scenes.Select(x => x.MockupId).Should().Equal(mockups[1].Id);
+        (await data.Service.ConfirmAsync(group.Id, new(group.Revision), default)).IsSuccess.Should().BeTrue();
+
+        GenerateVideoConfig Rendered(Guid productId) => WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows
+            .Single(x => x.NodeType == "generate-video" && x.WorkflowRunId == data.Base.RunRows.Single(run => run.ProductId == productId).Id).InputSnapshot);
+        Rendered(other.Id).AiScenes.Should().ContainSingle().Which.MockupId.Should().Be(mockups[1].Id);
+        Rendered(other.Id).ProductConfigs.Should().BeNull();
+        Rendered(data.Preview.Id).AiScenes!.Select(x => x.MockupId).Should().Equal(data.PreviewMockups[0].Id, data.PreviewMockups[1].Id);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AiScenesWithNoImageChosen_StartAndEachDesignUsesItsMainMockup()
+    {
+        var data = new RunGroupTestData();
+        var open = data.AiConfig() with { AiScenes = data.AiConfig().AiScenes!.Select(scene => scene with { MockupId = null }).ToArray() };
+        var workflow = data.AddWorkflow(data.SharedConfig() with
+        {
+            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = open }
+        });
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "open"), default);
+
+        started.IsSuccess.Should().BeTrue();
+        var hero = SceneSourceResolver.Hero(data.PreviewMockups)!.Id;
+        started.Value.Targets.Single().Scenes.Select(x => x.MockupId).Should().Equal(hero, hero);
+        new APCS.Application.Features.Workflows.Validators.GenerateVideoConfigValidator().Validate(open).IsValid.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ProductSettingsThatMakeOneProductsVideoOnly_AreRefused()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.SharedConfig() with
+        {
+            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = data.SharedConfig() with { Template = "product_on_model_pack" } }
+        });
+
+        var result = await data.Service.StartAsync(workflow.Id, new(4, "pack"), default);
+
+        result.Error.Message.Should().Contain("product's own video settings");
     }
 
     [TestMethod]
@@ -698,7 +757,7 @@ public sealed class WorkflowRunGroupServiceTests
             return model;
         }
 
-        /// <summary>Gemini's model photo is stored as a Lifestyle image of the design, waiting for review, as the real service does.</summary>
+        /// <summary>Ideogram's model photo is stored as a Lifestyle image of the design, waiting for review, as the real service does.</summary>
         public void ModelPhotosSucceed() => Lifestyle
             .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Guid productId, Guid garmentId, Guid modelId, CancellationToken _) =>
