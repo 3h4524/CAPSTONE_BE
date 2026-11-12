@@ -1,5 +1,6 @@
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Features.Assistant;
+using APCS.Application.Features.Assistant.Catalog;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
 using FluentAssertions;
@@ -18,7 +19,7 @@ public sealed class AssistantPromptBuilderTests
         var messages = builder.Build(AssistantTestSupport.Session(caller: AssistantTestSupport.Admin));
 
         messages[0].Role.Should().Be(AssistantMessageRole.System);
-        messages[0].Text.Should().Contain("APCS Assistant").And.Contain("2026-10-29").And.Contain("The user is a Admin");
+        messages[0].Text.Should().Contain("You are Podi").And.Contain("Podivo").And.Contain("2026-10-29").And.Contain("The user is a Admin");
     }
 
     [TestMethod]
@@ -109,6 +110,9 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("write the query in English, then answer in the user's language")]
     [DataRow("Make the query stand alone")]
     [DataRow("Never say you will make a change unless you call the tool")]
+    [DataRow("app_context has no canvas, do not explore")]
+    [DataRow("call navigate to /workflows?id=<workflow id>")]
+    [DataRow("If start_workflow_run returns an error, explain the reason it gave")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 
@@ -201,6 +205,50 @@ public sealed class AssistantPromptBuilderTests
 
         builder.Build(AssistantTestSupport.Session("hi"))[0].Text.Should().NotContain("\"connectionRules\"");
         builder.Build(AssistantTestSupport.Session("hi", context, AssistantTestSupport.Admin))[0].Text.Should().NotContain("\"connectionRules\"");
+    }
+
+    [TestMethod]
+    public void Build_SystemPromptNamesTheBotPodiAndNeverApcs()
+    {
+        var system = builder.Build(AssistantTestSupport.Session())[0].Text!;
+
+        system.Should().Contain("say you are Podi, the Podivo assistant").And.Contain("only help with Podivo");
+        system.Should().NotContain("APCS");
+    }
+
+    [TestMethod]
+    public void Build_SystemPromptRunOrderComesFromTheCatalogIncludingPublishSteps()
+    {
+        var system = builder.Build(AssistantTestSupport.Session())[0].Text!;
+
+        system.Should().Contain($"in this order: {string.Join(", ", WorkflowNodeCatalog.RunOrder)}.");
+        system.Should().Contain("export-zip, publish-printify, publish-etsy").And.Contain(WorkflowNodeCatalog.PublishRule);
+    }
+
+    [TestMethod]
+    public void Build_SystemPromptNoLongerAsksForTheNodeCatalogBeforeEditing()
+    {
+        var system = builder.Build(AssistantTestSupport.Session())[0].Text!;
+
+        system.Should().NotContain("call get_node_catalog").And.NotContain("do not call get_node_catalog");
+        system.Should().Contain("Never invent setting names, values or ids").And.Contain("list_batches");
+    }
+
+    [TestMethod]
+    public void Build_SystemPromptComparesWithTheCanvasLayoutInsteadOfPositions() =>
+        builder.Build(AssistantTestSupport.Session())[0].Text.Should().NotContain("canvas positions").And.Contain("layout and reading order");
+
+    [TestMethod]
+    public void IncludesNodeCatalog_OnlyForASellerWithAnOpenCanvas()
+    {
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, [], []);
+        var withCanvas = new AssistantClientContextDto("/workflows", null, null, null, canvas);
+        var withoutCanvas = new AssistantClientContextDto("/dashboard", null, null, null, null);
+
+        AssistantPromptBuilder.IncludesNodeCatalog(AssistantTestSupport.Seller, withCanvas).Should().BeTrue();
+        AssistantPromptBuilder.IncludesNodeCatalog(AssistantTestSupport.Seller, withoutCanvas).Should().BeFalse();
+        AssistantPromptBuilder.IncludesNodeCatalog(AssistantTestSupport.Seller, null).Should().BeFalse();
+        AssistantPromptBuilder.IncludesNodeCatalog(AssistantTestSupport.Admin, withCanvas).Should().BeFalse();
     }
 
     [TestMethod]
