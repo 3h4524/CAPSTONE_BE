@@ -46,6 +46,6 @@ public sealed class RunWorkflowTool(
                     : "The open canvas cannot run as it is. Unless a canvas change you proposed in this turn fixes it, tell the user what to fix."
             },
             true,
-            AssistantStreamEvent.ClientAction(action)).WithFinalText(arguments.Reply));
+            AssistantStreamEvent.ClientAction(action)).WithFinalText(warnings.Length == 0 ? arguments.Reply : null));
     }
 }

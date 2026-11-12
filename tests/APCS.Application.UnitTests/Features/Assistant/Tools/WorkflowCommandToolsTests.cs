@@ -73,6 +73,7 @@ public sealed class WorkflowCommandToolsTests
         var payload = outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject.Payload;
         payload.GetProperty("warnings").GetArrayLength().Should().Be(1);
         outcome.ModelResultJson.Should().Contain("cannot run as it is");
+        outcome.FinalText.Should().BeNull();
     }
 
     [TestMethod]
