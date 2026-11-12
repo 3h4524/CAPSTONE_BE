@@ -132,7 +132,11 @@ public sealed class DesignGenerationProcessingTests
         await using var db = CreateContext();
         var jobId = await SeedFinishedJobAsync(db, products: 2, variations: 2, requireApproval: false);
 
-        (await db.DesignImages.ToListAsync()).Should().OnlyContain(i => i.ApprovalStatus == "approved");
+        // A product keeps one approved design: the first of each product stays approved and its other design is rejected.
+        var images = await db.DesignImages.ToListAsync();
+        images.Should().HaveCount(4);
+        images.GroupBy(i => i.ProductId).Should().OnlyContain(group => group.Count(i => i.ApprovalStatus == "approved") == 1 && group.Count(i => i.ApprovalStatus == "rejected") == 1);
+        images.Where(i => i.ApprovalStatus == "approved").Should().OnlyContain(i => i.VariationIndex == 1);
         (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync()).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.Approved);
         (await db.Products.ToListAsync()).Should().OnlyContain(p => p.ProcessingStatus == BatchJobProductStatuses.Approved);
 
@@ -164,7 +168,7 @@ public sealed class DesignGenerationProcessingTests
         var result = await CreateService(db).SetImageApprovalAsync(jobId, new SetImageApprovalRequestDto([firstProductImage.Id], "approved"));
 
         result.IsSuccess.Should().BeTrue();
-        (result.Value.UpdatedCount, result.Value.Approved, result.Value.Pending, result.Value.Rejected).Should().Be((1, 1, 3, 0));
+        (result.Value.UpdatedCount, result.Value.Approved, result.Value.Pending, result.Value.Rejected).Should().Be((2, 1, 2, 1), "approving one design rejects the product's other one");
         db.ChangeTracker.Clear();
         (await db.DesignImages.FindAsync(firstProductImage.Id))!.ApprovalStatus.Should().Be("approved");
         var after = await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).ToListAsync();
@@ -208,7 +212,8 @@ public sealed class DesignGenerationProcessingTests
         result.Value.UpdatedCount.Should().Be(2, "the rejected image is not overridden by approve all");
         db.ChangeTracker.Clear();
         (await db.DesignImages.FindAsync(images[0].Id))!.ApprovalStatus.Should().Be("rejected");
-        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "approved")).Should().Be(2);
+        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "approved")).Should().Be(1, "a product keeps one approved design");
+        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "rejected")).Should().Be(2);
     }
 
     [TestMethod]

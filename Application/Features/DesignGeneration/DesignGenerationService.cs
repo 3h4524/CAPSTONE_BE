@@ -972,9 +972,10 @@ public sealed class DesignGenerationService(
     // done the first of the new ones stays approved and the others, earlier ones included, are rejected.
     private async Task KeepOneApprovedDesignAsync(BatchJobProduct row, int lastVariation, CancellationToken cancellationToken)
     {
-        var approved = await designImages.Query()
-            .Where(image => image.BatchJobProductId == row.Id && image.DeletedAt == null && image.ApprovalStatus == ApprovalStatuses.Approved)
-            .ToListAsync(cancellationToken);
+        // Tracked reads: this job's own new images are already tracked, so a no-tracking copy could not be updated.
+        var approved = await designImages.FindAsync(
+            image => image.BatchJobProductId == row.Id && image.DeletedAt == null && image.ApprovalStatus == ApprovalStatuses.Approved,
+            cancellationToken);
         var kept = approved.Where(image => image.VariationIndex > lastVariation)
             .OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).FirstOrDefault();
         if (kept is null) return;

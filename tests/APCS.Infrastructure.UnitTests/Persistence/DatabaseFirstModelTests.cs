@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(80);
+        mappedTables.Should().HaveCount(81);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_character_models", "ai_prompts", "api_keys", "api_usage_records", "assistant_conversations",
