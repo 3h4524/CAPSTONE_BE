@@ -14,4 +14,10 @@ public sealed class UpdateMockupTemplateForm
     public IFormFile? BaseImage { get; set; }
     public bool AllowRecolor { get; set; }
     public string? GarmentColor { get; set; }
+
+    /// <summary>The side of the garment the photo shows: "front" (the default), "back" or "side".</summary>
+    public string? View { get; set; }
+
+    /// <summary>Every print area as a JSON array, as on <see cref="CreateMockupTemplateForm.Areas"/>.</summary>
+    public string? Areas { get; set; }
 }

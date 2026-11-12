@@ -1,8 +1,16 @@
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchMockups.Dtos.Response;
 
 namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 
 /// <summary>Creates a personal mock-up template with a real uploaded base photo.</summary>
+/// <remarks>
+/// <c>Areas</c>, when given, are all the template's print areas (the main one keyed "main") and X/Y/Width/Height
+/// are not used; otherwise X/Y/Width/Height are its one print area. <c>View</c> is the side of the garment the photo
+/// shows: "front" (the default), "back" or "side". With <c>MainTemplateId</c> the photo is another side of that
+/// template (back, left or right sleeve, named by <c>View</c>): it is linked to it in the same save and is not listed
+/// on its own.
+/// </remarks>
 public sealed record CreateMockupTemplateRequestDto(
     string Name,
     string ProductType,
@@ -12,4 +20,7 @@ public sealed record CreateMockupTemplateRequestDto(
     int Height,
     UploadFileDto? BaseImage,
     bool AllowRecolor = false,
-    string? GarmentColor = null);
+    string? GarmentColor = null,
+    string? View = null,
+    IReadOnlyList<MockupAreaDto>? Areas = null,
+    Guid? MainTemplateId = null);

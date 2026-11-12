@@ -172,7 +172,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         if (snapshotDocument.RootElement.TryGetProperty("exportSources", out var sourceElement))
                             sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);
                     }
-                    catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException) { }
+                    catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentNullException) { }
                     var manifest = new { schemaVersion = 1, productId = run.ProductId, videoId = approvedVideo.Id, version = approvedVideo.VersionNumber,
                         mode = approvedVideo.Mode, fingerprint = approvedVideo.Fingerprint, approvedRevision = approvedVideo.ReviewRevision,
                         video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,

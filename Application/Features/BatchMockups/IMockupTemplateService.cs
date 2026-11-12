@@ -27,6 +27,12 @@ public interface IMockupTemplateService
     Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gives a template the photo of another of its sides (back, left or right sleeve): a template of the Seller's own,
+    /// which is then shown with it only. Null takes the side off; the side it replaces or takes off is removed.
+    /// </summary>
+    Task<Result<MockupTemplateResponseDto>> SetViewAsync(Guid id, string view, Guid? viewTemplateId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Previews a base photo before it is saved: its garment mask and whether it can be recolored.
     /// </summary>
     Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default);
