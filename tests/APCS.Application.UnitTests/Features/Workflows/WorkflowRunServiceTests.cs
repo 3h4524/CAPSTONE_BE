@@ -376,6 +376,38 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_ApproveVideo_ExportsPhotosInEtsyOrder_WithAGuideToListByHand()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        var video = fixture.VideoRows.Single();
+        var real = fixture.AssetRows.Single();
+        real.CreatedAt = WorkflowTestData.Now.UtcDateTime;
+        // Made earlier, but by AI: it goes after the photo of the real garment.
+        var ai = WorkflowTestData.Asset(real.ProductId, "Lifestyle");
+        ai.SourceType = "ai_generated";
+        ai.CreatedAt = WorkflowTestData.Now.UtcDateTime.AddHours(-1);
+        fixture.AssetRows.Add(ai);
+
+        await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", video.Id, 2), default);
+
+        var payload = WorkflowJson.Read<ExportJobPayload>(fixture.JobRows.Single().Payload);
+        payload.ApprovedMockups!.Select(x => (x.Id, x.AiMade)).Should().Equal((real.Id, false), (ai.Id, true));
+        payload.EtsyGuide.Should().Contain("mockup/mockup-01.png").And.Contain("mockup/mockup-02.png  [made with AI]")
+            .And.Contain($"video/final/v001__{video.Id}/video.mp4").And.Contain(EtsyListingText.AiDisclosure);
+        fixture.ItemRows.Single().IncludeMockupImages.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void EtsyGuide_AWorkflowThatPushesToPrintify_WarnsThatAHandMadeListingIsNotFulfilled()
+    {
+        var guide = ExportEtsyGuide.Build("Cat tee", "tshirt", [new("mockup/mockup-01.png", false)], [], "video/final/v001__x/video.mp4",
+            hasListing: true, etsy: null, viaPrintify: true);
+
+        guide.Should().Contain("not linked to Printify").And.Contain("keep its last paragraph").And.Contain("Production partners");
+    }
+
+    [TestMethod]
     public async Task ActionAsync_RejectVideo_KeepsReviewCheckpointWithoutExport()
     {
         var fixture = new WorkflowTestData();

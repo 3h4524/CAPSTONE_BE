@@ -43,10 +43,8 @@ public sealed class WorkflowCanvasPatchSimulator
     {
         var errors = new List<string>();
         var normalized = new List<NormalizedCanvasOperation>();
-        var nodes = canvas.Nodes.ToDictionary(
-            node => node.Id,
-            node => new SimNode(node.Type, node.Label, JsonNode.Parse(node.Config.GetRawText()) as JsonObject ?? new JsonObject()));
-        var edges = canvas.Edges.Select(edge => (edge.Source, edge.Target)).ToList();
+        var nodes = LoadNodes(canvas);
+        var edges = LoadEdges(canvas);
 
         if (operations.Count is 0 or > AssistantLimits.MaxCanvasOperations)
             errors.Add($"Provide between 1 and {AssistantLimits.MaxCanvasOperations} operations.");
@@ -60,7 +58,21 @@ public sealed class WorkflowCanvasPatchSimulator
                 normalized.Add(applied);
         }
 
-        var result = new WorkflowDefinition(
+        return new CanvasPatchSimulation(normalized, ToDefinition(nodes, edges), errors);
+    }
+
+    public WorkflowDefinition Snapshot(AssistantCanvasDto canvas) => ToDefinition(LoadNodes(canvas), LoadEdges(canvas));
+
+    private static Dictionary<string, SimNode> LoadNodes(AssistantCanvasDto canvas) =>
+        canvas.Nodes.ToDictionary(
+            node => node.Id,
+            node => new SimNode(node.Type, node.Label, JsonNode.Parse(node.Config.GetRawText()) as JsonObject ?? new JsonObject()));
+
+    private static List<(string Source, string Target)> LoadEdges(AssistantCanvasDto canvas) =>
+        canvas.Edges.Select(edge => (edge.Source, edge.Target)).ToList();
+
+    private static WorkflowDefinition ToDefinition(Dictionary<string, SimNode> nodes, List<(string Source, string Target)> edges) =>
+        new(
             2,
             nodes.Select(pair => new WorkflowNode(
                 pair.Key,
@@ -69,8 +81,6 @@ public sealed class WorkflowCanvasPatchSimulator
                 new Point(),
                 JsonSerializer.SerializeToElement(pair.Value.Config))).ToArray(),
             edges.Select(edge => new WorkflowEdge($"{edge.Source}->{edge.Target}", edge.Source, edge.Target)).ToArray());
-        return new CanvasPatchSimulation(normalized, result, errors);
-    }
 
     private static string? Apply(
         CanvasOperationArgs operation,
@@ -130,9 +140,20 @@ public sealed class WorkflowCanvasPatchSimulator
             return $"add_node: type '{operation.Type}' is not available.";
         if (operation.After is not null && !nodes.ContainsKey(operation.After))
             return $"add_node: after '{operation.After}' does not exist.";
+        JsonObject? patch = null;
+        if (!string.IsNullOrWhiteSpace(operation.ConfigJson))
+        {
+            var invalid = ParseConfig(operation.Type, operation.ConfigJson, out patch);
+            if (invalid is not null)
+                return $"add_node: {invalid}";
+        }
+
         var label = UniqueLabel(WorkflowNodeCatalog.LabelOf(operation.Type), nodes.Values.Select(node => node.Label));
-        nodes[operation.Ref] = new SimNode(operation.Type, label, new JsonObject());
-        applied = Normalize(operation with { Label = label }, null);
+        var config = new JsonObject();
+        if (patch is not null)
+            WorkflowNodeCatalog.DeepMerge(config, patch);
+        nodes[operation.Ref] = new SimNode(operation.Type, label, config);
+        applied = Normalize(operation with { Label = label }, patch is null ? null : JsonSerializer.SerializeToElement(patch));
         return null;
     }
 
@@ -146,26 +167,36 @@ public sealed class WorkflowCanvasPatchSimulator
             return $"update_config: node '{operation.NodeId}' does not exist.";
         if (string.IsNullOrWhiteSpace(operation.ConfigJson))
             return "update_config: configJson is required.";
-        if (operation.ConfigJson.Length > AssistantLimits.MaxNodeConfigBytes)
-            return "update_config: configJson is too large.";
-        JsonObject? patch;
+        var invalid = ParseConfig(node.Type, operation.ConfigJson, out var patch);
+        if (invalid is not null)
+            return $"update_config: {invalid}";
+        WorkflowNodeCatalog.DeepMerge(node.Config, patch!);
+        applied = Normalize(operation, JsonSerializer.SerializeToElement(patch));
+        return null;
+    }
+
+    private static string? ParseConfig(string nodeType, string configJson, out JsonObject? patch)
+    {
+        patch = null;
+        if (configJson.Length > AssistantLimits.MaxNodeConfigBytes)
+            return "configJson is too large.";
+        JsonObject? parsed;
         try
         {
-            patch = JsonNode.Parse(operation.ConfigJson) as JsonObject;
+            parsed = JsonNode.Parse(configJson) as JsonObject;
         }
         catch (JsonException)
         {
-            patch = null;
+            parsed = null;
         }
 
-        if (patch is null)
-            return "update_config: configJson must be a JSON object.";
-        patch = WorkflowNodeCatalog.ExpandDottedKeys(patch);
-        var invalid = WorkflowNodeCatalog.ValidateConfig(node.Type, patch);
+        if (parsed is null)
+            return "configJson must be a JSON object.";
+        parsed = WorkflowNodeCatalog.ExpandDottedKeys(parsed);
+        var invalid = WorkflowNodeCatalog.ValidateConfig(nodeType, parsed);
         if (invalid is not null)
-            return $"update_config: {invalid}";
-        WorkflowNodeCatalog.DeepMerge(node.Config, patch);
-        applied = Normalize(operation, JsonSerializer.SerializeToElement(patch));
+            return invalid;
+        patch = parsed;
         return null;
     }
 

@@ -27,14 +27,14 @@ public static class AssistantErrors
         Error.Conflict("assistant.action_not_pending", $"This action is already {status}.");
 
     public static Error ActionExpired() =>
-        Error.Conflict("assistant.action_expired", "This action expired. Ask the assistant again.");
+        Error.Conflict("assistant.action_expired", "This action expired. Ask Podi again.");
 
     public static Error ToolUnavailable() =>
         Error.Failure("assistant.tool_unavailable", "This action is no longer available.");
 
     public static (string Code, string Message) FromModelFailure(string? failureCode) => failureCode switch
     {
-        "not_configured" => (ModelNotConfiguredCode, "The assistant is not configured yet."),
-        _ => (ModelUnavailableCode, "The assistant is temporarily unavailable. Please try again.")
+        "not_configured" => (ModelNotConfiguredCode, "Podi is not configured yet."),
+        _ => (ModelUnavailableCode, "Podi is temporarily unavailable. Please try again.")
     };
 }

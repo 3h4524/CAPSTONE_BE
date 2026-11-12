@@ -22,7 +22,8 @@ public sealed record EtsyDraftResponseDto(
     IReadOnlyList<EtsyUploadHistoryDto> History,
     IReadOnlyList<ShopDesignDto> Designs);
 
-public sealed record EtsyDraftMockupDto(Guid Id, string PreviewUrl, int Width, int Height);
+/// <param name="AiMade">Made or edited with AI: Etsy wants a physical listing to have a photo besides such ones.</param>
+public sealed record EtsyDraftMockupDto(Guid Id, string PreviewUrl, int Width, int Height, bool AiMade = false);
 
 /// <summary>A design of the product that can be sold as a file or printed by Printify.</summary>
 /// <param name="IsFinal">The design the seller marked as the final one.</param>

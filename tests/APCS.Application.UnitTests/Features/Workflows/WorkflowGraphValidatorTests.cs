@@ -76,8 +76,16 @@ public sealed class WorkflowGraphValidatorTests
     public void Validate_PrintifyWithoutAProductType_SaysWhatIsMissing()
     {
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
-            ("publish-printify", new { colors = new[] { "White" }, sizes = new[] { "M" } }));
+            ("publish-printify", new { source = "manual", colors = new[] { "White" }, sizes = new[] { "M" } }));
         _validator.Validate(definition)!.Message.Should().Contain("product type");
+    }
+
+    [TestMethod]
+    public void Validate_PrintifyReadFromTheMockups_NeedsNoProductOnTheNode()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", new { targetProfit = 10 }));
+        _validator.Validate(definition).Should().BeNull();
     }
 
     [TestMethod]

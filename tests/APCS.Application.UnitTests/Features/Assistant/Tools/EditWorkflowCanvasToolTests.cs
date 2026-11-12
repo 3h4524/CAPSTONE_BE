@@ -1,3 +1,4 @@
+using APCS.Application.Features.Assistant.Catalog;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
 using APCS.Application.Features.Assistant.Tools;
@@ -94,4 +95,82 @@ public sealed class EditWorkflowCanvasToolTests
 
         outcome.FinalText.Should().BeNull();
     }
+
+    [TestMethod]
+    public void Declaration_OffersEveryCatalogStepTypeIncludingThePublishSteps()
+    {
+        var types = Tool().Declaration.ParametersSchema
+            .GetProperty("properties").GetProperty("operations").GetProperty("items")
+            .GetProperty("properties").GetProperty("type").GetProperty("enum")
+            .EnumerateArray().Select(item => item.GetString()).ToArray();
+
+        types.Should().BeEquivalentTo(WorkflowNodeCatalog.Nodes.Select(node => node.Type));
+        types.Should().Contain(["publish-printify", "publish-etsy"]);
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AddPushToPrintify_IsProposed()
+    {
+        var context = CanvasContext(
+            [new("z", "export-zip", "Export ZIP", AssistantTestSupport.Json("{}"))],
+            []);
+        var args = """{"operations":[{"op":"add_node","ref":"p","type":"publish-printify","after":"z"},{"op":"connect","source":"z","target":"p"}]}""";
+
+        var outcome = await Tool().ExecuteAsync(context, AssistantTestSupport.Json(args), default);
+
+        outcome.Succeeded.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_AddNodeWithConfig_SendsTheConfigOnTheAddOperation()
+    {
+        var args = """{"operations":[{"op":"add_node","ref":"n1","type":"generate-listing","configJson":"{\"tone\":\"playful\"}"}]}""";
+
+        var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json(args), default);
+
+        var operation = outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject.Payload.GetProperty("operations")[0];
+        operation.GetProperty("op").GetString().Should().Be("add_node");
+        operation.GetProperty("config").GetProperty("tone").GetString().Should().Be("playful");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WarningTheCanvasAlreadyHad_IsNotRepeated()
+    {
+        var context = CanvasContext(
+            [
+                new("a", "product-input", "Input", AssistantTestSupport.Json($$"""{"batchId":"{{Guid.NewGuid()}}","productId":"{{Guid.NewGuid()}}"}""")),
+                new("d", "design-image", "Design image", AssistantTestSupport.Json("{}"))
+            ],
+            []);
+        var args = """{"operations":[{"op":"add_node","ref":"m","type":"apply-mockup"}]}""";
+
+        var outcome = await Tool().ExecuteAsync(context, AssistantTestSupport.Json(args), default);
+
+        outcome.Succeeded.Should().BeTrue();
+        outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>()
+            .Which.Payload.GetProperty("warnings").GetArrayLength().Should().Be(0);
+        outcome.ModelResultJson.Should().Contain("\"warnings\":[]");
+    }
+
+    [TestMethod]
+    public async Task ExecuteAsync_WarningThePatchIntroduces_IsReturned()
+    {
+        var context = CanvasContext(
+            [
+                new("a", "product-input", "Input", AssistantTestSupport.Json($$"""{"batchId":"{{Guid.NewGuid()}}","productId":"{{Guid.NewGuid()}}"}""")),
+                new("l", "generate-listing", "Listing content", AssistantTestSupport.Json("{}"))
+            ],
+            [new("e", "a", "l")]);
+        var args = """{"operations":[{"op":"disconnect","source":"a","target":"l"}]}""";
+
+        var outcome = await Tool().ExecuteAsync(context, AssistantTestSupport.Json(args), default);
+
+        outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>()
+            .Which.Payload.GetProperty("warnings").EnumerateArray().Should().ContainSingle()
+            .Which.GetString().Should().Contain("in one line");
+    }
+
+    private static AssistantToolContext CanvasContext(IReadOnlyList<AssistantCanvasNodeDto> nodes, IReadOnlyList<AssistantCanvasEdgeDto> edges) =>
+        new(Guid.NewGuid(), AssistantTestSupport.UserId, AssistantTestSupport.Seller,
+            new AssistantClientContextDto("/workflows", null, null, null, new AssistantCanvasDto(Guid.NewGuid(), 1, false, nodes, edges)));
 }
