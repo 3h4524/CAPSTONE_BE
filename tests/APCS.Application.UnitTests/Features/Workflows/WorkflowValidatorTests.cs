@@ -236,13 +236,13 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    public void VideoConfig_AiShotWithoutOptionsOrLifestyleRights_RejectsConfiguration()
+    public void VideoConfig_AiShotWithoutOptions_RejectsConfigurationButNeedsNoLifestyleRights()
     {
         var validator = new GenerateVideoConfigValidator();
         validator.Validate(new GenerateVideoConfig(Mode: "ai_shot"))
             .Errors.Should().Contain(x => x.PropertyName == "AiShotOptions");
         validator.Validate(new GenerateVideoConfig(Mode: "ai_shot", AiShotOptions: new(Concept: "lifestyle_motion")))
-            .Errors.Should().Contain(x => x.ErrorMessage.Contains("rights"));
+            .Errors.Should().NotContain(x => x.ErrorMessage.Contains("rights"));
     }
 
     [TestMethod]

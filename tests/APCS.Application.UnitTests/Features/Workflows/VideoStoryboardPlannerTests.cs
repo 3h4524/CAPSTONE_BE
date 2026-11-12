@@ -645,15 +645,14 @@ public sealed class VideoStoryboardPlannerTests
     [DataRow("Hero", false)]
     [DataRow("Lifestyle", true)]
     [DataRow("Hero", true)]
-    public void Plan_LifestyleConcept_NeedsImageRightsWhateverTheImageRole(string role, bool rights)
+    public void Plan_LifestyleConcept_NeedsNoImageRightsConfirmation(string role, bool rights)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product, role);
         var result = _planner.Plan(product, [source], new(Mode: "ai_shot",
             AiShotOptions: new(Concept: "lifestyle_motion", MockupId: source.Id, RightsConfirmed: rights)));
-        result.IsSuccess.Should().Be(rights);
-        if (!rights) result.Error.Message.Should().Contain("image-rights confirmation");
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
     }
 
     [TestMethod]

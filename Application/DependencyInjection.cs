@@ -94,6 +94,11 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
         services.AddScoped<Features.Workflows.IWorkflowRunReconciler, Features.Workflows.WorkflowRunReconciler>();
         services.AddScoped<Features.Workflows.IMediaLeaseRecovery, Features.Workflows.MediaLeaseRecovery>();
+        services.AddScoped<Features.Workflows.IRunTargetConfigResolver, Features.Workflows.RunTargetConfigResolver>();
+        services.AddScoped<Features.Workflows.IWorkflowRunGroupService, Features.Workflows.WorkflowRunGroupService>();
+        services.AddScoped<Features.Workflows.IRunCostEstimateService, Features.Workflows.RunCostEstimateService>();
+        services.AddScoped<Features.Workflows.IRunGroupExportService, Features.Workflows.RunGroupExportService>();
+        services.AddScoped<Features.Workflows.IRunGroupPlanner, Features.Workflows.RunGroupPlanner>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();

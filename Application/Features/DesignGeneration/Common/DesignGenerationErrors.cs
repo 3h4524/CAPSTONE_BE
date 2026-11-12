@@ -24,6 +24,9 @@ public static class DesignGenerationErrors
     public static Error ApprovalNotAvailable() =>
         Error.Conflict("DesignGeneration.ApprovalNotAvailable", "Images can be approved or rejected once the job has finished generating.");
 
+    public static Error OneDesignPerProduct() =>
+        Error.Validation("Approve one design per product.");
+
     public static Error ImageNotFound() =>
         Error.NotFound("DesignGeneration.ImageNotFound", "One of the images was not found in this job.");
 
