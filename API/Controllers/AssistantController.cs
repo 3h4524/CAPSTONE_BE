@@ -13,7 +13,7 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Authorize(Roles = $"{AuthConstants.UserRole},{AuthConstants.AdminRole}")]
 [Route("api/assistant")]
-public sealed class AssistantController(IAssistantService assistant) : ControllerBase
+public sealed class AssistantController(IAssistantService assistant, IAssistantRunProgressReader runProgress) : ControllerBase
 {
     [HttpPost("chat")]
     [EnableRateLimiting(ApiRateLimiting.AssistantChatPolicy)]
@@ -97,6 +97,13 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
         SetClientActionStateRequestDto request,
         CancellationToken cancellationToken) =>
         (await assistant.SetClientActionStateAsync(messageId, actionId, request, cancellationToken)).ToActionResult(this);
+
+    [HttpGet("workflows/{workflowId:guid}/run-progress")]
+    [Authorize(Roles = AuthConstants.UserRole)]
+    [ProducesResponseType(typeof(AssistantRunProgressResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRunProgress(Guid workflowId, CancellationToken cancellationToken) =>
+        (await runProgress.ReadAsync(workflowId, cancellationToken)).ToActionResult(this);
 
     [HttpPost("actions/{id:guid}/confirm")]
     [ProducesResponseType(typeof(AssistantActionResultResponseDto), StatusCodes.Status200OK)]

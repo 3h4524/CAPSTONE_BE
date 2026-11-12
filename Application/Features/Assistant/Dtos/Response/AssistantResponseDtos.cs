@@ -25,3 +25,21 @@ public sealed record AssistantConversationDetailResponseDto(
 public sealed record AssistantActionResultResponseDto(
     AssistantPendingActionResponseDto Action,
     AssistantMessageResponseDto Message);
+
+public sealed record AssistantRunTargetResponseDto(string Design, string Product, string? Status, string? Step, string? Error);
+
+public sealed record AssistantRunProgressResponseDto(
+    Guid WorkflowId,
+    string WorkflowName,
+    string Stage,
+    string State,
+    string NextStep,
+    int? Done = null,
+    int? Total = null,
+    int? WaitingCount = null,
+    string? Error = null,
+    Guid? BatchJobId = null,
+    Guid? RunGroupId = null,
+    Guid? RunId = null,
+    DateTimeOffset? StartedAt = null,
+    IReadOnlyList<AssistantRunTargetResponseDto>? Targets = null);

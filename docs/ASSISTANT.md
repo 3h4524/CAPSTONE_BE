@@ -14,6 +14,7 @@ The assistant, named Podi in the Podivo app, answers help questions from the RAG
 | DELETE | `/api/assistant/conversations/{id}` | Soft-deletes one conversation and returns 202; the rows are purged by a background worker. |
 | DELETE | `/api/assistant/conversations?except={id}` | Same for all of the user's conversations except the given one. |
 | PUT | `/api/assistant/messages/{messageId}/client-actions/{actionId}` | Stores `applied` or `dismissed` for a client action chip so it survives reloads. |
+| GET | `/api/assistant/workflows/{workflowId}/run-progress` | Where the latest run of a workflow is and what the seller has to do next (Seller only). The frontend polls it to show Podi's run reminders. |
 | POST | `/api/assistant/actions/{id}/confirm` | Runs a prepared action. |
 | POST | `/api/assistant/actions/{id}/reject` | Cancels a prepared action. |
 
@@ -56,10 +57,20 @@ Each tool is a class implementing `IAssistantTool` (usually through `AssistantTo
 
 | Kind | Behaviour | Tools |
 |---|---|---|
-| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog` (not offered when the node catalog is already in the prompt), `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
-| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`; it returns only the graph warning the patch introduces, not one the canvas already had), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
+| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_run_progress`, `estimate_run_cost`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog` (not offered when the node catalog is already in the prompt), `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
+| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`; it returns only the graph warning the patch introduces, not one the canvas already had), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only), `run_workflow` and `save_workflow` (see below) |
 | Confirmation | Stores an `assistant_pending_actions` row; runs only when the user confirms | `start_workflow_run`, `workflow_run_action` |
 | Interaction | Shows reply chips | `offer_choices` |
+
+### Running a workflow from the chat
+
+The Run button of the workflow screen is orchestrated by the frontend (`useWorkflowExecution.start`): the cost dialog, the design batch job, design approval, mock-up generation and import, then a batch video run (`run-groups`) or a single video run. No single backend call does all of it, so Podi does not start runs itself:
+
+- `run_workflow` and `save_workflow` emit a client action. The card's button puts a request in the frontend `workflow-command` store, and the toolbar of that workflow carries it out with its own Save and Run (a run with unsaved changes saves first). Paid steps are confirmed in the same cost dialog as a manual run; Podi never shows or confirms a cost itself. `run_workflow` reports a graph problem of the open canvas as a warning rather than an error, since an `edit_workflow_canvas` proposed earlier in the same turn may fix it.
+- `start_workflow_run` (no canvas open) refuses workflows with design steps (`needs_workflow_screen`), because `POST /api/workflows/{id}/runs` skips the design and mock-up part; the prompt then sends the user to the workflow.
+- `estimate_run_cost` reads `IRunCostEstimateService` for the saved workflow and is read only.
+- `get_run_progress` and the run-progress endpoint use `AssistantRunProgressReader`. It takes the newest of the workflow's latest batch job (from the batch in Product Input, filtered by `workflowId` in the job config, drafts ignored), latest run group and latest run that is not a group child, and maps it to a `stage` (`not_started`, `designs`, `design_approval`, `designs_ready`, `mockup_approval`, `video`, `video_review`, `listing`, `export`, `publish`, `done`) and a `state` (`idle`, `working`, `waiting_for_user`, `failed`, `cancelled`, `done`) with a `nextStep` sentence for the model.
+- Run reminders: while a workflow is open, or after the user pressed Run on a Podi card, the frontend polls the run-progress endpoint every 20 seconds (only while the run is not settled or is being watched). When the run waits for the user, or failed or finished in the last 24 hours, the launcher shows a dot and the chat shows a bar with a "What now?" chip that asks Podi. No model call is made until the user clicks it.
 
 Rules that must hold for every new tool:
 
@@ -122,3 +133,4 @@ Each model call costs several seconds, so the design minimises calls:
 - The node catalog is added to the system prompt when a canvas is open (`AssistantPromptBuilder.IncludesNodeCatalog`), and `get_node_catalog` is then not offered at all.
 - Without an open canvas, the prompt tells the model not to explore when a request needs canvas edits: it says what is missing and offers a `navigate` button to `/workflows?id=<id>`. When `start_workflow_run` fails it explains the returned reason instead of investigating.
 - Thinking is set to `Assistant:ThinkingLevel` (default `Low`).
+- **Prompt caching.** Gemini caches a repeated prompt prefix implicitly. The system text keeps the stable part first (instructions, then the node catalog) and the date and role last, and `app_context` rides on the latest user message only. Each model call logs its input, cached and output token counts (`Assistant model usage`) so the hit rate can be measured. Gemini's server-side conversation state (Interactions API, `previous_interaction_id`) is not used: the .NET SDK does not expose it, tools and the system instruction would still be sent each turn, an interaction is bound to one API key while the assistant rotates keys on 429, and the loop rewrites history (`<final_answer>`, `<completion_check>`, memories, retries).

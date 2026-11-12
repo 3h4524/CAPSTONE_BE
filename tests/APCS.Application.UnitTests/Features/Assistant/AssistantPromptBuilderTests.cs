@@ -112,7 +112,12 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("Never say you will make a change unless you call the tool")]
     [DataRow("app_context has no canvas, do not explore")]
     [DataRow("call navigate to /workflows?id=<workflow id>")]
-    [DataRow("If start_workflow_run returns an error, explain the reason it gave")]
+    [DataRow("If start_workflow_run returns another error, explain the reason it gave")]
+    [DataRow("never ask the user to confirm a cost in chat and never say the run started")]
+    [DataRow("call estimate_run_cost and give the total")]
+    [DataRow("If it returns needs_workflow_screen, call navigate")]
+    [DataRow("call get_run_progress and say in plain words")]
+    [DataRow("call edit_workflow_canvas first and run_workflow after it")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 
@@ -195,6 +200,7 @@ public sealed class AssistantPromptBuilderTests
         var system = builder.Build(AssistantTestSupport.Session("hi", context))[0].Text!;
 
         system.Should().Contain("<node_catalog>").And.Contain("generate-listing").And.Contain("connectionRules");
+        system.IndexOf("</node_catalog>", StringComparison.Ordinal).Should().BeLessThan(system.IndexOf("Today is", StringComparison.Ordinal));
     }
 
     [TestMethod]
