@@ -6,6 +6,7 @@ public static class AssistantRunStages
     public const string Designs = "designs";
     public const string DesignApproval = "design_approval";
     public const string DesignsReady = "designs_ready";
+    public const string MockupsReady = "mockups_ready";
     public const string MockupApproval = "mockup_approval";
     public const string Video = "video";
     public const string VideoReview = "video_review";

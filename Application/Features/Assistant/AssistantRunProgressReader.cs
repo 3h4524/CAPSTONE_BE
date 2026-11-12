@@ -1,5 +1,6 @@
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Response;
+using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignGeneration.Dtos.Response;
 using APCS.Application.Features.Workflows;
@@ -17,7 +18,8 @@ public sealed class AssistantRunProgressReader(
     IWorkflowService workflows,
     IWorkflowRunService runs,
     IWorkflowRunGroupService runGroups,
-    IDesignGenerationService designJobs) : IAssistantRunProgressReader
+    IDesignGenerationService designJobs,
+    IMockupTemplateService jobMockups) : IAssistantRunProgressReader
 {
     private const int MaxTargets = 10;
     private const string OnScreen = "Open the workflow screen to continue; it shows this step.";
@@ -43,7 +45,7 @@ public sealed class AssistantRunProgressReader(
 
         return latest.Kind switch
         {
-            "job" => await FromJobAsync(workflowId, name, job!, jobAt, cancellationToken),
+            "job" => await FromJobAsync(workflowId, name, job!, jobAt, HasVideoSteps(workflow.Value.Definition), cancellationToken),
             "group" => await FromGroupAsync(workflowId, name, group!, cancellationToken),
             "run" => Result.Success(FromRun(workflowId, name, run!)),
             _ => Result.Success(new AssistantRunProgressResponseDto(workflowId, name, AssistantRunStages.NotStarted, AssistantRunStates.Idle,
@@ -78,7 +80,7 @@ public sealed class AssistantRunProgressReader(
     }
 
     private async Task<Result<AssistantRunProgressResponseDto>> FromJobAsync(
-        Guid workflowId, string name, BatchJobSummaryDto job, DateTimeOffset? startedAt, CancellationToken cancellationToken)
+        Guid workflowId, string name, BatchJobSummaryDto job, DateTimeOffset? startedAt, bool hasVideo, CancellationToken cancellationToken)
     {
         var progress = new AssistantRunProgressResponseDto(workflowId, name, AssistantRunStages.Designs, AssistantRunStates.Working,
             "Designs are being generated. Nothing to do yet.", job.ProcessedProducts, job.TotalProducts, BatchJobId: job.Id, StartedAt: startedAt);
@@ -110,6 +112,26 @@ public sealed class AssistantRunProgressReader(
                 WaitingCount = waiting,
                 Error = failed
             });
+        }
+
+        var made = await jobMockups.GetJobMockupsAsync(job.Id, cancellationToken);
+        if (made.IsSuccess && made.Value.Images.Count > 0)
+        {
+            return Result.Success(hasVideo
+                ? progress with
+                {
+                    Stage = AssistantRunStages.MockupsReady,
+                    State = AssistantRunStates.WaitingForUser,
+                    NextStep = $"{made.Value.Images.Count} mock-ups are ready. The video part starts from the workflow screen. {OnScreen}",
+                    Error = failed
+                }
+                : progress with
+                {
+                    Stage = AssistantRunStages.Done,
+                    State = AssistantRunStates.Done,
+                    NextStep = $"{made.Value.Images.Count} mock-ups are ready. They can be downloaded as a ZIP from the Export step on the workflow screen.",
+                    Error = failed
+                });
         }
 
         return Result.Success(progress with
@@ -227,6 +249,9 @@ public sealed class AssistantRunProgressReader(
             _ => progress
         };
     }
+
+    private static bool HasVideoSteps(WorkflowDefinition definition) =>
+        definition.Nodes.Any(node => node.Type == "generate-video");
 
     private static string StageOf(string? nodeType) => nodeType switch
     {

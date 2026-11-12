@@ -1,5 +1,7 @@
 using APCS.Application.Features.Assistant;
 using APCS.Application.Features.Assistant.Common;
+using APCS.Application.Features.BatchMockups;
+using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Application.Features.DesignGeneration;
 using APCS.Application.Features.DesignGeneration.Dtos.Response;
 using APCS.Application.Features.Workflows;
@@ -21,6 +23,7 @@ public sealed class AssistantRunProgressReaderTests
     private readonly Mock<IWorkflowRunService> runs = new();
     private readonly Mock<IWorkflowRunGroupService> groups = new();
     private readonly Mock<IDesignGenerationService> jobs = new();
+    private readonly Mock<IMockupTemplateService> jobMockups = new();
 
     public AssistantRunProgressReaderTests()
     {
@@ -30,11 +33,17 @@ public sealed class AssistantRunProgressReaderTests
             .ReturnsAsync(Result.Success(new WorkflowResponse(WorkflowId, "Etsy flow", "", 1, 3, Earlier, Earlier, definition)));
         WithJobs();
         WithGroups();
+        WithJobMockups(0);
         runs.Setup(service => service.GetLatestAsync(WorkflowId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure<RunResponse>(Error.NotFound("RunNotFound", "No run.")));
     }
 
-    private AssistantRunProgressReader Reader() => new(workflows.Object, runs.Object, groups.Object, jobs.Object);
+    private AssistantRunProgressReader Reader() => new(workflows.Object, runs.Object, groups.Object, jobs.Object, jobMockups.Object);
+
+    private void WithJobMockups(int count) =>
+        jobMockups.Setup(service => service.GetJobMockupsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new GenerateAllMockupsResultDto(count, 0, 0, [],
+                Enumerable.Range(0, count).Select(_ => new MockupImageResponseDto(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "u", 1, 1, "pending", null)).ToArray())));
 
     private void WithJobs(params BatchJobSummaryDto[] items) =>
         jobs.Setup(service => service.ListJobsForBatchAsync(BatchId, It.IsAny<CancellationToken>()))
@@ -117,6 +126,36 @@ public sealed class AssistantRunProgressReaderTests
         progress.State.Should().Be(AssistantRunStates.WaitingForUser);
         progress.WaitingCount.Should().Be(2);
         progress.BatchJobId.Should().Be(job.Id);
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_WithReviewedDesignsAndNoMockups_SaysTheyAreReadyForTheNextStep()
+    {
+        var job = Job("completed", Later);
+        WithJobs(job);
+        jobs.Setup(service => service.GetJobAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(JobDetail(job.Id, "approved", "approved")));
+
+        var progress = (await Reader().ReadAsync(WorkflowId, default)).Value;
+
+        progress.Stage.Should().Be(AssistantRunStages.DesignsReady);
+        progress.State.Should().Be(AssistantRunStates.WaitingForUser);
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_WithMockupsMadeForAWorkflowWithoutVideo_SaysTheRunIsDone()
+    {
+        var job = Job("completed", Later);
+        WithJobs(job);
+        WithJobMockups(3);
+        jobs.Setup(service => service.GetJobAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(JobDetail(job.Id, "approved", "approved")));
+
+        var progress = (await Reader().ReadAsync(WorkflowId, default)).Value;
+
+        progress.Stage.Should().Be(AssistantRunStages.Done);
+        progress.State.Should().Be(AssistantRunStates.Done);
+        progress.NextStep.Should().Contain("3 mock-ups are ready");
     }
 
     [TestMethod]
