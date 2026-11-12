@@ -107,6 +107,10 @@ for secret in apcs-prod-secrets apcs-prod-external apcs-ops-auth apcs-dev-secret
 done
 gcloud secrets add-iam-policy-binding apcs-dev-migrator-password --member "serviceAccount:$MIGRATOR_SA" \
   --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
+exists gcloud secrets describe sonar-token "${p[@]}" \
+  || gcloud secrets create sonar-token --replication-policy automatic "${p[@]}"
+gcloud secrets add-iam-policy-binding sonar-token --member "serviceAccount:$DEPLOYER_SA" \
+  --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
 
 exists gcloud iam workload-identity-pools describe github --location global "${p[@]}" \
   || gcloud iam workload-identity-pools create github --location global --display-name "GitHub Actions" "${p[@]}"

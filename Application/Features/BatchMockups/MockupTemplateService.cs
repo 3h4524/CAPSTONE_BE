@@ -39,7 +39,8 @@ public sealed class MockupTemplateService(
     IValidator<SaveMockupOverridesRequestDto> overridesValidator,
     TimeProvider timeProvider,
     ILogger<MockupTemplateService> logger,
-    IPlanEntitlementService entitlements) : IMockupTemplateService
+    IPlanEntitlementService entitlements,
+    IRepository<PrintifyColorMap>? printifyColors = null) : IMockupTemplateService
 {
     public async Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListAsync(string? productType, CancellationToken cancellationToken = default)
     {
@@ -49,6 +50,7 @@ public sealed class MockupTemplateService(
         var normalizedType = productType?.Trim().ToLowerInvariant();
 
         var items = await templates.Query()
+            .Include(template => template.MockupTemplatePrintifyLink)
             .Where(template => template.IsActive == true
                 && template.Kind != MockupRules.ModelKind
                 && (template.UserId == null || template.UserId == userId)
@@ -59,10 +61,69 @@ public sealed class MockupTemplateService(
 
         // Another side of a template is listed with it, not on its own.
         var byId = items.ToDictionary(template => template.Id);
+        var colors = await PrintifyColorsAsync(items.Select(template => template.MockupTemplatePrintifyLink?.BlueprintId), cancellationToken);
         return Result.Success<IReadOnlyList<MockupTemplateResponseDto>>(items
             .Where(template => !MockupRules.IsOtherView(template))
-            .Select(template => Map(template, userId, SidesOf(template, byId)))
+            .Select(template => Map(template, userId, SidesOf(template, byId), PrintifyOf(template.MockupTemplatePrintifyLink, colors)))
             .ToList());
+    }
+
+    /// <summary>
+    /// The garment colors of each blueprint, keyed by blueprint id. A blueprint's own row names a color; a shared row
+    /// (no blueprint) fills in a color the blueprint has no row of its own for. White and black lead, then the order
+    /// the colors were stored in.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<long, IReadOnlyList<PrintifyGarmentColorDto>>> PrintifyColorsAsync(
+        IEnumerable<long?> blueprintIds, CancellationToken cancellationToken)
+    {
+        var wanted = blueprintIds.OfType<long>().Distinct().ToList();
+        if (wanted.Count == 0 || printifyColors is null)
+            return new Dictionary<long, IReadOnlyList<PrintifyGarmentColorDto>>();
+
+        var colorRows = await printifyColors.Query()
+            .Where(row => row.BlueprintId == null || wanted.Contains(row.BlueprintId.Value))
+            .OrderBy(row => row.CreatedAt)
+            .ThenBy(row => row.PrintifyName)
+            .ToListAsync(cancellationToken);
+        var shared = colorRows.Where(row => row.BlueprintId is null).ToList();
+        return wanted.ToDictionary(id => id, id =>
+        {
+            var own = colorRows.Where(row => row.BlueprintId == id).ToList();
+            var named = own.Select(row => row.PrintifyName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return (IReadOnlyList<PrintifyGarmentColorDto>)own
+                .Concat(shared.Where(row => !named.Contains(row.PrintifyName)))
+                .Select((row, index) => (Color: new PrintifyGarmentColorDto(row.PrintifyName, row.Hex.Trim().ToUpperInvariant()), index))
+                .OrderBy(item => LeadingColorRank(item.Color.Name))
+                .ThenBy(item => item.index)
+                .Select(item => item.Color)
+                .ToList();
+        });
+    }
+
+    private static int LeadingColorRank(string name) =>
+        name.Equals("White", StringComparison.OrdinalIgnoreCase) ? 0
+        : name.Equals("Black", StringComparison.OrdinalIgnoreCase) ? 1
+        : 2;
+
+    private static MockupTemplatePrintifyDto? PrintifyOf(MockupTemplatePrintifyLink? link,
+        IReadOnlyDictionary<long, IReadOnlyList<PrintifyGarmentColorDto>> colors) =>
+        link is null
+            ? null
+            : new MockupTemplatePrintifyDto(link.BlueprintId, link.BlueprintTitle, link.PrintProviderId, link.PrintProviderTitle,
+                link.DefaultSizes ?? [], colors.TryGetValue(link.BlueprintId, out var own) ? own : []);
+
+    /// <summary>The Printify colors of a template linked to Printify, or null for one that is not.</summary>
+    private async Task<(MockupTemplatePrintifyLink Link, IReadOnlyList<PrintifyGarmentColorDto> Colors)?> PrintifyLinkAsync(
+        Guid templateId, CancellationToken cancellationToken)
+    {
+        var link = await templates.Query()
+            .Where(template => template.Id == templateId)
+            .Select(template => template.MockupTemplatePrintifyLink)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (link is null)
+            return null;
+        var colors = await PrintifyColorsAsync([link.BlueprintId], cancellationToken);
+        return (link, colors.TryGetValue(link.BlueprintId, out var own) ? own : []);
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> GetSelectionAsync(Guid batchJobId, CancellationToken cancellationToken = default)
@@ -114,6 +175,17 @@ public sealed class MockupTemplateService(
 
         var colors = (request.GarmentColors ?? []).Select(color => color.ToUpperInvariant()).ToList();
         var colorsByTemplate = NormalizeTemplateColors(request.TemplateColors);
+        // A template that shows a Printify product is only made in that product's Printify colors, so every mock-up
+        // has a color Printify can make.
+        foreach (var (templateId, chosen) in colorsByTemplate)
+        {
+            if (await PrintifyLinkAsync(templateId, cancellationToken) is not { Colors.Count: > 0 } printify)
+                continue;
+            var offered = printify.Colors.Select(color => color.Hex).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (chosen.FirstOrDefault(color => !offered.Contains(color)) is { } stray)
+                return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.PrintifyColorNotOffered(
+                    candidates.First(template => template.Id == templateId).Name, stray));
+        }
         var backgrounds = NormalizeTemplateBackgrounds(request.TemplateBackgrounds);
         // The cut mask is made now, so the mock-ups made later are plain URLs like every other one. A template's other
         // sides are put on the same background.
@@ -799,6 +871,17 @@ public sealed class MockupTemplateService(
                 var palette = colorsByTemplate.TryGetValue(template.Id, out var ownColors) ? ownColors : selectedColors;
                 return template.AllowRecolor && MockupRules.HasCurrentMaps(template) && palette.Count > 0 ? palette.Count : 1;
             });
+            // Colors added to one design's mock-up alone count too.
+            planned += targetImages.Sum(design => selectedTemplates.Sum(template =>
+            {
+                var palette = colorsByTemplate.TryGetValue(template.Id, out var ownColors) ? ownColors : selectedColors;
+                var recolorable = template.AllowRecolor && MockupRules.HasCurrentMaps(template);
+                IEnumerable<string?> made = recolorable && palette.Count > 0
+                    ? palette.Cast<string?>() : [recolorable ? template.GarmentColor : null];
+                return MockupRules.AddedSlotColors(overrides, design.Id, template.Id, made).Count;
+            }));
+            // And sides added to one design's mock-up alone.
+            planned += targetImages.Sum(design => AddedSides(design.Id).Count());
             var plan = await entitlements.GetAsync(userId, cancellationToken);
             if (plan.MaxMockupsPerRun >= 0 && planned > plan.MaxMockupsPerRun)
                 return Result.Failure<GenerateAllMockupsResultDto>(PlanErrors.MockupsPerRunExceeded(plan.MaxMockupsPerRun, planned));
@@ -822,6 +905,102 @@ public sealed class MockupTemplateService(
         void AddError(string message)
         {
             if (errors.Count < 50 && !errors.Contains(message)) errors.Add(message);
+        }
+
+        // A side is added only while the front it goes with (same design, same color) is on that side's template: an
+        // edit left from a template the job used before makes nothing.
+        IEnumerable<(string SlotKey, Guid TemplateId, string? Color)> AddedSides(Guid designImageId) =>
+            MockupRules.AddedSideSlots(overrides, designImageId, shownTemplateIds).Where(slot =>
+                templatesById.TryGetValue(slot.TemplateId, out var side)
+                && MockupRules.MainTemplateId(side.PrintAreaConfig) is { } mainId
+                && overrides.Any(entry => !entry.Value.Removed && entry.Value.MockupTemplateId == mainId
+                    && MockupRules.TryReadSlotKey(entry.Key, out var designId, out var frontId) && designId == designImageId
+                    && shownTemplateIds.Contains(frontId) && entry.Key.Split('.')[2] == slot.SlotKey.Split('.')[2]));
+
+        // Makes one mock-up slot, from the job's settings or its own; false when the rest of this template's colors
+        // would fail the same way.
+        bool MakeSlot(DesignImage designImage, Product product, MockupTemplate template, MockupRules.MockupPrintLayout layout,
+            string? color, string slotKey, MockupOverrideDto? custom)
+        {
+            // Made from the job's settings, or from the ones chosen for this mock-up alone.
+            var made = (Template: template, Color: color, Layout: layout,
+                Background: MockupRules.ResolveBackground(backgrounds.GetValueOrDefault(template.Id), color));
+            if (custom is not null)
+            {
+                if (templatesById.TryGetValue(custom.MockupTemplateId, out var chosen)
+                    && string.Equals(chosen.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase)
+                    && MockupRules.ParsePrintLayout(chosen.PrintAreaConfig) is { } chosenLayout)
+                {
+                    made = (chosen, custom.GarmentColor, chosenLayout, custom.BackgroundColor);
+                }
+                else
+                {
+                    AddError($"A mock-up of {product.Name} was set up on a template that can't be used any more, so it is made with the job's settings.");
+                    custom = null;
+                }
+            }
+
+            var resolved = MockupRules.ResolveAreas(made.Layout, custom, areaSources.GetValueOrDefault(made.Template.Id));
+            var placements = Placements(resolved, designImage, areaDesigns,
+                () => AddError($"A design chosen for a print area of {made.Template.Name} is no longer in this job, so that area was left empty."));
+            if (placements.Count == 0)
+            {
+                AddError($"{made.Template.Name}: no print area prints a design, so no mock-up was made on it.");
+                return true;
+            }
+
+            var layers = MockupRules.Layers(made.Template, designImage, made.Color, made.Background);
+            string compositeUrl;
+            try
+            {
+                compositeUrl = Compose(made.Template.BaseImageUrl, designImage, placements, layers);
+            }
+            catch (InvalidOperationException)
+            {
+                failedTemplateIds.Add(made.Template.Id);
+                AddError($"{made.Template.Name}: does not have a usable base photo yet.");
+                // Every color of the job's template fails the same way; a mock-up of its own only fails itself.
+                if (custom is null) return false;
+                return true;
+            }
+
+            if (existingByKey.TryGetValue((designImage.Id, made.Template.Id, compositeUrl), out var upToDate))
+            {
+                current.Add((upToDate, slotKey, custom));
+                return true;
+            }
+
+            if (!create)
+                return true;
+
+            var mockupImage = new MockupImage
+            {
+                Id = Guid.NewGuid(),
+                DesignImageId = designImage.Id,
+                ProductId = product.Id,
+                MockupTemplateId = made.Template.Id,
+                StorageProvider = "cloudinary",
+                StorageKey = $"mockups/{made.Template.Id:N}/{designImage.Id:N}",
+                MockupImageUrl = compositeUrl,
+                MockupWidthPx = made.Template.OutputWidthPx,
+                MockupHeightPx = made.Template.OutputHeightPx,
+                GenerationTimeSeconds = 0,
+                ApprovalStatus = "pending",
+                BatchJobProductId = designImage.BatchJobProductId,
+                GarmentColor = layers.GarmentColor,
+                BackgroundColor = layers.BackgroundColor,
+                SourceType = MockupSources.Generated,
+                MetadataRevision = MockupSources.FirstRevision,
+                Role = MockupSources.RoleForView(made.Layout.View),
+                Regions = MockupSources.NoRegions,
+                ArtworkGroupKey = MockupSources.ArtworkGroupKey(designImage.Id),
+                VariantKey = layers.GarmentColor,
+                CreatedAt = now
+            };
+            created.Add(mockupImage);
+            current.Add((mockupImage, slotKey, custom));
+            usageIncrements[made.Template.Id] = usageIncrements.GetValueOrDefault(made.Template.Id) + 1;
+            return true;
         }
 
         foreach (var designImage in targetImages)
@@ -855,6 +1034,8 @@ public sealed class MockupTemplateService(
                 var colors = recolorable && palette.Count > 0
                     ? palette.Cast<string?>().ToList()
                     : [recolorable ? template.GarmentColor : null];
+                // Colors added to this design's mock-up alone are made beside the job's.
+                colors.AddRange(MockupRules.AddedSlotColors(overrides, designImage.Id, template.Id, colors));
 
                 foreach (var color in colors)
                 {
@@ -862,89 +1043,32 @@ public sealed class MockupTemplateService(
                     var custom = overrides.GetValueOrDefault(slotKey);
                     if (custom is { Removed: true })
                     {
-                        removed.Add(new(slotKey, product.Id, designImage.Id, template.Id, template.Name, color));
+                        // Shown as it was set up when it was removed: its own color, background and areas, or the job's.
+                        var kept = custom is { GarmentColor: null, BackgroundColor: null, PrintArea: null, Areas: null } ? null : custom;
+                        var shownTemplate = kept is not null && templatesById.TryGetValue(kept.MockupTemplateId, out var keptTemplate)
+                            && string.Equals(keptTemplate.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase)
+                            ? keptTemplate : template;
+                        removed.Add(new(slotKey, product.Id, designImage.Id, template.Id, template.Name, color,
+                            RemovedPreviewUrl(shownTemplate, designImage, kept, kept is null ? color : kept.GarmentColor,
+                                kept is null ? MockupRules.ResolveBackground(backgrounds.GetValueOrDefault(template.Id), color) : kept.BackgroundColor,
+                                areaSources.GetValueOrDefault(shownTemplate.Id), areaDesigns),
+                            kept));
                         continue;
                     }
 
-                    // Made from the job's settings, or from the ones chosen for this mock-up alone.
-                    var made = (Template: template, Color: color, Layout: layout,
-                        Background: MockupRules.ResolveBackground(backgrounds.GetValueOrDefault(template.Id), color));
-                    if (custom is not null)
-                    {
-                        if (templatesById.TryGetValue(custom.MockupTemplateId, out var chosen)
-                            && string.Equals(chosen.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase)
-                            && MockupRules.ParsePrintLayout(chosen.PrintAreaConfig) is { } chosenLayout)
-                        {
-                            made = (chosen, custom.GarmentColor, chosenLayout, custom.BackgroundColor);
-                        }
-                        else
-                        {
-                            AddError($"A mock-up of {product.Name} was set up on a template that can't be used any more, so it is made with the job's settings.");
-                            custom = null;
-                        }
-                    }
-
-                    var resolved = MockupRules.ResolveAreas(made.Layout, custom, areaSources.GetValueOrDefault(made.Template.Id));
-                    var placements = Placements(resolved, designImage, areaDesigns,
-                        () => AddError($"A design chosen for a print area of {made.Template.Name} is no longer in this job, so that area was left empty."));
-                    if (placements.Count == 0)
-                    {
-                        AddError($"{made.Template.Name}: no print area prints a design, so no mock-up was made on it.");
-                        continue;
-                    }
-
-                    var layers = MockupRules.Layers(made.Template, designImage, made.Color, made.Background);
-                    string compositeUrl;
-                    try
-                    {
-                        compositeUrl = Compose(made.Template.BaseImageUrl, designImage, placements, layers);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        failedTemplateIds.Add(made.Template.Id);
-                        AddError($"{made.Template.Name}: does not have a usable base photo yet.");
-                        // Every color of the job's template fails the same way; a mock-up of its own only fails itself.
-                        if (custom is null) break;
-                        continue;
-                    }
-
-                    if (existingByKey.TryGetValue((designImage.Id, made.Template.Id, compositeUrl), out var upToDate))
-                    {
-                        current.Add((upToDate, slotKey, custom));
-                        continue;
-                    }
-
-                    if (!create)
-                        continue;
-
-                    var mockupImage = new MockupImage
-                    {
-                        Id = Guid.NewGuid(),
-                        DesignImageId = designImage.Id,
-                        ProductId = product.Id,
-                        MockupTemplateId = made.Template.Id,
-                        StorageProvider = "cloudinary",
-                        StorageKey = $"mockups/{made.Template.Id:N}/{designImage.Id:N}",
-                        MockupImageUrl = compositeUrl,
-                        MockupWidthPx = made.Template.OutputWidthPx,
-                        MockupHeightPx = made.Template.OutputHeightPx,
-                        GenerationTimeSeconds = 0,
-                        ApprovalStatus = "pending",
-                        BatchJobProductId = designImage.BatchJobProductId,
-                        GarmentColor = layers.GarmentColor,
-                        BackgroundColor = layers.BackgroundColor,
-                        SourceType = MockupSources.Generated,
-                        MetadataRevision = MockupSources.FirstRevision,
-                        Role = MockupSources.RoleForView(made.Layout.View),
-                        Regions = MockupSources.NoRegions,
-                        ArtworkGroupKey = MockupSources.ArtworkGroupKey(designImage.Id),
-                        VariantKey = layers.GarmentColor,
-                        CreatedAt = now
-                    };
-                    created.Add(mockupImage);
-                    current.Add((mockupImage, slotKey, custom));
-                    usageIncrements[made.Template.Id] = usageIncrements.GetValueOrDefault(made.Template.Id) + 1;
+                    if (!MakeSlot(designImage, product, template, layout, color, slotKey, custom))
+                        break;
                 }
+            }
+
+            // Sides added to this design's mock-up alone: a mock-up moved to a template with more sides than the job's
+            // gets them too, each in the color of the front it goes with.
+            foreach (var (slotKey, templateId, color) in AddedSides(designImage.Id))
+            {
+                if (templatesById.TryGetValue(templateId, out var side)
+                    && string.Equals(side.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase)
+                    && MockupRules.ParsePrintLayout(side.PrintAreaConfig) is { } sideLayout)
+                    MakeSlot(designImage, product, side, sideLayout, color, slotKey, overrides[slotKey]);
             }
         }
 
@@ -1025,8 +1149,16 @@ public sealed class MockupTemplateService(
     private async Task<Result<MockupOverrideDto>> CheckOverrideAsync(Guid batchJobId, MockupOverrideDto requested, Product product, Guid userId,
         Dictionary<Guid, MockupTemplate?> templatesById, Dictionary<Guid, bool> cutMaskByTemplate, CancellationToken cancellationToken)
     {
+        // A removed mock-up keeps how it was set up (color, background, print areas), so it comes back looking the same
+        // as the sides it was made with. A setup that would not be accepted is dropped: removing is never refused.
         if (requested.Removed)
-            return Result.Success(new MockupOverrideDto(requested.MockupTemplateId, null, null, null, Removed: true));
+        {
+            var justRemoved = new MockupOverrideDto(requested.MockupTemplateId, null, null, null, Removed: true);
+            if (requested is { GarmentColor: null, BackgroundColor: null, PrintArea: null, Areas: null })
+                return Result.Success(justRemoved);
+            var setup = await CheckOverrideAsync(batchJobId, requested with { Removed = false }, product, userId, templatesById, cutMaskByTemplate, cancellationToken);
+            return Result.Success(setup.IsSuccess ? setup.Value with { Removed = true } : justRemoved);
+        }
 
         if (!templatesById.TryGetValue(requested.MockupTemplateId, out var template))
         {
@@ -1071,6 +1203,18 @@ public sealed class MockupTemplateService(
                 if (found != chosenIds.Count)
                     return Result.Failure<MockupOverrideDto>(MockupErrors.AreaDesignNotFound());
             }
+        }
+        // A Printify template's print area is Printify's print area: the design moves inside it, never past it.
+        if ((requested.PrintArea is not null || requested.Areas is not null)
+            && MockupRules.ParsePrintLayout(template.PrintAreaConfig) is { } printifyLayout
+            && await PrintifyLinkAsync(template.Id, cancellationToken) is not null)
+        {
+            var placed = requested.Areas?.FirstOrDefault(item => item.Key == MockupRules.MainAreaKey)
+                ?? (requested.PrintArea is { } moved
+                    ? new MockupAreaDto(MockupRules.MainAreaKey, null, moved.X, moved.Y, moved.Width, moved.Height, Source: MockupRules.SourceSame)
+                    : null);
+            if (placed is not null && !MockupRules.LiesWithin(placed, MockupRules.AreaPosition(printifyLayout.Main)))
+                return Result.Failure<MockupOverrideDto>(MockupErrors.OutsidePrintifyArea(template.Name));
         }
 
         return Result.Success(requested with
@@ -1150,7 +1294,12 @@ public sealed class MockupTemplateService(
                 // Another side of a selected template makes mock-ups of the job too.
                 sideIds ??= (await templates.Query().Where(template => selection.Contains(template.Id)).Select(template => template.PrintAreaConfig).ToListAsync(cancellationToken))
                     .SelectMany(config => MockupRules.ViewTemplateIds(config).Values).ToHashSet();
-                if (!sideIds.Contains(templateId))
+                // So does a side added to one mock-up moved to another template: a photo of a template's other side. It
+                // is made only while that mock-up's front is on the side's template.
+                if (!sideIds.Contains(templateId)
+                    && !(await templates.Query().Where(template => template.Id == templateId && template.IsActive == true)
+                        .Select(template => template.PrintAreaConfig).ToListAsync(cancellationToken))
+                        .Any(config => MockupRules.MainTemplateId(config) is not null))
                     return Result.Failure<(BatchJob, IReadOnlyDictionary<string, Product>)>(MockupErrors.SlotNotFound());
             }
             designBySlot[slotKey] = designImageId;
@@ -1447,6 +1596,26 @@ public sealed class MockupTemplateService(
 
     // A mock-up of the design alone in one straight print area is made exactly as before there were several areas,
     // so its URL, and the mock-up already made with it, stay the same.
+    // What a removed mock-up looks like as it was set up: the same URL it had, so showing it makes nothing new. Null
+    // when it could not be made anyway.
+    private string? RemovedPreviewUrl(MockupTemplate template, DesignImage design, MockupOverrideDto? custom, string? color,
+        string? background, IReadOnlyDictionary<string, MockupAreaSourceDto>? sources, IReadOnlyDictionary<Guid, DesignImage> areaDesigns)
+    {
+        if (MockupRules.ParsePrintLayout(template.PrintAreaConfig) is not { } layout)
+            return null;
+        var placements = Placements(MockupRules.ResolveAreas(layout, custom, sources), design, areaDesigns);
+        if (placements.Count == 0)
+            return null;
+        try
+        {
+            return Compose(template.BaseImageUrl, design, placements, MockupRules.Layers(template, design, color, background));
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private string Compose(string baseImageUrl, DesignImage design, IReadOnlyList<MockupPlacement> placements, MockupLayers layers) =>
         placements is [{ Rotation: 0, Corners: null } only] && only.OverlayStorageKey == design.StorageKey
             ? compositor.BuildCompositeUrl(baseImageUrl, design.StorageKey, only.Area, layers)
@@ -1454,7 +1623,8 @@ public sealed class MockupTemplateService(
 
     private static string StorageKey(Guid templateId) => MockupRules.BaseImageKey(templateId);
 
-    private MockupTemplateResponseDto Map(MockupTemplate template, Guid userId, IReadOnlyList<MockupTemplate>? sides = null)
+    private MockupTemplateResponseDto Map(MockupTemplate template, Guid userId, IReadOnlyList<MockupTemplate>? sides = null,
+        MockupTemplatePrintifyDto? printify = null)
     {
         var mapsReady = MockupRules.HasCurrentMaps(template);
         var recolor = mapsReady && template.AllowRecolor;
@@ -1464,7 +1634,8 @@ public sealed class MockupTemplateService(
             mapsReady ? compositor.BuildAssetUrl(template.BaseImageUrl, MockupRules.GarmentMaskKey(template)) : null,
             recolor ? template.GarmentColor : null,
             AllowBackground: mapsReady,
-            Views: sides is { Count: > 0 } ? sides.Select(side => Map(side, userId)).ToList() : null);
+            Views: sides is { Count: > 0 } ? sides.Select(side => Map(side, userId)).ToList() : null,
+            Printify: printify);
     }
 
     private async Task<BatchJob?> FindOwnedBatchAsync(Guid batchJobId, CancellationToken cancellationToken)

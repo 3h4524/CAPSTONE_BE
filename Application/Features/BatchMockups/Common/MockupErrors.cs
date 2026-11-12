@@ -106,4 +106,10 @@ public static class MockupErrors
 
     public static Error NoTemplatesSelected() =>
         Error.Conflict("BatchMockups.NoTemplatesSelected", "Select at least one mock-up template for this batch before generating.");
+
+    public static Error OutsidePrintifyArea(string name) =>
+        Error.Validation($"Keep the design inside the Printify print area of {name}: Printify prints nothing outside it.");
+
+    public static Error PrintifyColorNotOffered(string name, string color) =>
+        Error.Validation($"{color} is not a Printify color of {name}. Choose one of its Printify colors.");
 }

@@ -4,9 +4,10 @@ WORKDIR /app
 COPY shared/video-composition ./shared/video-composition
 COPY media-worker/package*.json ./media-worker/
 WORKDIR /app/media-worker
-RUN npm ci --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
 COPY media-worker/tsconfig.json ./
 COPY media-worker/src ./src
 ENV CHROME_EXECUTABLE=/usr/bin/chromium
 USER node
-CMD ["npm", "start"]
+CMD ["node_modules/.bin/tsx", "src/worker.ts"]

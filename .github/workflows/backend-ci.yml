@@ -180,3 +180,77 @@ jobs:
           ./deploy/scripts/flyway.sh migrate
           ./deploy/scripts/flyway.sh validate
           ./deploy/scripts/flyway.sh info >> "$GITHUB_STEP_SUMMARY"
+
+  security:
+    name: Dependency audit and Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      TRIVY_VERSION: 0.76.2
+      TRIVY_SHA256: bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+      SECURITY_AUDIT_REPORT: /tmp/security-audit.md
+      SECURITY_TRIVY_REPORT: /tmp/security-trivy.md
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Restore the API
+        run: dotnet restore API/API.csproj
+
+      - name: Audit NuGet and media worker packages
+        id: audit
+        continue-on-error: true
+        run: |
+          status=0
+          GITHUB_STEP_SUMMARY="$SECURITY_AUDIT_REPORT" ./deploy/scripts/security-audit.sh audit nuget:API/API.csproj npm:media-worker || status=$?
+          cat "$SECURITY_AUDIT_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Install Trivy
+        run: |
+          curl --proto "=https" --tlsv1.2 -fsSLo /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  /tmp/trivy.tar.gz" | sha256sum -c -
+          sudo tar xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+
+      - name: Scan the repository for vulnerabilities and secrets
+        id: trivy
+        continue-on-error: true
+        run: |
+          ./deploy/scripts/security-audit.sh trivyignore > /tmp/trivyignore
+          status=0
+          trivy fs --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            --ignorefile /tmp/trivyignore --format table --output /tmp/trivy-fs.txt . || status=$?
+          { echo "## Trivy: repository"; echo '```'; cat /tmp/trivy-fs.txt; echo '```'; } > "$SECURITY_TRIVY_REPORT"
+          cat "$SECURITY_TRIVY_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
+          TRIVY_OUTCOME: ${{ steps.trivy.outcome }}
+        run: ./deploy/scripts/security-pr-comment.sh
+
+      - name: Fail on findings
+        if: steps.audit.outcome == 'failure' || steps.trivy.outcome == 'failure'
+        run: |
+          echo "::error::High or critical findings. Upgrade the package, or add an entry with a reason and an expiry date to security-acceptances.json."
+          exit 1
