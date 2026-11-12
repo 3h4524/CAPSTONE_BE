@@ -1,3 +1,4 @@
+using APCS.Application.Features.Assistant.Catalog;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Workflows;
 
@@ -19,16 +20,18 @@ public sealed class EditWorkflowCanvasTool(
     protected override string Description =>
         "Propose changes to the workflow canvas the user has open. Changes are applied only when the user clicks Apply, and must be saved by the user. Use ref ids for new nodes and reuse them in later operations. Add nodes before connecting them.";
 
-    protected override string ParametersSchemaJson => """
+    private static readonly string NodeTypesJson = AssistantJson.Serialize(WorkflowNodeCatalog.Nodes.Select(node => node.Type));
+
+    protected override string ParametersSchemaJson => $$$"""
         {"type":"object","properties":{"operations":{"type":"array","description":"Ordered canvas operations, at most 20.","items":{"type":"object","properties":{
         "op":{"type":"string","enum":["add_node","remove_node","connect","disconnect","update_config"]},
         "ref":{"type":"string","description":"New node id (add_node only), reused later as source, target, after or nodeId."},
-        "type":{"type":"string","enum":["product-input","prompt-synthesis","design-image","design-approval","apply-mockup","approval-gate","generate-video","review-video","export-zip","generate-listing"]},
+        "type":{"type":"string","enum":{{{NodeTypesJson}}} },
         "after":{"type":"string","description":"Existing node id to place the new node after."},
         "nodeId":{"type":"string"},
         "source":{"type":"string"},
         "target":{"type":"string"},
-        "configJson":{"type":"string","description":"JSON object text with the config keys to set."}},
+        "configJson":{"type":"string","description":"JSON object text with the config keys to set (add_node and update_config)."}},
         "required":["op"]}},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying what you propose and that they can review and apply it."}},"required":["operations","reply"]}
         """;
 
@@ -44,8 +47,9 @@ public sealed class EditWorkflowCanvasTool(
             return Task.FromResult(AssistantToolOutcome.Error("invalid_operations", string.Join("; ", simulation.Errors)));
 
         var warnings = new List<string>();
+        var existingIssue = graphValidator.Validate(simulator.Snapshot(canvas))?.Message;
         var validation = graphValidator.Validate(simulation.Result);
-        if (validation is not null)
+        if (validation is not null && validation.Message != existingIssue)
             warnings.Add(validation.Message);
 
         var action = new AssistantClientActionData(

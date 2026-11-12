@@ -66,7 +66,7 @@ public sealed class WorkflowRunActionTool(
         {
             return Result.Failure<AssistantPendingActionDraft>(new Error(
                 "paid_action_requires_ui",
-                "This step uses paid AI video generation. Ask the user to continue from the workflow screen where the cost is shown.",
+                "This step uses paid AI video generation. Continue from the workflow screen, where the cost is shown.",
                 ErrorType.Validation));
         }
 

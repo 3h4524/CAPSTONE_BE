@@ -28,12 +28,16 @@ public sealed partial class AssistantAgentLoop(
     private const string CachedModelName = "cache";
     private const int ReplayChunkChars = 48;
     private const int MaxEmptyRetries = 1;
-    private const string EmptyResponseMessage = "The assistant could not come up with an answer. Please rephrase or try again.";
+    private const string EmptyResponseMessage = "Podi could not come up with an answer. Please rephrase or try again.";
     private const string CompletionDoneMarker = "DONE";
     private const string CompletionCheckNote =
         "<completion_check>Read the user's latest message again. If a question in it is not answered yet, answer it now in plain text. "
         + "If a requested change or action has not been made yet, call the tool for it now. "
         + "Never summarise or repeat what you already did. If everything is done, reply with exactly DONE and nothing else.</completion_check>";
+    private const string FinalAnswerNote =
+        "<final_answer>You can no longer call tools in this turn. Answer the user now in plain text: say briefly what you found, "
+        + "what blocked you, and the next step the user can take.</final_answer>";
+    private static readonly HashSet<string> InternalToolErrors = ["unknown_tool", "invalid_arguments", "invalid_operations", "tool_failed", "missing_run"];
 
     public async IAsyncEnumerable<AssistantStreamEvent> RunAsync(
         AssistantChatSession session,
@@ -148,6 +152,8 @@ public sealed partial class AssistantAgentLoop(
 
                     conversation.Add(AssistantModelMessage.Tool(new AssistantToolResult(call.CallId, call.Name, outcome.ModelResultJson)));
                     state.ToolCalls.Add(new AssistantToolCallData(call.Name, outcome.Succeeded));
+                    if (!outcome.Succeeded)
+                        state.LastToolFailure = FailureReply(call.Name, outcome.ModelResultJson) ?? state.LastToolFailure;
                     if (outcome.Succeeded && call.Name != KnowledgeToolName && tools.FirstOrDefault(tool => tool.Name == call.Name)?.Kind == AssistantToolKind.Query)
                         state.Remember(call.Name, outcome.ModelResultJson);
                     yield return AssistantStreamEvent.ToolFinished(call.CallId, call.Name, outcome.Succeeded);
@@ -185,8 +191,17 @@ public sealed partial class AssistantAgentLoop(
                     }
                 }
 
-                if (iteration >= AssistantLimits.MaxToolIterations)
+                if (iteration >= AssistantLimits.MaxToolIterations && !endTurn)
+                {
                     endTurn = true;
+                    conversation.Add(AssistantModelMessage.User(FinalAnswerNote));
+                }
+            }
+
+            if (!state.HasVisibleOutput && state.LastToolFailure is { } failureReply)
+            {
+                state.AppendText(failureReply);
+                yield return AssistantStreamEvent.Delta(failureReply);
             }
 
             if (!state.HasVisibleOutput)
@@ -212,7 +227,7 @@ public sealed partial class AssistantAgentLoop(
             state.AssistantMessageId = await SaveAssistantMessageAsync(session, state);
         }
 
-        if (state.UsedOnlyKnowledgeTools && state.Error is null)
+        if (state.UsedOnlyKnowledgeTools && state.Error is null && state.LastToolFailure is null)
             await knowledgeBase.SaveAnswerAsync(session, new AssistantCachedAnswer(state.Text, state.Citations), CancellationToken.None);
 
         yield return AssistantStreamEvent.Done(state.AssistantMessageId, state.Model ?? chatModel.ModelName, state.InputTokens, state.OutputTokens);
@@ -235,6 +250,35 @@ public sealed partial class AssistantAgentLoop(
 
     [GeneratedRegex(@"[\p{L}\p{N}]+")]
     private static partial Regex WordPattern();
+
+    private static string? FailureReply(string toolName, string resultJson)
+    {
+        string? code;
+        string? message;
+        try
+        {
+            using var document = JsonDocument.Parse(resultJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
+            code = root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null;
+            message = root.TryGetProperty("message", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString()?.Trim() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(message) || code is not null && InternalToolErrors.Contains(code))
+            return null;
+        var lead = toolName switch
+        {
+            "start_workflow_run" => "I couldn't start the run",
+            "workflow_run_action" => "I couldn't do that on the run",
+            _ => "I couldn't finish that"
+        };
+        return $"{lead}: {message}";
+    }
 
     private static IEnumerable<AssistantStreamEvent> ReplayCachedAnswer(AssistantCachedAnswer answer, AssistantTurnState state)
     {
@@ -322,6 +366,8 @@ public sealed partial class AssistantAgentLoop(
         public List<AssistantToolCallData> ToolCalls { get; } = [];
 
         public AssistantErrorData? Error { get; set; }
+
+        public string? LastToolFailure { get; set; }
 
         public string? Model { get; private set; }
 

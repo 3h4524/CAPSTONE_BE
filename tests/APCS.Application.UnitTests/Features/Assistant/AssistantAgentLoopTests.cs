@@ -768,4 +768,95 @@ public sealed class AssistantAgentLoopTests
         events.Last().Type.Should().Be("done");
         events.Should().NotContain(e => e.Type == "error");
     }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheToolLimitIsReached_TellsTheModelToAnswerInPlainText()
+    {
+        var tool = new StubTool("again");
+        var turns = Enumerable.Range(0, AssistantLimits.MaxToolIterations)
+            .Select(_ => (IReadOnlyList<AssistantModelUpdate>)[AssistantTestSupport.Done("", AssistantTestSupport.Call("again"))])
+            .Append([AssistantTestSupport.Text("I could not finish."), AssistantTestSupport.Done()])
+            .ToArray();
+        var model = new FakeChatModel(turns);
+
+        await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
+
+        var final = model.Requests.Last();
+        final.AllowTools.Should().BeFalse();
+        final.Messages[^1].Role.Should().Be(AssistantMessageRole.User);
+        final.Messages[^1].Text.Should().Contain("<final_answer>").And.Contain("no longer call tools");
+        final.Messages.Count(message => message.Text != null && message.Text.Contains("<final_answer>")).Should().Be(1);
+        saved.Single().Content.Should().Be("I could not finish.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheFinalAnswerIsEmptyAfterAFailedTool_RepliesWithTheToolsReason()
+    {
+        const string reason = "Add a Listing Content or Generate Video node before running the workflow.";
+        var start = new StubTool("start_workflow_run", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("validation", reason)));
+        var lookup = new StubTool("get_workflow");
+        var turns = new IReadOnlyList<AssistantModelUpdate>[]
+            {
+                [AssistantTestSupport.Done("", AssistantTestSupport.Call("start_workflow_run", callId: "c1"))]
+            }
+            .Concat(Enumerable.Range(2, AssistantLimits.MaxToolIterations - 1)
+                .Select(i => (IReadOnlyList<AssistantModelUpdate>)[AssistantTestSupport.Done("", AssistantTestSupport.Call("get_workflow", callId: $"c{i}"))]))
+            .Append([AssistantTestSupport.Done()])
+            .Append([AssistantTestSupport.Done()])
+            .ToArray();
+        var model = new FakeChatModel(turns);
+
+        var events = await Collect(Loop(model, start, lookup).RunAsync(AssistantTestSupport.Session("run my workflow", new("/dashboard", null, null, null, null))));
+
+        var expected = $"I couldn't start the run: {reason}";
+        events.Should().NotContain(e => e.Type == "error");
+        events.Last().Type.Should().Be("done");
+        events.Where(e => e.Type == "delta").Select(e => ((AssistantDeltaEventData)e.Data).Text).Should().Equal(expected);
+        saved.Single().Content.Should().Be(expected);
+        saved.Single().Metadata.Should().NotContain(AssistantErrors.EmptyResponseCode);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenSeveralToolsFailed_UsesTheMostRecentReason()
+    {
+        var first = new StubTool("list_batches", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Error("not_found", "Batch not found.")));
+        var second = new StubTool("workflow_run_action", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("conflict", "The run is already finished.")));
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("list_batches", callId: "c1"))],
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("workflow_run_action", callId: "c2"))],
+            [AssistantTestSupport.Done()],
+            [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model, first, second).RunAsync(AssistantTestSupport.Session()));
+
+        events.Last().Type.Should().Be("done");
+        saved.Single().Content.Should().Be("I couldn't do that on the run: The run is already finished.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenOnlyAnInternalToolErrorHappened_StillReportsTheEmptyAnswer()
+    {
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("ghost"))],
+            [AssistantTestSupport.Done()],
+            [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session()));
+
+        events.Last().Data.Should().BeOfType<AssistantErrorData>().Which.Code.Should().Be(AssistantErrors.EmptyResponseCode);
+        events.Should().NotContain(e => e.Type == "delta");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheModelAnswersAfterAFailedTool_KeepsTheModelsAnswer()
+    {
+        var start = new StubTool("start_workflow_run", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("validation", "Missing video step.")));
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("start_workflow_run"))],
+            [AssistantTestSupport.Text("The workflow needs a video step first."), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, start).RunAsync(AssistantTestSupport.Session()));
+
+        saved.Single().Content.Should().Be("The workflow needs a video step first.");
+    }
 }

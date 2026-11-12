@@ -33,11 +33,15 @@ public static class WorkflowNodeCatalog
         "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy"
     ];
 
+    public const string PublishRule =
+        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the finished package: each may appear once, they come after export-zip and need the video steps, and nothing connects after publish-etsy.";
+
     public static readonly IReadOnlyList<string> ConnectionRules =
     [
         $"Steps connect in one direction, in this run order: {string.Join(" -> ", RunOrder)}. Only the steps that are on the canvas count.",
         "A step connects only to the NEXT step that is on the canvas. It cannot skip a step that is present (for example it cannot jump over Mockup Approval).",
         "generate-listing is outside the run order: it may follow or precede any step, and needs exactly one incoming connection.",
+        PublishRule,
         "A node cannot connect to itself, a connection cannot repeat, and a connection cannot create a loop.",
         "To insert a step between A and B: disconnect A->B first, then connect A->new and new->B."
     ];
@@ -107,7 +111,7 @@ public static class WorkflowNodeCatalog
         [
             new("targetProfit", "number", "Profit per item (USD)", Min: 0, Max: 500),
             new("publishToEtsy", "switch", "Publish to Etsy"),
-            new("addMockups", "switch", "Add APCS mock-ups to the listing")
+            new("addMockups", "switch", "Add Podivo mock-ups to the listing")
         ], "The product type, print provider, colors and sizes come from the Printify catalog and are chosen in the UI."),
         new("publish-etsy", "Publish to Etsy", "Creates an Etsy draft listing; a digital download delivers the approved designs.", Order("publish-etsy"),
         [

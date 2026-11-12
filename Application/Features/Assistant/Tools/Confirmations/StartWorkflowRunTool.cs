@@ -47,7 +47,7 @@ public sealed class StartWorkflowRunTool(
         if (canvas is not null && canvas.WorkflowId == workflowId && canvas.IsDirty)
         {
             return Result.Failure<AssistantPendingActionDraft>(
-                Error.Conflict("unsaved_changes", "The canvas has unsaved changes. Ask the user to save first."));
+                Error.Conflict("unsaved_changes", "The workflow has unsaved changes. Save it first."));
         }
 
         var invalid = graphValidator.Validate(workflow.Value.Definition);

@@ -1,6 +1,6 @@
 # Assistant chatbot
 
-The assistant answers help questions from the RAG knowledge base and operates on the signed-in user's workflows through tools. It lives in `Application/Features/Assistant` and is available to Seller and Admin accounts. Admins only get the FAQ, navigation and choice tools. Architecture and layering rules stay in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+The assistant, named Podi in the Podivo app, answers help questions from the RAG knowledge base and operates on the signed-in user's workflows through tools. It lives in `Application/Features/Assistant` and is available to Seller and Admin accounts. Admins only get the FAQ, navigation and choice tools. Architecture and layering rules stay in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Endpoints
 
@@ -27,8 +27,8 @@ Each tool is a class implementing `IAssistantTool` (usually through `AssistantTo
 
 | Kind | Behaviour | Tools |
 |---|---|---|
-| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog`, `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
-| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
+| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog` (not offered when the node catalog is already in the prompt), `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
+| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`; it returns only the graph warning the patch introduces, not one the canvas already had), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
 | Confirmation | Stores an `assistant_pending_actions` row; runs only when the user confirms | `start_workflow_run`, `workflow_run_action` |
 | Interaction | Shows reply chips | `offer_choices` |
 
@@ -46,7 +46,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 
 ## Model and configuration
 
-`IAssistantChatModel` is implemented by `GeminiAssistantChatModel` (Infrastructure, `Google.GenAI` through `Microsoft.Extensions.AI`). The agent loop in `AssistantAgentLoop` allows at most 5 tool rounds, then one final answer without tools.
+`IAssistantChatModel` is implemented by `GeminiAssistantChatModel` (Infrastructure, `Google.GenAI` through `Microsoft.Extensions.AI`). The agent loop in `AssistantAgentLoop` allows at most 5 tool rounds, then one final answer without tools. Before that final round it adds a `<final_answer>` note telling the model it can no longer call tools and must say what it found, what blocked it and the next step. If the turn still ends with nothing visible and a tool failed, the loop streams a fallback built from the most recent failed tool's `message` (for example "I couldn't start the run: ...") instead of `assistant.empty_response`; failures that only describe internal mistakes (`unknown_tool`, `invalid_arguments`, `invalid_operations`, `tool_failed`, `missing_run`) are not used. Such a turn is not saved to the answer cache.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -71,7 +71,7 @@ FAQ articles are RAG documents with `contentType = faq`. Ingest them from Admin,
 
 ## Node catalog and connection rules
 
-`Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
+`Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. `add_node` accepts an optional `configJson` checked with the same rules, and its normalized operation carries the result as `config`. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. The run order ends with `export-zip`, `publish-printify`, `publish-etsy`; the `type` enum of `edit_workflow_canvas` and the run order in the system prompt are built from the catalog, so a new step type only has to be added there. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
 
 Step names are unique: the step type name, numbered when it repeats (`Design image`, `Design image 1`, `Design image 2`). `add_node` ignores any label from the model and takes the next free name with the same rule as the frontend (`WorkflowCanvasPatchSimulator.UniqueLabel`, `uniqueNodeLabel` in `src/helpers/workflow-graph.ts`). The model is not offered a rename operation; an unexpected `rename_node` is rejected as an unknown operation. When a step name in the user's message matches several steps, the prompt tells the model to ask with `offer_choices` instead of guessing.
 
@@ -89,5 +89,6 @@ Each model call costs several seconds, so the design minimises calls:
 - **Pure help answers are cached** for 30 minutes (first message of a chat, no canvas, no tool other than `search_faq`), keyed by the normalised message, role and page path (route without its query string) and by the RAG generation token, so re-indexing invalidates them. A cache hit replays the answer without calling the model (`model: "cache"`).
 - **Tools that end the turn carry the user-facing sentence in a `reply` argument** (`edit_workflow_canvas`, `arrange_workflow_canvas`, `navigate`, `start_workflow_run`, `workflow_run_action`; `offer_choices` uses `question`). The loop streams it and skips the closing model call. Without a reply the model writes the closing sentence as before.
 - **Messages with several requests.** Every ClientAction, Confirmation and Interaction tool gets a required boolean `moreRequests` argument, added to its schema by `AssistantToolSchemas.Build`. When the model sets it, the loop calls the model again with tools allowed instead of ending the turn. Small models often leave it false, so after a round that ended with an action and a reply the loop runs one **completion check**: it adds a `<completion_check>` note and calls the model once more with tools allowed. The model answers a question it skipped, calls an action it skipped, or replies `DONE`. The text of the check is held until the call ends and dropped when it is `DONE` or when at least 60% of its words already appear in the answer (a repeated summary). The check runs at most once per turn, not after `offer_choices` and not when `moreRequests` was already used; it costs one extra model call per action turn. The replies of every action are shown, and text from different rounds is separated by a blank line.
-- The node catalog is added to the system prompt when a canvas is open, so the model does not call `get_node_catalog` first.
+- The node catalog is added to the system prompt when a canvas is open (`AssistantPromptBuilder.IncludesNodeCatalog`), and `get_node_catalog` is then not offered at all.
+- Without an open canvas, the prompt tells the model not to explore when a request needs canvas edits: it says what is missing and offers a `navigate` button to `/workflows?id=<id>`. When `start_workflow_run` fails it explains the returned reason instead of investigating.
 - Thinking is set to `Assistant:ThinkingLevel` (default `Low`).
