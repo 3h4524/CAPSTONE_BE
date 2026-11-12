@@ -121,6 +121,8 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
         services.AddScoped<Features.Assistant.IAssistantService, Features.Assistant.AssistantService>();
         services.AddScoped<Features.Assistant.AssistantAgentLoop>();
+        services.AddScoped<Features.Assistant.AssistantTurnReader>();
+        services.AddScoped<Features.Assistant.IAssistantTurnRunner, Features.Assistant.AssistantTurnRunner>();
         services.AddScoped<Features.Assistant.AssistantKnowledgeBase>();
         services.AddScoped<Features.Assistant.AssistantPromptBuilder>();
         services.AddScoped<Features.Assistant.AssistantToolRegistry>();

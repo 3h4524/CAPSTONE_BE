@@ -145,6 +145,7 @@ public static class DependencyInjection
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
         services.AddSingleton<IMarketResearchQueue, APCS.Infrastructure.BackgroundServices.MarketResearchQueueChannel>();
         services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
+        services.AddSingleton<IAssistantTurnQueue, APCS.Infrastructure.BackgroundServices.AssistantTurnQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -187,6 +188,10 @@ public static class DependencyInjection
                     configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
         });
         services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
+        services.AddOptions<APCS.Application.Features.Assistant.Common.AssistantTurnOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Assistant.Common.AssistantTurnOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<PrintifyOptions>()
@@ -272,6 +277,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantTurnWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
@@ -429,6 +435,13 @@ public static class DependencyInjection
         });
 
         services.AddScoped<ICacheService, RedisCacheService>();
+        services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
+        {
+            var redisConfiguration = StackExchange.Redis.ConfigurationOptions.Parse(redisOptions.ConnectionString);
+            redisConfiguration.AbortOnConnectFail = false;
+            return StackExchange.Redis.ConnectionMultiplexer.Connect(redisConfiguration);
+        });
+        services.AddSingleton<IAssistantTurnBuffer, RedisAssistantTurnBuffer>();
 
         return services;
     }
