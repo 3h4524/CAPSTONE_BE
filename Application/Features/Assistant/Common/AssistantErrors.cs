@@ -7,6 +7,9 @@ public static class AssistantErrors
     public const string ModelNotConfiguredCode = "assistant.model_not_configured";
     public const string ModelUnavailableCode = "assistant.model_unavailable";
     public const string EmptyResponseCode = "assistant.empty_response";
+    public const string StoppedCode = "assistant.stopped";
+    public const string TimeoutCode = "assistant.timeout";
+    public const string InterruptedCode = "assistant.interrupted";
 
     public static Error Unauthenticated() =>
         Error.Unauthorized("assistant.unauthorized", "The request is not authenticated.");
@@ -28,6 +31,18 @@ public static class AssistantErrors
 
     public static Error ActionExpired() =>
         Error.Conflict("assistant.action_expired", "This action expired. Ask Podi again.");
+
+    public static Error TurnInProgress() =>
+        Error.Conflict("assistant.turn_in_progress", "Podi is still answering in this chat. Wait for it or stop it first.");
+
+    public static Error NotStreaming() =>
+        Error.Conflict("assistant.not_streaming", "This answer has already finished.");
+
+    public static Error StreamNotFound() =>
+        Error.NotFound("assistant.stream_not_found", "This answer can no longer be followed. Reload the conversation.");
+
+    public static Error InvalidEventId() =>
+        Error.Validation("The last event id is not valid.");
 
     public static Error ToolUnavailable() =>
         Error.Failure("assistant.tool_unavailable", "This action is no longer available.");

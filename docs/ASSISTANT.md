@@ -6,9 +6,11 @@ The assistant, named Podi in the Podivo app, answers help questions from the RAG
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/assistant/chat` | Streams the answer as Server-Sent Events. Rate limited to 20 requests per minute per user (HTTP 429). |
+| POST | `/api/assistant/chat` | Starts a turn and streams it as Server-Sent Events. Rate limited to 20 requests per minute per user (HTTP 429). 409 `assistant.turn_in_progress` while the conversation already has a streaming answer. |
+| GET | `/api/assistant/messages/{messageId}/stream` | Re-attaches to an answer: replays the events after `Last-Event-ID` (or `?after=<id>`, or from the start without either), then follows the live turn until its terminal event. Owner only. 404 `assistant.stream_not_found` once the buffer expired (reload the conversation instead). Not under the chat rate limit. |
+| POST | `/api/assistant/messages/{messageId}/stop` | Stops a streaming answer from any API instance and returns 202. Owner only. 404 when the message is not the caller's, 409 `assistant.not_streaming` when the turn already ended. |
 | GET | `/api/assistant/conversations` | The 20 most recent conversations. |
-| GET | `/api/assistant/conversations/{id}` | Messages and pending actions of one conversation. |
+| GET | `/api/assistant/conversations/{id}` | Messages and pending actions of one conversation. Each message has a `status` (`done`, `streaming`, `error`, `stopped` or `interrupted`; user messages are `done`); a streaming answer returns the text saved so far, which may be empty. |
 | DELETE | `/api/assistant/conversations/{id}` | Soft-deletes one conversation and returns 202; the rows are purged by a background worker. |
 | DELETE | `/api/assistant/conversations?except={id}` | Same for all of the user's conversations except the given one. |
 | PUT | `/api/assistant/messages/{messageId}/client-actions/{actionId}` | Stores `applied` or `dismissed` for a client action chip so it survives reloads. |
@@ -19,7 +21,34 @@ The request body carries `conversationId`, `message` and a `context` (route, ope
 
 ### SSE events
 
-`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, `status`, then exactly one of `done` or `error`. `status` (`{ "state": "retrying", "retryInSeconds": 8 }`) is sent while the assistant waits before retrying a rate limited or busy model. Every event is `event: <type>` followed by one JSON line of camelCase data.
+`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, `status`, then exactly one of `done` or `error`. `conversation` is always first and carries `conversationId`, `userMessageId` and `assistantMessageId`. `status` (`{ "state": "retrying", "retryInSeconds": 8 }`) is sent while the assistant waits before retrying a rate limited or busy model. Every event is `id: <Redis stream entry id>`, `event: <type>` and one `data:` line of camelCase JSON; the id is what a client sends back as `Last-Event-ID`.
+
+Besides the model errors, the terminal `error` can be `assistant.stopped` ("Stopped.", after a stop), `assistant.timeout` (the turn ran longer than `Assistant:TurnTimeoutSeconds`) or `assistant.interrupted` (the API shut down during the turn).
+
+## Resumable answers
+
+A turn is not tied to the HTTP request, so closing the chat or reloading the page does not end it.
+
+1. `POST /chat` validates, saves the user message and an assistant message with empty content and `metadata.status = "streaming"` (created 1 ms after the user message so ordering by `created_at` stays user then assistant), writes the `conversation` event to the turn buffer and queues the turn.
+2. `AssistantTurnWorker` runs each queued turn in its own DI scope. `ActingUserContext` makes `ICurrentUser` return the sender, so tools and services see the same user as in the request; the roles travel in `AssistantCaller`. The turn has its own cancellation, ended by a stop, by `Assistant:TurnTimeoutSeconds` or by the API shutting down, never by the client disconnecting.
+3. `AssistantTurnRunner` appends every event of `AssistantAgentLoop` to the buffer. When the loop ends, it updates the assistant message with the final content, metadata and status before the terminal event is written, so a client that reloads after the terminal event sees the final row.
+4. The response of `POST /chat` and `GET /messages/{id}/stream` read the buffer (`AssistantTurnReader`) and end after the terminal event, when the client disconnects (only the reader stops), when the buffer disappears, or when the turn is older than the timeout plus one minute.
+
+| Status | Meaning |
+|---|---|
+| `streaming` | The turn is running. Left out of the model history; a new message in the conversation gets 409. |
+| `done` | Finished normally. |
+| `error` | The model failed, gave no answer, the turn timed out, or the turn failed unexpectedly (`metadata.error` holds the code). |
+| `stopped` | Stopped by the user; the partial text is kept. |
+| `interrupted` | The API stopped during the turn. At startup `AssistantTurnWorker` marks every `streaming` row older than the timeout plus one minute as `interrupted`, so a turn still running on another instance is never touched; a `streaming` row older than that is also reported as `interrupted` by the conversation endpoint and does not block new messages. |
+
+Redis (main instance, shared `IConnectionMultiplexer`, keys prefixed with `Redis:InstanceName`):
+
+| Key or channel | Use |
+|---|---|
+| `{prefix}assistant:turn:{assistantMessageId}` | Stream of the turn's events (`type`, `data` fields), `XADD MAXLEN ~ 5000`. Expires 15 minutes after the last event, 10 minutes after the terminal one. |
+| `{prefix}assistant:turn:{id}:notify` | Pub/sub channel published after each append. StackExchange.Redis cannot block on `XREAD` on a shared multiplexer, so readers `XRANGE` from their last id when notified and also poll every 500 ms so a lost notification never stalls them. |
+| `{prefix}assistant:turn:{id}:stop` | Key (15 minutes) and pub/sub channel of a stop request. The runner subscribes to the channel, checks the key when it starts and every second. |
 
 ## Tools
 
@@ -58,6 +87,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:OverloadRetryDelaySeconds` | `2` | Pause before retrying an overload error. |
 | `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |
+| `Assistant:TurnTimeoutSeconds` | `180` | 10 to 1800. A turn still running after this ends with `assistant.timeout`. |
 | `Assistant:ApiKeys` | empty | Extra Gemini keys tried in order. In `.env` write one line separated by `;`, like `Cors__AllowedOrigins`: `Assistant__ApiKeys=key1;key2` (indexed `Assistant__ApiKeys__0` and an appsettings array also work). An HTTP 429 switches to the next key at once without waiting; the delayed retries start only when every key is rate limited. The working key is kept for later requests. |
 | `Rag:Cache:*` | enabled | See [ADR 0001](adr/0001-rag-query-caching.md). |
 

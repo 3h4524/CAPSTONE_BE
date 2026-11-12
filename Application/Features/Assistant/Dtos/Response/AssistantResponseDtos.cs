@@ -4,7 +4,7 @@ namespace APCS.Application.Features.Assistant.Dtos.Response;
 
 public sealed record AssistantConversationSummaryResponseDto(Guid Id, string Title, DateTime UpdatedAt);
 
-public sealed record AssistantMessageResponseDto(Guid Id, string Role, string Content, JsonElement Metadata, DateTime CreatedAt);
+public sealed record AssistantMessageResponseDto(Guid Id, string Role, string Content, JsonElement Metadata, DateTime CreatedAt, string Status);
 
 public sealed record AssistantPendingActionResponseDto(
     Guid Id,

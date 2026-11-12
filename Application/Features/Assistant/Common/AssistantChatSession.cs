@@ -7,6 +7,7 @@ public sealed record AssistantHistoryMessage(string Role, string Content, string
 public sealed record AssistantChatSession(
     Guid ConversationId,
     Guid UserMessageId,
+    Guid AssistantMessageId,
     Guid UserId,
     AssistantCaller Caller,
     string Message,

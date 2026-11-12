@@ -21,6 +21,7 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Chat(SendAssistantMessageRequestDto request, CancellationToken cancellationToken)
     {
@@ -29,6 +30,31 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
         return session.IsSuccess
             ? new ServerSentEventsResult(assistant.StreamAsync(session.Value, cancellationToken))
             : session.ToActionResult(this);
+    }
+
+    [HttpGet("messages/{messageId:guid}/stream")]
+    [Produces("text/event-stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> StreamMessage(
+        Guid messageId,
+        [FromQuery] string? after,
+        [FromHeader(Name = "Last-Event-ID")] string? lastEventId,
+        CancellationToken cancellationToken)
+    {
+        var stream = await assistant.AttachToTurnAsync(messageId, string.IsNullOrWhiteSpace(lastEventId) ? after : lastEventId, cancellationToken);
+        return stream.IsSuccess ? new ServerSentEventsResult(stream.Value) : stream.ToActionResult(this);
+    }
+
+    [HttpPost("messages/{messageId:guid}/stop")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> StopMessage(Guid messageId, CancellationToken cancellationToken)
+    {
+        var result = await assistant.StopTurnAsync(messageId, cancellationToken);
+        return result.IsSuccess ? Accepted() : result.ToActionResult(this);
     }
 
     [HttpGet("conversations")]
