@@ -67,7 +67,8 @@ public sealed record MarketOpportunityInsights(
     int? FreshnessAgeDays,
     int FreshnessScore,
     IReadOnlyDictionary<string, double> MarketScoreBreakdown,
-    IReadOnlyList<MarketOpportunityEvidenceResponse> Evidence);
+    IReadOnlyList<MarketOpportunityEvidenceResponse> Evidence,
+    double? FavoritesPerDay = null);
 
 public sealed record MarketOpportunityEvidenceResponse(
     string Title,
