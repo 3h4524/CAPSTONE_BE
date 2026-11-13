@@ -1,4 +1,5 @@
 using APCS.Application.Features.Assistant.Common;
+using APCS.Application.Features.Batches;
 using APCS.Application.Features.Workflows;
 
 namespace APCS.Application.Features.Assistant.Tools.ClientActions;
@@ -7,7 +8,8 @@ public sealed record RunWorkflowArgs(string? Reply, string? BlockedReply);
 
 public sealed class RunWorkflowTool(
     WorkflowCanvasPatchSimulator simulator,
-    WorkflowGraphValidator graphValidator) : AssistantTool<RunWorkflowArgs>
+    WorkflowGraphValidator graphValidator,
+    IBatchService batches) : AssistantTool<RunWorkflowArgs>
 {
     public const string ActionKind = "run_workflow";
 
@@ -25,17 +27,19 @@ public sealed class RunWorkflowTool(
     public override bool IsAvailable(AssistantToolContext context) =>
         context.Caller.IsSeller && context.Client?.Canvas is not null;
 
-    protected override Task<AssistantToolOutcome> ExecuteCoreAsync(AssistantToolContext context, RunWorkflowArgs arguments, CancellationToken cancellationToken)
+    protected override async Task<AssistantToolOutcome> ExecuteCoreAsync(AssistantToolContext context, RunWorkflowArgs arguments, CancellationToken cancellationToken)
     {
         var canvas = context.Client!.Canvas!;
-        var issue = graphValidator.Validate(simulator.Snapshot(canvas), requireProduct: false)?.Message;
-        string[] warnings = issue is null ? [] : [issue];
+        var definition = simulator.Snapshot(canvas);
+        var issue = graphValidator.Validate(definition, requireProduct: false)?.Message;
+        var noPending = issue is null ? await NoPendingProductsAsync(definition, cancellationToken) : null;
+        string[] warnings = (issue ?? noPending) is { } warning ? [warning] : [];
 
         var action = new AssistantClientActionData(
             Guid.NewGuid(),
             ActionKind,
             AssistantJson.SerializeToElement(new { workflowId = canvas.WorkflowId, workflowName = canvas.WorkflowName ?? "This workflow", saveFirst = canvas.IsDirty, warnings }));
-        return Task.FromResult(AssistantToolOutcome.Ok(
+        return AssistantToolOutcome.Ok(
             new
             {
                 status = "proposed",
@@ -46,6 +50,21 @@ public sealed class RunWorkflowTool(
                     : "The open canvas cannot run as it is. Unless a canvas change you proposed in this turn fixes it, tell the user what to fix."
             },
             true,
-            AssistantStreamEvent.ClientAction(action)).WithFinalText(warnings.Length == 0 ? arguments.Reply : arguments.BlockedReply));
+            AssistantStreamEvent.ClientAction(action)).WithFinalText(warnings.Length == 0 ? arguments.Reply : arguments.BlockedReply);
     }
+
+    private async Task<string?> NoPendingProductsAsync(WorkflowDefinition definition, CancellationToken cancellationToken)
+    {
+        if (!definition.Nodes.Any(node => WorkflowCapabilityRegistry.BatchSteps.Contains(node.Type)))
+            return null;
+        var batchId = WorkflowGraphValidator.BatchIdOf(definition);
+        if (batchId == Guid.Empty)
+            return null;
+        var products = await batches.ListProductsAsync(batchId, cancellationToken);
+        if (products.IsFailure || products.Value.Any(product => product.Status == PendingProductStatus))
+            return null;
+        return "This batch has no pending products, so a run has nothing to design. Add products to the batch, or continue the earlier run.";
+    }
+
+    private const string PendingProductStatus = "pending";
 }

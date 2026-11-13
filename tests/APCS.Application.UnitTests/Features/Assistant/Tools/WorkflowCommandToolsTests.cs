@@ -6,8 +6,11 @@ using APCS.Application.Features.Assistant.Dtos.Response;
 using APCS.Application.Features.Assistant.Tools;
 using APCS.Application.Features.Assistant.Tools.ClientActions;
 using APCS.Application.Features.Assistant.Tools.Query;
+using APCS.Application.Features.Batches;
+using APCS.Application.Features.Batches.Dtos;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.Workflows.Validators;
+using APCS.Application.UnitTests.Features.Workflows;
 using APCS.Common.Models;
 using FluentAssertions;
 using Moq;
@@ -19,10 +22,60 @@ public sealed class WorkflowCommandToolsTests
 {
     private static readonly Guid WorkflowId = Guid.NewGuid();
 
-    private static RunWorkflowTool RunTool()
+    private readonly Mock<IBatchService> batches = new();
+
+    private RunWorkflowTool RunTool()
     {
         var registry = new WorkflowCapabilityRegistry();
-        return new RunWorkflowTool(new WorkflowCanvasPatchSimulator(), new WorkflowGraphValidator(registry, new GenerateVideoConfigValidator()));
+        return new RunWorkflowTool(new WorkflowCanvasPatchSimulator(), new WorkflowGraphValidator(registry, new GenerateVideoConfigValidator()), batches.Object);
+    }
+
+    private static AssistantCanvasDto DesignCanvas(out Guid batchId)
+    {
+        var product = new WorkflowTestData().AddProduct();
+        batchId = product.BatchId;
+        var definition = WorkflowTestData.Definition(product);
+        var design = new WorkflowNode("design", "design-image", "Design image", new Point(), AssistantTestSupport.Json("{}"));
+        var nodes = definition.Nodes.Append(design).ToArray();
+        var edges = definition.Edges.Where(edge => edge.Source != "node-0")
+            .Append(new WorkflowEdge("to-design", "node-0", "design"))
+            .Append(new WorkflowEdge("from-design", "design", "node-1"))
+            .ToArray();
+        return new AssistantCanvasDto(WorkflowId, 4, false,
+            nodes.Select(node => new AssistantCanvasNodeDto(node.Id, node.Type, node.Label, node.Config)).ToArray(),
+            edges.Select(edge => new AssistantCanvasEdgeDto(edge.Id, edge.Source, edge.Target)).ToArray(),
+            "Design flow");
+    }
+
+    private void WithProducts(Guid batchId, params string[] statuses) =>
+        batches.Setup(service => service.ListProductsAsync(batchId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IReadOnlyList<ProductDto>>(statuses
+                .Select(status => new ProductDto(Guid.NewGuid(), batchId, "Tee", "tshirt", "cats", ["cat"], null, null, status, null))
+                .ToArray()));
+
+    [TestMethod]
+    public async Task RunWorkflow_WhenTheBatchHasNoPendingProducts_WarnsThatThereIsNothingToDesign()
+    {
+        var canvas = DesignCanvas(out var batchId);
+        WithProducts(batchId, "completed", "completed");
+
+        var outcome = await RunTool().ExecuteAsync(Context(canvas), AssistantTestSupport.Json("""{"reply":"Ready.","blockedReply":"Fix it first."}"""), default);
+
+        var payload = outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject.Payload;
+        payload.GetProperty("warnings")[0].GetString().Should().Contain("no pending products");
+        outcome.FinalText.Should().Be("Fix it first.");
+    }
+
+    [TestMethod]
+    public async Task RunWorkflow_WithAPendingProduct_HasNoWarning()
+    {
+        var canvas = DesignCanvas(out var batchId);
+        WithProducts(batchId, "completed", "pending");
+
+        var outcome = await RunTool().ExecuteAsync(Context(canvas), AssistantTestSupport.Json("""{"reply":"Ready.","blockedReply":"Fix it first."}"""), default);
+
+        outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject.Payload.GetProperty("warnings").GetArrayLength().Should().Be(0);
+        outcome.FinalText.Should().Be("Ready.");
     }
 
     private static AssistantCanvasDto Canvas(bool isDirty = false, bool connected = true) => new(
