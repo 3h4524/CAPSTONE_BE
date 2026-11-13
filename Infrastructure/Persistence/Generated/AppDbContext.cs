@@ -172,6 +172,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<WorkflowRun> WorkflowRuns { get; set; }
 
+    public virtual DbSet<WorkflowRunGroup> WorkflowRunGroups { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -4274,9 +4276,16 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.UserId, e.IdempotencyKey }, "workflow_runs_user_id_idempotency_key_key").IsUnique();
 
+            entity.HasIndex(e => e.RunGroupId, "idx_workflow_runs_run_group").HasFilter("(run_group_id IS NOT NULL)");
+
+            entity.HasIndex(e => e.CreatedAt, "idx_workflow_runs_group_queue").HasFilter("(((status)::text = 'queued'::text) AND (run_group_id IS NOT NULL))");
+
             entity.Property(e => e.Id)
                 .ValueGeneratedNever()
                 .HasColumnName("id");
+            entity.Property(e => e.ArtworkGroupKey)
+                .HasMaxLength(100)
+                .HasColumnName("artwork_group_key");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -4298,6 +4307,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Revision)
                 .HasDefaultValue(1L)
                 .HasColumnName("revision");
+            entity.Property(e => e.RunGroupId).HasColumnName("run_group_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(40)
                 .HasColumnName("status");
@@ -4311,6 +4321,10 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.ParentRun).WithMany(p => p.InverseParentRun)
                 .HasForeignKey(d => d.ParentRunId)
                 .HasConstraintName("workflow_runs_parent_run_id_fkey");
+
+            entity.HasOne(d => d.RunGroup).WithMany(p => p.WorkflowRuns)
+                .HasForeignKey(d => d.RunGroupId)
+                .HasConstraintName("workflow_runs_run_group_id_fkey");
 
             entity.HasOne(d => d.Product).WithMany(p => p.WorkflowRuns)
                 .HasForeignKey(d => d.ProductId)
@@ -4326,6 +4340,65 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.WorkflowId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("workflow_runs_workflow_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkflowRunGroup>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workflow_run_groups_pkey");
+
+            entity.ToTable("workflow_run_groups");
+
+            entity.HasIndex(e => new { e.UserId, e.WorkflowId, e.CreatedAt }, "idx_workflow_run_groups_owner_workflow").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.IdempotencyKey }, "workflow_run_groups_user_id_idempotency_key_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.BatchId).HasColumnName("batch_id");
+            entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefinitionSnapshot)
+                .HasColumnType("jsonb")
+                .HasColumnName("definition_snapshot");
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(1000)
+                .HasColumnName("error_message");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(100)
+                .HasColumnName("idempotency_key");
+            entity.Property(e => e.RequestHash)
+                .HasMaxLength(64)
+                .HasColumnName("request_hash");
+            entity.Property(e => e.Revision)
+                .HasDefaultValue(1L)
+                .HasColumnName("revision");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasColumnName("status");
+            entity.Property(e => e.TargetOverrides)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("target_overrides");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkflowId).HasColumnName("workflow_id");
+            entity.Property(e => e.WorkflowRevision).HasColumnName("workflow_revision");
+
+            entity.HasOne(d => d.User).WithMany(p => p.WorkflowRunGroups)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_run_groups_user_id_fkey");
+
+            entity.HasOne(d => d.Workflow).WithMany(p => p.WorkflowRunGroups)
+                .HasForeignKey(d => d.WorkflowId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_run_groups_workflow_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

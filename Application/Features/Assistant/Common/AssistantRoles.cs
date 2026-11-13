@@ -14,6 +14,15 @@ public static class AssistantMessageKinds
     public const string ActionResult = "action_result";
 }
 
+public static class AssistantMessageStatuses
+{
+    public const string Done = "done";
+    public const string Streaming = "streaming";
+    public const string Error = "error";
+    public const string Stopped = "stopped";
+    public const string Interrupted = "interrupted";
+}
+
 public static class AssistantPendingActionStatuses
 {
     public const string Pending = "pending";

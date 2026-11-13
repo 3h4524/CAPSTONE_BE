@@ -11,13 +11,14 @@ public sealed class GetNodeCatalogTool : AssistantTool<NodeCatalogArgs>
     public override AssistantToolKind Kind => AssistantToolKind.Query;
 
     protected override string Description =>
-        "Get the workflow step types with the settings the assistant can change (names, valid values, limits) and the rules for connecting steps. Call it before editing node settings or connecting steps. Pass types to get the full detail of only those steps.";
+        "Get the workflow step types with the settings the assistant can change (names, valid values, limits) and the rules for connecting steps. Use it to answer questions about steps and their settings. Pass types to get the full detail of only those steps.";
 
     protected override string ParametersSchemaJson => """
         {"type":"object","properties":{"types":{"type":"array","description":"Step types to describe in full, for example [\"design-image\",\"generate-listing\"]. Omit for a short overview of all steps.","items":{"type":"string"}}}}
         """;
 
-    public override bool IsAvailable(AssistantToolContext context) => context.Caller.IsSeller;
+    public override bool IsAvailable(AssistantToolContext context) =>
+        context.Caller.IsSeller && !AssistantPromptBuilder.IncludesNodeCatalog(context.Caller, context.Client);
 
     protected override Task<AssistantToolOutcome> ExecuteCoreAsync(AssistantToolContext context, NodeCatalogArgs arguments, CancellationToken cancellationToken)
     {

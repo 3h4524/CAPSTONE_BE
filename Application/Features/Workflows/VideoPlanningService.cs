@@ -6,7 +6,11 @@ using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.Workflows;
 
-public sealed record PreviewStoryboardRequest(GenerateVideoConfig Config, IReadOnlyList<Guid> MockupIds, string? ArtworkGroupKey);
+/// <param name="ForDesign">
+/// Preview for one design of a batch video run: the scenes, set up on the preview product, are first rewritten to
+/// this design's own mock-ups (<see cref="SceneSourceResolver"/>).
+/// </param>
+public sealed record PreviewStoryboardRequest(GenerateVideoConfig Config, IReadOnlyList<Guid> MockupIds, string? ArtworkGroupKey, bool ForDesign = false);
 public interface IVideoPlanningService
 {
     Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct);
@@ -19,7 +23,7 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
     IRepository<VideoTemplate> templates, IRepository<AiCharacterModel> characterModels,
     GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
     VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
-    IVideoPromptPreparationService? promptPreparation = null) : IVideoPlanningService
+    IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -27,8 +31,18 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         if (product is null || product.UserId != user.UserId || product.DeletedAt != null) return Result.Failure<Storyboard>(Error.NotFound("ProductNotFound", "Product not found."));
         if (request.Config is null || request.MockupIds is null) return Result.Failure<Storyboard>(Error.Validation("Video configuration and mockup selection are required."));
         if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<Storyboard>(new("UnsupportedVideoMode", "Only Standard Showcase is enabled.", ErrorType.Validation));
-        var validation = await validator.ValidateAsync(request.Config, ct);
+        // A design's storyboard is made from the batch run's scene list, whose scenes may leave their image to be
+        // chosen for each design: the resolver below picks them, so the list is checked as a batch run checks it.
+        var validation = request.ForDesign
+            ? await validator.ValidateForBatchAsync(request.Config, ct)
+            : await validator.ValidateAsync(request.Config, ct);
         if (!validation.IsValid || request.MockupIds.Count > 8) return Result.Failure<Storyboard>(Error.Validation("Invalid video configuration or mockup selection."));
+        if (request.ForDesign && targetResolver is not null)
+        {
+            var resolved = await targetResolver.ResolveAsync(user.UserId!.Value, productId, request.ArtworkGroupKey, request.Config, null, ct);
+            if (resolved.Error is not null) return Result.Failure<Storyboard>(Error.Validation(resolved.Error));
+            request = request with { Config = resolved.Config, MockupIds = [] };
+        }
         var owned = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null, ct);
         var group = VideoStoryboardPlanner.KnownArtworkGroup(owned, request.ArtworkGroupKey);
         var aiTemplates = await LoadAiTemplatesAsync(ct);
@@ -58,8 +72,11 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             var identity = AiStudioFrameIdentity.Read(frame.Regions);
             if (identity is not null) requestedIds.Add(identity.SourceMockupId);
         }
+        // The automatic pick skips a composite that a newer one of the same template and color replaces; an image named
+        // explicitly stays (a batch design's names were already moved to its current images by the target resolver).
+        var superseded = APCS.Application.Features.BatchMockups.Common.MockupSources.Superseded(owned);
         var selected = request.MockupIds.Count == 0
-            ? approved.Where(x => requestedIds.Contains(x.Id)).Concat(approved.Take(8)).DistinctBy(x => x.Id).ToList()
+            ? approved.Where(x => requestedIds.Contains(x.Id)).Concat(approved.Where(x => !superseded.Contains(x.Id)).Take(8)).DistinctBy(x => x.Id).ToList()
             : approved.Where(x => requestedIds.Contains(x.Id)).ToList();
         selected.AddRange(owned.Where(x => requestedIds.Contains(x.Id) && x.SourceType == APCS.Application.Features.BatchMockups.Common.MockupSources.AiGenerated && x.Role == "VideoScene"));
         var experienceMap = experiences is null

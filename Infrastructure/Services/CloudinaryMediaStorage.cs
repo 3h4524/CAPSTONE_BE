@@ -4,12 +4,19 @@ using APCS.Application.Features.Workflows;
 using APCS.Infrastructure.Options;
 using CloudinaryDotNet;
 using CloudinaryDotNet.Actions;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure.Services;
 
-public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, TimeProvider time, IHttpClientFactory clients) : IMediaStorage
+public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, TimeProvider time, IHttpClientFactory clients,
+    IMemoryCache? cache = null) : IMediaStorage
 {
+    // A signed read link lives ten minutes. The same one is handed out for five: a page that reads its images again
+    // (a run's mock-ups, refreshed by every change of the run) then gets identical links, and the browser keeps the
+    // images it has instead of downloading every one again. Each link still has at least five minutes left.
+    private static readonly TimeSpan ReuseSignedLinkFor = TimeSpan.FromMinutes(5);
+
     private Cloudinary Client => CloudinaryClientFactory.Create(options.Value);
     public async Task<StoredMockup> UploadMockupAsync(Stream content, string fileName, string key, CancellationToken ct)
     {
@@ -43,7 +50,15 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
             && uri.AbsolutePath.StartsWith($"/{options.Value.CloudName}/image/", StringComparison.Ordinal)
             ? clients.CreateClient("PrivateMedia").GetByteArrayAsync(uri, ct)
             : throw new InvalidOperationException("Not an image of this Cloudinary account.");
-    public string SignRead(string key, string type, string? version = null, bool attachment = false) => Client.DownloadPrivate(
+    public string SignRead(string key, string type, string? version = null, bool attachment = false) =>
+        cache is null
+            ? SignReadNow(key, type, attachment)
+            : cache.GetOrCreate(("signed-read", options.Value.CloudName, key, type, version, attachment), entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = ReuseSignedLinkFor;
+                return SignReadNow(key, type, attachment);
+            })!;
+    private string SignReadNow(string key, string type, bool attachment) => Client.DownloadPrivate(
         PublicId(key), attachment: attachment, format: type == "image" ? "png" : type == "video" ? "mp4" : null,
         type: "authenticated", expiresAt: time.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds(), resourceType: type,
         transformation: null, targetFilename: type == "video" ? "video.mp4" : type == "raw" ? "video-package.zip" : null);

@@ -39,7 +39,8 @@ public sealed class EtsyPublishingService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<PublishEtsyDraftRequestDto> validator,
-    ILogger<EtsyPublishingService> logger) : IEtsyPublishingService
+    ILogger<EtsyPublishingService> logger,
+    IListingPace? pace = null) : IEtsyPublishingService
 {
     private const string TaxonomyCacheKey = "etsy:seller-taxonomy:v1";
     private static readonly TimeSpan TaxonomyLifetime = TimeSpan.FromDays(1);
@@ -69,7 +70,7 @@ public sealed class EtsyPublishingService(
         warnings.AddRange(tagWarnings);
 
         var approvedMockups = (await ApprovedMockupsAsync(productId, cancellationToken))
-            .Select(mockup => new EtsyDraftMockupDto(mockup.Id, storage.SignRead(mockup.StorageKey, "image", mockup.StorageVersion), mockup.MockupWidthPx, mockup.MockupHeightPx))
+            .Select(mockup => new EtsyDraftMockupDto(mockup.Id, storage.SignRead(mockup.StorageKey, "image", mockup.StorageVersion), mockup.MockupWidthPx, mockup.MockupHeightPx, ListingPhotos.IsAiMade(mockup)))
             .ToArray();
         if (approvedMockups.Length == 0)
             warnings.Add("This product has no approved mock-up yet; approve at least one before pushing.");
@@ -186,6 +187,9 @@ public sealed class EtsyPublishingService(
         var approved = (await ApprovedMockupsAsync(productId, cancellationToken)).ToDictionary(mockup => mockup.Id);
         if (request.MockupIds.Any(id => !approved.ContainsKey(id)))
             return Result.Failure<PublishEtsyDraftResponseDto>(ShopErrors.MockupNotApproved());
+        // A physical item needs one photo that shows it as it is; photos made with AI may only go beside it.
+        if (request.Type == "physical" && request.MockupIds.Count > 0 && request.MockupIds.All(id => ListingPhotos.IsAiMade(approved[id])))
+            return Result.Failure<PublishEtsyDraftResponseDto>(ShopErrors.NoRealPhoto());
         var video = request.IncludeVideo ? await ApprovedVideoAsync(productId, cancellationToken) : null;
         if (request.IncludeVideo && video is null)
             return Result.Failure<PublishEtsyDraftResponseDto>(ShopErrors.VideoNotApproved());
@@ -198,7 +202,7 @@ public sealed class EtsyPublishingService(
 
         var (title, _) = EtsyListingText.Title(request.Title);
         var (tags, _) = EtsyListingText.Tags(request.Tags);
-        var draft = new EtsyDraftListing(title, request.Description.Trim(), request.Price, request.Quantity, request.TaxonomyId,
+        var draft = new EtsyDraftListing(title, EtsyListingText.WithAiDisclosure(request.Description), request.Price, request.Quantity, request.TaxonomyId,
             request.Type, request.WhoMade, request.WhenMade, tags,
             request.Type == "physical" ? request.ShippingProfileId : null,
             request.Type == "physical" ? request.ReadinessStateId : null,
@@ -221,6 +225,8 @@ public sealed class EtsyPublishingService(
         var log = (await uploads.FindAsync(row => row.EtsyIntegrationId == connection.Integration.Id && row.IdempotencyKey == key, cancellationToken)).SingleOrDefault();
         if (log is { UploadStatus: "success", EtsyListingId: { } existing })
             return Result.Success(new PublishEtsyDraftResponseDto(existing, EditUrl(existing), 0, false, true, []));
+        if (pace is not null && await pace.CheckAsync(userId, cancellationToken) is { Allowed: false } paced)
+            return Result.Failure<PublishEtsyDraftResponseDto>(ShopErrors.ListingPace(paced.Reason!));
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (log is null)
@@ -263,6 +269,8 @@ public sealed class EtsyPublishingService(
         log.EtsyListingId = listing.ListingId;
         await uploads.UpdateAsync(log, saveChange: true, cancellationToken);
         var warnings = new List<string>();
+        if (request.Type == "physical" && request.MockupIds.Count > 0 && ListingPhotos.IsAiMade(approved[request.MockupIds[0]]))
+            warnings.Add(ListingPhotos.AiPhotoFirst);
         var imagesUploaded = 0;
         foreach (var (mockupId, index) in request.MockupIds.Select((id, index) => (id, index)))
         {
@@ -347,6 +355,7 @@ public sealed class EtsyPublishingService(
     /// <summary>Mock-ups approved at their current revision, as the workflow counts them.</summary>
     private async Task<IReadOnlyList<MockupImage>> ApprovedMockupsAsync(Guid productId, CancellationToken cancellationToken) =>
         await mockups.Query()
+            .Include(mockup => mockup.MockupTemplate)
             .Where(mockup => mockup.ProductId == productId && mockup.DeletedAt == null && mockup.ApprovalStatus == "approved"
                 && mockup.ApprovedRevision == mockup.MetadataRevision)
             .OrderBy(mockup => mockup.CreatedAt)

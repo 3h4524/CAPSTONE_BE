@@ -76,8 +76,52 @@ public sealed class WorkflowGraphValidatorTests
     public void Validate_PrintifyWithoutAProductType_SaysWhatIsMissing()
     {
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
-            ("publish-printify", new { colors = new[] { "White" }, sizes = new[] { "M" } }));
+            ("publish-printify", new { source = "manual", colors = new[] { "White" }, sizes = new[] { "M" } }));
         _validator.Validate(definition)!.Message.Should().Contain("product type");
+    }
+
+    [TestMethod]
+    public void Validate_PrintifyReadFromTheMockups_NeedsNoProductOnTheNode()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", new { targetProfit = 10 }));
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_PublishRightAfterMockupApprovalWithoutAVideo_IsAccepted()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoButWithExportZip_SaysTheZipNeedsTheVideo()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var export = new WorkflowNode("export", "export-zip", "Export ZIP", new(), JsonSerializer.SerializeToElement(new { }));
+        var gate = definition.Nodes.Single(x => x.Type == "approval-gate");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, export],
+            Edges = [.. definition.Edges.Where(x => x.Target != printify.Id), new("to-export", gate.Id, export.Id), new("to-printify", export.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("need Generate Video");
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoOrMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var mockup = definition.Nodes.Single(x => x.Type == "apply-mockup");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = definition.Nodes.Where(x => x.Type != "approval-gate").ToArray(),
+            Edges = [.. definition.Edges.Where(x => x.Source == definition.Nodes[0].Id), new("to-printify", mockup.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("Mockup Approval");
     }
 
     [TestMethod]
@@ -203,6 +247,18 @@ public sealed class WorkflowGraphValidatorTests
             Edges = definition.Edges.Where(x => x.Source != "node-0")
                 .Concat(line.Skip(1).Select((target, i) => new WorkflowEdge("design-edge-" + i, line[i], target))).ToArray()
         };
+    }
+
+    [TestMethod]
+    public void SupportsBatchVideos_AiSceneList_IsAllowedButOneProductsSettingsAreNot()
+    {
+        var scenes = new AiVideoSceneOptions[] { new(Mode: "ai", TemplateCode: "cinematic_product_showcase") };
+        var ai = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: scenes);
+
+        WorkflowGraphValidator.SupportsBatchVideos(ai).Should().BeTrue();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { AiScenes = null }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { Template = "product_on_model_pack" }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(new GenerateVideoConfig()).Should().BeTrue();
     }
 
     [TestMethod]

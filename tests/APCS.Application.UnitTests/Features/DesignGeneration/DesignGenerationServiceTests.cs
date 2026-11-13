@@ -37,6 +37,7 @@ public sealed class DesignGenerationServiceTests
         public required Mock<IUnitOfWork> UnitOfWork { get; init; }
         public required DesignGenerationService Service { get; init; }
         public required Guid OwnerId { get; init; }
+        public IReadOnlyList<DesignImage> Images { get; init; } = [];
     }
 
     private static Fixture CreateFixture(
@@ -51,7 +52,8 @@ public sealed class DesignGenerationServiceTests
         int[]? existingPromptVersions = null,
         DesignTemplate? template = null,
         Action<Product>? editProduct = null,
-        TestEntitlements? entitlements = null)
+        TestEntitlements? entitlements = null,
+        string[]? designStatuses = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -98,6 +100,14 @@ public sealed class DesignGenerationServiceTests
                 }
             }
             : Array.Empty<DesignImage>();
+        if (designStatuses is not null)
+            images = designStatuses.Select((status, index) => new DesignImage
+            {
+                Id = Guid.NewGuid(), ProductId = product.Id, AiPromptId = Guid.NewGuid(), BatchJobId = job.Id,
+                BatchJobProductId = row.Id, ImageUrl = $"https://img/{index + 1}.png", VariationIndex = index + 1, ImageWidthPx = 1024,
+                ImageHeightPx = 1024, ApprovalStatus = status, ImageGeneratorModel = "m", StorageProvider = "cloudinary",
+                StorageKey = "k", FileFormat = "png", CreatedAt = UtcNow.UtcDateTime
+            }).ToArray();
         var imageRepo = MockRepo(images);
         var templateRepo = MockRepo(template is null ? Array.Empty<DesignTemplate>() : new[] { template });
         var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
@@ -180,7 +190,7 @@ public sealed class DesignGenerationServiceTests
         return new Fixture
         {
             Job = job, Rows = [row], AddedPrompts = addedPrompts,
-            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId
+            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId, Images = images
         };
     }
 
@@ -192,6 +202,60 @@ public sealed class DesignGenerationServiceTests
         repo.Setup(x => x.UpdateAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         repo.Setup(x => x.AddAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         return repo;
+    }
+
+    private static Fixture ReviewFixture(params string[] statuses) =>
+        CreateFixture(jobStatus: BatchJobStatuses.Completed, rowStatus: BatchJobProductStatuses.ImageReviewRequired, designStatuses: statuses);
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_ApprovingADesign_RejectsTheOtherDesignsOfItsProduct()
+    {
+        var fixture = ReviewFixture("approved", "pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[2].Id], ApprovalStatuses.Approved));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("rejected", "rejected", "approved");
+        result.Value.Approved.Should().Be(1);
+        result.Value.Pending.Should().Be(0);
+        fixture.Rows[0].Status.Should().Be(BatchJobProductStatuses.Approved);
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_TwoDesignsOfOneProduct_IsRefused()
+    {
+        var fixture = ReviewFixture("pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto(fixture.Images.Select(image => image.Id).ToList(), ApprovalStatuses.Approved));
+
+        result.IsFailure.Should().BeTrue();
+        fixture.Images.Should().OnlyContain(image => image.ApprovalStatus == "pending");
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_ApproveEveryRemaining_ApprovesTheFirstDesignOfEachProduct()
+    {
+        var fixture = ReviewFixture("rejected", "pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id, new SetImageApprovalRequestDto(null, ApprovalStatuses.Approved));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("rejected", "approved", "rejected");
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_TakingBackAnApproval_LeavesTheOtherDesignsAlone()
+    {
+        var fixture = ReviewFixture("approved", "rejected");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[0].Id], ApprovalStatuses.Pending));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("pending", "rejected");
+        fixture.Rows[0].Status.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
     }
 
     [TestMethod]

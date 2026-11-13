@@ -18,7 +18,7 @@ public sealed record AssistantToolCallData(string Name, bool Ok);
 
 public sealed record AssistantToolMemoryData(string Tool, string Result);
 
-public sealed record AssistantConversationEventData(Guid ConversationId, Guid UserMessageId);
+public sealed record AssistantConversationEventData(Guid ConversationId, Guid UserMessageId, Guid AssistantMessageId);
 
 public sealed record AssistantDeltaEventData(string Text);
 
@@ -34,8 +34,17 @@ public sealed record AssistantDoneEventData(Guid AssistantMessageId, string Mode
 
 public sealed record AssistantStreamEvent(string Type, object Data)
 {
-    public static AssistantStreamEvent Conversation(Guid conversationId, Guid userMessageId) =>
-        new("conversation", new AssistantConversationEventData(conversationId, userMessageId));
+    public const string DoneType = "done";
+    public const string ErrorType = "error";
+
+    private static readonly JsonSerializerOptions DataJsonOptions = new(JsonSerializerDefaults.Web);
+
+    public string DataJson() => JsonSerializer.Serialize(Data, Data.GetType(), DataJsonOptions);
+
+    public static bool IsTerminal(string type) => type is DoneType or ErrorType;
+
+    public static AssistantStreamEvent Conversation(Guid conversationId, Guid userMessageId, Guid assistantMessageId) =>
+        new("conversation", new AssistantConversationEventData(conversationId, userMessageId, assistantMessageId));
 
     public static AssistantStreamEvent Delta(string text) => new("delta", new AssistantDeltaEventData(text));
 
@@ -58,7 +67,7 @@ public sealed record AssistantStreamEvent(string Type, object Data)
         new("status", new AssistantStatusEventData("retrying", retryInSeconds));
 
     public static AssistantStreamEvent Done(Guid assistantMessageId, string model, int? inputTokens, int? outputTokens) =>
-        new("done", new AssistantDoneEventData(assistantMessageId, model, inputTokens, outputTokens));
+        new(DoneType, new AssistantDoneEventData(assistantMessageId, model, inputTokens, outputTokens));
 
-    public static AssistantStreamEvent Error(string code, string message) => new("error", new AssistantErrorData(code, message));
+    public static AssistantStreamEvent Error(string code, string message) => new(ErrorType, new AssistantErrorData(code, message));
 }

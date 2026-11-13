@@ -33,11 +33,15 @@ public static class WorkflowNodeCatalog
         "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy"
     ];
 
+    public const string PublishRule =
+        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product: each may appear once and nothing connects after publish-etsy. With the video steps they come after export-zip; without a video they follow approval-gate directly, and review-video and export-zip are left out.";
+
     public static readonly IReadOnlyList<string> ConnectionRules =
     [
         $"Steps connect in one direction, in this run order: {string.Join(" -> ", RunOrder)}. Only the steps that are on the canvas count.",
         "A step connects only to the NEXT step that is on the canvas. It cannot skip a step that is present (for example it cannot jump over Mockup Approval).",
         "generate-listing is outside the run order: it may follow or precede any step, and needs exactly one incoming connection.",
+        PublishRule,
         "A node cannot connect to itself, a connection cannot repeat, and a connection cannot create a loop.",
         "To insert a step between A and B: disconnect A->B first, then connect A->new and new->B."
     ];
@@ -92,7 +96,10 @@ public static class WorkflowNodeCatalog
                 [new("none", "None"), new("fade", "Fade"), new("swipe", "Swipe"), new("zoom", "Zoom"), new("flash", "Flash"), new("whip_pan", "Whip pan"), new("blur", "Blur")],
                 Note: "Send as nested config, for example {\"standardOptions\":{\"transition\":\"fade\"}}.")
         ], "Video mode, AI scenes and motion are set in the UI because AI generation costs money."),
-        new("review-video", "Review Video", "Approve the exact video version before export.", Order("review-video"), []),
+        new("review-video", "Review Video", "Approve the exact video version before export.", Order("review-video"),
+        [
+            new("mode", "select", "Approval mode", [new("manual", "Manual review")])
+        ]),
         new("generate-listing", "Listing content", "Writes the SEO title, 13 tags and description for each product.", null,
         [
             new("model", "select", "Language model", [new("gpt-4o", "GPT-4o"), new("gemini", "Gemini")]),
@@ -104,7 +111,7 @@ public static class WorkflowNodeCatalog
         [
             new("targetProfit", "number", "Profit per item (USD)", Min: 0, Max: 500),
             new("publishToEtsy", "switch", "Publish to Etsy"),
-            new("addMockups", "switch", "Add APCS mock-ups to the listing")
+            new("addMockups", "switch", "Add Podivo mock-ups to the listing")
         ], "The product type, print provider, colors and sizes come from the Printify catalog and are chosen in the UI."),
         new("publish-etsy", "Publish to Etsy", "Creates an Etsy draft listing; a digital download delivers the approved designs.", Order("publish-etsy"),
         [

@@ -1,14 +1,16 @@
 # Assistant chatbot
 
-The assistant answers help questions from the RAG knowledge base and operates on the signed-in user's workflows through tools. It lives in `Application/Features/Assistant` and is available to Seller and Admin accounts. Admins only get the FAQ, navigation and choice tools. Architecture and layering rules stay in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+The assistant, named Podi in the Podivo app, answers help questions from the RAG knowledge base and operates on the signed-in user's workflows through tools. It lives in `Application/Features/Assistant` and is available to Seller and Admin accounts. Admins only get the FAQ, navigation and choice tools. Architecture and layering rules stay in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/assistant/chat` | Streams the answer as Server-Sent Events. Rate limited to 20 requests per minute per user (HTTP 429). |
+| POST | `/api/assistant/chat` | Starts a turn and streams it as Server-Sent Events. Rate limited to 20 requests per minute per user (HTTP 429). 409 `assistant.turn_in_progress` while the conversation already has a streaming answer. |
+| GET | `/api/assistant/messages/{messageId}/stream` | Re-attaches to an answer: replays the events after `Last-Event-ID` (or `?after=<id>`, or from the start without either), then follows the live turn until its terminal event. Owner only. 404 `assistant.stream_not_found` once the buffer expired (reload the conversation instead). Not under the chat rate limit. |
+| POST | `/api/assistant/messages/{messageId}/stop` | Stops a streaming answer from any API instance and returns 202. Owner only. 404 when the message is not the caller's, 409 `assistant.not_streaming` when the turn already ended. |
 | GET | `/api/assistant/conversations` | The 20 most recent conversations. |
-| GET | `/api/assistant/conversations/{id}` | Messages and pending actions of one conversation. |
+| GET | `/api/assistant/conversations/{id}` | Messages and pending actions of one conversation. Each message has a `status` (`done`, `streaming`, `error`, `stopped` or `interrupted`; user messages are `done`); a streaming answer returns the text saved so far, which may be empty. |
 | DELETE | `/api/assistant/conversations/{id}` | Soft-deletes one conversation and returns 202; the rows are purged by a background worker. |
 | DELETE | `/api/assistant/conversations?except={id}` | Same for all of the user's conversations except the given one. |
 | PUT | `/api/assistant/messages/{messageId}/client-actions/{actionId}` | Stores `applied` or `dismissed` for a client action chip so it survives reloads. |
@@ -19,7 +21,34 @@ The request body carries `conversationId`, `message` and a `context` (route, ope
 
 ### SSE events
 
-`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, `status`, then exactly one of `done` or `error`. `status` (`{ "state": "retrying", "retryInSeconds": 8 }`) is sent while the assistant waits before retrying a rate limited or busy model. Every event is `event: <type>` followed by one JSON line of camelCase data.
+`conversation`, `delta`, `tool_started`, `tool_finished`, `citations`, `client_action`, `pending_action`, `choices`, `status`, then exactly one of `done` or `error`. `conversation` is always first and carries `conversationId`, `userMessageId` and `assistantMessageId`. `status` (`{ "state": "retrying", "retryInSeconds": 8 }`) is sent while the assistant waits before retrying a rate limited or busy model. Every event is `id: <Redis stream entry id>`, `event: <type>` and one `data:` line of camelCase JSON; the id is what a client sends back as `Last-Event-ID`.
+
+Besides the model errors, the terminal `error` can be `assistant.stopped` ("Stopped.", after a stop), `assistant.timeout` (the turn ran longer than `Assistant:TurnTimeoutSeconds`) or `assistant.interrupted` (the API shut down during the turn).
+
+## Resumable answers
+
+A turn is not tied to the HTTP request, so closing the chat or reloading the page does not end it.
+
+1. `POST /chat` validates, saves the user message and an assistant message with empty content and `metadata.status = "streaming"` (created 1 ms after the user message so ordering by `created_at` stays user then assistant), writes the `conversation` event to the turn buffer and queues the turn.
+2. `AssistantTurnWorker` runs each queued turn in its own DI scope. `ActingUserContext` makes `ICurrentUser` return the sender, so tools and services see the same user as in the request; the roles travel in `AssistantCaller`. The turn has its own cancellation, ended by a stop, by `Assistant:TurnTimeoutSeconds` or by the API shutting down, never by the client disconnecting.
+3. `AssistantTurnRunner` appends every event of `AssistantAgentLoop` to the buffer. When the loop ends, it updates the assistant message with the final content, metadata and status before the terminal event is written, so a client that reloads after the terminal event sees the final row.
+4. The response of `POST /chat` and `GET /messages/{id}/stream` read the buffer (`AssistantTurnReader`) and end after the terminal event, when the client disconnects (only the reader stops), when the buffer disappears, or when the turn is older than the timeout plus one minute.
+
+| Status | Meaning |
+|---|---|
+| `streaming` | The turn is running. Left out of the model history; a new message in the conversation gets 409. |
+| `done` | Finished normally. |
+| `error` | The model failed, gave no answer, the turn timed out, or the turn failed unexpectedly (`metadata.error` holds the code). |
+| `stopped` | Stopped by the user; the partial text is kept. |
+| `interrupted` | The API stopped during the turn. At startup `AssistantTurnWorker` marks every `streaming` row older than the timeout plus one minute as `interrupted`, so a turn still running on another instance is never touched; a `streaming` row older than that is also reported as `interrupted` by the conversation endpoint and does not block new messages. |
+
+Redis (main instance, shared `IConnectionMultiplexer`, keys prefixed with `Redis:InstanceName`):
+
+| Key or channel | Use |
+|---|---|
+| `{prefix}assistant:turn:{assistantMessageId}` | Stream of the turn's events (`type`, `data` fields), `XADD MAXLEN ~ 5000`. Expires 15 minutes after the last event, 10 minutes after the terminal one. |
+| `{prefix}assistant:turn:{id}:notify` | Pub/sub channel published after each append. StackExchange.Redis cannot block on `XREAD` on a shared multiplexer, so readers `XRANGE` from their last id when notified and also poll every 500 ms so a lost notification never stalls them. |
+| `{prefix}assistant:turn:{id}:stop` | Key (15 minutes) and pub/sub channel of a stop request. The runner subscribes to the channel, checks the key when it starts and every second. |
 
 ## Tools
 
@@ -27,8 +56,8 @@ Each tool is a class implementing `IAssistantTool` (usually through `AssistantTo
 
 | Kind | Behaviour | Tools |
 |---|---|---|
-| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog`, `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
-| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
+| Query | Runs immediately and returns data to the model | `search_faq`, `list_workflows`, `get_workflow`, `get_workflow_run`, `get_workflow_capabilities`, `list_batches`, `list_batch_products`, `get_usage_overview`, `get_subscription_overview`, `get_node_catalog` (not offered when the node catalog is already in the prompt), `list_design_templates`, `list_style_presets`, `list_mockup_templates`, `list_video_templates` |
+| ClientAction | Sends an action to the browser; the turn ends unless `moreRequests` is true | `edit_workflow_canvas` (validated by `WorkflowCanvasPatchSimulator` and `WorkflowGraphValidator`; it returns only the graph warning the patch introduces, not one the canvas already had), `arrange_workflow_canvas` (only moves nodes; the browser computes the positions from the real node sizes), `navigate` (whitelisted routes only) |
 | Confirmation | Stores an `assistant_pending_actions` row; runs only when the user confirms | `start_workflow_run`, `workflow_run_action` |
 | Interaction | Shows reply chips | `offer_choices` |
 
@@ -46,7 +75,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 
 ## Model and configuration
 
-`IAssistantChatModel` is implemented by `GeminiAssistantChatModel` (Infrastructure, `Google.GenAI` through `Microsoft.Extensions.AI`). The agent loop in `AssistantAgentLoop` allows at most 5 tool rounds, then one final answer without tools.
+`IAssistantChatModel` is implemented by `GeminiAssistantChatModel` (Infrastructure, `Google.GenAI` through `Microsoft.Extensions.AI`). The agent loop in `AssistantAgentLoop` allows at most 5 tool rounds, then one final answer without tools. Before that final round it adds a `<final_answer>` note telling the model it can no longer call tools and must say what it found, what blocked it and the next step. If the turn still ends with nothing visible and a tool failed, the loop streams a fallback built from the most recent failed tool's `message` (for example "I couldn't start the run: ...") instead of `assistant.empty_response`; failures that only describe internal mistakes (`unknown_tool`, `invalid_arguments`, `invalid_operations`, `tool_failed`, `missing_run`) are not used. Such a turn is not saved to the answer cache.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -58,6 +87,7 @@ To add a tool: create the class, register it, add unit tests next to the existin
 | `Assistant:OverloadRetryDelaySeconds` | `2` | Pause before retrying an overload error. |
 | `Assistant:RateLimitRetryDelaySeconds` | `8` | Pause between those retries. |
 | `Assistant:ApiKey` | empty | Falls back to `Gemini:TextGeneration:ApiKey`, then `Gemini:Embeddings:ApiKey`. |
+| `Assistant:TurnTimeoutSeconds` | `180` | 10 to 1800. A turn still running after this ends with `assistant.timeout`. |
 | `Assistant:ApiKeys` | empty | Extra Gemini keys tried in order. In `.env` write one line separated by `;`, like `Cors__AllowedOrigins`: `Assistant__ApiKeys=key1;key2` (indexed `Assistant__ApiKeys__0` and an appsettings array also work). An HTTP 429 switches to the next key at once without waiting; the delayed retries start only when every key is rate limited. The working key is kept for later requests. |
 | `Rag:Cache:*` | enabled | See [ADR 0001](adr/0001-rag-query-caching.md). |
 
@@ -71,7 +101,7 @@ FAQ articles are RAG documents with `contentType = faq`. Ingest them from Admin,
 
 ## Node catalog and connection rules
 
-`Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
+`Application/Features/Assistant/Catalog/WorkflowNodeCatalog.cs` describes every step type, the settings the assistant may change and their valid values. `WorkflowCanvasPatchSimulator` validates `update_config` against it (unknown keys, values outside the options, ranges, ids) and applies it with a deep merge; dotted keys such as `standardOptions.transition` are expanded. `add_node` accepts an optional `configJson` checked with the same rules, and its normalized operation carries the result as `config`. It also enforces the same connection rules as the frontend (`getConnectionIssue`): a step connects only to the next step present in run order, `generate-listing` is outside the run order, no duplicates or loops. The run order ends with `export-zip`, `publish-printify`, `publish-etsy`; the `type` enum of `edit_workflow_canvas` and the run order in the system prompt are built from the catalog, so a new step type only has to be added there. Rejected operations come back to the model as `invalid_operations` so it can correct itself.
 
 Step names are unique: the step type name, numbered when it repeats (`Design image`, `Design image 1`, `Design image 2`). `add_node` ignores any label from the model and takes the next free name with the same rule as the frontend (`WorkflowCanvasPatchSimulator.UniqueLabel`, `uniqueNodeLabel` in `src/helpers/workflow-graph.ts`). The model is not offered a rename operation; an unexpected `rename_node` is rejected as an unknown operation. When a step name in the user's message matches several steps, the prompt tells the model to ask with `offer_choices` instead of guessing.
 
@@ -89,5 +119,6 @@ Each model call costs several seconds, so the design minimises calls:
 - **Pure help answers are cached** for 30 minutes (first message of a chat, no canvas, no tool other than `search_faq`), keyed by the normalised message, role and page path (route without its query string) and by the RAG generation token, so re-indexing invalidates them. A cache hit replays the answer without calling the model (`model: "cache"`).
 - **Tools that end the turn carry the user-facing sentence in a `reply` argument** (`edit_workflow_canvas`, `arrange_workflow_canvas`, `navigate`, `start_workflow_run`, `workflow_run_action`; `offer_choices` uses `question`). The loop streams it and skips the closing model call. Without a reply the model writes the closing sentence as before.
 - **Messages with several requests.** Every ClientAction, Confirmation and Interaction tool gets a required boolean `moreRequests` argument, added to its schema by `AssistantToolSchemas.Build`. When the model sets it, the loop calls the model again with tools allowed instead of ending the turn. Small models often leave it false, so after a round that ended with an action and a reply the loop runs one **completion check**: it adds a `<completion_check>` note and calls the model once more with tools allowed. The model answers a question it skipped, calls an action it skipped, or replies `DONE`. The text of the check is held until the call ends and dropped when it is `DONE` or when at least 60% of its words already appear in the answer (a repeated summary). The check runs at most once per turn, not after `offer_choices` and not when `moreRequests` was already used; it costs one extra model call per action turn. The replies of every action are shown, and text from different rounds is separated by a blank line.
-- The node catalog is added to the system prompt when a canvas is open, so the model does not call `get_node_catalog` first.
+- The node catalog is added to the system prompt when a canvas is open (`AssistantPromptBuilder.IncludesNodeCatalog`), and `get_node_catalog` is then not offered at all.
+- Without an open canvas, the prompt tells the model not to explore when a request needs canvas edits: it says what is missing and offers a `navigate` button to `/workflows?id=<id>`. When `start_workflow_run` fails it explains the returned reason instead of investigating.
 - Thinking is set to `Assistant:ThinkingLevel` (default `Low`).

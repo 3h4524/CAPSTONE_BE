@@ -10,7 +10,7 @@ This document is the source of truth for architecture, the Service/Repository pa
 - Entity Framework Core 8 with Npgsql and a database-first PostgreSQL model reverse-engineered from schema `public`, whose changes are Flyway migrations in `migrations/`.
 - Direct EF account persistence with GUID `User` identifiers, ASP.NET Core's `PasswordHasher<User>`, role codes, and a permission catalogue; ASP.NET Identity stores are not used.
 - Custom JWT access tokens and hashed, rotating refresh tokens.
-- Redis through `IDistributedCache` and the Application `ICacheService` abstraction.
+- Redis through `IDistributedCache` and the Application `ICacheService` abstraction, plus a shared `IConnectionMultiplexer` behind `IAssistantTurnBuffer` for the assistant's resumable answers.
 - MSTest, FluentAssertions, and Moq for the current unit-test suite.
 
 Do not add a technology merely because generic Clean Architecture or .NET guidance recommends it. Introduce a dependency only for an approved feature and document the durable architectural consequence.
@@ -194,7 +194,6 @@ These facts are documented so new work does not mistake a target rule for an alr
 - The Neon auth schema has no lockout fields or refresh-token lineage. Administrative account states still make an account inactive, but automatic lockout and descendant-token revocation on replay are not available.
 - `AggregateRoot` is presently a marker and domain events are not implemented.
 - `EmailService` logs a send request and completes without delivering email.
-- Redis is configured and unit-tested, but the repository has no Redis integration tests.
 - Model tests verify the reverse-engineered table count and `xmin` concurrency metadata. The opt-in APCS.Infrastructure.IntegrationTests project verifies API-key PostgreSQL projection, ownership, transaction-locked writes and soft deletion with session-local temporary tables. The complete HTTP authentication/authorization pipeline does not yet have integration coverage.
 
 These are not instructions to refactor unrelated code. Address a deviation only through an approved feature or architectural change.

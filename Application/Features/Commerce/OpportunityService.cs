@@ -252,6 +252,8 @@ public sealed class OpportunityService(
         limit = Math.Clamp(limit, 1, 100);
         // Rows ranked before demo data was excluded stay hidden until the next refresh replaces them.
         var query = sellerOpportunities.Query().Where(x => x.UserId == userId && !x.Opportunity.IsSynthetic);
+        // An archived opportunity is a niche the marketplace moved on from: it leaves the radar unless the seller kept it.
+        query = query.Where(x => x.Opportunity.Status != MarketOpportunityLifecycle.Archived || x.State == "saved" || x.State == "acted");
         query = query.Where(x =>
             x.SellerFitScore >= (decimal)SellerOpportunityThresholds.MinimumSellerFitScore
             && x.FinalScore >= (decimal)SellerOpportunityThresholds.MinimumFinalScore);

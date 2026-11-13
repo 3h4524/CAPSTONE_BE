@@ -86,9 +86,26 @@ internal sealed class WorkflowTestData
             .ReturnsAsync((Guid id, CancellationToken _) => JobRows.SingleOrDefault(x => x.Id == id));
         State.Setup(x => x.LockMockupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Guid id, CancellationToken _) => AssetRows.SingleOrDefault(x => x.Id == id));
+        // The single UPDATE of the repository, applied to the rows as the database would.
+        State.Setup(x => x.RenewLeaseAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<int>(),
+                It.IsAny<DateTime>(), It.IsAny<DateTime>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid id, Guid token, string stage, int progress, DateTime now, DateTime until, int threshold, CancellationToken _) =>
+            {
+                var job = JobRows.SingleOrDefault(x => x.Id == id);
+                if (job is not { Status: "leased" } || job.LeaseToken != token || job.LeaseExpiresAt <= now ||
+                    RunRows.SingleOrDefault(x => x.Id == job.WorkflowRunId) is not { Status: "running" } run)
+                    return null;
+                var (previousStage, previousProgress) = (job.Stage, job.Progress);
+                job.Progress = Math.Max(job.Progress, progress); job.Stage = stage; job.HeartbeatAt = now; job.LeaseExpiresAt = until;
+                var write = previousStage != stage || job.Progress - previousProgress >= threshold;
+                if (write && NodeRows.SingleOrDefault(x => x.Id == job.WorkflowNodeRunId) is { } node) { node.Progress = job.Progress; node.Stage = stage; }
+                return new LeaseRenewal(run.Id, run.RunGroupId, stage, job.Progress, write);
+            });
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
         Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
             It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        Quotes.Setup(x => x.VerifyBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<string?>(),
+            It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
         EtsyIs(ShopConnectionStatuses.Connected);
         PrintifyIs(PrintifyStatuses.Connected);
         var current = new Mock<ICurrentUser>();
@@ -122,10 +139,10 @@ internal sealed class WorkflowTestData
         return product;
     }
 
-    public Workflow AddWorkflow(Product product, GenerateVideoConfig? config = null)
+    public Workflow AddWorkflow(Product product, GenerateVideoConfig? config = null, string gateMode = "manual")
     {
         var workflow = new Workflow { Id = Guid.NewGuid(), UserId = Owner, Name = "Video workflow", Description = "",
-            Revision = 4, SchemaVersion = 2, Definition = WorkflowJson.Write(Definition(product, config)),
+            Revision = 4, SchemaVersion = 2, Definition = WorkflowJson.Write(Definition(product, config, gateMode)),
             CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
         WorkflowRows.Add(workflow);
         return workflow;
@@ -156,10 +173,27 @@ internal sealed class WorkflowTestData
         return workflow;
     }
 
+    /// <summary>Product Input -> Apply mock-up -> Mockup Approval -> Push to Printify, without a video.</summary>
+    public static WorkflowDefinition PublishWithoutVideoDefinition(Product product, string gateMode = "manual")
+    {
+        var video = Definition(product, gateMode: gateMode);
+        var printify = new WorkflowNode("publish-printify", "publish-printify", "Push to Printify", new(600, 0),
+            JsonSerializer.SerializeToElement(new { targetProfit = 10 }));
+        WorkflowNode[] nodes = [.. video.Nodes.Where(x => WorkflowCapabilityRegistry.PublishPipeline.Contains(x.Type)), printify];
+        return new(2, nodes, nodes.Skip(1).Select((node, i) => new WorkflowEdge("edge-" + i, nodes[i].Id, node.Id)).ToArray());
+    }
+
+    public Workflow AddPublishWithoutVideoWorkflow(Product product, string gateMode = "manual")
+    {
+        var workflow = AddWorkflow(product);
+        workflow.Definition = WorkflowJson.Write(PublishWithoutVideoDefinition(product, gateMode));
+        return workflow;
+    }
+
     public WorkflowRun AddRun(Product product, string status = "running")
     {
         var workflow = AddWorkflow(product);
-        var run = new WorkflowRun { Id = Guid.NewGuid(), WorkflowId = workflow.Id, ProductId = product.Id, UserId = Owner,
+        var run = new WorkflowRun { Id = Guid.NewGuid(), WorkflowId = workflow.Id, ProductId = product.Id, Product = product, UserId = Owner,
             DefinitionSnapshot = workflow.Definition, WorkflowRevision = 4, Revision = 7, Status = status,
             IdempotencyKey = "existing", RequestHash = "existing", CreatedAt = Now.UtcDateTime, UpdatedAt = Now.UtcDateTime };
         RunRows.Add(run);
@@ -229,7 +263,7 @@ internal sealed class WorkflowTestData
         Regions = WorkflowJson.Write(new MockupRegions(new(.5, .5), new(.25, .2, .5, .6))),
         StorageKey = "private/mockup", StorageVersion = "1", SourceType = "uploaded" };
 
-    public static WorkflowDefinition Definition(Product product, GenerateVideoConfig? config = null)
+    public static WorkflowDefinition Definition(Product product, GenerateVideoConfig? config = null, string gateMode = "manual")
     {
         var nodes = WorkflowCapabilityRegistry.Pipeline.Select((type, i) => new WorkflowNode("node-" + i, type, type,
             new(i * 200, 0), JsonSerializer.SerializeToElement<object>(type switch
@@ -237,6 +271,7 @@ internal sealed class WorkflowTestData
                 "product-input" => new ProductInputConfig(product.BatchId, product.Id),
                 "apply-mockup" => new MockupConfig(),
                 "generate-video" => config ?? new GenerateVideoConfig(),
+                "approval-gate" => new ApprovalGateConfig(gateMode),
                 _ => new { }
             }, WorkflowJson.Options))).ToArray();
         return new(2, nodes, nodes.Skip(1).Select((node, i) => new WorkflowEdge("edge-" + i, nodes[i].Id, node.Id)).ToArray());
@@ -245,7 +280,7 @@ internal sealed class WorkflowTestData
     public static string OutputKey(MediaJob job, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{job.LeaseToken}/{suffix}";
     public static MediaQa Qa() => new("h264", "yuv420p", 1080, 1920, 30, 12, 1024 * 1024, false, true);
 
-    private static Mock<IRepository<T>> Repository<T>(List<T> rows, Func<T, Guid> idSelector) where T : class
+    internal static Mock<IRepository<T>> Repository<T>(List<T> rows, Func<T, Guid> idSelector) where T : class
     {
         var mock = new Mock<IRepository<T>>();
         mock.Setup(x => x.GetByIdAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()))

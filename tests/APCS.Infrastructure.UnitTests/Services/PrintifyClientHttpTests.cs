@@ -132,6 +132,25 @@ public sealed class PrintifyClientHttpTests
     }
 
     [TestMethod]
+    public async Task CreateProductAsync_MorePlacements_PrintTheSameDesignOnTheBackToo()
+    {
+        respond = _ => Json(ProductJson);
+
+        await Create().CreateProductAsync("t", 777, new PrintifyNewProduct("Cat Tee", "Soft.", ["cat"], 6, 99,
+            [new PrintifyVariantPrice(101, 2499, true)], "img-1", "front", 0.8, 0.5, 0.3,
+            [new PrintifyPlacement("back", 0.6, 0.5, 0.25)]), default);
+
+        using var body = JsonDocument.Parse(bodies[0]);
+        var placeholders = body.RootElement.GetProperty("print_areas")[0].GetProperty("placeholders");
+        placeholders.GetArrayLength().Should().Be(2);
+        placeholders[0].GetProperty("position").GetString().Should().Be("front");
+        placeholders[0].GetProperty("images")[0].GetProperty("y").GetDouble().Should().Be(0.3);
+        placeholders[1].GetProperty("position").GetString().Should().Be("back");
+        placeholders[1].GetProperty("images")[0].GetProperty("id").GetString().Should().Be("img-1");
+        placeholders[1].GetProperty("images")[0].GetProperty("scale").GetDouble().Should().Be(0.6);
+    }
+
+    [TestMethod]
     public async Task ProductCalls_ReadUpdateAndPublish()
     {
         respond = _ => Json(ProductJson);

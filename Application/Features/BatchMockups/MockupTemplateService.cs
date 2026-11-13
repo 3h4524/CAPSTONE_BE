@@ -826,7 +826,7 @@ public sealed class MockupTemplateService(
         }
         else
         {
-            // Every approved image gets its mock-ups, so a product with several approved variations has several.
+            // The approved image of each product gets its mock-ups (Design approval keeps one per product).
             targetImages = candidateImages
                 .Where(image => image.ApprovalStatus == ApprovalStatuses.Approved)
                 .OrderBy(image => image.VariationIndex)

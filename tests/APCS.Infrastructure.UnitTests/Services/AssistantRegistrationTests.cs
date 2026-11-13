@@ -1,5 +1,8 @@
 using APCS.Application.Abstractions.Ai;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Rag;
+using APCS.Application.Features.Assistant.Common;
+using APCS.Infrastructure.BackgroundServices;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
@@ -116,6 +119,33 @@ public sealed class AssistantRegistrationTests
 
         options.EffectiveApiKeys.Should().Equal("key-1", "key-2");
         options.ApiKey.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void AddInfrastructure_RegistersTheResumableTurnServices()
+    {
+        using var provider = BuildProvider([]);
+
+        provider.GetRequiredService<IAssistantTurnQueue>().Should().BeOfType<AssistantTurnQueueChannel>();
+        provider.GetRequiredService<IAssistantTurnQueue>().Should().BeSameAs(provider.GetRequiredService<IAssistantTurnQueue>());
+    }
+
+    [TestMethod]
+    public void AssistantTurnOptions_DefaultToAThreeMinuteTurn()
+    {
+        using var provider = BuildProvider([]);
+
+        provider.GetRequiredService<IOptions<AssistantTurnOptions>>().Value.TurnTimeoutSeconds.Should().Be(180);
+    }
+
+    [TestMethod]
+    public void AssistantTurnOptions_RejectATimeoutOutOfRange()
+    {
+        using var provider = BuildProvider(new() { ["Assistant:TurnTimeoutSeconds"] = "1" });
+
+        var read = () => provider.GetRequiredService<IOptions<AssistantTurnOptions>>().Value;
+
+        read.Should().Throw<OptionsValidationException>();
     }
 
     private static ServiceProvider BuildProvider(Dictionary<string, string?> overrides)

@@ -24,6 +24,8 @@ public sealed class CreatePrintifyProductValidator : AbstractValidator<CreatePri
         RuleFor(x => x.Price).GreaterThanOrEqualTo(1).LessThanOrEqualTo(10000);
         RuleFor(x => x.Scale).InclusiveBetween(0.2, 2);
         RuleFor(x => x.Position).MaximumLength(40);
+        RuleFor(x => x.X).InclusiveBetween(0, 1);
+        RuleFor(x => x.Y).InclusiveBetween(0, 1);
     }
 }
 

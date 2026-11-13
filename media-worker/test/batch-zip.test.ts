@@ -73,3 +73,21 @@ test("batch ZIP splits between products and rejects a product larger than a part
 test("batch ZIP refuses a part limit above the storage upload maximum", async () => {
   await assert.rejects(createBatchZipParts(tmpdir(), [], 400 * 1024 * 1024 + 1, AbortSignal.timeout(5000)), /Invalid ZIP size limit/);
 });
+
+test("batch ZIP writes a product's Etsy listing guide beside its folders and lists it in the manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apcs-batch-zip-"));
+  try {
+    const mockup = join(directory, "mockup");
+    await writeFile(mockup, Buffer.from([7, 8, 9]));
+    const guide = "How to list \"Tee\" on Etsy yourself\n1. Photos\n   - mockup/mockup-01.png\n";
+    const [path] = await createBatchZipParts(directory,
+      [{ id: ids[0]!, name: "Tee", type: "tshirt", assets: [{ id: "m1", path: "mockup/mockup-01.png", file: mockup }], guide }],
+      1024 * 1024, AbortSignal.timeout(10_000));
+    const files = entries(await readFile(path!));
+    const folder = `Tee__${ids[0]}`;
+    assert.equal(files.get(`${folder}/ETSY-LISTING-GUIDE.txt`)?.toString(), guide);
+    const manifest = JSON.parse(files.get(`${folder}/manifest.json`)!.toString());
+    assert.ok(manifest.files.some((file: { path: string; id: string }) => file.path === "ETSY-LISTING-GUIDE.txt" && file.id === "guide"));
+    assert.match(files.get("README.txt")!.toString(), /ETSY-LISTING-GUIDE\.txt/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

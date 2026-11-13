@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Assistant;
@@ -10,7 +11,7 @@ using APCS.Application.Features.Assistant.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using MockQueryable.Moq;
 using Moq;
@@ -33,6 +34,8 @@ public sealed class AssistantServiceTests
     private readonly List<AssistantMessage> addedMessages = [];
     private readonly List<AssistantConversation> addedConversations = [];
     private readonly Mock<IAssistantConfirmableTool> confirmTool = new();
+    private readonly FakeTurnBuffer turnBuffer = new();
+    private readonly Mock<IAssistantTurnQueue> turnQueue = new();
 
     public AssistantServiceTests()
     {
@@ -47,17 +50,11 @@ public sealed class AssistantServiceTests
         confirmTool.SetupGet(t => t.Name).Returns("start_workflow_run");
     }
 
-    private AssistantService Service()
-    {
-        var model = new FakeChatModel();
-        var loop = new AssistantAgentLoop(
-            model, new AssistantPromptBuilder(time), new AssistantToolRegistry([]),
-            new AssistantKnowledgeBase(new Mock<APCS.Application.Abstractions.Rag.IRagService>().Object, new Mock<APCS.Application.Abstractions.Caching.ICacheService>().Object, NullLogger<AssistantKnowledgeBase>.Instance),
-            conversations.Object, messages.Object, unitOfWork.Object, time, NullLogger<AssistantAgentLoop>.Instance);
-        return new AssistantService(
+    private AssistantService Service() =>
+        new(
             currentUser.Object, conversations.Object, messages.Object, pendingActions.Object, conversationStore.Object, purgeQueue.Object, unitOfWork.Object,
-            new SendAssistantMessageValidator(), loop, new AssistantToolRegistry([confirmTool.Object]), time);
-    }
+            new SendAssistantMessageValidator(), new AssistantToolRegistry([confirmTool.Object]),
+            turnBuffer, turnQueue.Object, new AssistantTurnReader(turnBuffer, time), Options.Create(new AssistantTurnOptions()), time);
 
     private static AssistantConversation Conversation(Guid? userId = null, DateTime? deletedAt = null) => new()
     {
@@ -124,7 +121,8 @@ public sealed class AssistantServiceTests
 
         result.IsSuccess.Should().BeTrue();
         addedConversations.Should().ContainSingle().Which.Title.Should().HaveLength(AssistantLimits.TitleLength);
-        addedMessages.Should().ContainSingle().Which.Should().Match<AssistantMessage>(m => m.Role == "user" && m.Metadata.Contains("/workflows"));
+        addedMessages.Should().HaveCount(2);
+        addedMessages[0].Should().Match<AssistantMessage>(m => m.Role == "user" && m.Metadata.Contains("/workflows"));
         unitOfWork.Verify(u => u.SaveChangesAsync(cancellation.Token), Times.Once);
         result.Value.ConversationId.Should().Be(addedConversations[0].Id);
     }
@@ -568,5 +566,240 @@ public sealed class AssistantServiceTests
         var result = await Service().GetConversationAsync(conversation.Id);
 
         result.Value.Messages.Single().Metadata.GetRawText().Should().Contain("applied");
+    }
+
+    private static AssistantMessage AssistantRow(Guid conversationId, string status, DateTime createdAt, string content = "") => new()
+    {
+        Id = Guid.NewGuid(),
+        ConversationId = conversationId,
+        Role = "assistant",
+        Content = content,
+        Metadata = $$"""{"kind":"chat","status":"{{status}}"}""",
+        CreatedAt = createdAt
+    };
+
+    private AssistantConversation OwnConversationWith(params AssistantMessage[] rows)
+    {
+        var conversation = Conversation();
+        foreach (var row in rows)
+            row.ConversationId = conversation.Id;
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { conversation }.AsQueryable().BuildMock());
+        conversations.Setup(r => r.GetByIdAsync(conversation.Id, It.IsAny<CancellationToken>())).ReturnsAsync(conversation);
+        messages.Setup(r => r.Query()).Returns(rows.ToList().AsQueryable().BuildMock());
+        foreach (var row in rows)
+            messages.Setup(r => r.GetByIdAsync(row.Id, It.IsAny<CancellationToken>())).ReturnsAsync(row);
+        return conversation;
+    }
+
+    [TestMethod]
+    public async Task StartChatAsync_CreatesAStreamingAssistantRowAfterTheUserMessageAndQueuesTheTurn()
+    {
+        AssistantChatSession? queued = null;
+        turnQueue.Setup(q => q.Enqueue(It.IsAny<AssistantChatSession>())).Callback<AssistantChatSession>(session => queued = session);
+
+        var result = await Service().StartChatAsync(new(null, "hi", null), AssistantTestSupport.Seller);
+
+        var (user, assistant) = (addedMessages[0], addedMessages[1]);
+        assistant.Should().Match<AssistantMessage>(m => m.Role == "assistant" && m.Content == "" && m.Id == result.Value.AssistantMessageId);
+        AssistantJson.Deserialize<AssistantMessageMetadata>(assistant.Metadata)!.Status.Should().Be(AssistantMessageStatuses.Streaming);
+        assistant.CreatedAt.Should().BeAfter(user.CreatedAt);
+        queued.Should().BeSameAs(result.Value);
+        var opening = turnBuffer.Entries(assistant.Id).Should().ContainSingle().Subject;
+        opening.Type.Should().Be("conversation");
+        opening.Data.Should().Contain($"\"assistantMessageId\":\"{assistant.Id}\"").And.Contain($"\"userMessageId\":\"{user.Id}\"");
+    }
+
+    [TestMethod]
+    public async Task StartChatAsync_WhenTheConversationIsStillAnswering_ReturnsTurnInProgress()
+    {
+        var conversation = OwnConversationWith(AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddSeconds(-30)));
+
+        var result = await Service().StartChatAsync(new(conversation.Id, "again", null), AssistantTestSupport.Seller);
+
+        result.Error.Code.Should().Be("assistant.turn_in_progress");
+        result.Error.Type.Should().Be(ErrorType.Conflict);
+        addedMessages.Should().BeEmpty();
+        turnQueue.Verify(q => q.Enqueue(It.IsAny<AssistantChatSession>()), Times.Never);
+        unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartChatAsync_WhenTheStreamingRowIsStale_AcceptsTheMessageAndLeavesTheRowOutOfHistory()
+    {
+        var user = new AssistantMessage { Id = Guid.NewGuid(), Role = "user", Content = "first", Metadata = "{}", CreatedAt = Now.UtcDateTime.AddMinutes(-10) };
+        var stale = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddMinutes(-10).AddMilliseconds(1), "half an ans");
+        var conversation = OwnConversationWith(user, stale);
+
+        var result = await Service().StartChatAsync(new(conversation.Id, "again", null), AssistantTestSupport.Seller);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.History.Select(item => item.Content).Should().Equal("first");
+    }
+
+    [TestMethod]
+    public async Task StartChatAsync_KeepsFinishedStoppedAndInterruptedAnswersInHistory()
+    {
+        var conversation = OwnConversationWith(
+            AssistantRow(Guid.Empty, "done", Now.UtcDateTime.AddMinutes(-3), "a"),
+            AssistantRow(Guid.Empty, "stopped", Now.UtcDateTime.AddMinutes(-2), "b"),
+            AssistantRow(Guid.Empty, "interrupted", Now.UtcDateTime.AddMinutes(-1), "c"));
+
+        var result = await Service().StartChatAsync(new(conversation.Id, "again", null), AssistantTestSupport.Seller);
+
+        result.Value.History.Select(item => item.Content).Should().Equal("a", "b", "c");
+    }
+
+    [TestMethod]
+    public async Task GetConversationAsync_ReportsTheStatusOfEveryMessage()
+    {
+        var user = new AssistantMessage { Id = Guid.NewGuid(), Role = "user", Content = "q", Metadata = "{}", CreatedAt = Now.UtcDateTime.AddMinutes(-20) };
+        var legacy = new AssistantMessage { Id = Guid.NewGuid(), Role = "assistant", Content = "old", Metadata = """{"kind":"chat"}""", CreatedAt = Now.UtcDateTime.AddMinutes(-19) };
+        var stale = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddMinutes(-10));
+        var stopped = AssistantRow(Guid.Empty, "stopped", Now.UtcDateTime.AddMinutes(-5), "part");
+        var live = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddSeconds(-5), "so far");
+        var conversation = OwnConversationWith(user, legacy, stale, stopped, live);
+
+        var result = await Service().GetConversationAsync(conversation.Id);
+
+        result.Value.Messages.Select(message => message.Status).Should().Equal("done", "done", "interrupted", "stopped", "streaming");
+        result.Value.Messages.Last().Content.Should().Be("so far");
+    }
+
+    [TestMethod]
+    public async Task AttachToTurnAsync_ForTheOwnersMessage_ReplaysTheEntriesAfterTheGivenId()
+    {
+        var row = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime);
+        OwnConversationWith(row);
+        await turnBuffer.AppendAsync(row.Id, "conversation", "{}");
+        var seen = await turnBuffer.AppendAsync(row.Id, "delta", """{"text":"a"}""");
+        await turnBuffer.AppendAsync(row.Id, "delta", """{"text":"b"}""");
+        await turnBuffer.AppendAsync(row.Id, "done", "{}");
+
+        var result = await Service().AttachToTurnAsync(row.Id, seen);
+
+        var entries = new List<AssistantTurnEntry>();
+        await foreach (var entry in result.Value)
+            entries.Add(entry);
+        entries.Select(entry => entry.Data).Should().Equal("""{"text":"b"}""", "{}");
+    }
+
+    [TestMethod]
+    public async Task AttachToTurnAsync_ForAnotherUsersMessage_ReturnsNotFound()
+    {
+        var row = AssistantRow(Guid.NewGuid(), "streaming", Now.UtcDateTime);
+        messages.Setup(r => r.GetByIdAsync(row.Id, It.IsAny<CancellationToken>())).ReturnsAsync(row);
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { Conversation(Guid.NewGuid()) }.AsQueryable().BuildMock());
+        await turnBuffer.AppendAsync(row.Id, "conversation", "{}");
+
+        var result = await Service().AttachToTurnAsync(row.Id, null);
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+    }
+
+    [TestMethod]
+    public async Task AttachToTurnAsync_ForAUserMessage_ReturnsNotFound()
+    {
+        var row = new AssistantMessage { Id = Guid.NewGuid(), Role = "user", Content = "q", Metadata = "{}", CreatedAt = Now.UtcDateTime };
+        OwnConversationWith(row);
+
+        var result = await Service().AttachToTurnAsync(row.Id, null);
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+    }
+
+    [TestMethod]
+    public async Task AttachToTurnAsync_WhenTheStreamExpired_ReturnsStreamNotFound()
+    {
+        var row = AssistantRow(Guid.Empty, "done", Now.UtcDateTime.AddMinutes(-30), "answer");
+        OwnConversationWith(row);
+
+        var result = await Service().AttachToTurnAsync(row.Id, null);
+
+        result.Error.Code.Should().Be("assistant.stream_not_found");
+        result.Error.Type.Should().Be(ErrorType.NotFound);
+    }
+
+    [TestMethod]
+    [DataRow("abc")]
+    [DataRow("1-")]
+    [DataRow("1-2-3")]
+    [DataRow("-1-0")]
+    public async Task AttachToTurnAsync_WithAMalformedEventId_ReturnsValidationError(string eventId)
+    {
+        var result = await Service().AttachToTurnAsync(Guid.NewGuid(), eventId);
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+    }
+
+    [TestMethod]
+    public async Task AttachToTurnAsync_WhenUnauthenticated_ReturnsUnauthorized()
+    {
+        currentUser.SetupGet(u => u.UserId).Returns((Guid?)null);
+
+        var result = await Service().AttachToTurnAsync(Guid.NewGuid(), null);
+
+        result.Error.Code.Should().Be("assistant.unauthorized");
+    }
+
+    [TestMethod]
+    public async Task StopTurnAsync_ForALiveTurn_SignalsTheStop()
+    {
+        var row = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddSeconds(-5));
+        OwnConversationWith(row);
+
+        var result = await Service().StopTurnAsync(row.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        (await turnBuffer.IsStopRequestedAsync(row.Id)).Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow("done")]
+    [DataRow("error")]
+    [DataRow("stopped")]
+    public async Task StopTurnAsync_WhenTheTurnEnded_ReturnsNotStreaming(string status)
+    {
+        var row = AssistantRow(Guid.Empty, status, Now.UtcDateTime.AddSeconds(-5));
+        OwnConversationWith(row);
+
+        var result = await Service().StopTurnAsync(row.Id);
+
+        result.Error.Code.Should().Be("assistant.not_streaming");
+        result.Error.Type.Should().Be(ErrorType.Conflict);
+        (await turnBuffer.IsStopRequestedAsync(row.Id)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task StopTurnAsync_WhenTheStreamingRowIsStale_ReturnsNotStreaming()
+    {
+        var row = AssistantRow(Guid.Empty, "streaming", Now.UtcDateTime.AddMinutes(-10));
+        OwnConversationWith(row);
+
+        var result = await Service().StopTurnAsync(row.Id);
+
+        result.Error.Code.Should().Be("assistant.not_streaming");
+    }
+
+    [TestMethod]
+    public async Task StopTurnAsync_ForAnotherUsersMessage_ReturnsNotFound()
+    {
+        var row = AssistantRow(Guid.NewGuid(), "streaming", Now.UtcDateTime);
+        messages.Setup(r => r.GetByIdAsync(row.Id, It.IsAny<CancellationToken>())).ReturnsAsync(row);
+        conversations.Setup(r => r.Query()).Returns(new List<AssistantConversation> { Conversation(Guid.NewGuid()) }.AsQueryable().BuildMock());
+
+        var result = await Service().StopTurnAsync(row.Id);
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
+        (await turnBuffer.IsStopRequestedAsync(row.Id)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task StopTurnAsync_ForAMissingMessage_ReturnsNotFound()
+    {
+        messages.Setup(r => r.GetByIdAsync(It.IsAny<object>(), It.IsAny<CancellationToken>())).ReturnsAsync((AssistantMessage?)null);
+
+        var result = await Service().StopTurnAsync(Guid.NewGuid());
+
+        result.Error.Code.Should().Be("assistant.message_not_found");
     }
 }

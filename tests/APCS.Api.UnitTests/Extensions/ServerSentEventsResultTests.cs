@@ -1,5 +1,6 @@
 using System.Text;
 using APCS.Api.Extensions;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Features.Assistant.Common;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -10,7 +11,7 @@ namespace APCS.Api.UnitTests.Extensions;
 [TestClass]
 public sealed class ServerSentEventsResultTests
 {
-    private static async IAsyncEnumerable<AssistantStreamEvent> Events(params AssistantStreamEvent[] events)
+    private static async IAsyncEnumerable<AssistantTurnEntry> Events(params AssistantTurnEntry[] events)
     {
         foreach (var item in events)
         {
@@ -28,18 +29,23 @@ public sealed class ServerSentEventsResultTests
     }
 
     [TestMethod]
-    public async Task ExecuteResultAsync_WritesEventsAsServerSentEventsWithCamelCaseJson()
+    public async Task ExecuteResultAsync_WritesEventsWithTheirStreamIdsAndCamelCaseJson()
     {
         var (context, body) = CreateContext();
         var id = Guid.NewGuid();
-        var result = new ServerSentEventsResult(Events(AssistantStreamEvent.Conversation(id, id), AssistantStreamEvent.Delta("hi")));
+        var conversation = AssistantStreamEvent.Conversation(id, id, id);
+        var delta = AssistantStreamEvent.Delta("hi");
+        var result = new ServerSentEventsResult(Events(
+            new AssistantTurnEntry("1-0", conversation.Type, conversation.DataJson()),
+            new AssistantTurnEntry("2-0", delta.Type, delta.DataJson())));
 
         await result.ExecuteResultAsync(new ActionContext { HttpContext = context });
 
         var text = Encoding.UTF8.GetString(body.ToArray());
         context.Response.ContentType.Should().StartWith("text/event-stream");
         context.Response.Headers.CacheControl.ToString().Should().Contain("no-cache");
-        text.Should().Contain("event: conversation\ndata: {\"conversationId\":").And.Contain("event: delta\ndata: {\"text\":\"hi\"}\n\n");
+        text.Should().Contain("id: 1-0\nevent: conversation\ndata: {\"conversationId\":").And.Contain("\"assistantMessageId\":")
+            .And.Contain("id: 2-0\nevent: delta\ndata: {\"text\":\"hi\"}\n\n");
     }
 
     [TestMethod]
@@ -48,7 +54,7 @@ public sealed class ServerSentEventsResultTests
         using var cancellation = new CancellationTokenSource();
         var (context, _) = CreateContext(cancellation.Token);
         await cancellation.CancelAsync();
-        var result = new ServerSentEventsResult(Events(AssistantStreamEvent.Delta("hi")));
+        var result = new ServerSentEventsResult(Events(new AssistantTurnEntry("1-0", "delta", """{"text":"hi"}""")));
 
         var act = () => result.ExecuteResultAsync(new ActionContext { HttpContext = context });
 

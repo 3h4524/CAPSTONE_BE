@@ -26,7 +26,9 @@ public sealed class AssistantAgentLoopTests
 
     public AssistantAgentLoopTests()
     {
-        messages.Setup(r => r.AddAsync(It.IsAny<AssistantMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+        messages.Setup(r => r.GetByIdAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((object id, CancellationToken _) => new AssistantMessage { Id = (Guid)id, Role = "assistant", Content = string.Empty, Metadata = "{}" });
+        messages.Setup(r => r.UpdateAsync(It.IsAny<AssistantMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .Callback<AssistantMessage, bool, CancellationToken>((message, _, _) => saved.Add(message))
             .Returns(Task.CompletedTask);
         conversations.Setup(r => r.GetByIdAsync(It.IsAny<object>(), It.IsAny<CancellationToken>()))
@@ -60,7 +62,7 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session()));
 
-        events.Select(e => e.Type).Should().Equal("conversation", "tool_started", "tool_finished", "delta", "delta", "done");
+        events.Select(e => e.Type).Should().Equal("tool_started", "tool_finished", "delta", "delta", "done");
         saved.Should().ContainSingle().Which.Should().Match<AssistantMessage>(m =>
             m.Content == "Hello" && m.Role == "assistant" && m.InputTokens == 10 && m.OutputTokens == 5);
         unitOfWork.Verify(u => u.SaveChangesAsync(CancellationToken.None), Times.Once);
@@ -73,7 +75,7 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session()));
 
-        events.Select(e => e.Type).Should().Equal("conversation", "tool_started", "tool_finished", "status", "delta", "done");
+        events.Select(e => e.Type).Should().Equal("tool_started", "tool_finished", "status", "delta", "done");
         events.Single(e => e.Type == "status").Data.Should().BeEquivalentTo(new AssistantStatusEventData("retrying", 8));
     }
 
@@ -287,7 +289,7 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
 
-        events.Select(e => e.Type).Should().Equal("conversation", "tool_started", "tool_finished", "tool_started", "tool_finished", "delta", "done");
+        events.Select(e => e.Type).Should().Equal("tool_started", "tool_finished", "tool_started", "tool_finished", "delta", "done");
         model.Requests.Should().HaveCount(2);
         model.Requests[1].Messages.Last().ToolResult.Should().Match<AssistantToolResult>(r => r.CallId == "c1" && r.Json.Contains("7"));
         model.Requests[1].AllowTools.Should().BeTrue();
@@ -458,6 +460,78 @@ public sealed class AssistantAgentLoopTests
         await act.Should().ThrowAsync<OperationCanceledException>();
         saved.Should().ContainSingle().Which.Content.Should().Be("partial");
         unitOfWork.Verify(u => u.SaveChangesAsync(CancellationToken.None), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_Finished_UpdatesThePlaceholderRowAsDoneAndPointsDoneAtIt()
+    {
+        var session = AssistantTestSupport.Session();
+        var model = new FakeChatModel([AssistantTestSupport.Text("Hi"), AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(session));
+
+        saved.Should().ContainSingle().Which.Id.Should().Be(session.AssistantMessageId);
+        AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!.Status.Should().Be(AssistantMessageStatuses.Done);
+        events.Last().Data.Should().BeOfType<AssistantDoneEventData>().Which.AssistantMessageId.Should().Be(session.AssistantMessageId);
+        messages.Verify(r => r.AddAsync(It.IsAny<AssistantMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_ModelFails_SavesTheErrorStatusBeforeEmittingTheError()
+    {
+        var model = new FakeChatModel([AssistantModelUpdate.Failed("model_unavailable")]);
+        var savedWhenErrorArrived = -1;
+
+        await foreach (var item in Loop(model).RunAsync(AssistantTestSupport.Session()))
+        {
+            if (item.Type == "error")
+                savedWhenErrorArrived = saved.Count;
+        }
+
+        savedWhenErrorArrived.Should().Be(1);
+        AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!.Status.Should().Be(AssistantMessageStatuses.Error);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_Cancelled_SavesTheOutcomeTheCallerGivesForTheCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var model = new FakeChatModel([AssistantTestSupport.Text("partial"), AssistantTestSupport.Text("more"), AssistantTestSupport.Done()]);
+
+        var act = async () =>
+        {
+            await foreach (var item in Loop(model).RunAsync(AssistantTestSupport.Session(), cancellation.Token, () => AssistantTurnEnd.TimedOut))
+            {
+                if (item.Type == "delta")
+                    await cancellation.CancelAsync();
+            }
+        };
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        var metadata = AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!;
+        metadata.Status.Should().Be(AssistantMessageStatuses.Error);
+        metadata.Error!.Code.Should().Be(AssistantErrors.TimeoutCode);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_CancelledWithoutAnOutcome_SavesTheRowAsStopped()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var model = new FakeChatModel([AssistantTestSupport.Text("partial"), AssistantTestSupport.Text("more"), AssistantTestSupport.Done()]);
+
+        var act = async () =>
+        {
+            await foreach (var item in Loop(model).RunAsync(AssistantTestSupport.Session(), cancellation.Token))
+            {
+                if (item.Type == "delta")
+                    await cancellation.CancelAsync();
+            }
+        };
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        var metadata = AssistantJson.Deserialize<AssistantMessageMetadata>(saved.Single().Metadata)!;
+        metadata.Status.Should().Be(AssistantMessageStatuses.Stopped);
+        metadata.Error.Should().BeNull();
     }
 
     private static RagSearchResultDto Article(string title = "Mockups") =>
@@ -712,7 +786,7 @@ public sealed class AssistantAgentLoopTests
 
         var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session("add a step", new("/workflows", null, null, null, canvas))));
 
-        events.Select(e => e.Type).Should().Equal("conversation", "delta", "done");
+        events.Select(e => e.Type).Should().Equal("delta", "done");
     }
 
     [TestMethod]
@@ -767,5 +841,96 @@ public sealed class AssistantAgentLoopTests
 
         events.Last().Type.Should().Be("done");
         events.Should().NotContain(e => e.Type == "error");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheToolLimitIsReached_TellsTheModelToAnswerInPlainText()
+    {
+        var tool = new StubTool("again");
+        var turns = Enumerable.Range(0, AssistantLimits.MaxToolIterations)
+            .Select(_ => (IReadOnlyList<AssistantModelUpdate>)[AssistantTestSupport.Done("", AssistantTestSupport.Call("again"))])
+            .Append([AssistantTestSupport.Text("I could not finish."), AssistantTestSupport.Done()])
+            .ToArray();
+        var model = new FakeChatModel(turns);
+
+        await Collect(Loop(model, tool).RunAsync(AssistantTestSupport.Session()));
+
+        var final = model.Requests.Last();
+        final.AllowTools.Should().BeFalse();
+        final.Messages[^1].Role.Should().Be(AssistantMessageRole.User);
+        final.Messages[^1].Text.Should().Contain("<final_answer>").And.Contain("no longer call tools");
+        final.Messages.Count(message => message.Text != null && message.Text.Contains("<final_answer>")).Should().Be(1);
+        saved.Single().Content.Should().Be("I could not finish.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheFinalAnswerIsEmptyAfterAFailedTool_RepliesWithTheToolsReason()
+    {
+        const string reason = "Add a Listing Content or Generate Video node before running the workflow.";
+        var start = new StubTool("start_workflow_run", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("validation", reason)));
+        var lookup = new StubTool("get_workflow");
+        var turns = new IReadOnlyList<AssistantModelUpdate>[]
+            {
+                [AssistantTestSupport.Done("", AssistantTestSupport.Call("start_workflow_run", callId: "c1"))]
+            }
+            .Concat(Enumerable.Range(2, AssistantLimits.MaxToolIterations - 1)
+                .Select(i => (IReadOnlyList<AssistantModelUpdate>)[AssistantTestSupport.Done("", AssistantTestSupport.Call("get_workflow", callId: $"c{i}"))]))
+            .Append([AssistantTestSupport.Done()])
+            .Append([AssistantTestSupport.Done()])
+            .ToArray();
+        var model = new FakeChatModel(turns);
+
+        var events = await Collect(Loop(model, start, lookup).RunAsync(AssistantTestSupport.Session("run my workflow", new("/dashboard", null, null, null, null))));
+
+        var expected = $"I couldn't start the run: {reason}";
+        events.Should().NotContain(e => e.Type == "error");
+        events.Last().Type.Should().Be("done");
+        events.Where(e => e.Type == "delta").Select(e => ((AssistantDeltaEventData)e.Data).Text).Should().Equal(expected);
+        saved.Single().Content.Should().Be(expected);
+        saved.Single().Metadata.Should().NotContain(AssistantErrors.EmptyResponseCode);
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenSeveralToolsFailed_UsesTheMostRecentReason()
+    {
+        var first = new StubTool("list_batches", execute: (_, _) => Task.FromResult(AssistantToolOutcome.Error("not_found", "Batch not found.")));
+        var second = new StubTool("workflow_run_action", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("conflict", "The run is already finished.")));
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("list_batches", callId: "c1"))],
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("workflow_run_action", callId: "c2"))],
+            [AssistantTestSupport.Done()],
+            [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model, first, second).RunAsync(AssistantTestSupport.Session()));
+
+        events.Last().Type.Should().Be("done");
+        saved.Single().Content.Should().Be("I couldn't do that on the run: The run is already finished.");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenOnlyAnInternalToolErrorHappened_StillReportsTheEmptyAnswer()
+    {
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("ghost"))],
+            [AssistantTestSupport.Done()],
+            [AssistantTestSupport.Done()]);
+
+        var events = await Collect(Loop(model).RunAsync(AssistantTestSupport.Session()));
+
+        events.Last().Data.Should().BeOfType<AssistantErrorData>().Which.Code.Should().Be(AssistantErrors.EmptyResponseCode);
+        events.Should().NotContain(e => e.Type == "delta");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_WhenTheModelAnswersAfterAFailedTool_KeepsTheModelsAnswer()
+    {
+        var start = new StubTool("start_workflow_run", AssistantToolKind.Confirmation, (_, _) => Task.FromResult(AssistantToolOutcome.Error("validation", "Missing video step.")));
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("start_workflow_run"))],
+            [AssistantTestSupport.Text("The workflow needs a video step first."), AssistantTestSupport.Done()]);
+
+        await Collect(Loop(model, start).RunAsync(AssistantTestSupport.Session()));
+
+        saved.Single().Content.Should().Be("The workflow needs a video step first.");
     }
 }

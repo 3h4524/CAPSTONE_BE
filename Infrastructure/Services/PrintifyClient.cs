@@ -119,14 +119,14 @@ public sealed class PrintifyClient(
                 new
                 {
                     variant_ids = product.Variants.Select(variant => variant.Id),
-                    placeholders = new[]
-                    {
-                        new
+                    // The main print area first, then the same design on each further area (the back, a sleeve).
+                    placeholders = new[] { new PrintifyPlacement(product.Position, product.Scale, product.X, product.Y) }
+                        .Concat(product.MorePlacements ?? [])
+                        .Select(placement => new
                         {
-                            position = product.Position,
-                            images = new[] { new { id = product.ImageId, x = 0.5, y = 0.5, scale = product.Scale, angle = 0 } },
-                        },
-                    },
+                            position = placement.Position,
+                            images = new[] { new { id = product.ImageId, x = placement.X, y = placement.Y, scale = placement.Scale, angle = 0 } },
+                        }),
                 },
             },
         };

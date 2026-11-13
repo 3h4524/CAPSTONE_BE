@@ -1,4 +1,7 @@
+using APCS.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Pgvector.EntityFrameworkCore;
 using Respawn;
 using Respawn.Graph;
 using Testcontainers.PostgreSql;
@@ -26,12 +29,7 @@ namespace APCS.IntegrationTests.TestSupport;
 /// </remarks>
 public sealed class PostgresFixture : IAsyncDisposable
 {
-    /// <summary>
-    /// The image the production database runs. The committed bootstrap dump is taken from
-    /// PostgreSQL 18, so the container matches it exactly instead of replaying newer syntax such as
-    /// <c>SET transaction_timeout</c> onto an older server.
-    /// </summary>
-    private const string PostgresImage = "postgres:18-alpine";
+    private const string PostgresImage = "pgvector/pgvector:pg18";
 
     private const string RedisImage = "redis:7-alpine";
 
@@ -135,7 +133,7 @@ public sealed class PostgresFixture : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// A no-op unless the fixture owns disposable containers. Respawn keeps the schema in place, so
-    /// the committed bootstrap dump keeps describing the shape the application maps.
+    /// the schema built from the entity model keeps describing the shape the application maps.
     /// </remarks>
     public async Task ResetAsync()
     {
@@ -167,24 +165,6 @@ public sealed class PostgresFixture : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Resolves the path of the bootstrap dump copied next to the test assembly.
-    /// </summary>
-    /// <returns>The absolute path of the dump.</returns>
-    /// <exception cref="FileNotFoundException">Thrown when the dump is missing from the output.</exception>
-    public static string ResolveBootstrapScriptPath()
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "scripts", "sql", "000-bootstrap-schema.sql");
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException(
-                "The committed bootstrap schema dump is missing from the test output. Rebuild so the Content item in APCS.IntegrationTests.csproj copies it.",
-                path);
-        }
-
-        return path;
-    }
-
     private static async Task<PostgresFixture> StartAsync()
     {
         TestEnvironment.Apply();
@@ -205,7 +185,7 @@ public sealed class PostgresFixture : IAsyncDisposable
         try
         {
             await postgres.StartAsync().ConfigureAwait(false);
-            await ApplyBootstrapSchemaAsync(postgres.GetConnectionString()).ConfigureAwait(false);
+            await ApplyEntityModelAsync(postgres.GetConnectionString()).ConfigureAwait(false);
             await redis.StartAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -227,29 +207,22 @@ public sealed class PostgresFixture : IAsyncDisposable
         return fixture;
     }
 
-    /// <summary>
-    /// Replays the committed bootstrap dump against a freshly created container database.
-    /// </summary>
-    /// <remarks>
-    /// The repository is database-first and ships no migrations, so the dump taken from the
-    /// production server is the only description of the schema. Testcontainers 4 removed
-    /// <c>WithInitScript</c>, so the dump is executed over Npgsql once the container's entrypoint
-    /// has finished creating the database. pg_dump 18.6+ wraps the dump in psql-only
-    /// <c>\restrict</c>/<c>\unrestrict</c> meta-commands that the server cannot parse, so lines
-    /// starting with a backslash are dropped before execution.
-    /// </remarks>
-    /// <param name="connectionString">The container connection string.</param>
-    /// <returns>A task that completes once every statement in the dump has run.</returns>
-    private static async Task ApplyBootstrapSchemaAsync(string connectionString)
+    private static async Task ApplyEntityModelAsync(string connectionString)
     {
-        var lines = await File.ReadAllLinesAsync(ResolveBootstrapScriptPath()).ConfigureAwait(false);
-        var dump = string.Join('\n', lines.Where(line => !line.StartsWith('\\')));
+        await using (var connection = new NpgsqlConnection(connectionString))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using var extensions = new NpgsqlCommand(
+                "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"; CREATE EXTENSION IF NOT EXISTS vector;",
+                connection);
+            await extensions.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
 
-        await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync().ConfigureAwait(false);
-
-        await using var command = new NpgsqlCommand(dump, connection) { CommandTimeout = 120 };
-        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(connectionString, mapping => mapping.UseVector())
+            .Options;
+        await using var context = new AppDbContext(options);
+        await context.Database.EnsureCreatedAsync().ConfigureAwait(false);
     }
 
     private static PostgresFixture FromEnvironment(Exception? dockerFailure)

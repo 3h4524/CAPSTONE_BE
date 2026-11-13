@@ -83,6 +83,15 @@ public sealed class ShopService(
             if (shopId is null)
                 return Return(EtsyConnectionOutcomes.NoShop);
 
+            // One Etsy shop answers to one APCS account: Etsy reads a new shop run from several accounts as possible fraud.
+            var takenBy = await integrations.FindAsync(row => row.EtsyShopId == shopId && row.UserId != pending.UserId
+                && row.IsActive == true && row.DeletedAt == null, cancellationToken);
+            if (takenBy.Count > 0)
+            {
+                logger.LogWarning("User {UserId} tried to connect Etsy shop {ShopId}, already connected to another account.", pending.UserId, shopId);
+                return Return(EtsyConnectionOutcomes.ShopTaken);
+            }
+
             var shop = await etsy.GetShopAsync(tokens.AccessToken, shopId, cancellationToken);
             await SaveConnectionAsync(pending.UserId, shop, tokens, cancellationToken);
             return Return(EtsyConnectionOutcomes.Connected);

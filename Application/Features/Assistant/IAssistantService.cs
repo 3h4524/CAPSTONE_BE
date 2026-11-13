@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
 using APCS.Application.Features.Assistant.Dtos.Response;
@@ -12,8 +13,17 @@ public interface IAssistantService
         AssistantCaller caller,
         CancellationToken cancellationToken = default);
 
-    IAsyncEnumerable<AssistantStreamEvent> StreamAsync(
+    IAsyncEnumerable<AssistantTurnEntry> StreamAsync(
         AssistantChatSession session,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IAsyncEnumerable<AssistantTurnEntry>>> AttachToTurnAsync(
+        Guid messageId,
+        string? afterEventId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> StopTurnAsync(
+        Guid messageId,
         CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<AssistantConversationSummaryResponseDto>>> ListConversationsAsync(

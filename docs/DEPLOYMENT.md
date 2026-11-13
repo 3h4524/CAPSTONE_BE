@@ -122,8 +122,11 @@ is tagged on its own (the versions do not have to match). Every release touches 
 | `dev-db.sh up` | by hand | the shared dev database (project `apcs-dev`), only when someone runs it |
 
 `deploy.sh` rolls the image back by itself when the new container does not become healthy. A lock
-on the VM makes concurrent releases wait for each other. When an API change is needed by the
-frontend, release the backend first or keep the API backward compatible.
+on the VM makes concurrent releases wait for each other. After a successful release, `deploy.sh`
+removes the local `apcs-api`, `apcs-media-worker` or `apcs-fe` images except the current tag and
+the previous one (`/opt/apcs/releases/<target>.prev`), so the VM disk does not fill with old
+releases. When an API change is needed by the frontend, release the backend first or keep the API
+backward compatible.
 
 Migrations are never rolled back. To return to an older release, run the workflow by hand with the
 older tag selected as the ref (images are reused, migrations already applied are kept), or run
