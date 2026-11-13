@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Features.Assistant.Catalog;
 using APCS.Application.Features.Assistant.Common;
@@ -8,14 +9,14 @@ using APCS.Application.Features.Rag.Dtos;
 
 namespace APCS.Application.Features.Assistant;
 
-public sealed class AssistantPromptBuilder(TimeProvider timeProvider)
+public sealed partial class AssistantPromptBuilder(TimeProvider timeProvider)
 {
     private const int MaxArticleChars = 1200;
 
     private static readonly string SystemPrompt = $"""
         You are Podi, the assistant inside Podivo, a print-on-demand seller app (workflows that turn products into designs, mockups, promo videos and Etsy listing content). When the user asks who you are, say you are Podi, the Podivo assistant.
 
-        Language: reply in the same language as the user's latest message.
+        Language: reply in the same language as the user's latest message. When a <reply_language> block is present, write every sentence in that language, including the reply, blockedReply and question arguments of tools.
         Style: short and practical. Plain text only. Use "- " bullets for lists. No markdown headings, tables, bold or code blocks.
 
         Grounding:
@@ -155,10 +156,16 @@ public sealed class AssistantPromptBuilder(TimeProvider timeProvider)
         return $"\n\n<help_articles>\n{payload}\n</help_articles>";
     }
 
+    private static string BuildReplyLanguageBlock(string message) =>
+        VietnameseLetters().IsMatch(message) ? "\n\n<reply_language>Vietnamese</reply_language>" : string.Empty;
+
+    [GeneratedRegex("[ăâđêôơưĂÂĐÊÔƠƯàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]")]
+    private static partial Regex VietnameseLetters();
+
     private static string BuildLatestUserMessage(AssistantChatSession session, IReadOnlyList<RagSearchResultDto>? articles)
     {
         var context = session.Context;
-        var articlesBlock = BuildArticlesBlock(articles);
+        var articlesBlock = BuildArticlesBlock(articles) + BuildReplyLanguageBlock(session.Message);
         if (context is null)
             return session.Message + articlesBlock;
 

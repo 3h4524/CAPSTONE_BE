@@ -126,6 +126,18 @@ public sealed class AssistantPromptBuilderTests
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 
     [TestMethod]
+    public void Build_VietnameseMessage_PinsTheReplyLanguage()
+    {
+        var latest = builder.Build(AssistantTestSupport.Session("tạo batch mới cho cốc in hình chó"))[^1].Text!;
+
+        latest.Should().Contain("<reply_language>Vietnamese</reply_language>");
+    }
+
+    [TestMethod]
+    public void Build_EnglishMessage_HasNoReplyLanguageBlock() =>
+        builder.Build(AssistantTestSupport.Session("create a new batch for dog mugs"))[^1].Text.Should().NotContain("<reply_language>");
+
+    [TestMethod]
     public void Build_SystemPromptNeverMentionsRenaming() =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().NotContainEquivalentOf("renam");
 
