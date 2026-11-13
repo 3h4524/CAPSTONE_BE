@@ -55,7 +55,11 @@ public sealed class GeminiAssistantChatModel : IAssistantChatModel
             MaxOutputTokens = settings.MaxOutputTokens,
             Tools = request.Tools.Count > 0 ? request.Tools.Select(ToDeclaration).ToList() : null,
             ToolMode = allowTools ? ChatToolMode.Auto : ChatToolMode.None,
-            RawRepresentationFactory = _ => new GenerateContentConfig { ThinkingConfig = new ThinkingConfig { ThinkingLevel = ResolveThinkingLevel() } }
+            RawRepresentationFactory = _ => new GenerateContentConfig
+            {
+                ThinkingConfig = new ThinkingConfig { ThinkingLevel = ResolveThinkingLevel() },
+                SafetySettings = SafetySettings
+            }
         };
 
         var updates = new List<ChatResponseUpdate>();
@@ -124,6 +128,12 @@ public sealed class GeminiAssistantChatModel : IAssistantChatModel
         }
 
         var response = updates.ToChatResponse();
+        if (response.FinishReason == ChatFinishReason.ContentFilter && string.IsNullOrWhiteSpace(response.Text))
+        {
+            yield return AssistantModelUpdate.Failed("content_blocked");
+            yield break;
+        }
+
         logger.LogInformation(
             "Assistant model usage: {InputTokens} input tokens, {CachedInputTokens} cached, {OutputTokens} output",
             response.Usage?.InputTokenCount,
@@ -148,6 +158,14 @@ public sealed class GeminiAssistantChatModel : IAssistantChatModel
             (int?)response.Usage?.OutputTokenCount,
             response.ModelId ?? settings.Model);
     }
+
+    private static readonly List<SafetySetting> SafetySettings =
+    [
+        new() { Category = HarmCategory.HarmCategoryHarassment, Threshold = HarmBlockThreshold.BlockMediumAndAbove },
+        new() { Category = HarmCategory.HarmCategoryHateSpeech, Threshold = HarmBlockThreshold.BlockMediumAndAbove },
+        new() { Category = HarmCategory.HarmCategorySexuallyExplicit, Threshold = HarmBlockThreshold.BlockMediumAndAbove },
+        new() { Category = HarmCategory.HarmCategoryDangerousContent, Threshold = HarmBlockThreshold.BlockMediumAndAbove }
+    ];
 
     private ThinkingLevel ResolveThinkingLevel() => settings.ThinkingLevel.Trim().ToLowerInvariant() switch
     {

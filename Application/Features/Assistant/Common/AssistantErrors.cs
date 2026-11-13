@@ -10,6 +10,8 @@ public static class AssistantErrors
     public const string StoppedCode = "assistant.stopped";
     public const string TimeoutCode = "assistant.timeout";
     public const string InterruptedCode = "assistant.interrupted";
+    public const string BlockedCode = "assistant.blocked";
+    public const string BlockedMessage = "Podi can't help with that request.";
 
     public static Error Unauthenticated() =>
         Error.Unauthorized("assistant.unauthorized", "The request is not authenticated.");
@@ -50,6 +52,7 @@ public static class AssistantErrors
     public static (string Code, string Message) FromModelFailure(string? failureCode) => failureCode switch
     {
         "not_configured" => (ModelNotConfiguredCode, "Podi is not configured yet."),
+        "content_blocked" => (BlockedCode, BlockedMessage),
         _ => (ModelUnavailableCode, "Podi is temporarily unavailable. Please try again.")
     };
 }

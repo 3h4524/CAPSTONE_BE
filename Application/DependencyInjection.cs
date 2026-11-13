@@ -142,6 +142,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListVideoTemplatesTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.EstimateRunCostTool>();
         services.AddScoped<Features.Assistant.IAssistantRunProgressReader, Features.Assistant.AssistantRunProgressReader>();
+        services.AddSingleton<Features.Assistant.Guardrails.AssistantInputGuard>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetRunProgressTool>();
         services.AddSingleton<Features.Assistant.Tools.ClientActions.WorkflowCanvasPatchSimulator>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.EditWorkflowCanvasTool>();
