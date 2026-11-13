@@ -67,13 +67,13 @@ public sealed class WorkflowCommandToolsTests
     [TestMethod]
     public async Task RunWorkflow_OnABrokenCanvas_StillOffersTheButtonButWarns()
     {
-        var outcome = await RunTool().ExecuteAsync(Context(Canvas(connected: false)), AssistantTestSupport.Json("""{"reply":"ok"}"""), default);
+        var outcome = await RunTool().ExecuteAsync(Context(Canvas(connected: false)), AssistantTestSupport.Json("""{"reply":"Ready to run.","blockedReply":"Fix what the card lists first."}"""), default);
 
         outcome.Succeeded.Should().BeTrue();
         var payload = outcome.Events.Single().Data.Should().BeOfType<AssistantClientActionData>().Subject.Payload;
         payload.GetProperty("warnings").GetArrayLength().Should().Be(1);
         outcome.ModelResultJson.Should().Contain("cannot run as it is");
-        outcome.FinalText.Should().BeNull();
+        outcome.FinalText.Should().Be("Fix what the card lists first.");
     }
 
     [TestMethod]

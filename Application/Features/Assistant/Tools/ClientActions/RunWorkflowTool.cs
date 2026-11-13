@@ -3,7 +3,7 @@ using APCS.Application.Features.Workflows;
 
 namespace APCS.Application.Features.Assistant.Tools.ClientActions;
 
-public sealed record RunWorkflowArgs(string? Reply);
+public sealed record RunWorkflowArgs(string? Reply, string? BlockedReply);
 
 public sealed class RunWorkflowTool(
     WorkflowCanvasPatchSimulator simulator,
@@ -19,7 +19,7 @@ public sealed class RunWorkflowTool(
         "Offer a Run button for the workflow the user has open. It does exactly what the Run button of the workflow screen does (design, mock-ups, video, export and publish steps on the canvas), saving unsaved changes first. The app shows the cost and asks the user to confirm it before anything is paid. Never say the run started; the user starts it from the button.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the run is ready to start from the button and that the app will show the cost to confirm."}},"required":["reply"]}
+        {"type":"object","properties":{"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the run is ready to start from the button and that the app will show the cost to confirm."},"blockedReply":{"type":"string","description":"One short sentence for the user, in the user's language, used instead of reply when the workflow cannot run yet, saying the card lists what to fix first."}},"required":["reply","blockedReply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) =>
@@ -46,6 +46,6 @@ public sealed class RunWorkflowTool(
                     : "The open canvas cannot run as it is. Unless a canvas change you proposed in this turn fixes it, tell the user what to fix."
             },
             true,
-            AssistantStreamEvent.ClientAction(action)).WithFinalText(warnings.Length == 0 ? arguments.Reply : null));
+            AssistantStreamEvent.ClientAction(action)).WithFinalText(warnings.Length == 0 ? arguments.Reply : arguments.BlockedReply));
     }
 }
