@@ -125,10 +125,16 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         if (run is null || run.UserId != user.UserId) return Result.Failure<RunResponse>(Missing());
         if (run.Revision != request.ExpectedRevision) return Result.Failure<RunResponse>(Stale());
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == id, ct);
-        // A run that only writes a listing has none of the video steps the actions below work on.
-        if (request.Action is "resume_mockups" or "approve_video" or "reject_video" or "rerender" or "retry" or "regenerate_ai_shot" &&
-            checkpoints.All(x => x.NodeType != "generate-video"))
+        // A run that only writes a listing has none of the video steps the actions below work on. One that publishes
+        // without a video still waits at Mockup Approval and can retry a failed publish step, but has nothing else.
+        var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
+        var publishesWithoutVideo = !hasVideo && checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
+        if (!hasVideo && request.Action is "resume_mockups" or "approve_video" or "reject_video" or "rerender" or "retry" or "regenerate_ai_shot" &&
+            !(publishesWithoutVideo && request.Action is "resume_mockups" or "retry"))
             return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run has no video step."));
+        if (publishesWithoutVideo && request.Action == "retry" &&
+            !checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed"))
+            return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
         if (request.Action == "cancel")
         {
             if (run.Status is "completed" or "cancelled") return Result.Failure<RunResponse>(Error.Conflict("RunFinished", "Run is already finished."));
@@ -142,12 +148,16 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var gate = checkpoints.Single(x => x.NodeType == "approval-gate");
             var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
             var config = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
-            var generate = checkpoints.Single(x => x.NodeType == "generate-video");
-            var videoConfig = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+            // Without a video the approved mock-ups go to the publish steps, and nothing here is paid for.
+            var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
+            var videoConfig = generate is null ? null : WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
             var approved = await runtime.ApprovedAssetsAsync(run, config, videoConfig, ct);
             if (approved.Count == 0) return Result.Failure<RunResponse>(Error.Conflict("WaitingForInput", "Select and approve at least one current mockup or keyframe."));
-            var consent = await quotes.VerifyAsync(run, videoConfig, request.AiShotQuoteToken, false, null, ct);
-            if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
+            if (videoConfig is not null)
+            {
+                var consent = await quotes.VerifyAsync(run, videoConfig, request.AiShotQuoteToken, false, null, ct);
+                if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
+            }
             gate.Status = "succeeded"; gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision) });
             run.Status = "running"; await runtime.AdvanceAsync(run, ct);
         }

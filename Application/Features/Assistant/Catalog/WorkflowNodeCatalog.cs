@@ -34,7 +34,7 @@ public static class WorkflowNodeCatalog
     ];
 
     public const string PublishRule =
-        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the finished package: each may appear once, they come after export-zip and need the video steps, and nothing connects after publish-etsy.";
+        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product: each may appear once and nothing connects after publish-etsy. With the video steps they come after export-zip; without a video they follow approval-gate directly, and review-video and export-zip are left out.";
 
     public static readonly IReadOnlyList<string> ConnectionRules =
     [

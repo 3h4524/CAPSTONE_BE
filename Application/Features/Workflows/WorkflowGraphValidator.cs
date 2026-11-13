@@ -21,21 +21,28 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
             return new("UnsupportedNode", "This workflow contains a node without a backend executor.", ErrorType.Validation);
         var hasListing = definition.Nodes.Any(x => x.Type == "generate-listing");
         var hasVideo = definition.Nodes.Any(x => x.Type == "generate-video");
-        if (!hasListing && !hasVideo)
-            return Error.Validation("Add a Listing Content or Generate Video node before running the workflow.");
-        if (hasListing && !hasVideo && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)))
+        var publishes = definition.Nodes.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.Type));
+        if (!hasListing && !hasVideo && !publishes)
+            return Error.Validation("Add a Listing Content, Generate Video or publish node before running the workflow.");
+        if (hasListing && !hasVideo && !publishes && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)))
             return Error.Validation("A listing-only workflow currently supports Product Input -> Listing Content.");
         if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) != 1))
             return Error.Validation("Each video MVP node must appear exactly once.");
+        // Without a video the publish steps follow Mockup Approval, so the seller still approves what is listed.
+        if (!hasVideo && publishes)
+        {
+            if (definition.Nodes.Any(x => x.Type is "review-video" or "export-zip"))
+                return Error.Validation("Review Video and Export ZIP need Generate Video: add it, or remove them to publish without a video.");
+            if (WorkflowCapabilityRegistry.PublishPipeline.Any(type => definition.Nodes.Count(x => x.Type == type) != 1))
+                return Error.Validation("Publishing without a video needs Product Input → Apply Mockup → Mockup Approval before Push to Printify or Publish to Etsy.");
+        }
         if (definition.Nodes.Count(x => x.Type == "product-input") != 1 || definition.Nodes.Count(x => x.Type == "generate-listing") > 1)
             return Error.Validation("Product Input is required once and Listing Content may appear only once.");
         if (WorkflowCapabilityRegistry.BatchSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
             return Error.Validation("Each design step may appear only once.");
-        // Publishing sends the approved package, so it follows Export ZIP of a video run.
+        // Publishing comes last: after Export ZIP of a video run, or after Mockup Approval without a video.
         if (WorkflowCapabilityRegistry.PublishSteps.Any(type => definition.Nodes.Count(x => x.Type == type) > 1))
             return Error.Validation("Each publish step may appear only once.");
-        if (!hasVideo && definition.Nodes.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.Type)))
-            return Error.Validation("Publishing comes after Export ZIP: add the video steps before Push to Printify or Publish to Etsy.");
         // One line in run order, so neither approval gate can be bypassed and the design steps stay ahead of the mock-ups.
         // Listing Content is written from the product's own details and waits for no approval: it may hang off
         // any step, or sit between two of them, without being one of the steps the line is checked against.
