@@ -59,14 +59,16 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
         var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
         if (listing is { Status: "pending" }) await GenerateListingAsync(run, checkpoints, listing, ct);
-        if (!definition.Nodes.Any(x => x.Type == "generate-video"))
+        if (IsListingOnly(checkpoints))
         {
             if (listing is not null) FinishListingOnlyRun(run, listing);
             return;
         }
         // A listing that could not be written stays failed on its own step and can be retried there:
-        // the video is made from the mock-ups and does not wait for it.
-        foreach (var type in WorkflowCapabilityRegistry.Pipeline)
+        // the video is made from the mock-ups and does not wait for it. Without a video, Mockup Approval leads
+        // straight to the publish steps below.
+        var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
+        foreach (var type in hasVideo ? WorkflowCapabilityRegistry.Pipeline : WorkflowCapabilityRegistry.PublishPipeline)
         {
             var node = checkpoints.Single(x => x.NodeType == type);
             if (node.Status == "succeeded") continue;
@@ -236,8 +238,12 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var listing = checkpoints.Single(x => x.NodeType == "generate-listing");
         listing.Attempt++;
         await GenerateListingAsync(run, checkpoints, listing, ct);
-        if (checkpoints.All(x => x.NodeType != "generate-video")) FinishListingOnlyRun(run, listing);
+        if (IsListingOnly(checkpoints)) FinishListingOnlyRun(run, listing);
     }
+
+    /// <summary>A run that only writes a listing: no video and nothing to publish.</summary>
+    private static bool IsListingOnly(IReadOnlyList<WorkflowNodeRun> checkpoints) =>
+        checkpoints.All(x => x.NodeType != "generate-video" && !WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
 
     private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing, CancellationToken ct)
     {
@@ -294,9 +300,10 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         MockupAutoApproval.Approve(design is null ? stored : stored.Where(x => x.ArtworkGroupKey == design).ToArray(),
             run.UserId, time.GetUtcNow().UtcDateTime);
 
-        var generate = checkpoints.Single(x => x.NodeType == "generate-video");
-        var videoConfig = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-        if (!MockupAutoApproval.NeedsNoConsent(videoConfig)) return false;
+        // Without a video nothing is paid for after this step, so the approved mock-ups are enough to go on.
+        var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
+        var videoConfig = generate is null ? null : WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+        if (videoConfig is not null && !MockupAutoApproval.NeedsNoConsent(videoConfig)) return false;
         var approved = await ApprovedAssetsAsync(run, mockupConfig, videoConfig, ct);
         if (approved.Count == 0) return false;
         gate.Status = "succeeded";

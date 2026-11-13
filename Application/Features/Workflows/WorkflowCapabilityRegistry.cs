@@ -3,12 +3,15 @@ namespace APCS.Application.Features.Workflows;
 public sealed class WorkflowCapabilityRegistry
 {
     public static readonly string[] Pipeline = ["product-input", "apply-mockup", "approval-gate", "generate-video", "review-video", "export-zip"];
+    // A run that publishes without a video: the seller still approves the mock-ups, and the publish steps follow.
+    public static readonly string[] PublishPipeline = ["product-input", "apply-mockup", "approval-gate"];
     // The canvas makes the designs as a batch job before the run starts, so these steps have no executor here:
     // a workflow may place them between Product Input and Apply Mockup, and a run leaves them untouched.
     public static readonly string[] BatchSteps = ["prompt-synthesis", "design-image", "design-approval"];
     public static readonly string[] ListingSteps = ["generate-listing"];
-    // After the approved package: Printify makes the product and publishes it to Etsy, then a direct Etsy listing
-    // (meant for a digital download). Each runs in the background through WorkflowPublishService.
+    // Last in a run: after Export ZIP of a video run, or right after Mockup Approval without a video. Printify makes the
+    // product and publishes it to Etsy, then a direct Etsy listing (meant for a digital download). Each runs in the
+    // background through WorkflowPublishService.
     public static readonly string[] PublishSteps = ["publish-printify", "publish-etsy"];
     // The steps of a run that must be connected in this order. Listing Content is not one of them: it needs no approval.
     public static readonly string[] RunOrder = ["product-input", .. BatchSteps, .. Pipeline.Skip(1), .. PublishSteps];
