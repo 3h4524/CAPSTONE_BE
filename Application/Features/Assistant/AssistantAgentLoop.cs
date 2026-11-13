@@ -117,6 +117,7 @@ public sealed partial class AssistantAgentLoop(
             var textBefore = state.Text.Length;
             var heldText = new StringBuilder();
             var completionPass = isCompletionCheck;
+            var checkFailed = false;
             isCompletionCheck = false;
             await foreach (var update in chatModel.StreamAsync(new(conversation, declarations, !endTurn), cancellationToken))
             {
@@ -134,6 +135,12 @@ public sealed partial class AssistantAgentLoop(
                 }
                 else if (update.Kind == AssistantModelUpdateKind.Failed)
                 {
+                    if (completionPass && state.HasVisibleOutput)
+                    {
+                        checkFailed = true;
+                        break;
+                    }
+
                     var (code, message) = AssistantErrors.FromModelFailure(update.FailureCode);
                     state.Error = new AssistantErrorData(code, message);
                     yield break;
@@ -147,6 +154,9 @@ public sealed partial class AssistantAgentLoop(
                     yield return AssistantStreamEvent.Status(update.RetryInSeconds ?? 0);
                 }
             }
+
+            if (checkFailed)
+                break;
 
             var completionText = heldText.ToString().Trim();
             if (completionPass && completionText.Length > 0 && !IsCompletionDone(completionText) && !RepeatsEarlierText(state.Text, completionText))

@@ -124,6 +124,11 @@ public sealed class GeminiAssistantChatModel : IAssistantChatModel
         }
 
         var response = updates.ToChatResponse();
+        logger.LogInformation(
+            "Assistant model usage: {InputTokens} input tokens, {CachedInputTokens} cached, {OutputTokens} output",
+            response.Usage?.InputTokenCount,
+            response.Usage?.CachedInputTokenCount,
+            response.Usage?.OutputTokenCount);
         var toolCalls = response.Messages
             .SelectMany(message => message.Contents)
             .OfType<FunctionCallContent>()
