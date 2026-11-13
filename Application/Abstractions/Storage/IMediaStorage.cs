@@ -16,6 +16,14 @@ public interface IMediaStorage
     /// <exception cref="InvalidOperationException">The URL is not one of this account's Cloudinary images.</exception>
     Task<byte[]> ReadCompositeAsync(string url, CancellationToken cancellationToken);
     string SignRead(string storageKey, string resourceType, string? version = null, bool attachment = false);
+
+    /// <summary>
+    /// A signed link to a stored image padded to exactly <paramref name="width"/> × <paramref name="height"/> (the whole
+    /// image kept, the rest filled with its own edge color), the size a social platform shows. A storage that cannot
+    /// resize gives the image as it is.
+    /// </summary>
+    string SignReadFitted(string storageKey, string? version, int width, int height, bool attachment = false) =>
+        SignRead(storageKey, "image", version, attachment);
     UploadGrant CreateUploadGrant(string storageKey, string resourceType);
     Task<bool> VerifyAsync(string storageKey, string resourceType, string version, long? bytes, CancellationToken cancellationToken);
 }

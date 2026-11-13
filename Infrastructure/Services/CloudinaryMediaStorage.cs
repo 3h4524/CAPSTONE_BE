@@ -58,10 +58,22 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
                 entry.AbsoluteExpirationRelativeToNow = ReuseSignedLinkFor;
                 return SignReadNow(key, type, attachment);
             })!;
-    private string SignReadNow(string key, string type, bool attachment) => Client.DownloadPrivate(
-        PublicId(key), attachment: attachment, format: type == "image" ? "png" : type == "video" ? "mp4" : null,
+    private string SignReadNow(string key, string type, bool attachment, Transformation? transformation = null) => Client.DownloadPrivate(
+        PublicId(key), attachment: attachment, format: type == "image" ? (transformation is null ? "png" : "jpg") : type == "video" ? "mp4" : null,
         type: "authenticated", expiresAt: time.GetUtcNow().AddMinutes(10).ToUnixTimeSeconds(), resourceType: type,
-        transformation: null, targetFilename: type == "video" ? "video.mp4" : type == "raw" ? "video-package.zip" : null);
+        transformation: transformation, targetFilename: type == "video" ? "video.mp4" : type == "raw" ? "video-package.zip" : null);
+    public string SignReadFitted(string key, string? version, int width, int height, bool attachment = false)
+    {
+        // Padded, never cropped: a mock-up's design stays whole on a taller social format.
+        var fit = new Transformation().Width(width).Height(height).Crop("pad").Background("auto").Quality("auto:good");
+        return cache is null
+            ? SignReadNow(key, "image", attachment, fit)
+            : cache.GetOrCreate(("signed-read-fitted", options.Value.CloudName, key, version, width, height, attachment), entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = ReuseSignedLinkFor;
+                return SignReadNow(key, "image", attachment, fit);
+            })!;
+    }
     public UploadGrant CreateUploadGrant(string key, string type)
     {
         var fields = new Dictionary<string, string>

@@ -63,6 +63,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Shops.ShopService>();
         services.AddScoped<Features.Shops.IShopService>(provider => provider.GetRequiredService<Features.Shops.ShopService>());
         services.AddScoped<Features.Shops.IEtsyPublishingService, Features.Shops.EtsyPublishingService>();
+        services.AddScoped<Features.Social.ISocialShareKitService, Features.Social.SocialShareKitService>();
         services.AddScoped<Features.Shops.IListingPace, Features.Shops.ListingPace>();
         services.AddScoped<Features.Shops.IPrintifyService, Features.Shops.PrintifyService>();
         services.AddScoped<IProfileService, ProfileService>();
