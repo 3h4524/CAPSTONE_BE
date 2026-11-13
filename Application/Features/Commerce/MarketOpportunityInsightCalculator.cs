@@ -27,7 +27,10 @@ internal static class MarketOpportunityInsightCalculator
             .ToArray();
         var prices = latestByListing.Where(item => item.Price is not null).Select(item => item.Price!.Value).OrderBy(item => item).ToArray();
         var engagementRate = CalculateEngagement(latestByListing);
-        var engagementChange = CalculateEngagementChange(evidence);
+        // Demand is read from the same listings day after day (favorites gained per day); comparing the favorites/views
+        // ratio of two different sets of listings is only the fallback while too few days are observed.
+        var demand = DemandVelocity(evidence);
+        var engagementChange = demand.ChangePercent ?? CalculateEngagementChange(evidence);
         var observationPeriodCount = evidence.Select(item => item.ObservedAt.Date).Distinct().Count();
         var evidenceQuality = EvidenceQualityLabel(latestByListing.Length, observationPeriodCount);
 
@@ -72,7 +75,48 @@ internal static class MarketOpportunityInsightCalculator
                 .OrderByDescending(item => item.ObservedAt)
                 .Take(5)
                 .Select(item => new MarketOpportunityEvidenceResponse(item.Title, item.SourceUrl, item.Price, item.Currency, item.Favorites, item.Views, item.ObservedAt))
-                .ToArray());
+                .ToArray(),
+            demand.FavoritesPerDay);
+    }
+
+    /// <summary>
+    /// Favorites the opportunity's listings gain per day, and how that pace moved: each listing is followed across the
+    /// days it was observed (its last figures of a day), so a new listing joining the evidence does not read as growth.
+    /// The change compares the later half of each listing's daily gains with the earlier half; it needs a listing seen on
+    /// three days or more.
+    /// </summary>
+    internal static (double? FavoritesPerDay, double? ChangePercent) DemandVelocity(IReadOnlyCollection<MarketOpportunityEvidenceInput> evidence)
+    {
+        double? perDay = null;
+        double earlier = 0, recent = 0;
+        var compared = false;
+        foreach (var listing in evidence.Where(item => item.Favorites is not null && !item.IsSynthetic)
+                     .GroupBy(item => item.ExternalListingId, StringComparer.OrdinalIgnoreCase))
+        {
+            var days = listing
+                .GroupBy(item => item.ObservedAt.Date)
+                .Select(day => day.OrderByDescending(item => item.ObservedAt).First())
+                .OrderBy(item => item.ObservedAt)
+                .ToArray();
+            if (days.Length < 2)
+                continue;
+            var gains = days.Zip(days.Skip(1), (before, after) =>
+                    (after.Favorites!.Value - before.Favorites!.Value) / Math.Max(1d, (after.ObservedAt.Date - before.ObservedAt.Date).TotalDays))
+                .ToArray();
+            perDay = (perDay ?? 0) + gains.Average();
+            if (gains.Length < 2)
+                continue;
+            var half = gains.Length / 2;
+            earlier += gains.Take(half).Average();
+            recent += gains.Skip(gains.Length - half).Average();
+            compared = true;
+        }
+
+        double? change = !compared ? null
+            : earlier > 0 ? Math.Round((recent - earlier) / earlier * 100, 2)
+            : recent > 0 ? 100
+            : 0;
+        return (perDay is null ? null : Math.Round(perDay.Value, 2), change);
     }
 
     private static double? CalculateEngagement(IReadOnlyCollection<MarketOpportunityEvidenceInput> items)
