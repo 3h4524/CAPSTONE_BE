@@ -112,9 +112,30 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("Never say you will make a change unless you call the tool")]
     [DataRow("app_context has no canvas, do not explore")]
     [DataRow("call navigate to /workflows?id=<workflow id>")]
-    [DataRow("If start_workflow_run returns an error, explain the reason it gave")]
+    [DataRow("If start_workflow_run returns another error, explain the reason it gave")]
+    [DataRow("never ask the user to confirm a cost in chat and never say the run started")]
+    [DataRow("call estimate_run_cost and give the total")]
+    [DataRow("If it returns needs_workflow_screen, call navigate")]
+    [DataRow("call get_run_progress and say in plain words")]
+    [DataRow("call edit_workflow_canvas first and run_workflow after it")]
+    [DataRow("call review_designs (every waiting product")]
+    [DataRow("set moreRequests to true on it and then call continue_run")]
+    [DataRow("the runId of each video from get_run_progress targets")]
+    [DataRow("call create_batch first and, once the user confirmed it, add_batch_products")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
+
+    [TestMethod]
+    public void Build_VietnameseMessage_PinsTheReplyLanguage()
+    {
+        var latest = builder.Build(AssistantTestSupport.Session("tạo batch mới cho cốc in hình chó"))[^1].Text!;
+
+        latest.Should().Contain("<reply_language>Vietnamese</reply_language>");
+    }
+
+    [TestMethod]
+    public void Build_EnglishMessage_HasNoReplyLanguageBlock() =>
+        builder.Build(AssistantTestSupport.Session("create a new batch for dog mugs"))[^1].Text.Should().NotContain("<reply_language>");
 
     [TestMethod]
     public void Build_SystemPromptNeverMentionsRenaming() =>
@@ -195,6 +216,7 @@ public sealed class AssistantPromptBuilderTests
         var system = builder.Build(AssistantTestSupport.Session("hi", context))[0].Text!;
 
         system.Should().Contain("<node_catalog>").And.Contain("generate-listing").And.Contain("connectionRules");
+        system.IndexOf("</node_catalog>", StringComparison.Ordinal).Should().BeLessThan(system.IndexOf("Today is", StringComparison.Ordinal));
     }
 
     [TestMethod]

@@ -25,7 +25,7 @@ public sealed class SaveProductValidator : AbstractValidator<SaveProductDto>
 
 internal static class ProductRules
 {
-    private static readonly HashSet<string> Types = ["tshirt", "hoodie", "mug", "poster", "tote_bag", "phone_case"];
+    public static readonly IReadOnlyList<string> Types = ["tshirt", "hoodie", "mug", "poster", "tote_bag", "phone_case"];
     public static bool IsValidType(string? type) => type is not null && Types.Contains(type);
 
     // A slogan printed on the design: longer text is rarely spelled right by an image model.
