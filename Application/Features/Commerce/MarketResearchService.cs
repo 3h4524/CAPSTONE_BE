@@ -142,6 +142,58 @@ public sealed class MarketResearchService(
                 touched.Add(linked.Id);
             }
         }
+
+        // Each niche's product concepts, told apart by the distinctive tags of the top listings that made or matched
+        // them; the listings that only joined later do not widen a concept.
+        var nicheNames = uniqueListings.Select(NicheOf).Distinct(StringComparer.Ordinal).ToArray();
+        var nicheOpportunities = await opportunities.FindAsync(x => x.Platform == platformKey && nicheNames.Contains(x.Niche) && !x.IsSynthetic, cancellationToken);
+        var opportunityById = nicheOpportunities.ToDictionary(x => x.Id);
+        var nicheIds = opportunityById.Keys.ToArray();
+        var signatureRows = await evidence.Query()
+            .Where(row => nicheIds.Contains(row.OpportunityId))
+            .Select(row => new { row.OpportunityId, row.Snapshot.Tags, Picked = row.RagDocumentId != null })
+            .ToListAsync(cancellationToken);
+        var signatureByOpportunity = signatureRows.ToLookup(row => row.OpportunityId);
+        var commonByNiche = uniqueListings
+            .GroupBy(NicheOf, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key,
+                group => MarketConceptMatcher.CommonTags(group.Key, group.Select(item => (IEnumerable<string>)item.Tags).ToArray()),
+                StringComparer.Ordinal);
+        var conceptsByNiche = nicheOpportunities
+            .GroupBy(item => item.Niche, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Select(item =>
+            {
+                var rows = signatureByOpportunity[item.Id].ToArray();
+                var picked = rows.Any(row => row.Picked) ? rows.Where(row => row.Picked) : rows;
+                return new MarketConceptMatcher.Concept(item.Id, item.Title,
+                    MarketConceptMatcher.DistinctiveTags(picked.SelectMany(row => ReadTags(row.Tags)), commonByNiche.GetValueOrDefault(group.Key) ?? []));
+            }).ToList(), StringComparer.Ordinal);
+        List<MarketConceptMatcher.Concept> ConceptsOf(string niche)
+        {
+            if (!conceptsByNiche.TryGetValue(niche, out var list))
+                conceptsByNiche[niche] = list = [];
+            return list;
+        }
+        HashSet<string> TagsOf(CommerceMarketListing listing) =>
+            MarketConceptMatcher.DistinctiveTags(listing.Tags, commonByNiche.GetValueOrDefault(NicheOf(listing)) ?? []);
+
+        // A listing outside the top picks that shows a known concept backs it too, so a concept gathers the listings
+        // and shops that sell it instead of only the few that ranked first.
+        async Task JoinConceptAsync(CommerceMarketListing listing, Guid snapshotId)
+        {
+            if (MarketListingKind.IsDigital(listing.RawPayload) || linkedByListing.ContainsKey(listing.ExternalListingId))
+                return;
+            var concept = MarketConceptMatcher.Match(listing.Title, TagsOf(listing),
+                ConceptsOf(NicheOf(listing)).Where(item => opportunityById[item.OpportunityId].Status != MarketOpportunityLifecycle.Archived));
+            if (concept is null)
+                return;
+            var joined = opportunityById[concept.OpportunityId];
+            MarkObserved(joined, observedAt);
+            await opportunities.UpdateAsync(joined, cancellationToken: cancellationToken);
+            await AddEvidenceAsync(joined.Id, snapshotId, null);
+            touched.Add(joined.Id);
+        }
+
         foreach (var listing in uniqueListings)
         {
             selectedByListingId.TryGetValue(listing.ExternalListingId, out var selection);
@@ -226,32 +278,20 @@ public sealed class MarketResearchService(
             if (selection is null)
             {
                 await BackKnownOpportunitiesAsync(listing.ExternalListingId, snapshot.Id, null);
+                await JoinConceptAsync(listing, snapshot.Id);
                 continue;
             }
 
             var chosen = selection;
             var score = chosen.ViralScore;
             var ragDocumentId = documentId!.Value;
-            var niche = string.IsNullOrWhiteSpace(listing.MatchedQuery) ? listing.Title : listing.MatchedQuery.Trim();
-            // A public listing can be returned by several search queries. Keep one
-            // opportunity for the same platform/title and retain each query as evidence
-            // instead of showing the same product concept more than once in the radar.
-            var relatedOpportunities = await opportunities.FindAsync(x =>
-                x.Platform == platform && x.Niche == niche, cancellationToken);
-            var opportunity = relatedOpportunities
-                .Select(candidate => new
-                {
-                    Opportunity = candidate,
-                    Similarity = string.Equals(candidate.Title, listing.Title, StringComparison.OrdinalIgnoreCase)
-                        ? 1d
-                        : MarketOpportunityConceptMatcher.Similarity(candidate.Title, listing.Title)
-                })
-                .Where(item => item.Similarity >= 0.6)
-                .OrderByDescending(item => item.Similarity)
-                .ThenByDescending(item => item.Opportunity.MarketOpportunityScore)
-                .ThenBy(item => item.Opportunity.Id)
-                .Select(item => item.Opportunity)
-                .FirstOrDefault();
+            var niche = NicheOf(listing);
+            // One opportunity is one product concept of the niche: a top listing showing a known concept (shared
+            // distinctive tags, or a nearly identical title) adds to it instead of opening another.
+            var listingTags = TagsOf(listing);
+            var concept = MarketConceptMatcher.Match(listing.Title, listingTags, ConceptsOf(niche));
+            var opportunity = concept is null ? null : opportunityById[concept.OpportunityId];
+            concept?.Tags.UnionWith(listingTags);
             if (opportunity is null)
             {
                 opportunity = new MarketOpportunity
@@ -279,6 +319,8 @@ public sealed class MarketResearchService(
                     UpdatedAt = observedAt
                 };
                 await opportunities.AddAsync(opportunity, cancellationToken: cancellationToken);
+                opportunityById[opportunity.Id] = opportunity;
+                ConceptsOf(niche).Add(new MarketConceptMatcher.Concept(opportunity.Id, opportunity.Title, listingTags));
             }
             else
             {
@@ -314,6 +356,24 @@ public sealed class MarketResearchService(
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await CompactOldSnapshotsAsync(observedAt, cancellationToken);
         return new MarketResearchResponse(request.Platform, uniqueListings.Length, result.Count, result);
+    }
+
+    /// <summary>The niche a listing was collected for: its search query, or its title when it has none.</summary>
+    private static string NicheOf(CommerceMarketListing listing) =>
+        string.IsNullOrWhiteSpace(listing.MatchedQuery) ? listing.Title : listing.MatchedQuery.Trim();
+
+    /// <summary>The tags a snapshot stored as a JSON array; none when it cannot be read.</summary>
+    private static IEnumerable<string> ReadTags(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     /// <summary>A listing as one search query found it: its day's snapshot is kept once per pair.</summary>

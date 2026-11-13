@@ -63,16 +63,16 @@ public sealed class MarketResearchServiceTests
             observations.Object, Mock.Of<IUnitOfWork>(), listingQueries.Object);
     }
 
-    private static CommerceMarketListing Listing(string id, string title, int favorites, int views, string seller) =>
+    private static CommerceMarketListing Listing(string id, string title, int favorites, int views, string seller, params string[] tags) =>
         new(CommercePlatform.Etsy, id, seller, title, "A tee.", $"https://etsy.test/{id}", 24.99m, "USD", 10, favorites, views,
-            null, null, ["cat"], Niche, 1);
+            null, null, tags.Length == 0 ? ["cat"] : tags, Niche, 1);
 
     private void Collect(params CommerceMarketListing[] listings) =>
         connector.Setup(x => x.SearchPublicListingsAsync(It.IsAny<CommerceMarketSearchRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CommerceMarketSearchResult(listings, [new CommerceMarketQueryResult(Niche, 1000, listings.Length, 100, "score")]));
 
     /// <summary>An opportunity backed by one listing, observed <paramref name="daysAgo"/> days ago.</summary>
-    private MarketOpportunity Known(string listingId, string title, int daysAgo, string status = "active")
+    private MarketOpportunity Known(string listingId, string title, int daysAgo, string status = "active", params string[] tags)
     {
         var observed = DateTime.UtcNow.AddDays(-daysAgo);
         var opportunity = new MarketOpportunity
@@ -83,7 +83,8 @@ public sealed class MarketResearchServiceTests
         };
         var snapshot = new MarketListingSnapshot
         {
-            Id = Guid.NewGuid(), Platform = "etsy", ExternalListingId = listingId, ExternalSellerId = "shop-1", Title = title, Tags = "[]",
+            Id = Guid.NewGuid(), Platform = "etsy", ExternalListingId = listingId, ExternalSellerId = "shop-1", Title = title,
+            Tags = System.Text.Json.JsonSerializer.Serialize(tags),
             MatchedQuery = Niche, ObservedAt = observed, CollectedAt = observed,
         };
         opportunityRows.Add(opportunity);
@@ -153,6 +154,36 @@ public sealed class MarketResearchServiceTests
 
         listingQueries.Verify(x => x.CompactSupersededSnapshotsAsync(DateTime.UtcNow.Date.AddDays(-MarketSnapshotRetention.FullTextDays),
             MarketSnapshotRetention.BatchSize, It.IsAny<CancellationToken>()), Times.Exactly(2), "a short batch means nothing is left");
+    }
+
+    private static readonly string[] GrumpyTags = ["grumpy cat", "coffee lover", "monday mood", "sarcastic tee"];
+
+    [TestMethod]
+    public async Task RetrieveAndIngestAsync_AListingOutOfTheTopPicksShowingAKnownConcept_BacksIt()
+    {
+        var concept = Known("old-1", "Grumpy cat tee with coffee", daysAgo: 1, tags: GrumpyTags);
+        Collect(
+            Listing("hot-1", "Space cat galaxy shirt", favorites: 900, views: 3000, seller: "shop-2", "space cat", "galaxy"),
+            Listing("new-1", "Not Today Cat Shirt, Funny Mug Lover Tee", favorites: 3, views: 300, seller: "shop-3", "grumpy cat", "coffee lover", "monday mood"),
+            Listing("new-2", "Cute cat mom shirt", favorites: 2, views: 200, seller: "shop-4", "grumpy cat", "cat mom"));
+
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], TopN: 1));
+
+        var backing = evidenceRows.Where(row => row.OpportunityId == concept.Id).Select(row => row.Snapshot.ExternalListingId).ToArray();
+        backing.Should().Contain("new-1", "it shares three distinctive tags").And.NotContain("new-2", "one tag is not the concept");
+        concept.Confidence.Should().Be(MarketOpportunityLifecycle.Confidence(2, 2, 2, 2, 0), "two listings from two shops back it now");
+    }
+
+    [TestMethod]
+    public async Task RetrieveAndIngestAsync_ATopListingOfAKnownConcept_AddsToIt_InsteadOfOpeningAnother()
+    {
+        var concept = Known("old-1", "Grumpy cat tee with coffee", daysAgo: 1, tags: GrumpyTags);
+        Collect(Listing("hot-1", "Not Today Cat Shirt, Funny Mug Lover Tee", favorites: 900, views: 3000, seller: "shop-2", GrumpyTags));
+
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], TopN: 1));
+
+        opportunityRows.Should().ContainSingle().Which.Should().BeSameAs(concept);
+        evidenceRows.Count(row => row.OpportunityId == concept.Id).Should().Be(2);
     }
 
     [TestMethod]
