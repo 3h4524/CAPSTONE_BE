@@ -151,7 +151,7 @@ public sealed class MarketResearchService(
         var nicheIds = opportunityById.Keys.ToArray();
         var signatureRows = await evidence.Query()
             .Where(row => nicheIds.Contains(row.OpportunityId))
-            .Select(row => new { row.OpportunityId, row.Snapshot.Tags, Picked = row.RagDocumentId != null })
+            .Select(row => new { row.OpportunityId, row.Snapshot.Tags, row.Snapshot.Title, Picked = row.RagDocumentId != null })
             .ToListAsync(cancellationToken);
         var signatureByOpportunity = signatureRows.ToLookup(row => row.OpportunityId);
         var commonByNiche = uniqueListings
@@ -164,7 +164,11 @@ public sealed class MarketResearchService(
             .ToDictionary(group => group.Key, group => group.Select(item =>
             {
                 var rows = signatureByOpportunity[item.Id].ToArray();
-                var picked = rows.Any(row => row.Picked) ? rows.Where(row => row.Picked) : rows;
+                // Never from the listings that only joined: they would widen the concept with each one. Without a top
+                // listing on record, the listing the opportunity was named after stands for it.
+                var picked = rows.Any(row => row.Picked)
+                    ? rows.Where(row => row.Picked)
+                    : rows.Where(row => string.Equals(row.Title, item.Title, StringComparison.OrdinalIgnoreCase));
                 return new MarketConceptMatcher.Concept(item.Id, item.Title,
                     MarketConceptMatcher.DistinctiveTags(picked.SelectMany(row => ReadTags(row.Tags)), commonByNiche.GetValueOrDefault(group.Key) ?? []));
             }).ToList(), StringComparer.Ordinal);

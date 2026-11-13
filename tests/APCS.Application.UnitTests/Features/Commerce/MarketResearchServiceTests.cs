@@ -175,6 +175,28 @@ public sealed class MarketResearchServiceTests
     }
 
     [TestMethod]
+    public async Task RetrieveAndIngestAsync_ListingsThatOnlyJoinedAConcept_DoNotWidenIt()
+    {
+        var concept = Known("old-1", "Grumpy cat tee with coffee", daysAgo: 1, tags: GrumpyTags);
+        // A listing that joined earlier carries other tags; the concept is still read from the listing it was named after.
+        var joined = new MarketListingSnapshot
+        {
+            Id = Guid.NewGuid(), Platform = "etsy", ExternalListingId = "joined-1", ExternalSellerId = "shop-9", Title = "Monday mood mug tee",
+            Tags = System.Text.Json.JsonSerializer.Serialize(new[] { "grumpy cat", "coffee lover", "monday mood", "cat mom", "plant lady", "book club" }),
+            MatchedQuery = Niche, ObservedAt = DateTime.UtcNow.AddDays(-1), CollectedAt = DateTime.UtcNow.AddDays(-1),
+        };
+        snapshotRows.Add(joined);
+        evidenceRows.Add(new MarketOpportunityEvidence { OpportunityId = concept.Id, SnapshotId = joined.Id, Snapshot = joined, Opportunity = concept });
+        Collect(
+            Listing("hot-1", "Space cat galaxy shirt", favorites: 900, views: 3000, seller: "shop-2", "space cat", "galaxy"),
+            Listing("new-1", "Cat mom plant lady book club tee", favorites: 3, views: 300, seller: "shop-3", "cat mom", "plant lady", "book club"));
+
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], TopN: 1));
+
+        evidenceRows.Where(row => row.OpportunityId == concept.Id).Select(row => row.Snapshot.ExternalListingId).Should().NotContain("new-1");
+    }
+
+    [TestMethod]
     public async Task RetrieveAndIngestAsync_ATopListingOfAKnownConcept_AddsToIt_InsteadOfOpeningAnother()
     {
         var concept = Known("old-1", "Grumpy cat tee with coffee", daysAgo: 1, tags: GrumpyTags);
