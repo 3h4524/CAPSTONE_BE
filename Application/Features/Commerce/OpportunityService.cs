@@ -147,7 +147,24 @@ public sealed class OpportunityService(
 
     public async Task<IReadOnlyList<SellerOpportunityResponse>> RefreshRankingAsync(CancellationToken cancellationToken = default)
     {
-        var userId = RequireUserId();
+        await RankForUserAsync(RequireUserId(), cancellationToken);
+        return await ListAsync(limit: 100, cancellationToken: cancellationToken);
+    }
+
+    public async Task<int> RefreshAllRankingsAsync(CancellationToken cancellationToken = default)
+    {
+        // Every seller with a research profile or a radar ranked before: each sees the day's collection on opening it.
+        var withProfile = await profiles.Query().Select(x => x.UserId).ToListAsync(cancellationToken);
+        var ranked = await sellerOpportunities.Query().Select(x => x.UserId).Distinct().ToListAsync(cancellationToken);
+        var userIds = withProfile.Concat(ranked).Distinct().ToArray();
+        foreach (var userId in userIds)
+            await RankForUserAsync(userId, cancellationToken);
+        return userIds.Length;
+    }
+
+    /// <summary>Scores every active opportunity for one seller and ranks the ones that qualify.</summary>
+    private async Task RankForUserAsync(Guid userId, CancellationToken cancellationToken)
+    {
         var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
         var snapshot = profile is null ? new SellerResearchProfileSnapshot([], [], [], []) : ToSnapshot(profile);
         // Demo opportunities (is_synthetic) link to listings that do not exist, so sellers are only
@@ -239,8 +256,15 @@ public sealed class OpportunityService(
         foreach (var item in ranked.OrderByDescending(x => x.FinalScore).ThenBy(x => x.OpportunityId).Select((row, index) => (row, index)))
             item.row.Rank = item.index + 1;
 
+        // An opportunity that went stale or was archived keeps its row (and the seller's state) but not its old rank.
+        var activeIds = marketRows.Select(x => x.Id).ToHashSet();
+        foreach (var row in existingRows.Where(x => x.Rank is not null && !activeIds.Contains(x.OpportunityId)))
+        {
+            row.Rank = null;
+            await sellerOpportunities.UpdateAsync(row, cancellationToken: cancellationToken);
+        }
+
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return await ListAsync(limit: 100, cancellationToken: cancellationToken);
     }
 
     public async Task<IReadOnlyList<SellerOpportunityResponse>> ListAsync(
