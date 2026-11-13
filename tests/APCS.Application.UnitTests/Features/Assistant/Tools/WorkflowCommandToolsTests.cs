@@ -82,9 +82,11 @@ public sealed class WorkflowCommandToolsTests
         WorkflowId, 4, isDirty,
         [
             new("input", "product-input", "Product input", AssistantTestSupport.Json($$"""{"batchId":"{{Guid.NewGuid()}}"}""")),
-            new("listing", "generate-listing", "Listing content", AssistantTestSupport.Json("{}"))
+            new("mockup", "apply-mockup", "Apply mock-up", AssistantTestSupport.Json("{}")),
+            new("gate", "approval-gate", "Mockup approval", AssistantTestSupport.Json("{}")),
+            new("media", "publish-social", "Push to media", AssistantTestSupport.Json("{}"))
         ],
-        connected ? [new AssistantCanvasEdgeDto("e1", "input", "listing")] : [],
+        connected ? [new AssistantCanvasEdgeDto("e1", "input", "mockup"), new AssistantCanvasEdgeDto("e2", "mockup", "gate"), new AssistantCanvasEdgeDto("e3", "gate", "media")] : [],
         "Etsy flow");
 
     private static AssistantToolContext Context(AssistantCanvasDto? canvas, AssistantCaller? caller = null) =>

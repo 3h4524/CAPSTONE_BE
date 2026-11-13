@@ -37,9 +37,12 @@ public sealed class StartWorkflowRunToolTests
     private static WorkflowResponse Workflow(Guid id, bool runnable = true)
     {
         var input = new WorkflowNode("a", "product-input", "Input", new Point(), AssistantTestSupport.Json($$"""{"batchId":"{{Guid.NewGuid()}}","productId":"{{Guid.NewGuid()}}"}"""));
-        var listing = new WorkflowNode("b", "generate-listing", "Listing", new Point(), AssistantTestSupport.Json("{}"));
+        // The shortest runnable workflow: the mock-ups are approved, then go to one output.
+        var mockup = new WorkflowNode("b", "apply-mockup", "Mockup", new Point(), AssistantTestSupport.Json("{}"));
+        var gate = new WorkflowNode("c", "approval-gate", "Approval", new Point(), AssistantTestSupport.Json("{}"));
+        var media = new WorkflowNode("d", "publish-social", "Push to media", new Point(), AssistantTestSupport.Json("{}"));
         var definition = runnable
-            ? new WorkflowDefinition(2, [input, listing], [new WorkflowEdge("e", "a", "b")])
+            ? new WorkflowDefinition(2, [input, mockup, gate, media], [new WorkflowEdge("e1", "a", "b"), new WorkflowEdge("e2", "b", "c"), new WorkflowEdge("e3", "c", "d")])
             : new WorkflowDefinition(2, [input], []);
         return new WorkflowResponse(id, "Flow", "", definition.Nodes.Count, 7, Now, Now, definition);
     }

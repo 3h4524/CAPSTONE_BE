@@ -85,7 +85,7 @@ public sealed class WorkflowServiceTests
         stored.SchemaVersion.Should().Be(2);
         stored.Revision.Should().Be(1);
         stored.CreatedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
-        WorkflowJson.Read<WorkflowDefinition>(stored.Definition).Nodes.Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline);
+        WorkflowJson.Read<WorkflowDefinition>(stored.Definition).Nodes.Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Append("export-zip"));
         fixture.State.Verify(x => x.LockOwnerAsync(WorkflowTestData.Owner, cancellation.Token), Times.Once);
         fixture.Unit.Verify(x => x.SaveChangesAsync(cancellation.Token), Times.Once);
         fixture.Transaction.Verify(x => x.CommitAsync(cancellation.Token), Times.Once);

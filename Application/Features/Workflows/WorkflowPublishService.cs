@@ -41,7 +41,8 @@ public sealed class WorkflowPublishService(
     TimeProvider time,
     ILogger<WorkflowPublishService> logger,
     IListingPace? pace = null,
-    IPrintifyMockupMatcher? matcher = null) : IWorkflowPublishService
+    IPrintifyMockupMatcher? matcher = null,
+    Social.ISocialShareKitService? social = null) : IWorkflowPublishService
 {
     /// <summary>How often a product Printify is publishing is checked.</summary>
     internal static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(20);
@@ -57,7 +58,7 @@ public sealed class WorkflowPublishService(
 
     public async Task<IReadOnlyList<Guid>> UnfinishedAsync(CancellationToken cancellationToken) =>
         await nodes.Query()
-            .Where(node => (node.NodeType == "publish-printify" || node.NodeType == "publish-etsy") && node.Status == "running"
+            .Where(node => WorkflowCapabilityRegistry.PublishSteps.Contains(node.NodeType) && node.Status == "running"
                 && node.WorkflowRun.Status == "running")
             .Select(node => node.Id)
             .ToListAsync(cancellationToken);
@@ -75,7 +76,10 @@ public sealed class WorkflowPublishService(
         try
         {
             // A new listing waits its turn instead of failing: the step carries on by itself once the shop may list again.
-            if (current.Stage != "publishing" && pace is not null
+            // Push to media makes no listing, so it never waits.
+            if (snapshot.NodeType == "publish-social")
+                outcome = await SocialAsync(snapshot.ProductId, snapshot.UserId, snapshot.InputSnapshot, cancellationToken);
+            else if (current.Stage != "publishing" && pace is not null
                 && await pace.CheckAsync(snapshot.UserId, cancellationToken) is { Allowed: false, RetryAtUtc: { } retryAt })
                 outcome = Outcome.Wait(current, retryAt);
             else
@@ -109,7 +113,8 @@ public sealed class WorkflowPublishService(
                 await runtime.AdvanceAsync(run, cancellationToken);
                 break;
             case OutcomeKind.Failed:
-                await runtime.FailAsync(run, node.Id, outcome.Message!, cancellationToken);
+                // Only this output fails: the run's other outputs carry on, and the run is settled once they are done.
+                await runtime.FailOutputAsync(run, node.Id, outcome.Message!, cancellationToken);
                 run.UpdatedAt = now;
                 break;
             case OutcomeKind.Waiting:
@@ -130,6 +135,25 @@ public sealed class WorkflowPublishService(
             OutcomeKind.Waiting => outcome.RetryAtUtc!.Value - now > PollEvery ? outcome.RetryAtUtc.Value - now : PollEvery,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// Push to media prepares the product's posts for the chosen platforms from what the run approved; the seller
+    /// publishes them by hand from the run. It fails when nothing can be posted, saying what to approve first.
+    /// </summary>
+    private async Task<Outcome> SocialAsync(Guid productId, Guid userId, string input, CancellationToken cancellationToken)
+    {
+        if (social is null)
+            return Outcome.Fail("Push to media is not available on this server.");
+        var platforms = WorkflowJson.Read<PublishSocialConfig>(input).Chosen();
+        var kit = await social.BuildAsync(productId, userId, cancellationToken);
+        if (kit.IsFailure)
+            return Outcome.Fail(kit.Error.Message);
+        var posts = kit.Value.Posts.Count(post => platforms.Contains(post.Platform));
+        if (posts == 0)
+            return Outcome.Fail("Push to media: nothing to post yet. " + string.Join(" ", kit.Value.Warnings));
+        return Outcome.Done(new PublishNodeState("done", EtsyUrl: kit.Value.ListingUrl, Warnings: kit.Value.Warnings,
+            SocialPosts: posts, Platforms: platforms));
     }
 
     /// <summary>The Printify products set on Apply mock-up, or null when the definition cannot be read.</summary>

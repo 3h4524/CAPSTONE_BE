@@ -270,7 +270,7 @@ public sealed class AssistantRunProgressReader(
         "review-video" => AssistantRunStages.VideoReview,
         "generate-listing" => AssistantRunStages.Listing,
         "export-zip" => AssistantRunStages.Export,
-        "publish-printify" or "publish-etsy" => AssistantRunStages.Publish,
+        "publish-printify" or "publish-etsy" or "publish-social" => AssistantRunStages.Publish,
         _ => AssistantRunStages.Video
     };
 }

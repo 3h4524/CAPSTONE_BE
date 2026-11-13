@@ -30,11 +30,14 @@ public static class WorkflowNodeCatalog
     public static readonly IReadOnlyList<string> RunOrder =
     [
         "product-input", "prompt-synthesis", "design-image", "design-approval", "apply-mockup",
-        "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy"
+        "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy", "publish-social"
     ];
 
+    /// <summary>The outputs: peers that end a workflow, in any order.</summary>
+    public static readonly IReadOnlyList<string> Outputs = ["export-zip", "publish-printify", "publish-etsy", "publish-social"];
+
     public const string PublishRule =
-        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product: each may appear once and nothing connects after publish-etsy. With the video steps they come after export-zip; without a video they follow approval-gate directly, and review-video and export-zip are left out.";
+        "export-zip (Export ZIP), publish-printify (Push to Printify), publish-etsy (Publish to Etsy) and publish-social (Push to media) are the outputs: a workflow needs at least one, each at most once, in any order. Each output connects after the last step (review-video, or approval-gate without a video) or after another output, so they may sit side by side or one after another; only another output may follow an output. export-zip packages the approved video, so it needs generate-video and review-video.";
 
     public static readonly IReadOnlyList<string> ConnectionRules =
     [
@@ -117,7 +120,9 @@ public static class WorkflowNodeCatalog
         [
             new("listingType", "select", "Listing type", [new("download", "Digital download"), new("physical", "Physical item")]),
             new("includeVideo", "switch", "Attach the approved video")
-        ], "Price, Etsy category and shipping profile are set in the UI.")
+        ], "Price, Etsy category and shipping profile are set in the UI."),
+        new("publish-social", "Push to media", "Prepares Pinterest and TikTok posts from the approved mock-ups, video and listing, to publish by hand.", Order("publish-social"),
+            [], "The platforms are chosen in the UI; both by default.")
     ];
 
     public static readonly Lazy<string> CompactJson = new(() => JsonSerializer.Serialize(

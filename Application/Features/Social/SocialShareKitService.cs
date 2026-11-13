@@ -29,6 +29,9 @@ public interface ISocialShareKitService
 {
     /// <summary>Pinterest and TikTok posts of a product, from its approved mock-ups, video and listing.</summary>
     Task<Result<SocialShareKitDto>> GetAsync(Guid productId, CancellationToken cancellationToken = default);
+
+    /// <summary>The same kit for a product of <paramref name="userId"/>, for a workflow step running in the background.</summary>
+    Task<Result<SocialShareKitDto>> BuildAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -63,10 +66,13 @@ public sealed class SocialShareKitService(
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public async Task<Result<SocialShareKitDto>> GetAsync(Guid productId, CancellationToken cancellationToken = default)
+    public Task<Result<SocialShareKitDto>> GetAsync(Guid productId, CancellationToken cancellationToken = default) =>
+        currentUser.IsAuthenticated && currentUser.UserId is Guid userId
+            ? BuildAsync(productId, userId, cancellationToken)
+            : Task.FromResult(Result.Failure<SocialShareKitDto>(ShopErrors.Unauthenticated()));
+
+    public async Task<Result<SocialShareKitDto>> BuildAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default)
     {
-        if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid userId)
-            return Result.Failure<SocialShareKitDto>(ShopErrors.Unauthenticated());
         var product = await products.Query()
             .Where(row => row.Id == productId && row.UserId == userId && row.DeletedAt == null)
             .SingleOrDefaultAsync(cancellationToken);

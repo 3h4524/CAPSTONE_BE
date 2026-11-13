@@ -69,7 +69,7 @@ public sealed class WorkflowPublishServiceTests
             .ReturnsAsync(Result.Success(Product("publishing")));
 
         return new WorkflowPublishService(fixture.Nodes.Object, fixture.Runs.Object, fixture.State.Object, fixture.Unit.Object, runtime,
-            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance, pace.Object, matcher.Object);
+            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance, pace.Object, matcher.Object, socialKits.Object);
     }
 
     private PrintifyProductDto Product(string state, string? listingId = null) => new(run.ProductId, "p-1", "Cat Tee", state, listingId,
@@ -79,17 +79,76 @@ public sealed class WorkflowPublishServiceTests
 
     private WorkflowNodeRun Step(string type) => fixture.NodeRows.Single(x => x.NodeType == type);
 
+    private readonly Mock<APCS.Application.Features.Social.ISocialShareKitService> socialKits = new();
+
+    private void Kit(params string[] platforms) => socialKits.Setup(x => x.BuildAsync(run.ProductId, run.UserId, It.IsAny<CancellationToken>()))
+        .ReturnsAsync(Result.Success(new APCS.Application.Features.Social.SocialShareKitDto(run.ProductId, "Cat tee", "https://www.etsy.com/listing/1",
+            platforms.Select(platform => new APCS.Application.Features.Social.SocialPostDto(platform, "image", [], null, "caption", [], null, null)).ToArray(),
+            platforms.Length == 0 ? ["The product has no approved mock-up yet."] : [])));
+
     [TestMethod]
-    public async Task AdvanceAsync_PackageExported_QueuesTheFirstPublishStep()
+    public async Task ProcessAsync_PushToMedia_PreparesThePostsOfTheChosenPlatforms_AndCompletesTheRun()
+    {
+        var service = Create(("publish-social", new { platforms = new[] { "pinterest" } }));
+        Kit("pinterest", "pinterest", "tiktok");
+        await runtime.AdvanceAsync(run, default);
+
+        (await service.ProcessAsync(Step("publish-social").Id, default)).Should().BeNull();
+
+        Step("publish-social").Status.Should().Be("succeeded");
+        var state = WorkflowJson.Read<PublishNodeState>(Step("publish-social").OutputSnapshot);
+        state.SocialPosts.Should().Be(2);
+        state.Platforms.Should().Equal("pinterest");
+        run.Status.Should().Be("completed");
+        pace.Verify(x => x.CheckAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never, "posts are not listings");
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_PushToMediaWithNothingToPost_FailsSayingWhatToApprove()
+    {
+        var service = Create(("publish-social", new { }));
+        Kit();
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        Step("publish-social").Status.Should().Be("failed");
+        Step("publish-social").ErrorMessage.Should().Contain("nothing to post").And.Contain("approved mock-up");
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_OneOutputFails_TheOthersCarryOn_AndTheRunFailsOnceTheyAreDone()
+    {
+        var service = Create(("publish-printify", PrintifySettings), ("publish-social", new { }));
+        Kit("pinterest");
+        printify.Setup(x => x.CreateProductAsync(run.ProductId, It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<PrintifyProductDto>(Error.Validation("Printify refused the design.")));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("failed");
+        run.Status.Should().Be("running", "Push to media is still at work");
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        Step("publish-social").Status.Should().Be("succeeded");
+        run.Status.Should().Be("failed");
+        run.ErrorMessage.Should().Be("Printify refused the design.");
+    }
+
+    [TestMethod]
+    public async Task AdvanceAsync_PackageExported_StartsEveryPublishStepSideBySide()
     {
         Create(("publish-printify", PrintifySettings), ("publish-etsy", EtsySettings));
 
         await runtime.AdvanceAsync(run, default);
 
         Step("publish-printify").Status.Should().Be("running");
-        Step("publish-etsy").Status.Should().Be("pending");
+        Step("publish-etsy").Status.Should().Be("running");
         run.Status.Should().Be("running");
         queue.Verify(x => x.Enqueue(Step("publish-printify").Id, null), Times.Once);
+        queue.Verify(x => x.Enqueue(Step("publish-etsy").Id, null), Times.Once);
     }
 
     [TestMethod]

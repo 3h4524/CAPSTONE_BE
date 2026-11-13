@@ -105,4 +105,20 @@ public sealed record PublishNodeState(
     IReadOnlyList<Guid>? MockupIds = null,
     bool IncludeVideo = false,
     bool MockupsAfterPrintify = false,
-    string? MadeAs = null);
+    string? MadeAs = null,
+    int SocialPosts = 0,
+    IReadOnlyList<string>? Platforms = null);
+
+/// <summary>
+/// Push to media: the platforms to prepare posts for (<c>pinterest</c>, <c>tiktok</c>); none set means both. The
+/// posts are made from the approved mock-ups, video and listing, for the seller to publish by hand.
+/// </summary>
+public sealed record PublishSocialConfig(IReadOnlyList<string>? Platforms = null)
+{
+    public static readonly IReadOnlyList<string> AllPlatforms = ["pinterest", "tiktok"];
+
+    public IReadOnlyList<string> Chosen() =>
+        Platforms?.Select(item => item.Trim().ToLowerInvariant()).Where(AllPlatforms.Contains).Distinct().ToArray() is { Length: > 0 } chosen
+            ? chosen
+            : AllPlatforms;
+}

@@ -265,7 +265,8 @@ internal sealed class WorkflowTestData
 
     public static WorkflowDefinition Definition(Product product, GenerateVideoConfig? config = null, string gateMode = "manual")
     {
-        var nodes = WorkflowCapabilityRegistry.Pipeline.Select((type, i) => new WorkflowNode("node-" + i, type, type,
+        // The video steps, then Export ZIP as the run's output.
+        var nodes = WorkflowCapabilityRegistry.Pipeline.Append("export-zip").Select((type, i) => new WorkflowNode("node-" + i, type, type,
             new(i * 200, 0), JsonSerializer.SerializeToElement<object>(type switch
             {
                 "product-input" => new ProductInputConfig(product.BatchId, product.Id),

@@ -347,7 +347,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         // Trying again by itself cannot change a refusal, a changed source or an uncertain submission.
         job.Status = request.Message is "VeoSubmissionUncertain" or "AiVideoSubmissionUncertain" or "AiShotRejected" or "SourceChanged" || reason != null || job.Attempt >= job.MaximumAttempts ? "failed" : "queued";
         job.AvailableAt = time.GetUtcNow().AddSeconds(busy ? 70 * job.Attempt : 5 * job.Attempt).UtcDateTime;
-        if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
+        // A failed render fails the run; a failed export fails only its output, beside the others still at work.
+        if (job.Status == "failed") await runtime.FailOutputAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         if (runNotifier != null) await runNotifier.RunChangedAsync(run!, ct);

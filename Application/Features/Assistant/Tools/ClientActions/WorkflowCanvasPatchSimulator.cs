@@ -210,9 +210,25 @@ public sealed class WorkflowCanvasPatchSimulator
         var to = nodes[target];
         var fromOrder = WorkflowNodeCatalog.OrderOf(from.Type);
         var toOrder = WorkflowNodeCatalog.OrderOf(to.Type);
-        if (fromOrder >= 0 && toOrder >= 0)
+        var fromOutput = WorkflowNodeCatalog.Outputs.Contains(from.Type);
+        var toOutput = WorkflowNodeCatalog.Outputs.Contains(to.Type);
+        // The outputs are peers: each follows the last step or another output, in any order.
+        if (fromOutput && !toOutput && to.Type != "generate-listing")
+            return $"Only another output may follow {from.Label}.";
+        if (toOutput && !fromOutput && fromOrder >= 0)
+        {
+            var lastStep = nodes.Values
+                .Where(node => !WorkflowNodeCatalog.Outputs.Contains(node.Type))
+                .Select(node => WorkflowNodeCatalog.OrderOf(node.Type))
+                .DefaultIfEmpty(-1)
+                .Max();
+            if (fromOrder != lastStep)
+                return $"Outputs go after the last step: connect {WorkflowNodeCatalog.LabelOf(WorkflowNodeCatalog.RunOrder[lastStep])} to {to.Label}.";
+        }
+        else if (fromOrder >= 0 && toOrder >= 0 && !fromOutput)
         {
             var next = nodes.Values
+                .Where(node => !WorkflowNodeCatalog.Outputs.Contains(node.Type))
                 .Select(node => WorkflowNodeCatalog.OrderOf(node.Type))
                 .Where(order => order > fromOrder)
                 .OrderBy(order => order)

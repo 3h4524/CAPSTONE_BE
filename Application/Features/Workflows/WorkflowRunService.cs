@@ -128,12 +128,12 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         // A run that only writes a listing has none of the video steps the actions below work on. One that publishes
         // without a video still waits at Mockup Approval and can retry a failed publish step, but has nothing else.
         var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
-        var publishesWithoutVideo = !hasVideo && checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
+        var publishesWithoutVideo = !hasVideo && checkpoints.Any(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType));
         if (!hasVideo && request.Action is "resume_mockups" or "approve_video" or "reject_video" or "rerender" or "retry" or "regenerate_ai_shot" &&
             !(publishesWithoutVideo && request.Action is "resume_mockups" or "retry"))
             return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run has no video step."));
         if (publishesWithoutVideo && request.Action == "retry" &&
-            !checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed"))
+            !checkpoints.Any(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType) && x.Status == "failed"))
             return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
         if (request.Action == "cancel")
         {
@@ -186,12 +186,17 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
             else { review.Status = "waiting_for_review"; run.Status = "waiting_for_review"; }
         }
-        else if (request.Action == "retry" && checkpoints.FirstOrDefault(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed") is { } failedPublish)
+        else if (request.Action == "retry" && checkpoints.Any(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType) && x.Status == "failed")
+            && checkpoints.Where(x => !WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType) && x.NodeType != "generate-listing").All(x => x.Status == "succeeded"))
         {
-            // Only publishing failed: the approved package stays as it is and the publish step runs again. Pushing the
-            // same product to Printify again finds the product it already made instead of making a second one.
+            // Only outputs failed: what the run made stays as it is and each failed output runs again; the ones that
+            // succeeded keep their result. Pushing the same product to Printify again finds the product it already made.
             if (run.Status != "failed") return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
-            failedPublish.Status = "pending"; failedPublish.Attempt++; failedPublish.ErrorMessage = null; failedPublish.Stage = null;
+            foreach (var failedOutput in checkpoints.Where(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType) && x.Status == "failed"))
+            {
+                failedOutput.Status = "pending"; failedOutput.Attempt++; failedOutput.ErrorMessage = null; failedOutput.Stage = null;
+            }
+            foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed" && x.Kind == "export_zip", ct)) job.Status = "cancelled";
             run.Status = "running"; run.ErrorMessage = null;
             await runtime.AdvanceAsync(run, ct);
         }
@@ -247,21 +252,15 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     return Result.Failure<RunResponse>(Error.Conflict("StoryboardChanged", "Storyboard changed. Preview again before rendering."));
             }
             var selectedConfig = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-            var failedExportOnly = request.Action == "retry" && checkpoints.Single(x => x.NodeType == "export-zip").Status == "failed";
-            if (!failedExportOnly)
-            {
-                if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
-                    return Result.Failure<RunResponse>(Error.Validation("Regeneration requires AI Shot mode."));
-                if (request.SceneOrder.HasValue && request.Action != "regenerate_ai_shot")
-                    return Result.Failure<RunResponse>(Error.Validation("A scene can only be selected for AI clip regeneration."));
-                var videoCheck = await CheckVideoPlanAsync(run.UserId, selectedConfig, ct);
-                if (videoCheck.IsFailure) return Result.Failure<RunResponse>(videoCheck.Error);
-                var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
-                if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
-            }
-            var failedExport = checkpoints.Single(x => x.NodeType == "export-zip");
-            if (failedExportOnly) failedExport.Status = "pending";
-            else
+            // A failed output alone is retried above; here the video is made again.
+            if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
+                return Result.Failure<RunResponse>(Error.Validation("Regeneration requires AI Shot mode."));
+            if (request.SceneOrder.HasValue && request.Action != "regenerate_ai_shot")
+                return Result.Failure<RunResponse>(Error.Validation("A scene can only be selected for AI clip regeneration."));
+            var videoCheck = await CheckVideoPlanAsync(run.UserId, selectedConfig, ct);
+            if (videoCheck.IsFailure) return Result.Failure<RunResponse>(videoCheck.Error);
+            var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
+            if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             {
                 // A retry sends the settings on the canvas too. Only settings that differ from the run's make a new
                 // video version; the same ones carry on with the version that failed.
@@ -290,7 +289,14 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     }
                     else if (previousJob is not null) previousJob.Payload = "{}";
                 }
-                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
+                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending";
+                // The new video goes out again: Export ZIP always packages it anew; an output that already succeeded
+                // (a listing on Etsy) is not made a second time.
+                foreach (var output in checkpoints.Where(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType)
+                             && (x.NodeType == "export-zip" || x.Status != "succeeded")))
+                {
+                    output.Status = "pending"; output.ErrorMessage = null; output.Stage = null;
+                }
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";
             run.Status = "running"; run.ErrorMessage = null; if (reopenCancelledScene) run.CompletedAt = null;

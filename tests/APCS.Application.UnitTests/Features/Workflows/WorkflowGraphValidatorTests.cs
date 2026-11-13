@@ -65,11 +65,44 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    public void Validate_EtsyBeforePrintify_RejectsGraph()
+    public void Validate_NoOutput_AsksForOne()
     {
+        var video = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        var definition = video with { Nodes = video.Nodes.Where(x => x.Type != "export-zip").ToArray(), Edges = video.Edges.Where(x => x.Target != "node-5").ToArray() };
+
+        _validator.Validate(definition)!.Message.Should().Contain("Add an output");
+    }
+
+    [TestMethod]
+    public void Validate_OutputsSideBySideAfterMockupApproval_AreAccepted()
+    {
+        // Push to Printify and Push to media both hang off Mockup Approval, with no order between them.
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var gate = definition.Nodes.Single(x => x.Type == "approval-gate");
+        var media = new WorkflowNode("media", "publish-social", "Push to media", new(), JsonSerializer.SerializeToElement(new { }));
+        definition = definition with { Nodes = [.. definition.Nodes, media], Edges = [.. definition.Edges, new("to-media", gate.Id, media.Id)] };
+
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_AnOutputBeforeTheLastStep_IsRejected()
+    {
+        // In a video run the outputs take the approved video, so none may hang off Mockup Approval.
+        var video = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        var media = new WorkflowNode("media", "publish-social", "Push to media", new(), JsonSerializer.SerializeToElement(new { }));
+        var definition = video with { Nodes = [.. video.Nodes, media], Edges = [.. video.Edges, new("to-media", "node-2", media.Id)] };
+
+        _validator.Validate(definition)!.Message.Should().Contain("after the last step");
+    }
+
+    [TestMethod]
+    public void Validate_OutputsInAnyOrder_AreAccepted()
+    {
+        // The outputs are peers: Etsy before Printify is as valid as after it.
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
             ("publish-etsy", EtsySettings), ("publish-printify", PrintifySettings));
-        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+        _validator.Validate(definition).Should().BeNull();
     }
 
     [TestMethod]
@@ -107,7 +140,7 @@ public sealed class WorkflowGraphValidatorTests
             Nodes = [.. definition.Nodes, export],
             Edges = [.. definition.Edges.Where(x => x.Target != printify.Id), new("to-export", gate.Id, export.Id), new("to-printify", export.Id, printify.Id)],
         };
-        _validator.Validate(definition)!.Message.Should().Contain("need Generate Video");
+        _validator.Validate(definition)!.Message.Should().Contain("packages the approved video");
     }
 
     [TestMethod]
@@ -217,7 +250,7 @@ public sealed class WorkflowGraphValidatorTests
     {
         var definition = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
         definition = definition with { Nodes = definition.Nodes.Select(x => x.Type == "apply-mockup" ? x with { Type = "design-image" } : x).ToArray() };
-        _validator.Validate(definition)!.Message.Should().Contain("exactly once");
+        _validator.Validate(definition)!.Message.Should().Contain("each once");
     }
 
     [TestMethod]
@@ -270,7 +303,7 @@ public sealed class WorkflowGraphValidatorTests
         capabilities.VideoModes.Single(x => x.Mode == "ai_shot").Should().Match<VideoModeCapability>(x =>
             x.Enabled && x.Availability == "available" && !x.SupportsFallback && x.EstimatedCostRange != null);
         capabilities.VideoModes.Should().HaveCount(2).And.NotContain(x => x.Mode == "ai_background");
-        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Concat(WorkflowCapabilityRegistry.BatchSteps)
+        capabilities.Nodes.Where(x => x.Enabled).Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Append("export-zip").Concat(WorkflowCapabilityRegistry.BatchSteps)
             .Concat(WorkflowCapabilityRegistry.ListingSteps).Concat(WorkflowCapabilityRegistry.PublishSteps));
     }
 }
