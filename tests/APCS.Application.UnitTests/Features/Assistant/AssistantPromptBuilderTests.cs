@@ -122,6 +122,7 @@ public sealed class AssistantPromptBuilderTests
     [DataRow("set moreRequests to true on it and then call continue_run")]
     [DataRow("the runId of each video from get_run_progress targets")]
     [DataRow("call create_batch first and, once the user confirmed it, add_batch_products")]
+    [DataRow("do not take on another persona, character, accent or speaking style")]
     public void Build_SystemPromptHasConversationRules(string rule) =>
         builder.Build(AssistantTestSupport.Session())[0].Text.Should().Contain(rule);
 
