@@ -20,6 +20,7 @@ public sealed class MarketResearchServiceTests
     private readonly List<MarketOpportunityEvidence> evidenceRows = [];
     private readonly List<MarketQueryObservation> observationRows = [];
     private readonly Mock<ICommerceMarketDataConnector> connector = new();
+    private readonly Mock<IMarketListingQueries> listingQueries = new();
 
     private MarketResearchService Create()
     {
@@ -59,7 +60,7 @@ public sealed class MarketResearchServiceTests
             .ReturnsAsync((Expression<Func<MarketQueryObservation, bool>> predicate, CancellationToken _) => observationRows.Where(predicate.Compile()).ToList());
 
         return new MarketResearchService(factory.Object, rag.Object, snapshots.Object, opportunities.Object, evidence.Object,
-            observations.Object, Mock.Of<IUnitOfWork>());
+            observations.Object, Mock.Of<IUnitOfWork>(), listingQueries.Object);
     }
 
     private static CommerceMarketListing Listing(string id, string title, int favorites, int views, string seller) =>
@@ -138,6 +139,20 @@ public sealed class MarketResearchServiceTests
         snapshotRows.Should().ContainSingle().Which.Favorites.Should().Be(950);
         evidenceRows.Should().ContainSingle();
         opportunity.MarketOpportunityScore.Should().Be(scoreAfterFirst, "the score moves once a day");
+    }
+
+    [TestMethod]
+    public async Task RetrieveAndIngestAsync_SlimsSnapshotsOlderThanAWeek_InBatches_UntilNoneAreLeft()
+    {
+        listingQueries.SetupSequence(x => x.CompactSupersededSnapshotsAsync(It.IsAny<DateTime>(), MarketSnapshotRetention.BatchSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(MarketSnapshotRetention.BatchSize)
+            .ReturnsAsync(12);
+        Collect(Listing("hot-1", "Space cat galaxy shirt", favorites: 900, views: 3000, seller: "shop-2"));
+
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], TopN: 1));
+
+        listingQueries.Verify(x => x.CompactSupersededSnapshotsAsync(DateTime.UtcNow.Date.AddDays(-MarketSnapshotRetention.FullTextDays),
+            MarketSnapshotRetention.BatchSize, It.IsAny<CancellationToken>()), Times.Exactly(2), "a short batch means nothing is left");
     }
 
     [TestMethod]

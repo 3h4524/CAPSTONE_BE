@@ -18,7 +18,8 @@ public sealed class MarketResearchService(
     IRepository<MarketOpportunity> opportunities,
     IRepository<MarketOpportunityEvidence> evidence,
     IRepository<MarketQueryObservation> queryObservations,
-    IUnitOfWork unitOfWork) : IMarketResearchService
+    IUnitOfWork unitOfWork,
+    IMarketListingQueries? listingQueries = null) : IMarketResearchService
 {
     public async Task<IReadOnlyList<string>> SelectUnobservedQueriesAsync(
         CommercePlatform platform,
@@ -311,12 +312,28 @@ public sealed class MarketResearchService(
         await RefreshConfidenceAsync(touched, cancellationToken);
         await AgeUnobservedAsync(observedAt, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
+        await CompactOldSnapshotsAsync(observedAt, cancellationToken);
         return new MarketResearchResponse(request.Platform, uniqueListings.Length, result.Count, result);
     }
 
     /// <summary>A listing as one search query found it: its day's snapshot is kept once per pair.</summary>
     private static string SnapshotKey(string listingId, string? matchedQuery) =>
         $"{listingId.Trim().ToLowerInvariant()}\n{MarketQueryKey.Normalize(matchedQuery ?? string.Empty)}";
+
+    /// <summary>
+    /// Snapshots older than a week that a newer one of the same listing supersedes keep only their figures, so a day of
+    /// collection does not add Etsy's full listing text for good. A run slims a bounded number; the rest follows on later runs.
+    /// </summary>
+    private async Task CompactOldSnapshotsAsync(DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        if (listingQueries is null) return;
+        var before = nowUtc.Date.AddDays(-MarketSnapshotRetention.FullTextDays);
+        for (var batch = 0; batch < MarketSnapshotRetention.MaxBatchesPerRun; batch++)
+        {
+            if (await listingQueries.CompactSupersededSnapshotsAsync(before, MarketSnapshotRetention.BatchSize, cancellationToken) < MarketSnapshotRetention.BatchSize)
+                return;
+        }
+    }
 
     /// <summary>An opportunity seen again is current: it is active, whatever it had aged to.</summary>
     private static void MarkObserved(MarketOpportunity opportunity, DateTime observedAt)
