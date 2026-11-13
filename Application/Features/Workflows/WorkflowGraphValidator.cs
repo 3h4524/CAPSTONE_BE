@@ -128,7 +128,13 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         Guid.TryParse(value.GetString(), out var batchId) ? batchId : Guid.Empty;
 
     /// <summary>
-    /// Whether one scene list can make the video of every design. AI scenes are billed per clip, so the run confirms
+    /// Settings that render one design only: the Product on Model pack, made from one shared mock-up and the keyframes
+    /// made from it. A run group still lists every design, and makes the video of the one that mock-up belongs to.
+    /// </summary>
+    public static bool IsSingleDesign(GenerateVideoConfig config) => config.Template == "product_on_model_pack";
+
+    /// <summary>
+    /// Whether one scene list can make the video of every design (a design's or a product's own settings have to). AI scenes are billed per clip, so the run confirms
     /// their total cost once for the whole group; the pack template is left out because it renders one product's
     /// shared mock-up and character.
     /// </summary>

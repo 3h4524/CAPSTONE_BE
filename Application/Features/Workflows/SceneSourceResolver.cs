@@ -44,6 +44,11 @@ public static class SceneSourceResolver
             SharedMockupId = config.SharedMockupId is { } shared ? Translate(shared, usable, approvedIds, referenced) : null,
             AiStudioSourceMockupId = config.AiStudioSourceMockupId is { } source ? Translate(source, usable, approvedIds, referenced) : null,
             AiStudioFrameId = config.AiStudioFrameId is { } frame && approvedIds.Contains(frame) ? frame : null,
+            // The legacy single-shot settings may name the clip's source: this design's counterpart, else its first
+            // approved mock-up (the planner's default when none is named).
+            AiShotOptions = config.AiShotOptions is { MockupId: Guid shot } options
+                ? options with { MockupId = Translate(shot, usable, approvedIds, referenced) }
+                : config.AiShotOptions,
         };
         if (resolved.AssetSelection == "manual" && resolved.SelectedMockupIds is not { Count: > 0 })
             resolved = resolved with { AssetSelection = "automatic", SelectedMockupIds = null };

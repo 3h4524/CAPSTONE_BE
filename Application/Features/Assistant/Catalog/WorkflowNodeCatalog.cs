@@ -60,7 +60,8 @@ public static class WorkflowNodeCatalog
         new("product-input", "Product input", "Starts the workflow with the products of a batch.", Order("product-input"),
         [
             new("batchId", "source", "Batch", Source: "batches", Note: "Use list_batches for ids."),
-            new("productId", "source", "Product for the video", Source: "batch-products", Note: "Use list_batch_products for ids.")
+            new("productId", "source", "Product", Source: "batch-products", Optional: true,
+                Note: "Use list_batch_products for ids. Only for listing content or publishing without a video; a video workflow makes a video for every approved design, so leave it empty.")
         ]),
         new("prompt-synthesis", "Prompt synthesis", "Combines a design template and art style into a design prompt.", Order("prompt-synthesis"),
         [

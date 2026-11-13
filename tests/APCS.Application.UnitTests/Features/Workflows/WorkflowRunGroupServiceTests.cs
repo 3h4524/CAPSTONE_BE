@@ -54,6 +54,52 @@ public sealed class WorkflowRunGroupServiceTests
         data.GroupRows.Should().ContainSingle();
     }
 
+    [TestMethod]
+    public async Task ConfirmAsync_ProductOnModelPack_MakesOnlyTheVideoOfTheDesignItsSharedMockupBelongsTo()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow(data.PackConfig());
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "pack"), default);
+        started.IsSuccess.Should().BeTrue(started.IsFailure ? started.Error.Message : null);
+        var other = data.AddProduct("Birth Month Blooms");
+        var (_, otherMockups) = data.AddDesign(other, 0, approved: true);
+
+        var refused = await data.Service.ConfirmAsync(started.Value.Id, new(1, "quote-token"), default);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Error.Message.Should().Contain("Birth Month Blooms").And.Contain("Product on Model pack");
+        data.Base.RunRows.Should().BeEmpty();
+
+        foreach (var mockup in otherMockups) { mockup.ApprovalStatus = "rejected"; mockup.ApprovedRevision = null; }
+        var result = await data.Service.ConfirmAsync(started.Value.Id, new(1, "quote-token"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        var run = data.Base.RunRows.Should().ContainSingle().Which;
+        run.ProductId.Should().Be(data.Preview.Id);
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.SharedMockupId.Should().Be(data.PreviewMockups[0].Id);
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_LegacyAiShot_MakesEachDesignsClipFromItsOwnMockup()
+    {
+        var data = new RunGroupTestData();
+        var legacy = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 12,
+            AiShotOptions: new(MockupId: data.PreviewMockups[1].Id, RightsConfirmed: true));
+        var workflow = data.AddWorkflow(legacy);
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "legacy"), default);
+        started.IsSuccess.Should().BeTrue(started.IsFailure ? started.Error.Message : null);
+        var other = data.AddProduct("Birth Month Blooms");
+        var (_, otherMockups) = data.AddDesign(other, 0, approved: true);
+
+        var result = await data.Service.ConfirmAsync(started.Value.Id, new(1, "quote-token"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        var run = data.Base.RunRows.Single(x => x.ProductId == other.Id);
+        var generate = WorkflowJson.Read<GenerateVideoConfig>(data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").InputSnapshot);
+        generate.AiShotOptions!.MockupId.Should().Be(otherMockups[1].Id);
+    }
+
 
     [TestMethod]
     public async Task GetAsync_WaitingGroup_ListsEveryDesignWithItsScenesResolved()
@@ -868,6 +914,16 @@ public sealed class WorkflowRunGroupServiceTests
             Mode = "ai_shot",
             AiScenes = SharedConfig().AiScenes!.Select(scene => scene with { Mode = "ai", TemplateCode = "cinematic_product_showcase" }).ToArray()
         };
+
+        /// <summary>The Product on Model pack made from the preview design's front mock-up: three AI scenes from its keyframes.</summary>
+        public GenerateVideoConfig PackConfig()
+        {
+            var shared = PreviewMockups[0].Id;
+            return new(Mode: "ai_shot", Template: "product_on_model_pack", TemplateVersion: 2, DurationSeconds: 12, SharedMockupId: shared,
+                AiScenes: Enumerable.Range(0, 3).Select(_ => new AiVideoSceneOptions(MockupId: shared, DurationSeconds: 4,
+                    RightsConfirmed: true, Mode: "ai", StartFrameMode: "studio", StudioLayout: AiStudioFrameIdentity.None,
+                    StudioFrameId: Guid.NewGuid())).ToArray());
+        }
 
         public Workflow AddWorkflow(GenerateVideoConfig? config = null, string gateMode = "manual") =>
             Base.AddWorkflow(Preview, config ?? SharedConfig(), gateMode);

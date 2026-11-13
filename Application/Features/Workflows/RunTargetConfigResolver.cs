@@ -65,7 +65,7 @@ public sealed class RunTargetConfigResolver(IRepository<MockupImage> assets, IRe
         var ids = (config.AiScenes ?? []).Select(scene => scene.MockupId).OfType<Guid>()
             .Concat(config.SelectedMockupIds ?? []).Concat(config.SceneOrder ?? [])
             .Concat((config.StandardScenes ?? []).Select(scene => scene.MockupId))
-            .Concat(new[] { config.SharedMockupId, config.AiStudioSourceMockupId }.OfType<Guid>())
+            .Concat(new[] { config.SharedMockupId, config.AiStudioSourceMockupId, config.AiShotOptions?.MockupId }.OfType<Guid>())
             .Where(id => id != Guid.Empty).Distinct().ToArray();
         if (ids.Length == 0) return new Dictionary<Guid, MockupImage>();
         var found = await assets.FindAsync(x => ids.Contains(x.Id) && x.DeletedAt == null, ct);

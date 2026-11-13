@@ -80,10 +80,9 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         if (error != null) return Result.Failure<RunGroupResponse>(error);
         if (definition.Nodes.SingleOrDefault(x => x.Type == "generate-video") is not { } videoNode)
             return Result.Failure<RunGroupResponse>(Error.Validation("Add Generate Video to make a video for each design."));
+        // Every video setting runs as a group, even one that fits a single design (the Product on Model pack): its
+        // designs are listed at Mockup Approval like any other, and the ones it cannot make are refused when confirmed.
         var config = WorkflowJson.Config<GenerateVideoConfig>(videoNode);
-        if (!WorkflowGraphValidator.SupportsBatchVideos(config))
-            return Result.Failure<RunGroupResponse>(Error.Validation(
-                "These video settings make one product's video only. Set up the scenes of the video, and leave the Product on Model pack to a single product."));
 
         var batchId = WorkflowGraphValidator.BatchIdOf(definition);
         if (request.BatchJobId is Guid jobId)
@@ -380,8 +379,17 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         foreach (var target in targets)
         {
             overrides.TryGetValue(target.Key, out var picked);
-            var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, ConfigFor(shared, picked, target.Product.Id), picked, ct);
+            var targetConfig = ConfigFor(shared, picked, target.Product.Id);
+            var resolved = await targetConfigs.ResolveAsync(group.UserId, target.Product.Id, target.ArtworkGroupKey, targetConfig, picked, ct);
             if (resolved.Error != null) { problems.Add($"{Label(target)}: {resolved.Error}"); continue; }
+            // The pack renders its shared mock-up and the keyframes made from it, so only the design that mock-up
+            // belongs to (with it approved) can get its video; any other would be sent another design's frames.
+            if (WorkflowGraphValidator.IsSingleDesign(targetConfig) &&
+                (targetConfig.SharedMockupId is null || resolved.Config.SharedMockupId != targetConfig.SharedMockupId))
+            {
+                problems.Add($"{Label(target)}: the Product on Model pack makes the video of one design only, the one its shared mock-up belongs to, with that mock-up approved.");
+                continue;
+            }
             var child = ForTarget(definition, target.Product.Id, target.ArtworkGroupKey, resolved.Config);
             plans.Add(new(target, resolved.Config, child, ChildRun(group, child, target, now, plans.Count)));
         }
@@ -671,7 +679,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     /// <summary>
     /// The scene list of a group still waiting for its designs: the workflow's saved Generate Video settings, so a
     /// change the seller saves while choosing designs is what the videos use, or the snapshot taken at the start when
-    /// the saved settings could not make a video for several designs.
+    /// the saved workflow is no longer valid.
     /// </summary>
     private async Task<(WorkflowDefinition Definition, GenerateVideoConfig Config)> SharedConfigAsync(WorkflowRunGroup group, CancellationToken ct)
     {
@@ -683,9 +691,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         {
             var latest = WorkflowJson.Read<WorkflowDefinition>(workflow.Definition);
             if (graph.Validate(latest, requireProduct: false) is null &&
-                latest.Nodes.SingleOrDefault(x => x.Type == "generate-video") is { } node &&
-                WorkflowJson.Config<GenerateVideoConfig>(node) is var saved && WorkflowGraphValidator.SupportsBatchVideos(saved))
-                return (definition, saved);
+                latest.Nodes.SingleOrDefault(x => x.Type == "generate-video") is { } node)
+                return (definition, WorkflowJson.Config<GenerateVideoConfig>(node));
         }
         catch (JsonException) { }
         return (definition, config);
