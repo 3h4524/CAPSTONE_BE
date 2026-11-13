@@ -405,6 +405,131 @@ public sealed class WorkflowRunGroupServiceTests
         group.Status.Should().Be("waiting_for_targets");
         data.Base.RunRows.Should().BeEmpty();
         data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved");
+        // The seller is told why nothing started, and it is kept for when the run is opened again.
+        group.Notice.Should().Contain("at most");
+        data.GroupRows.Single().ErrorMessage.Should().Be(group.Notice);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalThatStarts_HasNothingToSay()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+
+        var group = await data.StartAsync(gateMode: "auto");
+
+        group.Status.Should().Be("running");
+        group.Notice.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalLeavesOutTheDesignThatCannotBeMade_AndStartsTheOthers()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        data.QuotesCost(3.20m);
+        // A mug has no model photo of the library to dress, so its scenes with a person cannot start.
+        var mug = data.AddProduct("Mug");
+        mug.ProductType = "mug";
+        data.AddDesign(mug, 1, approved: false);
+        var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "left-out", AiBudgetUsd: 5m), default)).Value;
+
+        group.Status.Should().Be("running");
+        data.Base.RunRows.Should().ContainSingle().Which.ProductId.Should().Be(data.Preview.Id);
+        group.Notice.Should().StartWith("Left out of the run: Mug").And.Contain("model photo");
+        group.Targets.Should().ContainSingle().Which.ProductName.Should().Be("DAVIES T-Shirt");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalWhenNoDesignCanBeMade_WaitsWithEveryReason()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "none"), default)).Value;
+
+        group.Status.Should().Be("waiting_for_targets");
+        data.Base.RunRows.Should().BeEmpty();
+        group.Notice.Should().Contain("DAVIES T-Shirt").And.Contain("model photo");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ScenesWithAPersonInTheBackground_AnswersAtOnceAndMakesTheModelPhotosAfterwards()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        data.QuotesCost(3.20m);
+        var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "later", AiBudgetUsd: 5m), default)).Value;
+
+        // Pressing Run costs the seller no wait for the image provider: nothing is made yet, and the run says it is getting ready.
+        group.Status.Should().Be("waiting_for_targets");
+        group.Preparing.Should().BeTrue();
+        group.Notice.Should().BeNull();
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        data.StartQueue!.Requests.Should().ContainSingle().Which.Should().Be(
+            new RunGroupStartRequest(group.Id, WorkflowTestData.Owner, 5m, AutoApprove: true));
+
+        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+        data.Base.RunRows.Should().ContainSingle();
+        data.GroupRows.Single().Status.Should().Be("running");
+        data.StartQueue.IsPending(group.Id).Should().BeFalse();
+        data.Notifier.Verify(x => x.GroupChangedAsync(group.Id, It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoApprovalInTheBackground_AnswersAtOnceAndStartsTheVideosAfterwards()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.QuotesCost(3.20m);
+        var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "auto", AiBudgetUsd: 5m), default)).Value;
+
+        // Quoting the AI scenes plans every design's storyboard: Run does not wait for it.
+        group.Status.Should().Be("waiting_for_targets");
+        group.Preparing.Should().BeTrue();
+        data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+
+        data.GroupRows.Single().Status.Should().Be("running");
+        data.Base.RunRows.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ManualApprovalWithoutAPerson_WaitsForTheSellerWithoutTheBackground()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        var workflow = data.AddWorkflow(data.AiConfig());
+
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "manual", AiBudgetUsd: 5m), default)).Value;
+
+        group.Status.Should().Be("waiting_for_targets");
+        group.Preparing.Should().BeFalse();
+        data.StartQueue!.Requests.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PrepareAsync_GroupCancelledMeanwhile_MakesNothing()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "cancelled", AiBudgetUsd: 5m), default)).Value;
+        data.GroupRows.Single().Status = "cancelled";
+
+        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        data.Base.RunRows.Should().BeEmpty();
     }
 
     [TestMethod]
@@ -547,6 +672,7 @@ public sealed class WorkflowRunGroupServiceTests
         var group = (await data.Service.StartAsync(workflow.Id, new(4, "over", AiBudgetUsd: 5m), default)).Value;
 
         group.Status.Should().Be("waiting_for_targets");
+        group.Notice.Should().Contain("$9.60").And.Contain("$5.00");
         data.Base.RunRows.Should().BeEmpty();
         data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved");
     }
@@ -561,6 +687,7 @@ public sealed class WorkflowRunGroupServiceTests
         var group = (await data.Service.StartAsync(workflow.Id, new(4, "no-budget"), default)).Value;
 
         group.Status.Should().Be("waiting_for_targets");
+        group.Notice.Should().Be("Confirm what the AI videos of this run cost before starting them.");
         data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -639,6 +766,17 @@ public sealed class WorkflowRunGroupServiceTests
         listed.Single(x => x.Id == fromBatch.Id).BatchJobId.Should().BeNull();
     }
 
+    /// <summary>Keeps what is handed to the background, as the worker's queue does.</summary>
+    internal sealed class FakeStartQueue : IRunGroupStartQueue
+    {
+        private readonly HashSet<Guid> pending = [];
+        public List<RunGroupStartRequest> Requests { get; } = [];
+        public void Enqueue(RunGroupStartRequest request) { if (pending.Add(request.GroupId)) Requests.Add(request); }
+        public bool IsPending(Guid groupId) => pending.Contains(groupId);
+        public void Done(Guid groupId) => pending.Remove(groupId);
+        public ValueTask<RunGroupStartRequest> DequeueAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
     private sealed class RunGroupTestData
     {
         public WorkflowTestData Base { get; } = new();
@@ -661,7 +799,10 @@ public sealed class WorkflowRunGroupServiceTests
         public DesignImage PreviewDesign { get; }
         public IReadOnlyList<MockupImage> PreviewMockups { get; }
 
-        public RunGroupTestData(bool previewApproved = true)
+        /// <summary>The queue a started group is handed to when it is made ready in the background; null runs it in the request.</summary>
+        public FakeStartQueue? StartQueue { get; }
+
+        public RunGroupTestData(bool previewApproved = true, bool background = false)
         {
             var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
             Base.State.Setup(x => x.LockRunGroupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -679,7 +820,8 @@ public sealed class WorkflowRunGroupServiceTests
                 WorkflowTestData.Repository(JobProductRows, x => x.Id).Object, WorkflowTestData.Repository(DesignRows, x => x.Id).Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
                 Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
-                lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object);
+                lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object,
+                startQueue: StartQueue = background ? new FakeStartQueue() : null);
             GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
             RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,

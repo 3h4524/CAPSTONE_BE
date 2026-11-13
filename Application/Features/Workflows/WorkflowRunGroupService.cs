@@ -23,6 +23,12 @@ public interface IWorkflowRunGroupService
     Task<Result<AiShotQuoteResponse>> QuoteAiAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
     Task<Result<RunGroupResponse>> ConfirmAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
     Task<Result<RunGroupResponse>> CancelAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
+
+    /// <summary>
+    /// What a started group still needs before its videos: the model photos of its scenes with a person, then, when
+    /// Mockup Approval is automatic, the start of the videos. Run in the background as the group's owner.
+    /// </summary>
+    Task PrepareAsync(Guid groupId, decimal? aiBudgetUsd, bool autoApprove, CancellationToken ct);
 }
 
 /// <summary>
@@ -42,7 +48,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     IPlanEntitlementService entitlements, IMediaStorage storage, TimeProvider time,
     IRunGroupPlannerQueue? planner = null, IWorkflowRunNotifier? notifier = null,
     Validators.GenerateVideoConfigValidator? videoValidator = null, IAiShotQuoteService? quotes = null,
-    ILifestyleMockupService? lifestyle = null, IRepository<MockupTemplate>? mockupTemplates = null) : IWorkflowRunGroupService
+    ILifestyleMockupService? lifestyle = null, IRepository<MockupTemplate>? mockupTemplates = null,
+    IRunGroupStartQueue? startQueue = null) : IWorkflowRunGroupService
 {
     /// <summary>Videos one group makes at most.</summary>
     public const int MaximumTargets = 10;
@@ -105,10 +112,43 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         await uow.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
-        // The model photos are made by Ideogram and paid for, so only after the seller confirmed the Run's cost, which lists them.
+        var auto = MockupAutoApproval.IsAuto(definition);
+        // The model photos are made by Ideogram and paid for, so only after the seller confirmed the Run's cost, which lists
+        // them. Each one takes seconds at the image provider, and starting the videos by themselves quotes their AI scenes
+        // (planning each design's storyboard): both are done in the background, so Run answers at once.
+        if (startQueue is not null && (auto || request.AiBudgetUsd is > 0 && NeedsModelPhotos(config)))
+        {
+            startQueue.Enqueue(new(group.Id, userId, request.AiBudgetUsd, auto));
+            return Result.Success(await MapAsync(group, ct));
+        }
         if (request.AiBudgetUsd is > 0) await MakeModelPhotosAsync(group, ct);
-        if (MockupAutoApproval.IsAuto(definition)) return Result.Success(await AutoConfirmAsync(group, request.AiBudgetUsd, ct));
+        if (auto) return Result.Success(await AutoConfirmAsync(group, request.AiBudgetUsd, ct));
         return Result.Success(await MapAsync(group, ct));
+    }
+
+    private static bool NeedsModelPhotos(GenerateVideoConfig config) =>
+        PersonModelPhotos.Needs(config) || config.ProductConfigs?.Values.Any(PersonModelPhotos.Needs) == true;
+
+    public async Task PrepareAsync(Guid groupId, decimal? aiBudgetUsd, bool autoApprove, CancellationToken ct)
+    {
+        var group = await groups.GetByIdAsync(groupId, ct);
+        if (group is null || group.Status != "waiting_for_targets") return;
+        try
+        {
+            if (aiBudgetUsd is > 0) await MakeModelPhotosAsync(group, ct);
+            if (autoApprove) await AutoConfirmAsync(group, aiBudgetUsd, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            await SaveNoticeAsync(group, "The videos could not be made ready by themselves. Choose Continue to start them.", ct);
+            throw;
+        }
+        finally
+        {
+            // Told last: the seller's screen reads the group again and must find it no longer being prepared.
+            startQueue?.Done(groupId);
+            if (notifier != null) await notifier.GroupChangedAsync(groupId, ct);
+        }
     }
 
     /// <summary>
@@ -116,19 +156,45 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     /// AI clips start only within <paramref name="aiBudgetUsd"/>, the AI cost the seller confirmed when pressing Run:
     /// their exact quote is taken here and stands for the consent. When they cannot start (a quote over that budget or
     /// none given, too many designs, no video left on the plan...), the group waits at Mockup Approval as in manual
-    /// mode, with the mock-ups already approved.
+    /// mode, with the mock-ups already approved, and says why (<see cref="RunGroupResponse.Notice"/>). A design that
+    /// cannot be made (no model photo for its scene with a person...) is left out, with the reason, instead of holding
+    /// up the others.
     /// </summary>
     private async Task<RunGroupResponse> AutoConfirmAsync(WorkflowRunGroup group, decimal? aiBudgetUsd, CancellationToken ct)
     {
         await ApproveWaitingAsync(group, ct);
         string? token = null;
+        string? reason = null;
         if (aiBudgetUsd is decimal allowed && quotes is not null)
         {
-            var quote = await QuoteAiAsync(group.Id, new(group.Revision), ct);
-            if (quote.IsSuccess && quote.Value.EstimatedCostUsd <= allowed) token = quote.Value.Token;
+            var quote = await QuoteGroupAsync(group, new List<string>(), ct);
+            if (quote.IsSuccess)
+            {
+                if (quote.Value.EstimatedCostUsd <= allowed) token = quote.Value.Token;
+                else reason = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"The AI videos now cost ${quote.Value.EstimatedCostUsd:0.00}, more than the ${allowed:0.00} you confirmed when you pressed Run. Check the cost, then choose Continue to start them.");
+            }
         }
-        var confirmed = await ConfirmAsync(group.Id, new(group.Revision, token), ct);
-        return confirmed.IsSuccess ? confirmed.Value : await MapAsync(group, ct);
+        var confirmed = await ConfirmGroupAsync(group.Id, new(group.Revision, token), leaveOutProblems: true, ct);
+        if (confirmed.IsSuccess) return confirmed.Value;
+        return await MapAsync(await SaveNoticeAsync(group, reason ?? confirmed.Error.Message, ct), ct);
+    }
+
+    private const int NoticeLength = 1000;
+
+    private static string Clip(string notice) => notice.Length <= NoticeLength ? notice : notice[..(NoticeLength - 1)] + "…";
+
+    /// <summary>Keeps why the group waits, for the seller to read: the group's message column.</summary>
+    private async Task<WorkflowRunGroup> SaveNoticeAsync(WorkflowRunGroup group, string notice, CancellationToken ct)
+    {
+        var current = await groups.GetByIdAsync(group.Id, ct) ?? group;
+        // A run the seller cancelled meanwhile has nothing left to wait for.
+        if (current.Status != "waiting_for_targets") return current;
+        current.ErrorMessage = Clip(notice);
+        current.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        await uow.SaveChangesAsync(ct);
+        if (notifier != null) await notifier.GroupChangedAsync(current.Id, ct);
+        return current;
     }
 
     /// <summary>Approves, as the owner, every stored mock-up of the group's products still waiting for review.</summary>
@@ -294,8 +360,12 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     /// The videos a run group would make now. The AI quote plans these runs before they exist and Confirm stores
     /// them, so the cost the seller confirms belongs to exactly the designs and settings that then render.
     /// </summary>
+    /// <param name="leftOut">
+    /// When given, a design that cannot be made is left out and its reason added here, so the others still get their
+    /// video; it only fails when none can be made. When null, one such design fails the whole run.
+    /// </param>
     private async Task<Result<IReadOnlyList<TargetPlan>>> PlanTargetsAsync(WorkflowRunGroup group, WorkflowDefinition definition,
-        GenerateVideoConfig shared, DateTime now, CancellationToken ct)
+        GenerateVideoConfig shared, DateTime now, CancellationToken ct, List<string>? leftOut = null)
     {
         var targets = (await TargetsAsync(group, ct)).Where(x => x.Approved.Count > 0).ToArray();
         if (targets.Length == 0)
@@ -314,6 +384,13 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             if (resolved.Error != null) { problems.Add($"{Label(target)}: {resolved.Error}"); continue; }
             var child = ForTarget(definition, target.Product.Id, target.ArtworkGroupKey, resolved.Config);
             plans.Add(new(target, resolved.Config, child, ChildRun(group, child, target, now, plans.Count)));
+        }
+        if (leftOut is not null)
+        {
+            leftOut.AddRange(problems);
+            return plans.Count > 0
+                ? Result.Success<IReadOnlyList<TargetPlan>>(plans)
+                : Result.Failure<IReadOnlyList<TargetPlan>>(Error.Validation(string.Join(" ", problems)));
         }
         if (problems.Count > 0)
             return Result.Failure<IReadOnlyList<TargetPlan>>(Error.Validation(string.Join(" ", problems) + " Reject that design's mock-ups to leave it out."));
@@ -347,14 +424,23 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         if (group.Revision != request.ExpectedRevision) return Result.Failure<AiShotQuoteResponse>(Stale());
         if (group.Status != "waiting_for_targets")
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("TargetsConfirmed", "The videos of this run have already started."));
-        var (definition, config) = await SharedConfigAsync(group, ct);
-        var plans = await PlanTargetsAsync(group, definition, config, time.GetUtcNow().UtcDateTime, ct);
-        return plans.IsFailure
-            ? Result.Failure<AiShotQuoteResponse>(plans.Error)
-            : await quotes.QuoteBatchAsync(group.Id, ForQuote(plans.Value), ct);
+        return await QuoteGroupAsync(group, null, ct);
     }
 
-    public async Task<Result<RunGroupResponse>> ConfirmAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct)
+    private async Task<Result<AiShotQuoteResponse>> QuoteGroupAsync(WorkflowRunGroup group, List<string>? leftOut, CancellationToken ct)
+    {
+        var (definition, config) = await SharedConfigAsync(group, ct);
+        var plans = await PlanTargetsAsync(group, definition, config, time.GetUtcNow().UtcDateTime, ct, leftOut);
+        return plans.IsFailure
+            ? Result.Failure<AiShotQuoteResponse>(plans.Error)
+            : await quotes!.QuoteBatchAsync(group.Id, ForQuote(plans.Value), ct);
+    }
+
+    public Task<Result<RunGroupResponse>> ConfirmAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct) =>
+        ConfirmGroupAsync(groupId, request, leaveOutProblems: false, ct);
+
+    /// <param name="leaveOutProblems">Makes the videos that can be made and leaves the other designs out (auto mode).</param>
+    private async Task<Result<RunGroupResponse>> ConfirmGroupAsync(Guid groupId, RunGroupRevisionRequest request, bool leaveOutProblems, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var group = await state.LockRunGroupAsync(groupId, ct);
@@ -365,7 +451,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
 
         var (definition, config) = await SharedConfigAsync(group, ct);
         var now = time.GetUtcNow().UtcDateTime;
-        var planned = await PlanTargetsAsync(group, definition, config, now, ct);
+        var leftOut = leaveOutProblems ? new List<string>() : null;
+        var planned = await PlanTargetsAsync(group, definition, config, now, ct, leftOut);
         if (planned.IsFailure) return Result.Failure<RunGroupResponse>(planned.Error);
         var plans = planned.Value;
 
@@ -399,7 +486,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             Nodes = definition.Nodes.Select(node => node.Type == "generate-video"
                 ? node with { Config = JsonSerializer.SerializeToElement(config, WorkflowJson.Options) } : node).ToArray()
         });
-        group.Status = "running"; group.Revision++; group.UpdatedAt = now; group.ErrorMessage = null;
+        group.Status = "running"; group.Revision++; group.UpdatedAt = now;
+        group.ErrorMessage = leftOut is { Count: > 0 } ? Clip("Left out of the run: " + string.Join(" ", leftOut)) : null;
         await uow.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         planner?.Signal();
@@ -576,7 +664,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),
             children.Count(x => x.Status == "failed"), children.Count(x => x.Status == "cancelled"), children.Count(x => x.Status == "waiting_for_input"));
         return new(group.Id, group.WorkflowId, group.BatchId, group.BatchJobId, StatusOf(group, children), group.Revision,
-            group.WorkflowRevision, group.CreatedAt, MaximumTargets, rows.Count(x => x.Selected), progress, rows);
+            group.WorkflowRevision, group.CreatedAt, MaximumTargets, rows.Count(x => x.Selected), progress, rows, group.ErrorMessage,
+            waiting && group.ErrorMessage is null && startQueue?.IsPending(group.Id) == true);
     }
 
     /// <summary>

@@ -173,6 +173,23 @@ internal sealed class WorkflowTestData
         return workflow;
     }
 
+    /// <summary>Product Input -> Apply mock-up -> Mockup Approval -> Push to Printify, without a video.</summary>
+    public static WorkflowDefinition PublishWithoutVideoDefinition(Product product, string gateMode = "manual")
+    {
+        var video = Definition(product, gateMode: gateMode);
+        var printify = new WorkflowNode("publish-printify", "publish-printify", "Push to Printify", new(600, 0),
+            JsonSerializer.SerializeToElement(new { targetProfit = 10 }));
+        WorkflowNode[] nodes = [.. video.Nodes.Where(x => WorkflowCapabilityRegistry.PublishPipeline.Contains(x.Type)), printify];
+        return new(2, nodes, nodes.Skip(1).Select((node, i) => new WorkflowEdge("edge-" + i, nodes[i].Id, node.Id)).ToArray());
+    }
+
+    public Workflow AddPublishWithoutVideoWorkflow(Product product, string gateMode = "manual")
+    {
+        var workflow = AddWorkflow(product);
+        workflow.Definition = WorkflowJson.Write(PublishWithoutVideoDefinition(product, gateMode));
+        return workflow;
+    }
+
     public WorkflowRun AddRun(Product product, string status = "running")
     {
         var workflow = AddWorkflow(product);

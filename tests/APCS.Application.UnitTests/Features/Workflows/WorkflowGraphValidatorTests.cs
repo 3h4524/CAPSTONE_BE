@@ -89,6 +89,42 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
+    public void Validate_PublishRightAfterMockupApprovalWithoutAVideo_IsAccepted()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoButWithExportZip_SaysTheZipNeedsTheVideo()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var export = new WorkflowNode("export", "export-zip", "Export ZIP", new(), JsonSerializer.SerializeToElement(new { }));
+        var gate = definition.Nodes.Single(x => x.Type == "approval-gate");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, export],
+            Edges = [.. definition.Edges.Where(x => x.Target != printify.Id), new("to-export", gate.Id, export.Id), new("to-printify", export.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("need Generate Video");
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoOrMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var mockup = definition.Nodes.Single(x => x.Type == "apply-mockup");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = definition.Nodes.Where(x => x.Type != "approval-gate").ToArray(),
+            Edges = [.. definition.Edges.Where(x => x.Source == definition.Nodes[0].Id), new("to-printify", mockup.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("Mockup Approval");
+    }
+
+    [TestMethod]
     public void Validate_PhysicalEtsyListingWithoutShipping_SaysWhatIsMissing()
     {
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),

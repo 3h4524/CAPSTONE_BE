@@ -106,6 +106,24 @@ public sealed class CloudinaryMediaStorageTests
     }
 
     private static Cloudinary Signer(CloudinaryOptions options) => new(new Account(options.CloudName, options.ApiKey, options.ApiSecret));
+    [TestMethod]
+    public void SignRead_WithACache_HandsOutTheSameLinkAgain_SoThePageKeepsItsImages()
+    {
+        var options = new CloudinaryOptions { CloudName = "unit-test-cloud", ApiKey = "synthetic-public-key", ApiSecret = "synthetic-private-secret" };
+        var time = new FakeTimeProvider(Now);
+        using var cache = new Microsoft.Extensions.Caching.Memory.MemoryCache(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
+        var service = new CloudinaryMediaStorage(Microsoft.Extensions.Options.Options.Create(options), time,
+            new Mock<IHttpClientFactory>(MockBehavior.Strict).Object, cache);
+
+        var first = service.SignRead(Key, "image", "1");
+        time.Advance(TimeSpan.FromMinutes(1));
+        var again = service.SignRead(Key, "image", "1");
+
+        again.Should().Be(first);
+        service.SignRead(Key, "image", "2").Should().NotBe(first, "another version is another image");
+        service.SignRead(Key, "image", "1", attachment: true).Should().NotBe(first);
+    }
+
     private static (CloudinaryMediaStorage Service, CloudinaryOptions Options, FakeTimeProvider Time, Mock<IHttpClientFactory> Clients) Create()
     {
         var options = new CloudinaryOptions { CloudName = "unit-test-cloud", ApiKey = "synthetic-public-key", ApiSecret = "synthetic-private-secret", Folder = "/apcs//private/" };
