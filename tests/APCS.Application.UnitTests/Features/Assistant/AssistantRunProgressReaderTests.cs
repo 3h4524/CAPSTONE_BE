@@ -67,8 +67,10 @@ public sealed class AssistantRunProgressReaderTests
         null, runStatus, null, null, 0, error);
 
     private void WithGroup(Guid id, string status, RunGroupProgress progress, params RunGroupTargetResponse[] targets) =>
-        groups.Setup(service => service.GetAsync(id, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Result.Success(new RunGroupResponse(id, WorkflowId, BatchId, null, status, 2, 3, Later, 10, targets.Length, progress, targets)));
+        WithGroupDetail(new RunGroupResponse(id, WorkflowId, BatchId, null, status, 2, 3, Later, 10, targets.Length, progress, targets));
+
+    private void WithGroupDetail(RunGroupResponse group) =>
+        groups.Setup(service => service.GetAsync(group.Id, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(group));
 
     private static RunResponse Run(string status, DateTimeOffset at, Guid? groupId = null, params NodeRunResponse[] nodes) =>
         new(Guid.NewGuid(), WorkflowId, Guid.NewGuid(), status, 1, 3, at, null, nodes, groupId);
@@ -172,6 +174,53 @@ public sealed class AssistantRunProgressReaderTests
         progress.State.Should().Be(AssistantRunStates.WaitingForUser);
         progress.WaitingCount.Should().Be(3);
         progress.RunGroupId.Should().Be(groupId);
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_WhileAGroupIsPreparedInTheBackground_SaysThereIsNothingToDoYet()
+    {
+        var groupId = Guid.NewGuid();
+        WithGroups(new RunGroupSummaryResponse(groupId, "waiting_for_targets", Later, 1, 0));
+        WithGroupDetail(new RunGroupResponse(groupId, WorkflowId, BatchId, null, "waiting_for_targets", 2, 3, Later, 10, 1,
+            new RunGroupProgress(0, 0, 0, 0, 0, 0, 0, 0), [Target(pending: 2)], Preparing: true));
+
+        var progress = (await Reader().ReadAsync(WorkflowId, default)).Value;
+
+        progress.Stage.Should().Be(AssistantRunStages.MockupApproval);
+        progress.State.Should().Be(AssistantRunStates.Working);
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_AtMockupApproval_PassesOnTheGroupNotice()
+    {
+        var groupId = Guid.NewGuid();
+        WithGroups(new RunGroupSummaryResponse(groupId, "waiting_for_targets", Later, 1, 0));
+        WithGroupDetail(new RunGroupResponse(groupId, WorkflowId, BatchId, null, "waiting_for_targets", 2, 3, Later, 10, 1,
+            new RunGroupProgress(0, 0, 0, 0, 0, 0, 0, 0), [Target(pending: 1)], Notice: "The AI clips cost more than the budget."));
+
+        var progress = (await Reader().ReadAsync(WorkflowId, default)).Value;
+
+        progress.State.Should().Be(AssistantRunStates.WaitingForUser);
+        progress.NextStep.Should().Contain("The AI clips cost more than the budget.");
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_WithMockupsMadeForAWorkflowThatPublishesWithoutVideo_SaysTheNextPartIsReady()
+    {
+        var input = new WorkflowNode("a", "product-input", "Input", new Point(), AssistantTestSupport.Json($$"""{"batchId":"{{BatchId}}"}"""));
+        var publish = new WorkflowNode("p", "publish-printify", "Push to Printify", new Point(), AssistantTestSupport.Json("{}"));
+        workflows.Setup(service => service.GetAsync(WorkflowId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new WorkflowResponse(WorkflowId, "Etsy flow", "", 2, 3, Earlier, Earlier, new WorkflowDefinition(2, [input, publish], []))));
+        var job = Job("completed", Later);
+        WithJobs(job);
+        WithJobMockups(2);
+        jobs.Setup(service => service.GetJobAsync(job.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(JobDetail(job.Id, "approved")));
+
+        var progress = (await Reader().ReadAsync(WorkflowId, default)).Value;
+
+        progress.Stage.Should().Be(AssistantRunStages.MockupsReady);
+        progress.State.Should().Be(AssistantRunStates.WaitingForUser);
     }
 
     [TestMethod]

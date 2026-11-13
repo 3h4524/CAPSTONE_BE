@@ -45,7 +45,7 @@ public sealed class AssistantRunProgressReader(
 
         return latest.Kind switch
         {
-            "job" => await FromJobAsync(workflowId, name, job!, jobAt, HasVideoSteps(workflow.Value.Definition), cancellationToken),
+            "job" => await FromJobAsync(workflowId, name, job!, jobAt, HasServerPart(workflow.Value.Definition), cancellationToken),
             "group" => await FromGroupAsync(workflowId, name, group!, cancellationToken),
             "run" => Result.Success(FromRun(workflowId, name, run!)),
             _ => Result.Success(new AssistantRunProgressResponseDto(workflowId, name, AssistantRunStages.NotStarted, AssistantRunStates.Idle,
@@ -80,7 +80,7 @@ public sealed class AssistantRunProgressReader(
     }
 
     private async Task<Result<AssistantRunProgressResponseDto>> FromJobAsync(
-        Guid workflowId, string name, BatchJobSummaryDto job, DateTimeOffset? startedAt, bool hasVideo, CancellationToken cancellationToken)
+        Guid workflowId, string name, BatchJobSummaryDto job, DateTimeOffset? startedAt, bool hasServerPart, CancellationToken cancellationToken)
     {
         var progress = new AssistantRunProgressResponseDto(workflowId, name, AssistantRunStages.Designs, AssistantRunStates.Working,
             "Designs are being generated. Nothing to do yet.", job.ProcessedProducts, job.TotalProducts, BatchJobId: job.Id, StartedAt: startedAt);
@@ -117,12 +117,12 @@ public sealed class AssistantRunProgressReader(
         var made = await jobMockups.GetJobMockupsAsync(job.Id, cancellationToken);
         if (made.IsSuccess && made.Value.Images.Count > 0)
         {
-            return Result.Success(hasVideo
+            return Result.Success(hasServerPart
                 ? progress with
                 {
                     Stage = AssistantRunStages.MockupsReady,
                     State = AssistantRunStates.WaitingForUser,
-                    NextStep = $"{made.Value.Images.Count} mock-ups are ready. The video part starts from the workflow screen. {OnScreen}",
+                    NextStep = $"{made.Value.Images.Count} mock-ups are ready. The video or publishing part starts from the workflow screen. {OnScreen}",
                     Error = failed
                 }
                 : progress with
@@ -161,6 +161,16 @@ public sealed class AssistantRunProgressReader(
             "The videos are being made. Nothing to do yet.", counts.Completed, counts.Total,
             RunGroupId: group.Id, StartedAt: group.CreatedAt, Targets: targets);
 
+        if (group.Status == "waiting_for_targets" && group.Preparing)
+        {
+            return Result.Success(progress with
+            {
+                Stage = AssistantRunStages.MockupApproval,
+                NextStep = "The run is being made ready in the background. Nothing to do yet.",
+                Done = null,
+                Total = group.Targets.Count
+            });
+        }
         if (group.Status == "waiting_for_targets")
         {
             var pending = group.Targets.Sum(target => target.PendingCount);
@@ -168,7 +178,7 @@ public sealed class AssistantRunProgressReader(
             {
                 Stage = AssistantRunStages.MockupApproval,
                 State = AssistantRunStates.WaitingForUser,
-                NextStep = $"Mock-ups wait for approval ({pending} not reviewed). The mock-ups of each design that should get a video are approved in this chat or on the workflow screen, then Continue starts the videos.",
+                NextStep = $"Mock-ups wait for approval ({pending} not reviewed). The mock-ups of each design that should get a video are approved in this chat or on the workflow screen, then Continue starts the videos.{(group.Notice is { Length: > 0 } notice ? $" Note: {notice}" : string.Empty)}",
                 WaitingCount = pending,
                 Done = null,
                 Total = group.Targets.Count
@@ -250,8 +260,8 @@ public sealed class AssistantRunProgressReader(
         };
     }
 
-    private static bool HasVideoSteps(WorkflowDefinition definition) =>
-        definition.Nodes.Any(node => node.Type == "generate-video");
+    private static bool HasServerPart(WorkflowDefinition definition) =>
+        definition.Nodes.Any(node => node.Type == "generate-video" || WorkflowCapabilityRegistry.PublishSteps.Contains(node.Type));
 
     private static string StageOf(string? nodeType) => nodeType switch
     {
