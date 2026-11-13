@@ -88,6 +88,22 @@ Rules that must hold for every new tool:
 
 To add a tool: create the class, register it, add unit tests next to the existing tool tests, and mention it in the system prompt in `AssistantPromptBuilder` only if the model needs guidance.
 
+## Guardrails
+
+Guardrails sit in `Application/Features/Assistant/Guardrails` and run inside `AssistantAgentLoop`. They add to the action-layer rules above (ownership through `ICurrentUser`, confirmations, the navigation whitelist, paid steps only in the UI) and to the limits (4 000-character messages, 20 messages a minute, 5 tool rounds, the turn timeout).
+
+- **Input** (`AssistantInputGuard`, rules only, no extra model call). The message is lower-cased, stripped of Vietnamese diacritics and matched against English and Vietnamese patterns.
+  - Block: asking for the system prompt or hidden instructions, "ignore the previous instructions", jailbreak personas (DAN, developer mode), asking for the system's API keys or secrets. The model is not called. A refusal in the message's language is streamed, the turn ends `done` with model `guardrail`, and the answer is not cached.
+  - Flag: role overrides ("you are now", "pretend to be", "đóng vai") and fake role markers (`system:`, `<system>`, `[INST]`). The latest user message gets a `<security_note>` and the model is called as usual.
+  - Ordinary questions about limits, roles of a step or the user's own API keys are not matched; the unit tests list them.
+- **Context data.** `app_context`, help articles and tool results are serialized by `AssistantJson`, whose default encoder escapes `<` and `>`, so a workflow or node name cannot close a prompt block.
+- **Model** (`GeminiAssistantChatModel`). Harassment, hate speech, sexually explicit and dangerous content are set to `BlockMediumAndAbove`. An answer ended by Gemini's content filter without text becomes `assistant.blocked` ("Podi can't help with that request.").
+- **Output** (`AssistantOutputGuard`, one per turn). It applies to the text the user reads: the `delta` events and the saved message. Event metadata (tool names in `tool_started` and `tool_finished`, client action kinds, pending action tool names) is untouched, because the frontend turns it into labels.
+  - Secrets (Google API keys, `sk-` keys, JWTs, `password=`/`pwd=` values, private keys) are replaced with `••••`. Only a trailing token that could start a secret is held back until it ends, so ordinary text streams at once.
+  - An answer that repeats the system prompt (three or more 8-word sequences in common) stops the stream with `assistant.blocked`, and the saved text is cleared.
+  - Raw tool names in the answer are only logged.
+- **Logs.** Each hit writes one warning, `Assistant guardrail {GuardrailKind} ({GuardrailRule}) for user {UserId} in conversation {ConversationId}: {Excerpt}`. The kinds are `input_block`, `input_flag`, `secret_redacted`, `prompt_leak`, `tool_name_mention` and `model_blocked`, and the excerpt is at most 60 characters.
+
 ## Model and configuration
 
 `IAssistantChatModel` is implemented by `GeminiAssistantChatModel` (Infrastructure, `Google.GenAI` through `Microsoft.Extensions.AI`). The agent loop in `AssistantAgentLoop` allows at most 5 tool rounds, then one final answer without tools. Before that final round it adds a `<final_answer>` note telling the model it can no longer call tools and must say what it found, what blocked it and the next step. If the turn still ends with nothing visible and a tool failed, the loop streams a fallback built from the most recent failed tool's `message` (for example "I couldn't start the run: ...") instead of `assistant.empty_response`; failures that only describe internal mistakes (`unknown_tool`, `invalid_arguments`, `invalid_operations`, `tool_failed`, `missing_run`) are not used. Such a turn is not saved to the answer cache.
