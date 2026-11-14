@@ -29,5 +29,7 @@ public partial class StyleArtPreset
 
     public Guid? UserId { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual User? User { get; set; }
 }
