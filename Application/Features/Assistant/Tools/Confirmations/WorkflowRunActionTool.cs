@@ -23,11 +23,12 @@ public sealed class WorkflowRunActionTool(
     IAssistantPendingActionRepository pendingActions,
     TimeProvider timeProvider) : ConfirmableAssistantTool<WorkflowRunActionArgs>(pendingActions, timeProvider)
 {
-    private static readonly HashSet<string> PaidWhenAiShot = ["resume_mockups", "retry"];
+    private static readonly HashSet<string> PaidWhenAiShot = ["resume_mockups", "retry", "resume"];
 
     private static readonly Dictionary<string, (string Title, string Summary)> Texts = new()
     {
-        ["cancel"] = ("Cancel run", "Stops this run. It cannot be resumed afterwards."),
+        ["cancel"] = ("Cancel run", "Stops this run. It can be resumed later from where it stopped."),
+        ["resume"] = ("Resume run", "Goes on with the stopped run from where it stopped, keeping what it already made."),
         ["resume_mockups"] = ("Continue with approved mockups", "Continues the run using the mockups you approved."),
         ["retry"] = ("Retry failed step", "Retries the step that failed."),
         ["retry_listing"] = ("Retry listing content", "Generates the listing content again."),
@@ -38,10 +39,10 @@ public sealed class WorkflowRunActionTool(
     public override string Name => "workflow_run_action";
 
     protected override string Description =>
-        "Prepare an action on a workflow run (cancel, continue after mockup approval, retry, retry listing, approve or reject the video). The user must confirm.";
+        "Prepare an action on a workflow run (cancel, resume a stopped run, continue after mockup approval, retry, retry listing, approve or reject the video). The user must confirm.";
 
     protected override string ParametersSchemaJson => """
-        {"type":"object","properties":{"runId":{"type":"string","description":"Run id (GUID). Optional when the run in app_context is meant."},"action":{"type":"string","enum":["cancel","resume_mockups","retry","retry_listing","approve_video","reject_video"]},"videoId":{"type":"string","description":"Video id (GUID) for approve_video or reject_video. Defaults to the newest version."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the action is ready and they must press Confirm."}},"required":["action","reply"]}
+        {"type":"object","properties":{"runId":{"type":"string","description":"Run id (GUID). Optional when the run in app_context is meant."},"action":{"type":"string","enum":["cancel","resume","resume_mockups","retry","retry_listing","approve_video","reject_video"]},"videoId":{"type":"string","description":"Video id (GUID) for approve_video or reject_video. Defaults to the newest version."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the action is ready and they must press Confirm."}},"required":["action","reply"]}
         """;
 
     public override bool IsAvailable(AssistantToolContext context) => context.Caller.IsSeller;

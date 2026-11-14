@@ -5,7 +5,7 @@ namespace APCS.Application.Abstractions.BackgroundJobs;
 /// provider) and, when Mockup Approval is automatic, its videos are started, as the seller.
 /// </summary>
 /// <param name="AutoApprove">Mockup Approval is set to approve automatically: the videos start when the photos are made.</param>
-public sealed record RunGroupStartRequest(Guid GroupId, Guid UserId, decimal? AiBudgetUsd, bool AutoApprove);
+public sealed record RunGroupStartRequest(Guid GroupId, Guid UserId, bool AutoApprove);
 
 /// <summary>
 /// Hands a started run group to the background worker, so pressing Run answers at once instead of waiting for the

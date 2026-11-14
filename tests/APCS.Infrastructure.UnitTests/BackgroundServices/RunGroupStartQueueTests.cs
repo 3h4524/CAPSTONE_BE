@@ -11,7 +11,7 @@ namespace APCS.Infrastructure.UnitTests.BackgroundServices;
 [TestClass]
 public sealed class RunGroupStartQueueTests
 {
-    private static RunGroupStartRequest Request(Guid? group = null) => new(group ?? Guid.NewGuid(), Guid.NewGuid(), 5m, AutoApprove: true);
+    private static RunGroupStartRequest Request(Guid? group = null) => new(group ?? Guid.NewGuid(), Guid.NewGuid(), AutoApprove: true);
 
     [TestMethod]
     public async Task Enqueue_HandsTheGroupToTheWorkerAndIsPendingUntilItIsDone()

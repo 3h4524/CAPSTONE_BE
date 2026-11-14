@@ -66,12 +66,18 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         // A listing that could not be written stays failed on its own step and can be retried there:
         // the video is made from the mock-ups and does not wait for it. Without a video, Mockup Approval leads
-        // straight to the publish steps below.
+        // straight to the publish steps below, and a video without Export ZIP goes there from Review Video.
         var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
         foreach (var type in hasVideo ? WorkflowCapabilityRegistry.Pipeline : WorkflowCapabilityRegistry.PublishPipeline)
         {
-            var node = checkpoints.Single(x => x.NodeType == type);
-            if (node.Status == "succeeded") continue;
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null && WorkflowCapabilityRegistry.OptionalVideoSteps.Contains(type)) continue;
+            node ??= checkpoints.Single(x => x.NodeType == type);
+            if (node.Status == "succeeded")
+            {
+                if (type == "approval-gate") StartPrintify(checkpoints);
+                continue;
+            }
             if (node.Status is "running" or "failed" or "cancelled") return;
             node.UpdatedAt = time.GetUtcNow().UtcDateTime;
             switch (type)
@@ -80,7 +86,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                 case "apply-mockup": node.Status = "succeeded"; break;
                 case "approval-gate":
                     // Auto mode approves the mock-ups itself and goes on, unless the video still needs the seller.
-                    if (MockupAutoApproval.IsAuto(definition) && await AutoApproveAsync(run, definition, checkpoints, node, ct)) break;
+                    if (MockupAutoApproval.IsAuto(definition) && await AutoApproveAsync(run, definition, checkpoints, node, ct))
+                    {
+                        StartPrintify(checkpoints);
+                        break;
+                    }
                     node.Status = "waiting_for_input"; run.Status = "waiting_for_input"; return;
                 case "generate-video":
                     var config = WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
@@ -219,18 +229,49 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         // Publishing calls Printify and Etsy for up to minutes, so it runs in the background after this transaction
         // commits; WorkflowPublishService finishes the step and advances the run again.
-        foreach (var type in WorkflowCapabilityRegistry.PublishSteps)
+        foreach (var type in WorkflowCapabilityRegistry.PublishSteps.Where(type => type != WorkflowCapabilityRegistry.PrintifyStep))
         {
             var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
             if (node is null || node.Status == "succeeded") continue;
             if (node.Status is "running" or "failed" or "cancelled") return;
-            node.Status = "running"; node.Stage = "Queued"; node.Progress = 5; node.ErrorMessage = null;
-            node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
-            node.UpdatedAt = time.GetUtcNow().UtcDateTime;
-            publishQueue?.Enqueue(node.Id);
+            StartPublish(node);
             return;
         }
+        // Push to Printify goes its own way beside the video: the run is finished once it is too, and a Printify that
+        // failed leaves the run failed with its reason, for the seller to retry that step alone.
+        switch (checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep))
+        {
+            case { Status: "pending" }:
+                StartPrintify(checkpoints);
+                return;
+            case { Status: "running" or "cancelled" }:
+                return;
+            case { Status: "failed" } failed:
+                run.Status = "failed"; run.ErrorMessage = failed.ErrorMessage;
+                return;
+        }
         run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
+    }
+
+    /// <summary>
+    /// Push to Printify publishes the design and the approved mock-ups, never the video, so it starts as soon as Mockup
+    /// Approval has passed and runs beside the video: neither waits for the other, and one failing does not stop the
+    /// other. WorkflowPublishService finishes it in the background.
+    /// </summary>
+    private void StartPrintify(IReadOnlyList<WorkflowNodeRun> checkpoints)
+    {
+        if (checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep) is { Status: "pending" } printify
+            && checkpoints.SingleOrDefault(x => x.NodeType == "approval-gate") is { Status: "succeeded" })
+            StartPublish(printify);
+    }
+
+    /// <summary>Queues a publish step for the background worker, which finishes it and advances the run again.</summary>
+    private void StartPublish(WorkflowNodeRun node)
+    {
+        node.Status = "running"; node.Stage = "Queued"; node.Progress = 5; node.ErrorMessage = null;
+        node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
+        node.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        publishQueue?.Enqueue(node.Id);
     }
     /// <summary>Writes the listing again after it failed, without touching the video steps.</summary>
     public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
@@ -289,7 +330,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
 
     /// <summary>
     /// Mockup Approval in auto mode: approves this run's mock-ups waiting for review (of its design, when it has one)
-    /// and passes the step when the video has an image and needs no paid confirmation. False keeps the run waiting.
+    /// and passes the step when the video has an image to start from. AI scenes go on too: their cost was shown when
+    /// the seller pressed Run. False keeps the run waiting.
     /// </summary>
     private async Task<bool> AutoApproveAsync(WorkflowRun run, WorkflowDefinition definition, IReadOnlyList<WorkflowNodeRun> checkpoints,
         WorkflowNodeRun gate, CancellationToken ct)
@@ -300,10 +342,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         MockupAutoApproval.Approve(design is null ? stored : stored.Where(x => x.ArtworkGroupKey == design).ToArray(),
             run.UserId, time.GetUtcNow().UtcDateTime);
 
-        // Without a video nothing is paid for after this step, so the approved mock-ups are enough to go on.
         var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
         var videoConfig = generate is null ? null : WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-        if (videoConfig is not null && !MockupAutoApproval.NeedsNoConsent(videoConfig)) return false;
         var approved = await ApprovedAssetsAsync(run, mockupConfig, videoConfig, ct);
         if (approved.Count == 0) return false;
         gate.Status = "succeeded";

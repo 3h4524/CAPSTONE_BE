@@ -112,9 +112,9 @@ public sealed class EditWorkflowCanvasToolTests
     public async Task ExecuteAsync_AddPushToPrintify_IsProposed()
     {
         var context = CanvasContext(
-            [new("z", "export-zip", "Export ZIP", AssistantTestSupport.Json("{}"))],
+            [new("g", "approval-gate", "Mockup Approval", AssistantTestSupport.Json("{}"))],
             []);
-        var args = """{"operations":[{"op":"add_node","ref":"p","type":"publish-printify","after":"z"},{"op":"connect","source":"z","target":"p"}]}""";
+        var args = """{"operations":[{"op":"add_node","ref":"p","type":"publish-printify","after":"g"},{"op":"connect","source":"g","target":"p"}]}""";
 
         var outcome = await Tool().ExecuteAsync(context, AssistantTestSupport.Json(args), default);
 

@@ -36,7 +36,6 @@ public sealed class PrintifyService(
     IRepository<Product> products,
     IRepository<DesignImage> designs,
     IRepository<MockupImage> mockups,
-    IRepository<PromoVideo> videos,
     IRepository<PrintifyIntegration> integrations,
     IRepository<PrintifyUploadLog> uploads,
     IMediaStorage storage,
@@ -271,7 +270,6 @@ public sealed class PrintifyService(
         var approvedMockups = (await ApprovedMockupsAsync(productId, cancellationToken))
             .Select(mockup => new EtsyDraftMockupDto(mockup.Id, storage.SignRead(mockup.StorageKey, "image", mockup.StorageVersion), mockup.MockupWidthPx, mockup.MockupHeightPx, ListingPhotos.IsAiMade(mockup)))
             .ToArray();
-        var video = await ApprovedVideoAsync(productId, cancellationToken);
 
         var connection = (await ResolveAsync(userId, refresh: false, cancellationToken)).Connection;
         if (connection.Status == PrintifyStatuses.Connected && connection.SalesChannel != "etsy")
@@ -295,8 +293,6 @@ public sealed class PrintifyService(
         return Result.Success(new PrintifyDraftResponseDto(
             product.Id, product.Name, connection, title, content.IsSuccess ? content.Value.Description : product.InputDescription, tags,
             warnings, approvedDesigns, approvedMockups,
-            video is null ? null : new EtsyDraftVideoDto(video.Id, video.VideoDurationSeconds,
-                video.ThumbnailStorageKey is null ? null : storage.SignRead(video.ThumbnailStorageKey, "image", video.ThumbnailStorageVersion)),
             await LastSettingsAsync(userId, cancellationToken), history, etsyConnected));
     }
 
@@ -398,10 +394,7 @@ public sealed class PrintifyService(
             }
         }
 
-        // Each Printify product becomes an Etsy listing: it counts toward the shop's pace.
-        if (pace is not null && await pace.CheckAsync(userId, cancellationToken) is { Allowed: false } paced)
-            return Result.Failure<PrintifyProductDto>(ShopErrors.ListingPace(paced.Reason!));
-
+        // A product only made on Printify is no Etsy listing yet: the shop's pace is kept when it is published (PublishAsync).
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (log is null)
         {
@@ -482,6 +475,10 @@ public sealed class PrintifyService(
         // Etsy requires items a partner makes to name it; a listing without one can cost the seller the shop.
         if (await MissingProductionPartnerAsync(cancellationToken))
             return Result.Failure<PrintifyProductDto>(ShopErrors.NoProductionPartner());
+        // Publishing makes the product an Etsy listing: it counts toward the shop's pace, unless it was sent already.
+        if (pace is not null && LogState.Read(log.ApiResponse).PublishRequestedAt is null
+            && await pace.CheckAsync(integration.UserId, cancellationToken) is { Allowed: false } paced)
+            return Result.Failure<PrintifyProductDto>(ShopErrors.ListingPace(paced.Reason!));
 
         try
         {
@@ -543,7 +540,7 @@ public sealed class PrintifyService(
             if (state.Stage != PrintifyStages.Published && await MissingProductionPartnerAsync(cancellationToken))
                 warnings.Add(NoProductionPartner);
             state = state with { Stage = PrintifyStages.Published, EtsyListingId = listingId };
-            if (!state.MediaAttempted && (request.MockupIds.Count > 0 || request.IncludeVideo))
+            if (!state.MediaAttempted && request.MockupIds.Count > 0)
             {
                 var (attached, mediaWarnings) = await AttachMediaAsync(productId, listingId, request, product.Title, cancellationToken);
                 state = state with { MediaAttempted = true, MediaAttached = attached };
@@ -641,14 +638,17 @@ public sealed class PrintifyService(
                 design.ImageWidthPx, design.ImageHeightPx, areaWidth, areaHeight);
     }
 
-    /// <summary>Adds approved APCS mock-ups (in front of Printify's, or just behind its first photo) and the video to Printify's Etsy listing.</summary>
+    /// <summary>
+    /// Adds approved APCS mock-ups (in front of Printify's, or just behind its first photo) to Printify's Etsy listing.
+    /// A Printify product carries the design and its mock-ups only: no video goes with it.
+    /// </summary>
     private async Task<(int Attached, IReadOnlyList<string> Warnings)> AttachMediaAsync(
         Guid productId, string listingId, SyncPrintifyProductRequestDto request, string title, CancellationToken cancellationToken)
     {
         var warnings = new List<string>();
         if (currentUser.UserId is not Guid userId || await EtsyAccessAsync(userId, cancellationToken) is not { } connection)
         {
-            warnings.Add("Connect Etsy on the Shop page to add the APCS mock-ups and video to this listing.");
+            warnings.Add("Connect Etsy on the Shop page to add the APCS mock-ups to this listing.");
             return (0, warnings);
         }
 
@@ -669,20 +669,6 @@ public sealed class PrintifyService(
             {
                 logger.LogWarning("Mock-up {Index} for Etsy listing {ListingId} failed: {Error}.", index + 1, listingId, exception.GetType().Name);
                 warnings.Add($"Mock-up {index + 1} could not be added to the Etsy listing{(exception is EtsyApiException { Reason: { } reason } ? $": {reason}" : ".")}");
-            }
-        }
-        if (request.IncludeVideo && await ApprovedVideoAsync(productId, cancellationToken) is { } video)
-        {
-            try
-            {
-                await etsy.UploadListingVideoAsync(connection.AccessToken, connection.Integration.EtsyShopId, listingId,
-                    storage.SignRead(video.StorageKey!, "video", video.StorageVersion), title, cancellationToken);
-                attached++;
-            }
-            catch (EtsyApiException exception)
-            {
-                logger.LogWarning("Video for Etsy listing {ListingId} failed: {Kind}.", listingId, exception.Kind);
-                warnings.Add($"The video could not be added to the Etsy listing{(exception.Reason is { } reason ? $": {reason}" : ".")}");
             }
         }
         return (attached, warnings);
@@ -860,12 +846,6 @@ public sealed class PrintifyService(
             .OrderBy(mockup => mockup.CreatedAt)
             .Take(Validators.PublishEtsyDraftValidator.MaxImages)
             .ToListAsync(cancellationToken);
-
-    private Task<PromoVideo?> ApprovedVideoAsync(Guid productId, CancellationToken cancellationToken) =>
-        videos.Query()
-            .Where(video => video.ProductId == productId && video.DeletedAt == null && video.ApprovalStatus == "approved" && video.StorageKey != null)
-            .OrderByDescending(video => video.UpdatedAt ?? video.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
 
     private static T? Deserialize<T>(string? json) where T : class
     {

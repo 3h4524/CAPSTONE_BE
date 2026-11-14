@@ -9,7 +9,8 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// are not used; otherwise X/Y/Width/Height are its one print area. <c>View</c> is the side of the garment the photo
 /// shows: "front" (the default), "back" or "side". With <c>MainTemplateId</c> the photo is another side of that
 /// template (back, left or right sleeve, named by <c>View</c>): it is linked to it in the same save and is not listed
-/// on its own.
+/// on its own. <c>FromPrintify</c> is set only by the server, for a photo measured on Printify: it may be a side of a
+/// Printify template, which an uploaded photo never is.
 /// </remarks>
 public sealed record CreateMockupTemplateRequestDto(
     string Name,
@@ -23,4 +24,5 @@ public sealed record CreateMockupTemplateRequestDto(
     string? GarmentColor = null,
     string? View = null,
     IReadOnlyList<MockupAreaDto>? Areas = null,
-    Guid? MainTemplateId = null);
+    Guid? MainTemplateId = null,
+    bool FromPrintify = false);

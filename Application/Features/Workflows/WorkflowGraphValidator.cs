@@ -24,10 +24,14 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         var publishes = definition.Nodes.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.Type));
         if (!hasListing && !hasVideo && !publishes)
             return Error.Validation("Add a Listing Content, Generate Video or publish node before running the workflow.");
-        if (hasListing && !hasVideo && !publishes && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)))
-            return Error.Validation("A listing-only workflow currently supports Product Input -> Listing Content.");
-        if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) != 1))
-            return Error.Validation("Each video MVP node must appear exactly once.");
+        // A batch run writes the listing of each design approved at Mockup Approval; a single run writes one product's.
+        if (hasListing && !hasVideo && !publishes && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type))
+            && (requireProduct || !HasApprovalPipeline(definition)))
+            return Error.Validation("A listing-only workflow currently supports Product Input -> Listing Content, or Apply Mockup → Mockup Approval before it.");
+        // Export ZIP is optional: the publish steps read the approved media themselves, not the ZIP.
+        if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) is var count
+                && (WorkflowCapabilityRegistry.OptionalVideoSteps.Contains(type) ? count > 1 : count != 1)))
+            return Error.Validation("A video needs Product Input, Apply Mockup, Mockup Approval, Generate Video and Review Video exactly once each; Export ZIP may appear once.");
         // Without a video the publish steps follow Mockup Approval, so the seller still approves what is listed.
         if (!hasVideo && publishes)
         {
@@ -49,7 +53,20 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         var listing = definition.Nodes.SingleOrDefault(x => x.Type == "generate-listing");
         if (listing is not null && definition.Edges.Count(e => e.Target == listing.Id) != 1)
             return Error.Validation("Connect Listing Content after exactly one step.");
-        var ordered = definition.Nodes.Where(x => x != listing).OrderBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.Type)).ToArray();
+        // Push to Printify sells the design and its approved mock-ups, not the video: it branches off Apply Mockup or
+        // Mockup Approval and ends there. It starts right after Mockup Approval, beside the video, so its mock-ups are always approved.
+        var printifyStep = definition.Nodes.SingleOrDefault(x => x.Type == WorkflowCapabilityRegistry.PrintifyStep);
+        if (printifyStep is not null)
+        {
+            var into = definition.Edges.Where(e => e.Target == printifyStep.Id)
+                .Select(e => definition.Nodes.FirstOrDefault(node => node.Id == e.Source)?.Type).ToArray();
+            if (into is not ["apply-mockup" or "approval-gate"])
+                return Error.Validation("Connect Push to Printify after Apply Mockup or Mockup Approval: it publishes the design and its mock-ups, not the video.");
+            if (definition.Edges.Any(e => e.Source == printifyStep.Id))
+                return Error.Validation("Push to Printify ends its branch: connect the next steps to the step before it.");
+        }
+        var ordered = definition.Nodes.Where(x => x != listing && x != printifyStep)
+            .OrderBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.Type)).ToArray();
         for (var i = 1; i < ordered.Length; i++)
         {
             var direct = definition.Edges.Count(e => e.Source == ordered[i - 1].Id && e.Target == ordered[i].Id);
@@ -119,6 +136,10 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
         }
         return null;
     }
+
+    /// <summary>Product Input → Apply Mockup → Mockup Approval, once each: what a batch run without a video goes through.</summary>
+    public static bool HasApprovalPipeline(WorkflowDefinition definition) =>
+        WorkflowCapabilityRegistry.PublishPipeline.All(type => definition.Nodes.Count(x => x.Type == type) == 1);
 
     /// <summary>The batch chosen in Product Input, read without requiring a product, or <see cref="Guid.Empty"/>.</summary>
     public static Guid BatchIdOf(WorkflowDefinition definition) =>

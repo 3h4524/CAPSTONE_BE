@@ -239,6 +239,14 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
         });
         services.AddScoped<IPrintifyClient, PrintifyClient>();
+        // Printify's mock-up photos, read to make templates of Printify products: no redirects, so only its own host is reached.
+        services.AddHttpClient(PrintifyMockupCalibrator.HttpClientName, (provider, client) =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(provider.GetRequiredService<IOptions<PrintifyOptions>>().Value.UserAgent);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddSingleton<IPrintifyMockupCalibrator, PrintifyMockupCalibrator>();
+        services.AddSingleton<IPrintifyAdminToken, PrintifyAdminToken>();
         services.AddHttpClient(EtsyShopClient.MediaDownloadClientName, client => client.Timeout = TimeSpan.FromMinutes(2));
         services.AddHttpClient(EtsyShopClient.UploadClientName, (provider, client) =>
         {
@@ -291,6 +299,10 @@ public static class DependencyInjection
         // Use cases queue steps through the transaction they run in; the worker reads the channel itself.
         services.AddScoped<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.TransactionalWorkflowPublishQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobChannel>();
+        services.AddSingleton<APCS.Application.Features.BatchMockups.Printify.IPrintifyTemplateJobQueue>(provider =>
+            provider.GetRequiredService<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobChannel>());
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobWorker>();
 
         return services;
     }

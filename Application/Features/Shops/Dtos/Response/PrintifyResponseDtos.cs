@@ -37,7 +37,8 @@ public sealed record PrintifyPrintAreaDto(string Position, int Width, int Height
 public sealed record PrintifyVariantOptionDto(long Id, string Title, string? Color, string? Size);
 
 /// <summary>The Printify push form for a product.</summary>
-/// <param name="EtsyConnected">Whether APCS can add its mock-ups and video to the Etsy listing Printify creates.</param>
+/// <param name="EtsyConnected">Whether APCS can add its mock-ups to the Etsy listing Printify creates.</param>
+/// <remarks>A Printify product carries the design and its mock-ups only: no video.</remarks>
 public sealed record PrintifyDraftResponseDto(
     Guid ProductId,
     string ProductName,
@@ -48,7 +49,6 @@ public sealed record PrintifyDraftResponseDto(
     IReadOnlyList<string> Warnings,
     IReadOnlyList<ShopDesignDto> Designs,
     IReadOnlyList<EtsyDraftMockupDto> Mockups,
-    EtsyDraftVideoDto? Video,
     PrintifyProductSettingsDto Defaults,
     IReadOnlyList<PrintifyHistoryDto> History,
     bool EtsyConnected);
