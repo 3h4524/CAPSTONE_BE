@@ -1,14 +1,13 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.StyleArtPresets;
 using APCS.Application.Features.StyleArtPresets.Common;
-using APCS.Application.Features.Translations;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Admin.StyleArtPresets;
 
@@ -23,7 +22,7 @@ public interface IAdminStyleArtPresetService
     Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 }
 
-/// <summary>A system art style as an admin edits it, including its Vietnamese translation when present.</summary>
+/// <summary>A system art style as an admin edits it, with the machine translation and its status when present.</summary>
 public sealed record AdminStyleArtPresetDto(
     Guid Id,
     string Name,
@@ -36,29 +35,19 @@ public sealed record AdminStyleArtPresetDto(
     AdminStyleArtPresetViDto? Vi,
     string? ViStatus);
 
-/// <summary>The raw Vietnamese translation payload the admin form round-trips.</summary>
+/// <summary>The Vietnamese machine translation of a system style, read-only for the admin.</summary>
 public sealed record AdminStyleArtPresetViDto(
     string Name,
     string Description,
     IReadOnlyList<string> Recommendations);
 
-/// <summary>
-/// Vietnamese translation as the admin form sends it. Empty strings mean "fall back to English";
-/// a null <see cref="RecommendationsJson"/> means no Vietnamese recommendations.
-/// </summary>
-public sealed record AdminStyleArtPresetViRequestDto(
-    string? Name,
-    string? Description,
-    string? RecommendationsJson);
-
-/// <summary>English content is required; the Vietnamese payload is optional.</summary>
+/// <summary>English content only; the Vietnamese translation is produced in the background.</summary>
 public sealed record CreateAdminStyleArtPresetRequestDto(
     string Name,
     string Description,
     string StyleModifiers,
     string? RecommendationsJson,
-    UploadFileDto? Preview,
-    AdminStyleArtPresetViRequestDto? Vi);
+    UploadFileDto? Preview);
 
 /// <summary>Same as create, plus the active flag and preview deletion.</summary>
 public sealed record UpdateAdminStyleArtPresetRequestDto(
@@ -68,16 +57,14 @@ public sealed record UpdateAdminStyleArtPresetRequestDto(
     string? RecommendationsJson,
     UploadFileDto? Preview,
     bool DeletePreview,
-    bool IsActive,
-    AdminStyleArtPresetViRequestDto? Vi);
+    bool IsActive);
 
 public sealed class AdminStyleArtPresetService(
     ICurrentUser currentUser,
     IRepository<StyleArtPreset> presets,
     IPublicImageService images,
     ICacheService cache,
-    ITranslationService translationService,
-    ILogger<AdminStyleArtPresetService> logger,
+    IStyleArtPresetTranslationQueue translationQueue,
     TimeProvider timeProvider) : IAdminStyleArtPresetService
 {
     public async Task<Result<IReadOnlyList<AdminStyleArtPresetDto>>> ListAsync(CancellationToken cancellationToken = default)
@@ -95,7 +82,7 @@ public sealed class AdminStyleArtPresetService(
         if (currentUser.TryGetUserId() is not Guid _)
             return Result.Failure<AdminStyleArtPresetDto>(Error.Unauthorized("Auth.Unauthenticated", "Sign in again to manage styles."));
 
-        if (Problem(request.Name, request.Description, request.StyleModifiers, request.RecommendationsJson, request.Vi) is { } problem)
+        if (Problem(request.Name, request.Description, request.StyleModifiers, request.RecommendationsJson) is { } problem)
             return Result.Failure<AdminStyleArtPresetDto>(Error.Validation(problem));
 
         if (await IsNameTakenAsync(request.Name, null, cancellationToken))
@@ -113,9 +100,6 @@ public sealed class AdminStyleArtPresetService(
         StyleArtPresetRules.TryParseRecommendations(request.RecommendationsJson, out var recommendations);
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        var translations = await BuildTranslationsAsync(
-            request.Vi, name, description, recommendations, null, now, cancellationToken);
-
         var preset = new StyleArtPreset
         {
             Id = presetId,
@@ -130,7 +114,7 @@ public sealed class AdminStyleArtPresetService(
             UsageCount = 0,
             CreatedAt = now,
             UpdatedAt = now,
-            Translations = translations
+            Translations = StyleArtPresetTranslations.Queued(now)
         };
 
         try
@@ -155,6 +139,7 @@ public sealed class AdminStyleArtPresetService(
         }
 
         await InvalidateSystemRowsAsync(cancellationToken);
+        translationQueue.Notify();
         return Result.Success(Map(preset));
     }
 
@@ -163,7 +148,7 @@ public sealed class AdminStyleArtPresetService(
         if (currentUser.TryGetUserId() is not Guid _)
             return Result.Failure<AdminStyleArtPresetDto>(Error.Unauthorized("Auth.Unauthenticated", "Sign in again to manage styles."));
 
-        if (Problem(request.Name, request.Description, request.StyleModifiers, request.RecommendationsJson, request.Vi) is { } problem)
+        if (Problem(request.Name, request.Description, request.StyleModifiers, request.RecommendationsJson) is { } problem)
             return Result.Failure<AdminStyleArtPresetDto>(Error.Validation(problem));
 
         var preset = await presets.Query().SingleOrDefaultAsync(item => item.Id == id && item.UserId == null, cancellationToken);
@@ -178,10 +163,10 @@ public sealed class AdminStyleArtPresetService(
         var modifiers = request.StyleModifiers?.Trim() ?? string.Empty;
         StyleArtPresetRules.TryParseRecommendations(request.RecommendationsJson, out var recommendations);
 
-        var previousTranslations = preset.Translations;
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        preset.Translations = await BuildTranslationsAsync(
-            request.Vi, name, description, recommendations, previousTranslations, now, cancellationToken);
+        var needsTranslation = NeedsTranslation(preset, name, description, recommendations);
+        if (needsTranslation)
+            preset.Translations = StyleArtPresetTranslations.Queued(now);
         preset.Name = name;
         preset.Description = description;
         preset.StyleModifiers = modifiers;
@@ -215,6 +200,8 @@ public sealed class AdminStyleArtPresetService(
         }
 
         await InvalidateSystemRowsAsync(cancellationToken);
+        if (needsTranslation)
+            translationQueue.Notify();
         return Result.Success(Map(preset));
     }
 
@@ -232,46 +219,18 @@ public sealed class AdminStyleArtPresetService(
         return Result.Success();
     }
 
-    private async Task<string?> BuildTranslationsAsync(
-        AdminStyleArtPresetViRequestDto? vi,
+    private static bool NeedsTranslation(
+        StyleArtPreset preset,
         string name,
         string description,
-        IReadOnlyList<string> recommendations,
-        string? previousTranslations,
-        DateTime now,
-        CancellationToken cancellationToken)
+        IReadOnlyList<string> recommendations)
     {
-        if (vi is not null)
-        {
-            StyleArtPresetRules.TryParseRecommendations(vi.RecommendationsJson, out var viRecommendations);
-            var formTranslation = new StyleArtPresetTranslations.ViTranslation(
-                vi.Name?.Trim() ?? string.Empty,
-                vi.Description?.Trim() ?? string.Empty,
-                viRecommendations);
-            var hasAny = formTranslation.Name.Length > 0
-                || formTranslation.Description.Length > 0
-                || formTranslation.Recommendations.Count > 0;
-
-            return hasAny
-                ? StyleArtPresetTranslations.SerializeDocument(formTranslation, manual: true, status: "ok", attempts: 0, nextRetryAt: null)
-                : null;
-        }
-
-        if (StyleArtPresetTranslations.ParseState(previousTranslations) is { Manual: true })
-            return previousTranslations;
-
-        var outcome = await StyleArtPresetTranslator.TranslateEnToViAsync(
-            name, description, recommendations, translationService, logger, cancellationToken);
-        if (outcome.Success)
-            return StyleArtPresetTranslations.SerializeDocument(outcome.Vi, manual: false, status: "ok", attempts: 0, nextRetryAt: null);
-
-        logger.LogWarning("Translation failed for system style {Name}; the row is queued for retry.", name);
-        return StyleArtPresetTranslations.SerializeDocument(
-            StyleArtPresetTranslations.ParseViDocument(previousTranslations),
-            manual: false,
-            status: "pending",
-            attempts: 1,
-            nextRetryAt: now.AddMinutes(5));
+        var state = StyleArtPresetTranslations.ParseState(preset.Translations);
+        return state is null
+            || state.Status == StyleArtPresetTranslations.Failed
+            || preset.Name != name
+            || preset.Description != description
+            || !ToRecommendations(preset.Recommendations).SequenceEqual(recommendations);
     }
 
     private async Task InvalidateSystemRowsAsync(CancellationToken cancellationToken) =>
@@ -299,8 +258,7 @@ public sealed class AdminStyleArtPresetService(
         string name,
         string? description,
         string? styleModifiers,
-        string? recommendationsJson,
-        AdminStyleArtPresetViRequestDto? vi)
+        string? recommendationsJson)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Trim().Length > StyleArtPresetRules.MaximumNameLength)
             return $"A style name of at most {StyleArtPresetRules.MaximumNameLength} characters is required.";
@@ -310,15 +268,6 @@ public sealed class AdminStyleArtPresetService(
             return $"The style modifiers must be at most {StyleArtPresetRules.MaximumModifiersLength} characters.";
         if (!StyleArtPresetRules.TryParseRecommendations(recommendationsJson, out _))
             return $"Recommendations must be a JSON array of up to {StyleArtPresetRules.MaximumRecommendations} short strings.";
-
-        if (vi is null)
-            return null;
-        if (vi.Name?.Trim().Length > StyleArtPresetRules.MaximumNameLength)
-            return $"The Vietnamese name must be at most {StyleArtPresetRules.MaximumNameLength} characters.";
-        if (vi.Description?.Trim().Length > StyleArtPresetRules.MaximumDescriptionLength)
-            return $"The Vietnamese description must be at most {StyleArtPresetRules.MaximumDescriptionLength} characters.";
-        if (!StyleArtPresetRules.TryParseRecommendations(vi.RecommendationsJson, out _))
-            return $"Vietnamese recommendations must be a JSON array of up to {StyleArtPresetRules.MaximumRecommendations} short strings.";
 
         return null;
     }
@@ -338,14 +287,8 @@ public sealed class AdminStyleArtPresetService(
             : new AdminStyleArtPresetViDto(vi.Name, vi.Description, vi.Recommendations);
     }
 
-    private static string? ViStatus(string? translations)
-    {
-        var state = StyleArtPresetTranslations.ParseState(translations);
-        if (state is null)
-            return null;
-
-        return state.Manual ? "manual" : state.Status;
-    }
+    private static string? ViStatus(string? translations) =>
+        StyleArtPresetTranslations.ParseState(translations)?.Status;
 
     private static AdminStyleArtPresetDto Map(StyleArtPreset preset) =>
         new(

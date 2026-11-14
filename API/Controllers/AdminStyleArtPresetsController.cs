@@ -36,8 +36,7 @@ public sealed class AdminStyleArtPresetsController(IAdminStyleArtPresetService s
                     form.Description,
                     form.StyleModifiers,
                     form.RecommendationsJson,
-                    preview,
-                    ToViRequest(form.ViName, form.ViDescription, form.ViRecommendationsJson)),
+                    preview),
                 cancellationToken);
 
             return result.IsSuccess
@@ -72,8 +71,7 @@ public sealed class AdminStyleArtPresetsController(IAdminStyleArtPresetService s
                     form.RecommendationsJson,
                     preview,
                     form.DeletePreview,
-                    form.IsActive,
-                    ToViRequest(form.ViName, form.ViDescription, form.ViRecommendationsJson)),
+                    form.IsActive),
                 cancellationToken);
 
             return result.ToActionResult(this);
@@ -89,9 +87,4 @@ public sealed class AdminStyleArtPresetsController(IAdminStyleArtPresetService s
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken) =>
         (await service.DeleteAsync(id, cancellationToken)).ToActionResult(this);
-
-    private static AdminStyleArtPresetViRequestDto? ToViRequest(string? name, string? description, string? recommendationsJson) =>
-        name is null && description is null && recommendationsJson is null
-            ? null
-            : new AdminStyleArtPresetViRequestDto(name, description, recommendationsJson);
 }

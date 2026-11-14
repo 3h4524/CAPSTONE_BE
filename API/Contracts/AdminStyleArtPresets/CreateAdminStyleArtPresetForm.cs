@@ -10,7 +10,4 @@ public sealed class CreateAdminStyleArtPresetForm
     public string StyleModifiers { get; set; } = string.Empty;
     public string? RecommendationsJson { get; set; }
     public IFormFile? Preview { get; set; }
-    public string? ViName { get; set; }
-    public string? ViDescription { get; set; }
-    public string? ViRecommendationsJson { get; set; }
 }

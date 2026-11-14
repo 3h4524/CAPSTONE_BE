@@ -54,14 +54,13 @@ public sealed class StyleArtPresetTranslationsTests
     }
 
     [TestMethod]
-    public void ParseState_WhenMetadataPresent_ReturnsManualAndPending()
+    public void ParseState_WhenMetadataPresent_ReturnsPendingWithItsSchedule()
     {
         var state = StyleArtPresetTranslations.ParseState(
-            "{\"vi\":{\"name\":\"Co dien\"},\"manual\":true,\"status\":\"pending\",\"attempts\":2,\"nextRetryAt\":\"2026-11-14T05:00:00.0000000Z\"}");
+            "{\"vi\":{\"name\":\"Co dien\"},\"status\":\"pending\",\"attempts\":2,\"nextRetryAt\":\"2026-11-14T05:00:00.0000000Z\"}");
 
         state.Should().NotBeNull();
-        state!.Manual.Should().BeTrue();
-        state.Status.Should().Be("pending");
+        state!.Status.Should().Be("pending");
         state.Attempts.Should().Be(2);
         state.NextRetryAt.Should().NotBeNull();
     }
@@ -90,7 +89,7 @@ public sealed class StyleArtPresetTranslationsTests
         var vi = new StyleArtPresetTranslations.ViTranslation("Co dien", "Tong co", ["Ap phich"]);
         var nextRetry = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
 
-        var document = StyleArtPresetTranslations.SerializeDocument(vi, manual: false, status: "pending", attempts: 1, nextRetryAt: nextRetry);
+        var document = StyleArtPresetTranslations.SerializeDocument(vi, status: "pending", attempts: 1, nextRetryAt: nextRetry);
 
         var localized = StyleArtPresetTranslations.Localize("Vintage", "Retro tones", "[\"Posters\"]", document, "vi");
         localized.Name.Should().Be("Co dien");
@@ -104,5 +103,49 @@ public sealed class StyleArtPresetTranslationsTests
         using var parsed = JsonDocument.Parse(document);
         parsed.RootElement.GetProperty("vi").GetProperty("recommendations").EnumerateArray()
             .Select(item => item.GetString()).Should().Equal("Ap phich");
+    }
+
+    [TestMethod]
+    public void Queued_IsDueAtOnce()
+    {
+        var now = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+
+        var state = StyleArtPresetTranslations.ParseState(StyleArtPresetTranslations.Queued(now));
+
+        state!.Status.Should().Be(StyleArtPresetTranslations.Pending);
+        state.Attempts.Should().Be(0);
+        StyleArtPresetTranslations.IsDue(state, now).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void AfterFailedAttempt_RetriesAfterFiveThenTenMinutesThenGivesUp()
+    {
+        var now = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var queued = StyleArtPresetTranslations.ParseState(StyleArtPresetTranslations.Queued(now))!;
+
+        var first = StyleArtPresetTranslations.ParseState(StyleArtPresetTranslations.AfterFailedAttempt(queued, now))!;
+        first.Status.Should().Be(StyleArtPresetTranslations.Pending);
+        first.NextRetryAt.Should().Be(now.AddMinutes(5));
+        StyleArtPresetTranslations.IsDue(first, now.AddMinutes(4)).Should().BeFalse();
+
+        var second = StyleArtPresetTranslations.ParseState(StyleArtPresetTranslations.AfterFailedAttempt(first, now))!;
+        second.Status.Should().Be(StyleArtPresetTranslations.Pending);
+        second.NextRetryAt.Should().Be(now.AddMinutes(10));
+
+        var third = StyleArtPresetTranslations.ParseState(StyleArtPresetTranslations.AfterFailedAttempt(second, now))!;
+        third.Status.Should().Be(StyleArtPresetTranslations.Failed);
+        third.NextRetryAt.Should().BeNull();
+        StyleArtPresetTranslations.IsDue(third, now.AddDays(1)).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void Succeeded_StoresTheTranslationAndClearsTheSchedule()
+    {
+        var document = StyleArtPresetTranslations.Succeeded(new StyleArtPresetTranslations.ViTranslation("Co dien", "Tong co", []));
+
+        var state = StyleArtPresetTranslations.ParseState(document)!;
+        state.Status.Should().Be(StyleArtPresetTranslations.Translated);
+        state.NextRetryAt.Should().BeNull();
+        StyleArtPresetTranslations.ParseViDocument(document)!.Name.Should().Be("Co dien");
     }
 }
