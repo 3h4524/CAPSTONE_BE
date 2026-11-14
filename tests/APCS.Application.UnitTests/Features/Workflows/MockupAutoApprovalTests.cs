@@ -61,12 +61,4 @@ public sealed class MockupAutoApprovalTests
         newer.ApprovalStatus.Should().Be("approved");
         older.ApprovalStatus.Should().Be("pending");
     }
-
-    [TestMethod]
-    public void NeedsNoConsent_StandardScenesOnly()
-    {
-        MockupAutoApproval.NeedsNoConsent(new GenerateVideoConfig(Mode: "standard")).Should().BeTrue();
-        MockupAutoApproval.NeedsNoConsent(new GenerateVideoConfig(Mode: "ai_shot")).Should().BeFalse();
-        MockupAutoApproval.NeedsNoConsent(new GenerateVideoConfig(Mode: "standard", AiScenes: [new AiVideoSceneOptions(Mode: "ai")])).Should().BeFalse();
-    }
 }

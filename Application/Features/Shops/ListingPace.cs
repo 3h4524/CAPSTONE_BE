@@ -58,16 +58,23 @@ public sealed class ListingPace(
         var limit = ListingPaceRules.For(await OpenedAtAsync(userId, cancellationToken), now);
         var since = now.UtcDateTime.AddDays(-1);
 
-        // A Printify product counts from when it was made: it becomes an Etsy listing when published.
         var direct = await etsyLogs.Query()
             .Where(row => row.EtsyIntegration.UserId == userId && row.EtsyListingId != null && row.AttemptedAt >= since)
             .Select(row => row.AttemptedAt)
             .ToListAsync(cancellationToken);
-        var throughPrintify = await printifyLogs.Query()
+        // A Printify product counts from when it was sent to Etsy; one only made on Printify adds no listing. Products
+        // made in the last month are read: one made earlier and published today is rare enough to leave out.
+        var madeSince = since.AddDays(-30);
+        var printifyStates = await printifyLogs.Query()
             .Where(row => row.PrintifyIntegration.UserId == userId && row.SyncType == "create" && row.UploadStatus == "success"
-                && row.CompletedAt != null && row.CompletedAt >= since)
-            .Select(row => row.CompletedAt!.Value)
+                && row.CompletedAt != null && row.CompletedAt >= madeSince && row.ApiResponse != null)
+            .Select(row => row.ApiResponse)
             .ToListAsync(cancellationToken);
+        var throughPrintify = printifyStates
+            .Select(json => PrintifyService.LogState.Read(json).PublishRequestedAt)
+            .OfType<DateTime>()
+            .Where(at => at >= since)
+            .ToList();
         var added = direct.Concat(throughPrintify).Order().ToList();
         var lastHour = added.Where(at => at >= now.UtcDateTime.AddHours(-1)).ToList();
 

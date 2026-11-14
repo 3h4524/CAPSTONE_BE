@@ -244,7 +244,7 @@ public sealed class AssistantPromptBuilderTests
         var system = builder.Build(AssistantTestSupport.Session())[0].Text!;
 
         system.Should().Contain($"in this order: {string.Join(", ", WorkflowNodeCatalog.RunOrder)}.");
-        system.Should().Contain("export-zip, publish-printify, publish-etsy").And.Contain(WorkflowNodeCatalog.PublishRule);
+        system.Should().Contain("approval-gate, publish-printify, generate-video").And.Contain("export-zip, publish-etsy").And.Contain(WorkflowNodeCatalog.PublishRule);
     }
 
     [TestMethod]

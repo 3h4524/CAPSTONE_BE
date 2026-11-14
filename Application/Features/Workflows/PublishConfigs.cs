@@ -103,6 +103,5 @@ public sealed record PublishNodeState(
     int MediaAttached = 0,
     IReadOnlyList<string>? Warnings = null,
     IReadOnlyList<Guid>? MockupIds = null,
-    bool IncludeVideo = false,
     bool MockupsAfterPrintify = false,
     string? MadeAs = null);

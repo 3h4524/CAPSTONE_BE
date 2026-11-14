@@ -434,7 +434,7 @@ public sealed class WorkflowRunGroupServiceTests
         data.AddDesign(mug, 1, approved: false);
         var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "left-out", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "left-out"), default)).Value;
 
         group.Status.Should().Be("running");
         data.Base.RunRows.Should().ContainSingle().Which.ProductId.Should().Be(data.Preview.Id);
@@ -464,7 +464,7 @@ public sealed class WorkflowRunGroupServiceTests
         data.QuotesCost(3.20m);
         var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "later", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "later"), default)).Value;
 
         // Pressing Run costs the seller no wait for the image provider: nothing is made yet, and the run says it is getting ready.
         group.Status.Should().Be("waiting_for_targets");
@@ -472,9 +472,9 @@ public sealed class WorkflowRunGroupServiceTests
         group.Notice.Should().BeNull();
         data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         data.StartQueue!.Requests.Should().ContainSingle().Which.Should().Be(
-            new RunGroupStartRequest(group.Id, WorkflowTestData.Owner, 5m, AutoApprove: true));
+            new RunGroupStartRequest(group.Id, WorkflowTestData.Owner, AutoApprove: true));
 
-        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+        await data.Service.PrepareAsync(group.Id, autoApprove: true, default);
 
         data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
         data.Base.RunRows.Should().ContainSingle();
@@ -490,14 +490,14 @@ public sealed class WorkflowRunGroupServiceTests
         data.QuotesCost(3.20m);
         var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "auto", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "auto"), default)).Value;
 
         // Quoting the AI scenes plans every design's storyboard: Run does not wait for it.
         group.Status.Should().Be("waiting_for_targets");
         group.Preparing.Should().BeTrue();
         data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
 
-        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+        await data.Service.PrepareAsync(group.Id, autoApprove: true, default);
 
         data.GroupRows.Single().Status.Should().Be("running");
         data.Base.RunRows.Should().ContainSingle();
@@ -509,7 +509,7 @@ public sealed class WorkflowRunGroupServiceTests
         var data = new RunGroupTestData(previewApproved: false, background: true);
         var workflow = data.AddWorkflow(data.AiConfig());
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "manual", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "manual"), default)).Value;
 
         group.Status.Should().Be("waiting_for_targets");
         group.Preparing.Should().BeFalse();
@@ -523,10 +523,10 @@ public sealed class WorkflowRunGroupServiceTests
         data.AddSystemModel();
         data.ModelPhotosSucceed();
         var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "cancelled", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "cancelled"), default)).Value;
         data.GroupRows.Single().Status = "cancelled";
 
-        await data.Service.PrepareAsync(group.Id, 5m, autoApprove: true, default);
+        await data.Service.PrepareAsync(group.Id, autoApprove: true, default);
 
         data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         data.Base.RunRows.Should().BeEmpty();
@@ -600,7 +600,7 @@ public sealed class WorkflowRunGroupServiceTests
         data.ModelPhotosSucceed();
         var workflow = data.AddWorkflow(data.PersonConfig());
 
-        (await data.Service.StartAsync(workflow.Id, new(4, "person", AiBudgetUsd: 5m), default)).IsSuccess.Should().BeTrue();
+        (await data.Service.StartAsync(workflow.Id, new(4, "person"), default)).IsSuccess.Should().BeTrue();
 
         // Both scenes show a person; one image is made and both use it.
         data.PersonConfig().AiScenes.Should().HaveCountGreaterThan(1);
@@ -609,15 +609,34 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_RunCostNotConfirmed_MakesNoPaidModelPhoto()
+    public async Task StartAsync_ScenesWithAPerson_MakeTheModelPhotoWithoutASecondConfirmation()
     {
         var data = new RunGroupTestData();
         data.AddSystemModel();
         data.ModelPhotosSucceed();
 
-        (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "unconfirmed"), default)).IsSuccess.Should().BeTrue();
+        // The model photo is in the cost shown when the seller pressed Run: nothing else has to be sent for it.
+        (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "shown-at-run"), default)).IsSuccess.Should().BeTrue();
 
-        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ModelPhotoThatCannotBeMade_SaysWhyAndContinueTriesAgain()
+    {
+        var data = new RunGroupTestData();
+        data.AddSystemModel();
+        data.Lifestyle
+            .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupResponse>(Error.Failure("Ideogram.Busy", "Ideogram is busy.")));
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "busy"), default)).Value;
+
+        group.Notice.Should().Contain("DAVIES T-Shirt").And.Contain("Ideogram is busy.");
+
+        data.ModelPhotosSucceed();
+        await data.Service.ConfirmAsync(group.Id, new(group.Revision), default);
+
+        data.Base.AssetRows.Should().ContainSingle(x => x.Role == ModelPhotoMockupService.Role);
     }
 
     [TestMethod]
@@ -627,7 +646,7 @@ public sealed class WorkflowRunGroupServiceTests
         data.AddSystemModel();
         data.ModelPhotosSucceed();
 
-        (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "ai", AiBudgetUsd: 5m), default)).IsSuccess.Should().BeTrue();
+        (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "ai"), default)).IsSuccess.Should().BeTrue();
 
         data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -639,23 +658,22 @@ public sealed class WorkflowRunGroupServiceTests
         data.AddSystemModel();
         data.ModelPhotosSucceed();
         var workflow = data.AddWorkflow(data.PersonConfig());
-        await data.Service.StartAsync(workflow.Id, new(4, "first", AiBudgetUsd: 5m), default);
+        await data.Service.StartAsync(workflow.Id, new(4, "first"), default);
 
-        await data.Service.StartAsync(workflow.Id, new(4, "second", AiBudgetUsd: 5m), default);
+        await data.Service.StartAsync(workflow.Id, new(4, "second"), default);
 
         data.Base.AssetRows.Count(x => x.Role == ModelPhotoMockupService.Role).Should().Be(1);
     }
 
     [TestMethod]
-    public async Task StartAsync_AutoApprovalWithinTheConfirmedAiBudget_StartsTheVideosWithTheirModelPhoto()
+    public async Task StartAsync_AutoApprovalWithScenesWithAPerson_StartsTheVideosWithTheirModelPhoto()
     {
         var data = new RunGroupTestData(previewApproved: false);
         data.AddSystemModel();
         data.ModelPhotosSucceed();
-        data.QuotesCost(3.20m);
         var workflow = data.AddWorkflow(data.PersonConfig(), gateMode: "auto");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "budget", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "person-auto"), default)).Value;
 
         group.Status.Should().Be("running");
         data.Base.AssetRows.Single(x => x.Role == ModelPhotoMockupService.Role).ApprovalStatus.Should().Be("approved");
@@ -663,32 +681,92 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_AutoApprovalOverTheConfirmedAiBudget_WaitsAtMockupApproval()
+    public async Task StartAsync_AutoApprovalWithAiScenes_StartsTheVideosWithoutASecondConfirmation()
     {
         var data = new RunGroupTestData(previewApproved: false);
-        data.QuotesCost(9.60m);
         var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "over", AiBudgetUsd: 5m), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "ai-auto"), default)).Value;
 
-        group.Status.Should().Be("waiting_for_targets");
-        group.Notice.Should().Contain("$9.60").And.Contain("$5.00");
-        data.Base.RunRows.Should().BeEmpty();
-        data.PreviewMockups.Should().OnlyContain(x => x.ApprovalStatus == "approved");
+        group.Status.Should().Be("running");
+        group.Notice.Should().BeNull();
+        data.Base.RunRows.Should().ContainSingle();
+        data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
-    public async Task StartAsync_AutoApprovalWithoutAnAiBudget_WaitsForTheCostToBeConfirmed()
+    public async Task ResumeAsync_StoppedGroup_QueuesItsStoppedRunsAgainFromWhereTheyStopped()
     {
-        var data = new RunGroupTestData(previewApproved: false);
-        data.QuotesCost(1m);
-        var workflow = data.AddWorkflow(data.AiConfig(), gateMode: "auto");
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        await data.GroupPlanner.AdvanceNextAsync(_ => { }, default);
+        var stopped = (await data.Service.CancelAsync(group.Id, new(2), default)).Value;
+        var run = data.Base.RunRows.Single();
+        var video = data.Base.VideoRows.Single(x => x.WorkflowRunId == run.Id);
+        video.Status.Should().Be("failed", "a video the stop left unfinished is not counted against the plan");
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "no-budget"), default)).Value;
+        var resumed = await data.Service.ResumeAsync(group.Id, new(stopped.Revision), default);
 
-        group.Status.Should().Be("waiting_for_targets");
-        group.Notice.Should().Be("Confirm what the AI videos of this run cost before starting them.");
-        data.Base.Quotes.Verify(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()), Times.Never);
+        resumed.IsSuccess.Should().BeTrue(resumed.IsFailure ? resumed.Error.Message : null);
+        resumed.Value.Status.Should().Be("running");
+        run.Status.Should().Be("queued");
+        var steps = data.Base.NodeRows.Where(x => x.WorkflowRunId == run.Id).ToArray();
+        steps.Should().NotContain(x => x.Status == "cancelled");
+        steps.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeTrue();
+        // Nothing changed, so the video is made again under the version the stop left unfinished.
+        data.Base.VideoRows.Where(x => x.WorkflowRunId == run.Id).Should().ContainSingle().Which.Status.Should().Be("queued");
+    }
+
+    [TestMethod]
+    public async Task ResumeAsync_GroupStoppedAtMockupApproval_WaitsThereAgain()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        var stopped = (await data.Service.CancelAsync(group.Id, new(group.Revision), default)).Value;
+
+        var resumed = await data.Service.ResumeAsync(group.Id, new(stopped.Revision), default);
+
+        resumed.Value.Status.Should().Be("waiting_for_targets");
+    }
+
+    [TestMethod]
+    public async Task ResumeAsync_GroupThatIsNotStopped_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+
+        var result = await data.Service.ResumeAsync(group.Id, new(group.Revision), default);
+
+        result.Error.Code.Should().Be("InvalidCheckpoint");
+    }
+
+    [TestMethod]
+    public async Task ResumeAsync_OneDesignsRun_WithALongerScene_RendersAgainAndBringsTheGroupBack()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        await data.GroupPlanner.AdvanceNextAsync(_ => { }, default);
+        await data.Service.CancelAsync(group.Id, new(2), default);
+        var run = data.Base.RunRows.Single();
+        var generate = data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video");
+        var attempt = generate.Attempt;
+        var longer = data.SharedConfig() with
+        {
+            DurationSeconds = 12,
+            AiScenes = data.SharedConfig().AiScenes!.Select((scene, index) => index == 0 ? scene with { DurationSeconds = 7 } : scene).ToArray()
+        };
+
+        var result = await data.RunService.ActionAsync(run.Id, new(run.Revision, "resume", Config: longer), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        run.Status.Should().Be("running");
+        generate.Attempt.Should().Be(attempt + 1);
+        WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot).AiScenes![0].DurationSeconds.Should().Be(7);
+        data.GroupRows.Single().Status.Should().Be("running");
     }
 
     [TestMethod]
@@ -748,6 +826,101 @@ public sealed class WorkflowRunGroupServiceTests
         var result = await data.Service.StartAsync(workflow.Id, new(4, "pack"), default);
 
         result.Error.Message.Should().Contain("product's own video settings");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PublishWithoutVideo_WaitsForTheDesignsAndConfirmQueuesOneRunEachToPublish()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow();
+        workflow.Definition = WorkflowJson.Write(WorkflowTestData.PublishWithoutVideoDefinition(data.Preview));
+        var other = data.AddProduct("Birth Month Blooms");
+        data.AddDesign(other, 1, approved: true);
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "publish"), default);
+        started.IsSuccess.Should().BeTrue(started.IsFailure ? started.Error.Message : null);
+        started.Value.Status.Should().Be("waiting_for_targets");
+        started.Value.Targets.Should().HaveCount(2).And.OnlyContain(x => x.Selected && x.Scenes.Count == 0 && x.Config == null);
+
+        var confirmed = await data.Service.ConfirmAsync(started.Value.Id, new(1), default);
+
+        confirmed.IsSuccess.Should().BeTrue(confirmed.IsFailure ? confirmed.Error.Message : null);
+        data.Base.RunRows.Should().HaveCount(2).And.OnlyContain(run => run.Status == "queued" && run.RunGroupId == started.Value.Id);
+        data.Base.NodeRows.Should().NotContain(x => x.NodeType == "generate-video");
+        data.Entitlements.AllowancesRequested.Should().NotContain(x => x.Item1 == UsageAllowances.Videos);
+        data.Base.Quotes.Verify(x => x.VerifyBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeTrue();
+        var planned = data.Base.RunRows.Single(x => x.Status != "queued");
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == planned.Id && x.NodeType == "publish-printify").Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ListingAfterMockupApprovalWithoutVideo_WritesEachDesignsListing()
+    {
+        var data = new RunGroupTestData();
+        data.Base.ListingSucceeds();
+        var workflow = data.AddWorkflow();
+        var publish = WorkflowTestData.PublishWithoutVideoDefinition(data.Preview);
+        var listing = new WorkflowNode("listing", "generate-listing", "Listing content", new(800, 0), JsonSerializer.SerializeToElement(new { }));
+        WorkflowNode[] nodes = [.. publish.Nodes.Where(x => x.Type != "publish-printify"), listing];
+        workflow.Definition = WorkflowJson.Write(new WorkflowDefinition(2, nodes,
+            nodes.Skip(1).Select((node, i) => new WorkflowEdge("edge-" + i, nodes[i].Id, node.Id)).ToArray()));
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "listing"), default);
+        started.IsSuccess.Should().BeTrue(started.IsFailure ? started.Error.Message : null);
+        (await data.Service.ConfirmAsync(started.Value.Id, new(1), default)).IsSuccess.Should().BeTrue();
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeTrue();
+
+        var run = data.Base.RunRows.Should().ContainSingle().Subject;
+        run.Status.Should().Be("completed");
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-listing").Status.Should().Be("succeeded");
+    }
+
+    [TestMethod]
+    public async Task UpdateConfigAsync_GroupWithoutVideo_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var workflow = data.AddWorkflow();
+        workflow.Definition = WorkflowJson.Write(WorkflowTestData.PublishWithoutVideoDefinition(data.Preview));
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "no-video"), default)).Value;
+
+        var result = await data.Service.UpdateConfigAsync(group.Id,
+            new(group.Revision, data.Preview.Id, data.PreviewDesign.Id.ToString(), data.SharedConfig()), default);
+
+        result.Error.Message.Should().Contain("makes no video");
+    }
+
+    // Push to Printify runs beside the video: a run it failed still shows its video as made.
+    [TestMethod]
+    [DataRow("failed", "succeeded", "succeeded", "completed")]
+    [DataRow("running", "succeeded", "waiting_for_review", "waiting_for_review")]
+    [DataRow("succeeded", "failed", "pending", "failed")]
+    [DataRow("failed", "running", "pending", "running")]
+    // Stopped while only Printify was going: the finished video stays made.
+    [DataRow("cancelled", "succeeded", "succeeded", "completed")]
+    // Stopped while the video was rendering: the video is stopped.
+    [DataRow("cancelled", "cancelled", "cancelled", "cancelled")]
+    public void VideoStatusOf_ReadsTheVideoApartFromPushToPrintify(string printify, string generate, string review, string expected)
+    {
+        WorkflowNodeRun Step(string type, string status) => new() { Id = Guid.NewGuid(), NodeType = type, Status = status };
+        var run = new WorkflowRun { Status = printify == "cancelled" ? "cancelled"
+            : printify == "failed" && generate == "succeeded" && review == "succeeded" ? "failed" : "running" };
+        var steps = new[]
+        {
+            Step("product-input", "succeeded"), Step("apply-mockup", "succeeded"), Step("approval-gate", "succeeded"),
+            Step("publish-printify", printify), Step("generate-video", generate), Step("review-video", review),
+        };
+
+        WorkflowRunGroupService.VideoStatusOf(run, steps).Should().Be(expected);
+    }
+
+    [TestMethod]
+    public void VideoStatusOf_RunWithoutAVideo_HasNone()
+    {
+        var steps = new[] { new WorkflowNodeRun { NodeType = "approval-gate", Status = "succeeded" }, new WorkflowNodeRun { NodeType = "publish-printify", Status = "failed" } };
+
+        WorkflowRunGroupService.VideoStatusOf(new WorkflowRun { Status = "failed" }, steps).Should().BeNull();
     }
 
     [TestMethod]
@@ -821,7 +994,7 @@ public sealed class WorkflowRunGroupServiceTests
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
                 Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
                 lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object,
-                startQueue: StartQueue = background ? new FakeStartQueue() : null);
+                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object);
             GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
             RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,
@@ -876,9 +1049,6 @@ public sealed class WorkflowRunGroupServiceTests
         {
             Base.Quotes.Setup(x => x.QuoteBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success(new AiShotQuoteResponse("budget-token", cost, 2, WorkflowTestData.Now.AddMinutes(10), "MiniMax-H3", "note")));
-            Base.Quotes.Setup(x => x.VerifyBatchAsync(It.IsAny<Guid>(), It.IsAny<IReadOnlyList<PlannedVideo>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((Guid _, IReadOnlyList<PlannedVideo> _, string? token, CancellationToken _) =>
-                    token == "budget-token" ? Result.Success() : Result.Failure(Error.Validation("Confirm what the AI videos of this run cost before starting them.")));
         }
 
         /// <summary>AI scenes that all show a person (Product On Model).</summary>
