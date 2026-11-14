@@ -26,8 +26,10 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
             return Error.Validation("Add a Listing Content, Generate Video or publish node before running the workflow.");
         if (hasListing && !hasVideo && !publishes && definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)))
             return Error.Validation("A listing-only workflow currently supports Product Input -> Listing Content.");
-        if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) != 1))
-            return Error.Validation("Each video MVP node must appear exactly once.");
+        // Export ZIP is optional: the publish steps read the approved media themselves, not the ZIP.
+        if (hasVideo && WorkflowCapabilityRegistry.Pipeline.Any(type => definition.Nodes.Count(x => x.Type == type) is var count
+                && (WorkflowCapabilityRegistry.OptionalVideoSteps.Contains(type) ? count > 1 : count != 1)))
+            return Error.Validation("A video needs Product Input, Apply Mockup, Mockup Approval, Generate Video and Review Video exactly once each; Export ZIP may appear once.");
         // Without a video the publish steps follow Mockup Approval, so the seller still approves what is listed.
         if (!hasVideo && publishes)
         {

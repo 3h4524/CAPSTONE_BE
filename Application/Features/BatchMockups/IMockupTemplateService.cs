@@ -17,25 +17,38 @@ public interface IMockupTemplateService
     /// <summary>Stores the mock-up selection on a draft batch.</summary>
     Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default);
 
-    /// <summary>Creates a personal mock-up template with a real uploaded base photo.</summary>
-    Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
-
-    /// <summary>Updates a personal mock-up template the current Seller owns.</summary>
-    Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, CancellationToken cancellationToken = default);
-
-    /// <summary>Deactivates a personal mock-up template the current Seller owns (soft — no hard delete column exists).</summary>
-    Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+    /// <summary>The shared templates (no owner), with their sides and Printify link, as an admin manages them.</summary>
+    Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListSystemAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gives a template the photo of another of its sides (back, left or right sleeve): a template of the Seller's own,
-    /// which is then shown with it only. Null takes the side off; the side it replaces or takes off is removed.
+    /// Creates a mock-up template with a real uploaded base photo: the Seller's own, or a shared one when
+    /// <paramref name="system"/> (an admin, with no plan check).
     /// </summary>
-    Task<Result<MockupTemplateResponseDto>> SetViewAsync(Guid id, string view, Guid? viewTemplateId, CancellationToken cancellationToken = default);
+    Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, bool system = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates a template the current Seller owns, or a shared one when <paramref name="system"/>. A Printify template
+    /// keeps its photo and print area.
+    /// </summary>
+    Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, bool system = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deactivates a template the current Seller owns, or a shared one when <paramref name="system"/> (soft — no hard
+    /// delete column exists).
+    /// </summary>
+    Task<Result> DeleteAsync(Guid id, bool system = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gives a template the photo of another of its sides (back, left or right sleeve): a template of the same owner
+    /// (shared ones when <paramref name="system"/>), which is then shown with it only. Null takes the side off; the
+    /// side it replaces or takes off is removed. A Printify template only gets new sides from Printify.
+    /// </summary>
+    Task<Result<MockupTemplateResponseDto>> SetViewAsync(Guid id, string view, Guid? viewTemplateId, bool system = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Previews a base photo before it is saved: its garment mask and whether it can be recolored.
     /// </summary>
-    Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default);
+    Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, bool system = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Composites a design image onto a mock-up template's base photo (SRS 3.5.9 execution). Uses the

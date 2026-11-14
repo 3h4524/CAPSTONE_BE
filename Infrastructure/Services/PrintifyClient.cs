@@ -104,6 +104,48 @@ public sealed class PrintifyClient(
         return new PrintifyUploadedImage(id, (int)(Number(root, "width") ?? 0), (int)(Number(root, "height") ?? 0));
     }
 
+    public async Task<PrintifyUploadedImage> UploadImageContentsAsync(string token, string fileName, byte[] contents, CancellationToken cancellationToken)
+    {
+        using var document = await SendAsync(HttpMethod.Post, "uploads/images.json", token,
+            new { file_name = fileName, contents = Convert.ToBase64String(contents) }, cancellationToken);
+        var root = document.RootElement;
+        var id = Text(root, "id");
+        if (string.IsNullOrEmpty(id))
+            throw new PrintifyApiException(PrintifyFailureKind.Unavailable, "Printify returned no image id.");
+        return new PrintifyUploadedImage(id, (int)(Number(root, "width") ?? 0), (int)(Number(root, "height") ?? 0));
+    }
+
+    public async Task<PrintifyProduct> CreateProbeProductAsync(string token, long shopId, PrintifyProbeProduct product, CancellationToken cancellationToken)
+    {
+        var body = new
+        {
+            title = product.Title,
+            description = "Temporary product made to read its mock-ups. Not for sale; delete it.",
+            blueprint_id = product.BlueprintId,
+            print_provider_id = product.PrintProviderId,
+            variants = product.VariantIds.Select(id => new { id, price = 2500, is_enabled = true }),
+            print_areas = new[]
+            {
+                new
+                {
+                    variant_ids = product.VariantIds,
+                    placeholders = product.Positions.Select(position => new
+                    {
+                        position,
+                        images = new[] { new { id = product.ImageId, x = 0.5, y = 0.5, scale = 1.0, angle = 0 } },
+                    }),
+                },
+            },
+        };
+        using var document = await SendAsync(HttpMethod.Post, $"shops/{shopId}/products.json", token, body, cancellationToken);
+        return ReadProduct(document.RootElement);
+    }
+
+    public async Task DeleteProductAsync(string token, long shopId, string productId, CancellationToken cancellationToken)
+    {
+        using var _ = await SendAsync(HttpMethod.Delete, $"shops/{shopId}/products/{Uri.EscapeDataString(productId)}.json", token, null, cancellationToken);
+    }
+
     public async Task<PrintifyProduct> CreateProductAsync(string token, long shopId, PrintifyNewProduct product, CancellationToken cancellationToken)
     {
         var body = new
@@ -171,9 +213,16 @@ public sealed class PrintifyClient(
                 Flag(variant, "is_enabled"),
                 !variant.TryGetProperty("is_available", out var available) || available.ValueKind != JsonValueKind.False)).ToArray()
             : [];
-        var images = root.TryGetProperty("images", out var pictures)
-            ? Items(pictures).Select(image => Text(image, "src")).Where(src => !string.IsNullOrEmpty(src)).Select(src => src!).ToArray()
+        var pictures = root.TryGetProperty("images", out var list2)
+            ? Items(list2).Select(image => new PrintifyProductImage(
+                Text(image, "src") ?? string.Empty,
+                image.TryGetProperty("variant_ids", out var ids) && ids.ValueKind == JsonValueKind.Array
+                    ? ids.EnumerateArray().Where(id => id.ValueKind == JsonValueKind.Number).Select(id => id.GetInt64()).ToArray()
+                    : [],
+                Text(image, "position"),
+                Flag(image, "is_default"))).Where(image => image.Src.Length > 0).ToArray()
             : [];
+        var images = pictures.Select(image => image.Src).ToArray();
         return new PrintifyProduct(
             Text(root, "id") ?? string.Empty,
             Text(root, "title") ?? string.Empty,
@@ -181,7 +230,8 @@ public sealed class PrintifyClient(
             string.IsNullOrWhiteSpace(externalId) ? null : externalId,
             string.IsNullOrWhiteSpace(handle) ? null : handle,
             variants,
-            images);
+            images,
+            pictures);
     }
 
     private static PrintifyProvider ReadProvider(JsonElement provider)

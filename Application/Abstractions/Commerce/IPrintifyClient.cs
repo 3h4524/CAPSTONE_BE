@@ -48,6 +48,24 @@ public sealed record PrintifyNewProduct(
     double Y = 0.5,
     IReadOnlyList<PrintifyPlacement>? MorePlacements = null);
 
+/// <summary>
+/// A throwaway product printing one image, centered and filling the area, on several print areas (<c>front</c>,
+/// <c>back</c>…) of every variant: what its mock-ups show is where Printify prints.
+/// </summary>
+public sealed record PrintifyProbeProduct(
+    string Title,
+    long BlueprintId,
+    long PrintProviderId,
+    IReadOnlyList<long> VariantIds,
+    string ImageId,
+    IReadOnlyList<string> Positions);
+
+/// <summary>
+/// A mock-up photo of a product: <c>Src</c> is its URL, <c>VariantIds</c> the product variants it shows and
+/// <c>Position</c> the print area it faces, as Printify says.
+/// </summary>
+public sealed record PrintifyProductImage(string Src, IReadOnlyList<long> VariantIds, string? Position, bool IsDefault);
+
 /// <summary>A product variant with what Printify charges (<c>CostCents</c>) and what the buyer pays (<c>PriceCents</c>).</summary>
 public sealed record PrintifyProductVariant(long Id, string Title, long CostCents, long PriceCents, bool IsEnabled, bool IsAvailable);
 
@@ -62,7 +80,8 @@ public sealed record PrintifyProduct(
     string? ExternalId,
     string? ExternalHandle,
     IReadOnlyList<PrintifyProductVariant> Variants,
-    IReadOnlyList<string> ImageUrls);
+    IReadOnlyList<string> ImageUrls,
+    IReadOnlyList<PrintifyProductImage>? Images = null);
 
 public enum PrintifyFailureKind
 {
@@ -107,7 +126,15 @@ public interface IPrintifyClient
     /// <summary>Printify fetches the image from <paramref name="sourceUrl"/>, the recommended way for large files.</summary>
     Task<PrintifyUploadedImage> UploadImageAsync(string token, string fileName, string sourceUrl, CancellationToken cancellationToken);
 
+    /// <summary>Uploads an image sent with the request, for a small file that has no public URL.</summary>
+    Task<PrintifyUploadedImage> UploadImageContentsAsync(string token, string fileName, byte[] contents, CancellationToken cancellationToken);
+
     Task<PrintifyProduct> CreateProductAsync(string token, long shopId, PrintifyNewProduct product, CancellationToken cancellationToken);
+
+    /// <summary>Creates an unpublished product only to read its mock-ups; delete it with <see cref="DeleteProductAsync"/>.</summary>
+    Task<PrintifyProduct> CreateProbeProductAsync(string token, long shopId, PrintifyProbeProduct product, CancellationToken cancellationToken);
+
+    Task DeleteProductAsync(string token, long shopId, string productId, CancellationToken cancellationToken);
 
     Task<PrintifyProduct> GetProductAsync(string token, long shopId, string productId, CancellationToken cancellationToken);
 

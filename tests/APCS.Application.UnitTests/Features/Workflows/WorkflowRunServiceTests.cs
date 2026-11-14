@@ -809,6 +809,40 @@ public sealed class WorkflowRunServiceTests
         return (run, config, job);
     }
 
+    [TestMethod]
+    public async Task ActionAsync_ApproveVideoWithoutExportZip_GoesStraightToPushToPrintify()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        fixture.NodeRows.RemoveAll(x => x.NodeType == "export-zip");
+        var publish = new WorkflowNodeRun { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "publish-printify", NodeType = "publish-printify",
+            Status = "pending", Attempt = 1, InputSnapshot = WorkflowJson.Write(new { targetProfit = 10 }), OutputSnapshot = "{}" };
+        fixture.NodeRows.Add(publish);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", fixture.VideoRows.Single().Id, 2), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.ExportRows.Should().BeEmpty();
+        publish.Status.Should().Be("running");
+        run.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryAFailedVideoWithoutExportZip_RendersAgain()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture); run.Status = "failed";
+        fixture.NodeRows.RemoveAll(x => x.NodeType == "export-zip");
+        fixture.VideoRows.Single().Status = "failed";
+        fixture.NodeRows.Single(x => x.NodeType == "generate-video").Status = "failed";
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Status.Should().Be("running");
+        fixture.NodeRows.Single(x => x.NodeType == "review-video").Status.Should().Be("pending");
+    }
+
     internal static WorkflowRun PrepareReview(WorkflowTestData fixture)
     {
         var product = fixture.AddProduct();

@@ -66,11 +66,13 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         // A listing that could not be written stays failed on its own step and can be retried there:
         // the video is made from the mock-ups and does not wait for it. Without a video, Mockup Approval leads
-        // straight to the publish steps below.
+        // straight to the publish steps below, and a video without Export ZIP goes there from Review Video.
         var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
         foreach (var type in hasVideo ? WorkflowCapabilityRegistry.Pipeline : WorkflowCapabilityRegistry.PublishPipeline)
         {
-            var node = checkpoints.Single(x => x.NodeType == type);
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null && WorkflowCapabilityRegistry.OptionalVideoSteps.Contains(type)) continue;
+            node ??= checkpoints.Single(x => x.NodeType == type);
             if (node.Status == "succeeded") continue;
             if (node.Status is "running" or "failed" or "cancelled") return;
             node.UpdatedAt = time.GetUtcNow().UtcDateTime;
