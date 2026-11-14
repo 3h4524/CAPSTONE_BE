@@ -276,6 +276,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.TranslationRetrySweeper>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantTurnWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
@@ -337,6 +338,7 @@ public static class DependencyInjection
         // A background worker sets the acting seller on its scope; a request reads the signed-in user.
         services.AddScoped<ActingUserContext>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
+        services.AddScoped<APCS.Application.Abstractions.Localization.ICultureAccessor, CultureAccessorService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IJwtService, JwtService>();

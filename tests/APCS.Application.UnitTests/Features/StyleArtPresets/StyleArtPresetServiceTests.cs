@@ -1,4 +1,6 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.StyleArtPresets;
@@ -342,14 +344,95 @@ public sealed class StyleArtPresetServiceTests
         result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.NotFound);
     }
 
+    [TestMethod]
+    public async Task ListMineAsync_WhenCacheHit_UsesCachedSystemRows()
+    {
+        var userId = Guid.NewGuid();
+        var repository = PresetRepository();
+        var cachedRows = new List<StyleArtPresetCacheRow>
+        {
+            new(Guid.NewGuid(), "Vintage", "Retro", "vintage", null, "[\"A\"]", 9, null)
+        };
+        var cache = new Mock<ICacheService>();
+        cache.Setup(x => x.GetAsync<IReadOnlyList<StyleArtPresetCacheRow>>("sys:style-art-presets:system", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(cachedRows);
+
+        var result = await CreateService(userId, repository, cache: cache).ListMineAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().ContainSingle().Which.Name.Should().Be("Vintage");
+        repository.Verify(r => r.Query(), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ListMineAsync_CultureVi_LocalizesSystemPresetsOnly()
+    {
+        var userId = Guid.NewGuid();
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro tones", StyleModifiers = "retro", Recommendations = "[\"Posters\"]", IsActive = true, IsSystemTemplate = true, UsageCount = 5, Translations = "{\"vi\":{\"name\":\"C\",\"description\":\"M\",\"recommendations\":[\"P\"]},\"status\":\"ok\"}" },
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Mine", Description = "Own", StyleModifiers = "own", Recommendations = "[]", IsActive = true, IsSystemTemplate = false, UserId = userId, UsageCount = 1 });
+
+        var result = await CreateService(userId, repository, culture: "vi").ListMineAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.First(item => item.IsSystemTemplate).Name.Should().Be("C");
+        result.Value.First(item => item.IsSystemTemplate).Description.Should().Be("M");
+        result.Value.First(item => item.IsSystemTemplate).Recommendations.Should().ContainSingle().Which.Should().Be("P");
+        result.Value.First(item => !item.IsSystemTemplate).Name.Should().Be("Mine");
+    }
+
+    [TestMethod]
+    public async Task ListMineAsync_CultureVi_MissingViFieldFallsBackToEnglish()
+    {
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro tones", StyleModifiers = "retro", Recommendations = "[\"Posters\"]", IsActive = true, IsSystemTemplate = true, UsageCount = 5, Translations = "{\"vi\":{\"name\":\"C\",\"description\":\"\",\"recommendations\":[]},\"status\":\"ok\"}" });
+
+        var result = await CreateService(Guid.NewGuid(), repository, culture: "vi").ListMineAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        var item = result.Value.Single();
+        item.Name.Should().Be("C");
+        item.Description.Should().Be("Retro tones");
+        item.Recommendations.Should().ContainSingle().Which.Should().Be("Posters");
+    }
+
+    [TestMethod]
+    public async Task ListMineAsync_CultureVi_CorruptTranslationsFallsBackToEnglish()
+    {
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro tones", StyleModifiers = "retro", Recommendations = "[\"Posters\"]", IsActive = true, IsSystemTemplate = true, UsageCount = 5, Translations = "{not-json" });
+
+        var result = await CreateService(Guid.NewGuid(), repository, culture: "vi").ListMineAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Single().Name.Should().Be("Vintage");
+    }
+
+    [TestMethod]
+    public async Task ListMineAsync_CultureEn_IgnoresTranslations()
+    {
+        var repository = PresetRepository(
+            new StyleArtPreset { Id = Guid.NewGuid(), Name = "Vintage", Description = "Retro tones", StyleModifiers = "retro", Recommendations = "[]", IsActive = true, IsSystemTemplate = true, UsageCount = 5, Translations = "{\"vi\":{\"name\":\"Co dien\"}}" });
+
+        var result = await CreateService(Guid.NewGuid(), repository, culture: "en").ListMineAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Single().Name.Should().Be("Vintage");
+    }
+
     private static StyleArtPresetService CreateService(
         Guid? userId,
         Mock<IRepository<StyleArtPreset>> repository,
-        Mock<IPublicImageService>? images = null)
+        Mock<IPublicImageService>? images = null,
+        Mock<ICacheService>? cache = null,
+        string culture = "en")
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(userId.HasValue);
         currentUser.SetupGet(user => user.UserId).Returns(userId);
+
+        var cultureAccessor = new Mock<ICultureAccessor>();
+        cultureAccessor.SetupGet(accessor => accessor.CurrentCulture).Returns(culture);
 
         return new StyleArtPresetService(
             currentUser.Object,
@@ -358,7 +441,21 @@ public sealed class StyleArtPresetServiceTests
             new CreateStyleArtPresetValidator(),
             new UpdateStyleArtPresetValidator(),
             new QuickCreateStyleArtPresetValidator(),
+            cultureAccessor.Object,
+            (cache ?? MissCache()).Object,
             TimeProvider.System);
+    }
+
+    private static Mock<ICacheService> MissCache()
+    {
+        var cache = new Mock<ICacheService>();
+        cache.Setup(x => x.GetAsync<IReadOnlyList<StyleArtPresetCacheRow>>(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((IReadOnlyList<StyleArtPresetCacheRow>?)null);
+        cache.Setup(x => x.SetAsync(It.IsAny<string>(), It.IsAny<List<StyleArtPresetCacheRow>>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        cache.Setup(x => x.RemoveAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        return cache;
     }
 
     private static Mock<IRepository<StyleArtPreset>> PresetRepository(params StyleArtPreset[] presets)
