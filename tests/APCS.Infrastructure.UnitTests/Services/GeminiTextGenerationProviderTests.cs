@@ -87,6 +87,28 @@ public sealed class GeminiTextGenerationProviderTests
         body.Should().NotContain("responseSchema");
     }
 
+    [TestMethod]
+    [DataRow("""{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}""", "PROHIBITED_CONTENT")]
+    [DataRow("""{"candidates":[{"finishReason":"SAFETY"}]}""", "SAFETY")]
+    public async Task GenerateAsync_RefusedBySafetyFilter_SaysSoInsteadOfAnEmptyAnswer(string body, string reason)
+    {
+        var provider = Provider(_ => Response(HttpStatusCode.OK, body));
+
+        var action = () => provider.GenerateAsync(new GeminiTextGenerationRequest("Classify this."));
+
+        (await action.Should().ThrowAsync<GeminiContentBlockedException>()).Which.Reason.Should().Be(reason);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_EmptyAnswerWithoutABlock_IsStillAnUnusableAnswer()
+    {
+        var provider = Provider(_ => Response(HttpStatusCode.OK, """{"candidates":[{"finishReason":"STOP"}]}"""));
+
+        var action = () => provider.GenerateAsync(new GeminiTextGenerationRequest("Classify this."));
+
+        (await action.Should().ThrowAsync<InvalidOperationException>()).Which.Should().NotBeOfType<GeminiContentBlockedException>();
+    }
+
     private static GeminiTextGenerationProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send) =>
         new(new HttpClient(new Handler(send)) { BaseAddress = new Uri("https://example.test/v1beta/") },
             Microsoft.Extensions.Options.Options.Create(new GeminiTextGenerationOptions { ApiKey = "key", Model = "primary-model", FallbackModel = "fallback-model" }));

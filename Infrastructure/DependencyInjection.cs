@@ -167,6 +167,9 @@ public static class DependencyInjection
         }
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.AddOptions<APCS.Application.Features.Moderation.ModerationOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Moderation.ModerationOptions.SectionName))
+            .ValidateDataAnnotations();
         services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
             .Bind(configuration.GetSection(APCS.Application.Features.Workflows.VideoPromptPreparationOptions.SectionName));
         services.AddScoped<IVideoFirstFramePreparer, MiniMaxFirstFramePreparer>();
@@ -308,6 +311,7 @@ public static class DependencyInjection
         services.AddScoped<IPlanRepository, PlanRepository>();
         services.AddScoped<IInvoiceRepository, InvoiceRepository>();
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
+        services.AddSingleton<APCS.Application.Abstractions.Moderation.IModerationStore, ModerationStore>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
         services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
@@ -316,6 +320,7 @@ public static class DependencyInjection
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
         services.AddScoped<IMockupTemplatePrintifyLinkRepository, MockupTemplatePrintifyLinkRepository>();
         services.AddScoped<IPrintifyColorMapRepository, PrintifyColorMapRepository>();
+        services.AddScoped<IModerationCheckRepository, ModerationCheckRepository>();
 
         return services;
     }

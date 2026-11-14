@@ -14,7 +14,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
-    IRepository<MockupTemplate>? mockupTemplates = null)
+    IRepository<MockupTemplate>? mockupTemplates = null,
+    Abstractions.Moderation.IContentModerationService? moderation = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -49,8 +50,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             ? null
             : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
         var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap);
-        if (planned.IsFailure || promptPreparation is null) return planned;
-        return Result.Success(await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct));
+        if (planned.IsFailure) return planned;
+        var prepared = promptPreparation is null
+            ? planned.Value
+            : await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct);
+        return await moderation.CheckAiShotPromptsAsync(prepared, run.UserId, ct);
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)

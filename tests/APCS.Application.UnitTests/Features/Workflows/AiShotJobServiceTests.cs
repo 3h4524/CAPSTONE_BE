@@ -1,5 +1,6 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.BatchMockups.Common;
@@ -38,6 +39,29 @@ public sealed class AiShotJobServiceTests
         // The worker asks again after a restart: the paid request is not sent a second time.
         (await service.StartAsync(job.Id, 0, Lease(), default)).Value.Status.Should().Be("polling");
         provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PromptBlockedByTheContentPolicy_FailsTheSceneWithoutSubmitting()
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(),
+                It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new ModerationVerdict(ModerationDecision.Block,
+                [new ModerationFinding(ModerationCategories.ViolenceGore, ModerationSeverity.High)], ModerationDeciders.Gemini));
+        var service = Service(moderation: moderation.Object);
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        State().Status.Should().Be("failed");
+        State().Failure.Should().Contain("graphic violence");
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()), Times.Never);
+        moderation.Verify(x => x.CheckTextAsync(
+            It.Is<IReadOnlyList<ModerationText>>(texts => texts.Single().Value == "Move gently."),
+            It.Is<ModerationContext>(context => context.Feature == ModerationFeatures.AiVideo && context.Direction == ModerationDirection.Input),
+            It.IsAny<CancellationToken>(), false), Times.Once);
     }
 
     [TestMethod]
@@ -422,7 +446,8 @@ public sealed class AiShotJobServiceTests
 
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true,
         string providerKey = VeoVideoModel.ProviderKey, string modelKey = VeoVideoModel.ModelKey,
-        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null)
+        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null,
+        IContentModerationService? moderation = null)
     {
         var product = fixture.AddProduct();
         var run = fixture.AddRun(product);
@@ -440,6 +465,7 @@ public sealed class AiShotJobServiceTests
             .ReturnsAsync(connected ? "plain-key" : null);
         fixture.Storage.Setup(x => x.SignRead(source.StorageKey, "image", source.StorageVersion, false)).Returns("https://signed.example/source");
         return new(fixture.Jobs.Object, fixture.Assets.Object, videoCredentials.Object, fixture.State.Object,
-            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier);
+            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier,
+            moderation: moderation);
     }
 }

@@ -1,9 +1,11 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.Moderation;
 using APCS.Application.Features.UsageStatistics;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -21,7 +23,8 @@ public interface IAiStudioFrameService
 public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<ApiUsageRecord> usage, IApiKeyRepository keys, IApiKeyCredentials credentials, IEnumerable<IImageGenerationProvider> imageProviders,
     IMediaStorage storage, IMockupAssetService mockups, IUnitOfWork uow, TimeProvider time,
-    ILogger<AiStudioFrameService> logger, IPlanEntitlementService entitlements) : IAiStudioFrameService
+    ILogger<AiStudioFrameService> logger, IPlanEntitlementService entitlements,
+    IContentModerationService? moderation = null) : IAiStudioFrameService
 {
     // Gemini is the provider that can make a frame from the product source and its reference images.
     private readonly IImageGenerationProvider images = imageProviders.First(provider => provider.Provider == ImageGenerationProviders.Gemini);
@@ -46,6 +49,18 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
         var context = await ResolveAsync(productId, request, ct);
         if (context.IsFailure) return Result.Failure<AiStudioFrameQuote>(context.Error);
         var (_, source, _, referenceMetadata, aspectRatio, fingerprint) = context.Value;
+
+        // The seller's own keyframe direction, before it is priced. Generating goes through this quote, so the prompt
+        // is checked before every Gemini call too.
+        if (moderation is not null && !string.IsNullOrWhiteSpace(request.CustomPrompt))
+        {
+            var verdict = await moderation.CheckTextAsync(
+                [new ModerationText("the keyframe prompt", request.CustomPrompt)],
+                new ModerationContext(user.UserId, ModerationFeatures.AiStudioFrame, ModerationDirection.Input,
+                    ModerationSubjects.StudioFramePrompt, productId),
+                ct);
+            if (verdict.IsBlocked) return Result.Failure<AiStudioFrameQuote>(ModerationErrors.Blocked(verdict));
+        }
 
         MockupResponse? existing = null;
         if (!request.Regenerate)
@@ -135,6 +150,17 @@ public sealed class AiStudioFrameService(ICurrentUser user, IRepository<Product>
             return Result.Failure<AiStudioFrameGenerationResponse>(Error.Failure("StudioFrameGenerationFailed", "Gemini returned an unsupported image. Try again."));
 
         var id = Guid.NewGuid();
+
+        // The platform's own look at the keyframe before it is kept. One that could not be checked is kept as usual
+        // (it is pending review anyway); approving it checks it again.
+        if (moderation is not null)
+        {
+            var verdict = await moderation.CheckImageAsync(generated.ImageBytes!, generated.MimeType!,
+                new ModerationContext(userId, ModerationFeatures.AiStudioFrame, ModerationDirection.Output,
+                    ModerationSubjects.MockupImage, id), ct);
+            if (verdict.IsBlocked) return Result.Failure<AiStudioFrameGenerationResponse>(ModerationErrors.Blocked(verdict));
+        }
+
         var now = time.GetUtcNow().UtcDateTime;
         var metadata = new AiStudioFrameMetadata(fingerprint, source.Id, source.ContentHash!, source.MetadataRevision,
             request.Layout, aspectRatio, AiStudioFrameIdentity.PromptVersionFor(request.Layout, request.CustomPrompt),

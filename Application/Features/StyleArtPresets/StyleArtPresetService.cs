@@ -1,7 +1,9 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Common.Validation;
+using APCS.Application.Features.Moderation;
 using APCS.Application.Features.StyleArtPresets.Common;
 using APCS.Application.Features.StyleArtPresets.Dtos.Request;
 using APCS.Application.Features.StyleArtPresets.Dtos.Response;
@@ -21,8 +23,26 @@ public sealed class StyleArtPresetService(
     IValidator<CreateStyleArtPresetRequestDto> createValidator,
     IValidator<UpdateStyleArtPresetRequestDto> updateValidator,
     IValidator<string> quickCreateValidator,
-    TimeProvider timeProvider) : IStyleArtPresetService
+    TimeProvider timeProvider,
+    IContentModerationService? moderation = null) : IStyleArtPresetService
 {
+    // A personal art style's name and modifiers are written into the prompt of every design that uses it.
+    private async Task<Error?> ModerateAsync(Guid userId, Guid? presetId, string name, string? description, string? modifiers,
+        CancellationToken cancellationToken)
+    {
+        if (moderation is null) return null;
+        var verdict = await moderation.CheckTextAsync(
+            [
+                new ModerationText("the style name", name),
+                new ModerationText("the style description", description),
+                new ModerationText("the style modifiers", modifiers)
+            ],
+            new ModerationContext(userId, ModerationFeatures.DesignGeneration, ModerationDirection.Input,
+                ModerationSubjects.StylePreset, presetId),
+            cancellationToken);
+        return verdict.IsBlocked ? ModerationErrors.Blocked(verdict) : null;
+    }
+
     public async Task<Result<IReadOnlyList<StyleArtPresetResponseDto>>> ListMineAsync(CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
@@ -96,6 +116,9 @@ public sealed class StyleArtPresetService(
             return Result.Failure<StyleArtPresetResponseDto>(Error.Validation("A preview image is required."));
         }
 
+        if (await ModerateAsync(userId, null, request.Name, request.Description, request.StyleModifiers, cancellationToken) is { } blocked)
+            return Result.Failure<StyleArtPresetResponseDto>(blocked);
+
         if (await IsNameTakenAsync(request.Name, null, cancellationToken))
         {
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
@@ -162,6 +185,9 @@ public sealed class StyleArtPresetService(
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.DuplicateName());
         }
 
+        if (await ModerateAsync(userId, null, name, null, null, cancellationToken) is { } blocked)
+            return Result.Failure<StyleArtPresetResponseDto>(blocked);
+
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var preset = new StyleArtPreset
         {
@@ -199,6 +225,9 @@ public sealed class StyleArtPresetService(
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.NotFound());
         if (preset.UserId is null || preset.UserId != userId)
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.UpdateNotOwner());
+
+        if (await ModerateAsync(userId, id, request.Name, request.Description, request.StyleModifiers, cancellationToken) is { } blocked)
+            return Result.Failure<StyleArtPresetResponseDto>(blocked);
 
         if (await IsNameTakenAsync(request.Name, id, cancellationToken))
         {

@@ -23,7 +23,8 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
     IRepository<VideoTemplate> templates, IRepository<AiCharacterModel> characterModels,
     GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
     VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
-    IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null) : IVideoPlanningService
+    IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null,
+    Abstractions.Moderation.IContentModerationService? moderation = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -84,8 +85,11 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             : await experiences.RetrieveForScenesAsync(user.UserId!.Value, product, request.Config, ct);
         var sources = selected.DistinctBy(x => x.Id).ToArray();
         var planned = planner.Plan(product, sources, request.Config, aiTemplates, experienceMap);
-        if (planned.IsFailure || promptPreparation is null) return planned;
-        return Result.Success(await promptPreparation.PrepareAsync(user.UserId!.Value, planned.Value, sources, ct));
+        if (planned.IsFailure) return planned;
+        var prepared = promptPreparation is null
+            ? planned.Value
+            : await promptPreparation.PrepareAsync(user.UserId!.Value, planned.Value, sources, ct);
+        return await moderation.CheckAiShotPromptsAsync(prepared, user.UserId!.Value, ct);
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)

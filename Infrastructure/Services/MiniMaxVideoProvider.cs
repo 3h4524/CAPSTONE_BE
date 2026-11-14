@@ -136,6 +136,7 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
                 var code = GetString(error, "code");
                 var detail = Shorten(GetString(error, "message"));
                 if (!string.IsNullOrWhiteSpace(detail)) failure = string.IsNullOrWhiteSpace(code) ? detail : $"{detail} ({code})";
+                if (IsContentRefusal(code, detail)) failure = ContentPolicyFailure + (detail is null ? "." : $": {failure}");
             }
             return new(true, null, failure);
         }
@@ -187,8 +188,18 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
                 detail = Shorten(GetString(error, "message"));
         }
         catch (JsonException) { /* Some provider/CDN refusals have a non-JSON body. */ }
+        if (IsContentRefusal(null, detail ?? body)) detail = ContentPolicyFailure + (detail is null ? "." : $": {detail}");
         return new AiVideoProviderException((int)response.StatusCode, detail);
     }
+
+    /// <summary>The start of the failure text of a clip MiniMax refused for its content, so it reads apart from a fault.</summary>
+    public const string ContentPolicyFailure = "MiniMax blocked this clip under its content policy";
+
+    // MiniMax refuses sensitive input or output with codes 1026 and 1027, and says "sensitive" in the message.
+    internal static bool IsContentRefusal(string? code, string? message) =>
+        code is "1026" or "1027" ||
+        (message is not null && (message.Contains("sensitive", StringComparison.OrdinalIgnoreCase) ||
+                                 message.Contains("content policy", StringComparison.OrdinalIgnoreCase)));
 
     private static void ValidateSettings(string prompt, string aspectRatio, int durationSeconds)
     {

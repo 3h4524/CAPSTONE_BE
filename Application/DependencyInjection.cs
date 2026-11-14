@@ -84,6 +84,10 @@ public static class DependencyInjection
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
         services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
+        services.AddSingleton<Features.Moderation.ModerationBlocklistCache>();
+        services.AddSingleton<Features.Moderation.ModerationRuntimeSettings>();
+        services.AddScoped<Features.Admin.Moderation.IAdminModerationService, Features.Admin.Moderation.AdminModerationService>();
+        services.AddScoped<Abstractions.Moderation.IContentModerationService, Features.Moderation.ContentModerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
         services.AddScoped<Features.Workflows.WorkflowPublishConnections>();

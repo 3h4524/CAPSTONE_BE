@@ -3,6 +3,7 @@ using APCS.Application.Features.Entitlements;
 using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchProductPrompts.Common;
@@ -53,7 +54,8 @@ public sealed class DesignGenerationServiceTests
         DesignTemplate? template = null,
         Action<Product>? editProduct = null,
         TestEntitlements? entitlements = null,
-        string[]? designStatuses = null)
+        string[]? designStatuses = null,
+        IContentModerationService? moderation = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -185,7 +187,7 @@ public sealed class DesignGenerationServiceTests
             [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)),
-            entitlements ?? TestEntitlements.AllowAll());
+            entitlements ?? TestEntitlements.AllowAll(), moderation: moderation);
 
         return new Fixture
         {
@@ -206,6 +208,39 @@ public sealed class DesignGenerationServiceTests
 
     private static Fixture ReviewFixture(params string[] statuses) =>
         CreateFixture(jobStatus: BatchJobStatuses.Completed, rowStatus: BatchJobProductStatuses.ImageReviewRequired, designStatuses: statuses);
+
+    [TestMethod]
+    public async Task StartAsync_InstructionsBlockedByTheContentPolicy_DoesNotStartTheJob()
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(),
+                It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new ModerationVerdict(ModerationDecision.Block,
+                [new ModerationFinding(ModerationCategories.Hate, ModerationSeverity.High, "the job instructions")], ModerationDeciders.Gemini));
+        var fixture = CreateFixture(moderation: moderation.Object);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest() with { Instructions = "something hateful" });
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        fixture.Job.Status.Should().Be(BatchJobStatuses.Draft);
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_DesignWhoseContentCheckCouldNotRun_IsNotApproved()
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.GetLatestOutputDecisionAsync(ModerationSubjects.DesignImage, It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ModerationDecision.Unchecked);
+        var fixture = CreateFixture(jobStatus: BatchJobStatuses.Completed, rowStatus: BatchJobProductStatuses.ImageReviewRequired,
+            designStatuses: ["pending"], moderation: moderation.Object);
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[0].Id], ApprovalStatuses.Approved));
+
+        result.Error.Code.Should().Be("ModerationPending");
+        fixture.Images[0].ApprovalStatus.Should().Be(ApprovalStatuses.Pending);
+    }
 
     [TestMethod]
     public async Task SetImageApprovalAsync_ApprovingADesign_RejectsTheOtherDesignsOfItsProduct()

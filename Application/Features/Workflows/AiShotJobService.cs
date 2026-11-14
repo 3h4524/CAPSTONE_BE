@@ -1,6 +1,9 @@
 using APCS.Application.Abstractions.AI;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.Moderation;
+using APCS.Application.Features.Moderation.Common;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Logging;
@@ -26,7 +29,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     IAiVideoCredentialResolver videoCredentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
     IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null,
-    ISceneVideoNotifier? sceneNotifier = null) : IAiShotJobService
+    ISceneVideoNotifier? sceneNotifier = null, IContentModerationService? moderation = null) : IAiShotJobService
 {
     /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
@@ -73,6 +76,22 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", missing, ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(missing));
         }
+        // The last check before a paid request leaves: the prompt was checked when it was planned, so this is almost
+        // always a cached answer. Nothing has been sent, so a blocked scene is simply failed with the reason.
+        if (moderation is not null)
+        {
+            var verdict = await moderation.CheckTextAsync(
+                [new ModerationText($"the scene {sceneOrder + 1} video prompt", shot.Prompt)],
+                new ModerationContext(job.UserId, ModerationFeatures.AiVideo, ModerationDirection.Input, ModerationSubjects.AiShot, jobId),
+                ct);
+            if (verdict.IsBlocked)
+            {
+                var blocked = ModerationPolicy.BlockedMessage(verdict);
+                await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", blocked, ct);
+                return Result.Failure<AiShotProgressResponse>(ModerationErrors.Blocked(verdict));
+            }
+        }
+
         string operation;
         try
         {

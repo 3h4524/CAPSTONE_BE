@@ -134,7 +134,8 @@ public sealed class MiniMaxVideoProviderTests
 
         result.Done.Should().BeTrue();
         result.VideoUri.Should().BeNull();
-        result.Failure.Should().Be("sensitive content (1026)");
+        // A content refusal reads apart from a fault, and keeps the provider's own words.
+        result.Failure.Should().Be("MiniMax blocked this clip under its content policy: sensitive content (1026)");
         result.NotCharged.Should().BeFalse();
     }
 
