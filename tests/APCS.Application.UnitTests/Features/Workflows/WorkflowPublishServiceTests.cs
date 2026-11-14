@@ -104,6 +104,20 @@ public sealed class WorkflowPublishServiceTests
     }
 
     [TestMethod]
+    public async Task ProcessAsync_PushToMedia_ReadsThePlatformSwitchesOfTheCanvas()
+    {
+        var service = Create(("publish-social", new { pinterest = false, tiktok = true }));
+        Kit("pinterest", "tiktok", "tiktok");
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        var state = WorkflowJson.Read<PublishNodeState>(Step("publish-social").OutputSnapshot);
+        state.Platforms.Should().Equal("tiktok");
+        state.SocialPosts.Should().Be(2);
+    }
+
+    [TestMethod]
     public async Task ProcessAsync_PushToMediaWithNothingToPost_FailsSayingWhatToApprove()
     {
         var service = Create(("publish-social", new { }));

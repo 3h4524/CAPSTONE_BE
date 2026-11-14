@@ -113,12 +113,18 @@ public sealed record PublishNodeState(
 /// Push to media: the platforms to prepare posts for (<c>pinterest</c>, <c>tiktok</c>); none set means both. The
 /// posts are made from the approved mock-ups, video and listing, for the seller to publish by hand.
 /// </summary>
-public sealed record PublishSocialConfig(IReadOnlyList<string>? Platforms = null)
+/// <param name="Pinterest">The canvas's Pinterest switch; unset counts as on.</param>
+/// <param name="TikTok">The canvas's TikTok switch; unset counts as on.</param>
+public sealed record PublishSocialConfig(IReadOnlyList<string>? Platforms = null, bool? Pinterest = null, bool? TikTok = null)
 {
     public static readonly IReadOnlyList<string> AllPlatforms = ["pinterest", "tiktok"];
 
-    public IReadOnlyList<string> Chosen() =>
-        Platforms?.Select(item => item.Trim().ToLowerInvariant()).Where(AllPlatforms.Contains).Distinct().ToArray() is { Length: > 0 } chosen
-            ? chosen
-            : AllPlatforms;
+    /// <summary>A list of platforms wins; else the two switches; none chosen at all means both.</summary>
+    public IReadOnlyList<string> Chosen()
+    {
+        if (Platforms?.Select(item => item.Trim().ToLowerInvariant()).Where(AllPlatforms.Contains).Distinct().ToArray() is { Length: > 0 } listed)
+            return listed;
+        string[] switched = [.. Pinterest != false ? ["pinterest"] : Array.Empty<string>(), .. TikTok != false ? ["tiktok"] : Array.Empty<string>()];
+        return switched.Length > 0 ? switched : AllPlatforms;
+    }
 }
