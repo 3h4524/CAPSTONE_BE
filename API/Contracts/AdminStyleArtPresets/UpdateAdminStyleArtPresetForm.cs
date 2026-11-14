@@ -12,7 +12,4 @@ public sealed class UpdateAdminStyleArtPresetForm
     public IFormFile? Preview { get; set; }
     public bool DeletePreview { get; set; }
     public bool IsActive { get; set; } = true;
-    public string? ViName { get; set; }
-    public string? ViDescription { get; set; }
-    public string? ViRecommendationsJson { get; set; }
 }

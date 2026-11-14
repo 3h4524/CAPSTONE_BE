@@ -257,6 +257,9 @@ public static class DependencyInjection
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowActivitySignal>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.MarketScheduleSignal>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationSignal>();
+        services.AddSingleton<IStyleArtPresetTranslationQueue>(provider =>
+            provider.GetRequiredService<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationSignal>());
         services.AddSingleton<APCS.Infrastructure.Persistence.AfterCommitInterceptor>();
         services.AddSingleton<APCS.Infrastructure.Persistence.MediaJobQueuedInterceptor>();
         services.AddDbContext<AppDbContext>((provider, options) => options
@@ -276,7 +279,7 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
-        services.AddHostedService<APCS.Infrastructure.BackgroundServices.TranslationRetrySweeper>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantTurnWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();

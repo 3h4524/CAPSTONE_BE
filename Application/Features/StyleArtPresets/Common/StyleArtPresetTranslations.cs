@@ -5,11 +5,17 @@ namespace APCS.Application.Features.StyleArtPresets.Common;
 
 public static class StyleArtPresetTranslations
 {
+    public const string Pending = "pending";
+    public const string Translated = "ok";
+    public const string Failed = "failed";
+
+    private static readonly TimeSpan[] RetryDelays = [TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10)];
+
     public sealed record LocalizedText(string Name, string Description, string Recommendations);
 
     public sealed record ViTranslation(string Name, string Description, IReadOnlyList<string> Recommendations);
 
-    public sealed record TranslationState(bool Manual, string Status, int Attempts, DateTime? NextRetryAt);
+    public sealed record TranslationState(string Status, int Attempts, DateTime? NextRetryAt);
 
     public static LocalizedText Localize(
         string name,
@@ -62,10 +68,9 @@ public static class StyleArtPresetTranslations
         {
             using var document = JsonDocument.Parse(translations);
             var root = document.RootElement;
-            var manual = root.TryGetProperty("manual", out var manualValue) && manualValue.ValueKind == JsonValueKind.True;
             var status = root.TryGetProperty("status", out var statusValue) && statusValue.ValueKind == JsonValueKind.String
-                ? statusValue.GetString() ?? "ok"
-                : "ok";
+                ? statusValue.GetString() ?? Translated
+                : Translated;
             var attempts = root.TryGetProperty("attempts", out var attemptsValue)
                 && attemptsValue.ValueKind == JsonValueKind.Number
                 && attemptsValue.TryGetInt32(out var count)
@@ -80,7 +85,7 @@ public static class StyleArtPresetTranslations
                 nextRetryAt = parsed;
             }
 
-            return new TranslationState(manual, status, attempts, nextRetryAt);
+            return new TranslationState(status, attempts, nextRetryAt);
         }
         catch (JsonException)
         {
@@ -88,11 +93,27 @@ public static class StyleArtPresetTranslations
         }
     }
 
-    public static string SerializeDocument(ViTranslation? vi, bool manual, string status, int attempts, DateTime? nextRetryAt)
+    public static string Queued(DateTime now) =>
+        SerializeDocument(null, Pending, attempts: 0, nextRetryAt: now);
+
+    public static string Succeeded(ViTranslation vi) =>
+        SerializeDocument(vi, Translated, attempts: 0, nextRetryAt: null);
+
+    public static string AfterFailedAttempt(TranslationState state, DateTime now)
+    {
+        var attempts = state.Attempts + 1;
+        return attempts > RetryDelays.Length
+            ? SerializeDocument(null, Failed, attempts, nextRetryAt: null)
+            : SerializeDocument(null, Pending, attempts, now + RetryDelays[attempts - 1]);
+    }
+
+    public static bool IsDue(TranslationState? state, DateTime now) =>
+        state is { Status: Pending, NextRetryAt: { } dueAt } && dueAt <= now;
+
+    public static string SerializeDocument(ViTranslation? vi, string status, int attempts, DateTime? nextRetryAt)
     {
         var document = new Dictionary<string, object?>
         {
-            ["manual"] = manual,
             ["status"] = status,
             ["attempts"] = attempts
         };
