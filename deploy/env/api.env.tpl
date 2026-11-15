@@ -68,6 +68,15 @@ Etsy__ApiKey=${ETSY_API_KEY}
 Etsy__SharedSecret=${ETSY_SHARED_SECRET}
 Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
+Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
+
+SystemApiKeys__Ideogram__Keys=${IDEOGRAM_API_KEYS}
+SystemApiKeys__Ideogram__DailyLimitPerKey=500
+SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
+SystemApiKeys__Ideogram__Strategy=rotate
+SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
+SystemApiKeys__MiniMax__DailyLimitPerKey=100
+SystemApiKeys__MiniMax__Strategy=rotate
 
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
