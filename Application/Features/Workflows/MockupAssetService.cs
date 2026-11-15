@@ -1,7 +1,9 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
+using APCS.Application.Features.Moderation;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -18,7 +20,7 @@ public interface IMockupAssetService
 
 public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, MockupMetadataValidator validator,
-    VideoStoryboardPlanner planner, TimeProvider time) : IMockupAssetService
+    VideoStoryboardPlanner planner, TimeProvider time, IContentModerationService? moderation = null) : IMockupAssetService
 {
     public async Task<Result<IReadOnlyList<MockupResponse>>> ListAsync(Guid productId, CancellationToken ct)
     {
@@ -70,6 +72,16 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
     }
     public async Task<Result<MockupResponse>> ReviewAsync(Guid id, MockupReviewRequest request, CancellationToken ct)
     {
+        // An AI keyframe kept while its content check was unavailable is checked again before it can be approved. Done
+        // before the row is locked, since it may wait on Gemini; ownership is still checked under the lock below.
+        if (request.Approved && moderation is not null && await assets.GetByIdAsync(id, ct) is { DeletedAt: null } reviewed
+            && await OwnsAsync(reviewed.ProductId, ct)
+            && await moderation.EnsureApprovableAsync(
+                new ModerationContext(user.UserId, ModerationFeatures.AiStudioFrame, ModerationDirection.Output,
+                    ModerationSubjects.MockupImage, reviewed.Id),
+                token => storage.ReadImageAsync(reviewed.StorageKey, reviewed.StorageVersion, token),
+                ct) is { } notApprovable)
+            return Result.Failure<MockupResponse>(notApprovable);
         await using var tx = await uow.BeginTransactionAsync(ct);
         var entity = await state.LockMockupAsync(id, ct);
         if (entity is null || entity.DeletedAt != null || !await OwnsAsync(entity.ProductId, ct)) return Result.Failure<MockupResponse>(Missing());

@@ -302,16 +302,48 @@ public sealed class WorkflowCanvasPatchSimulatorTests
     }
 
     [TestMethod]
-    [DataRow("publish-printify", "Push to Printify")]
-    [DataRow("publish-etsy", "Publish to Etsy")]
-    public void Simulate_AddPublishStepAfterExportZip_IsAllowed(string type, string label)
+    public void Simulate_AddPublishToEtsyAfterExportZip_IsAllowed()
     {
         var canvas = PipelineCanvas(("z", "export-zip"));
 
-        var result = simulator.Simulate(canvas, [Op("add_node", "p", type, after: "z"), Op("connect", source: "z", target: "p")], Allowed);
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-etsy", after: "z"), Op("connect", source: "z", target: "p")], Allowed);
 
         result.Errors.Should().BeEmpty();
-        result.Operations[0].Label.Should().Be(label);
+        result.Operations[0].Label.Should().Be("Publish to Etsy");
+    }
+
+    [TestMethod]
+    [DataRow("apply-mockup")]
+    [DataRow("approval-gate")]
+    public void Simulate_AddPushToPrintifyOffTheMockupSteps_IsAllowed(string sourceType)
+    {
+        var canvas = PipelineCanvas(("m", sourceType), ("v", "generate-video"));
+
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-printify", after: "m"), Op("connect", source: "m", target: "p")], Allowed);
+
+        result.Errors.Should().BeEmpty();
+        result.Operations[0].Label.Should().Be("Push to Printify");
+    }
+
+    // Printify takes the design and its mock-ups, not the video.
+    [TestMethod]
+    public void Simulate_PushToPrintifyAfterExportZip_IsRefused()
+    {
+        var canvas = PipelineCanvas(("z", "export-zip"));
+
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-printify", after: "z"), Op("connect", source: "z", target: "p")], Allowed);
+
+        result.Errors.Should().ContainSingle().Which.Should().Contain("after Apply mock-up or Mockup Approval");
+    }
+
+    [TestMethod]
+    public void Simulate_StepAfterPushToPrintify_IsRefused()
+    {
+        var canvas = PipelineCanvas(("g", "approval-gate"), ("p", "publish-printify"), ("e", "publish-etsy"));
+
+        var result = simulator.Simulate(canvas, [Op("connect", source: "p", target: "e")], Allowed);
+
+        result.Errors.Should().ContainSingle().Which.Should().Contain("ends its branch");
     }
 
     [TestMethod]

@@ -45,4 +45,5 @@ public sealed record PrintifyVariantPriceDto(long VariantId, decimal Price);
 /// Puts the mock-ups after Printify's first photo instead of in front of it, so the listing opens on the photo of the
 /// garment Printify ships; Printify's photos of each color stay on the listing for its variations.
 /// </param>
-public sealed record SyncPrintifyProductRequestDto(IReadOnlyList<Guid> MockupIds, bool IncludeVideo, bool AfterPrintifyPhoto = false);
+/// <remarks>A Printify product carries the design and its mock-ups only: no video is added to its listing.</remarks>
+public sealed record SyncPrintifyProductRequestDto(IReadOnlyList<Guid> MockupIds, bool AfterPrintifyPhoto = false);

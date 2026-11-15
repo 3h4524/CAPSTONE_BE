@@ -1,9 +1,11 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.BatchProductPrompts.Common;
 using APCS.Application.Features.BatchProductPrompts.Dtos.Request;
 using APCS.Application.Features.BatchProductPrompts.Dtos.Response;
+using APCS.Application.Features.Moderation;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
@@ -20,7 +22,8 @@ public sealed class BatchProductPromptService(
     IRepository<DesignTemplate> templates,
     IRepository<StyleArtPreset> styles,
     IValidator<UpdateBatchProductPromptRequestDto> saveValidator,
-    TimeProvider timeProvider) : IBatchProductPromptService
+    TimeProvider timeProvider,
+    IContentModerationService? moderation = null) : IBatchProductPromptService
 {
     public async Task<Result<BatchProductPromptResponseDto>> GetDefaultAsync(Guid rowId, CancellationToken cancellationToken = default)
     {
@@ -58,6 +61,24 @@ public sealed class BatchProductPromptService(
             return Result.Failure<BatchProductPromptResponseDto>(BatchProductPromptErrors.RowNotFound());
         if (!loaded.CanEdit)
             return Result.Failure<BatchProductPromptResponseDto>(BatchProductPromptErrors.NotPending());
+
+        // Everything the seller wrote that goes into the image prompt. Negative terms are left out: they name what the
+        // image must not show ("no gore"), which a content check would read the wrong way round.
+        if (moderation is not null)
+        {
+            var verdict = await moderation.CheckTextAsync(
+                [
+                    new ModerationText("the subject", request.Subject),
+                    new ModerationText("the art style", request.ArtStyle),
+                    new ModerationText("the mood", request.MoodTone),
+                    new ModerationText("the instructions", request.Instructions),
+                    new ModerationText("the custom image prompt", request.CustomPrompt)
+                ],
+                new ModerationContext(currentUser.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Input,
+                    ModerationSubjects.ProductPrompt, rowId),
+                cancellationToken);
+            if (verdict.IsBlocked) return Result.Failure<BatchProductPromptResponseDto>(ModerationErrors.Blocked(verdict));
+        }
 
         // The product's own image prompt is set first: it decides what the prompt is made from.
         var customPromptChanged = request.CustomPrompt is not null && loaded.Product is not null

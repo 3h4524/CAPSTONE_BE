@@ -33,7 +33,7 @@ public sealed class RunGroupStartWorker(IServiceScopeFactory scopes, IRunGroupSt
                 using var scope = scopes.CreateScope();
                 scope.ServiceProvider.GetRequiredService<ActingUserContext>().ActAs(request.UserId);
                 await scope.ServiceProvider.GetRequiredService<IWorkflowRunGroupService>()
-                    .PrepareAsync(request.GroupId, request.AiBudgetUsd, request.AutoApprove, stoppingToken);
+                    .PrepareAsync(request.GroupId, request.AutoApprove, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

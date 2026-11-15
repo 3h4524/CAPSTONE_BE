@@ -1674,7 +1674,7 @@ public sealed class DesignGenerationProcessingTests
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)),
-            new AllowAllEntitlements(), textCheckQueue, systemKeys);
+            new AllowAllEntitlements(), textCheckQueue, systemKeys: systemKeys);
     }
 
     // ---- The platform's own Ideogram keys ----

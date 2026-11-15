@@ -1,5 +1,8 @@
+using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.Moderation;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -15,7 +18,8 @@ public interface IWorkflowService
 }
 
 public sealed class WorkflowService(ICurrentUser user, IRepository<Workflow> workflows, IWorkflowStateRepository state,
-    IUnitOfWork uow, SaveWorkflowValidator validator, TimeProvider time) : IWorkflowService
+    IUnitOfWork uow, SaveWorkflowValidator validator, TimeProvider time,
+    IContentModerationService? moderation = null) : IWorkflowService
 {
     public async Task<Result<IReadOnlyList<WorkflowResponse>>> ListAsync(CancellationToken ct) =>
         Result.Success<IReadOnlyList<WorkflowResponse>>((await workflows.FindAsync(x => x.UserId == user.UserId && x.DeletedAt == null, ct)).OrderByDescending(x => x.UpdatedAt).Select(Map).ToArray());
@@ -28,6 +32,14 @@ public sealed class WorkflowService(ICurrentUser user, IRepository<Workflow> wor
     {
         var validation = await validator.ValidateAsync(request, ct);
         if (!validation.IsValid) return Result.Failure<WorkflowResponse>(Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage))));
+        if (moderation is not null && VideoTexts(request.Definition) is { Count: > 0 } texts)
+        {
+            // Checked before the workflow is locked: the check may wait on Gemini.
+            var verdict = await moderation.CheckTextAsync(texts,
+                new ModerationContext(user.UserId, ModerationFeatures.AiVideo, ModerationDirection.Input, ModerationSubjects.Workflow, id),
+                ct);
+            if (verdict.IsBlocked) return Result.Failure<WorkflowResponse>(ModerationErrors.Blocked(verdict));
+        }
         await using var tx = await uow.BeginTransactionAsync(ct);
         await state.LockOwnerAsync(user.UserId!.Value, ct);
         Workflow entity;
@@ -51,6 +63,32 @@ public sealed class WorkflowService(ICurrentUser user, IRepository<Workflow> wor
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return Result.Success(Map(entity));
     }
+    // What the seller wrote into the AI video scenes, shared and per product. A node that cannot be read is left to the
+    // graph validation that runs when the workflow is used.
+    internal static IReadOnlyList<ModerationText> VideoTexts(WorkflowDefinition definition)
+    {
+        var texts = new List<ModerationText>();
+        foreach (var node in definition.Nodes.Where(node => node.Type == "generate-video"))
+        {
+            GenerateVideoConfig config;
+            try { config = WorkflowJson.Config<GenerateVideoConfig>(node); }
+            catch (JsonException) { continue; }
+            foreach (var own in new[] { config }.Concat(config.ProductConfigs?.Values.Where(value => value is not null) ?? []))
+            {
+                texts.Add(new("the shared scene directions", own.AiGlobalInstructions));
+                foreach (var (scene, index) in (own.AiScenes ?? []).Select((scene, index) => (scene, index + 1)))
+                {
+                    texts.Add(new($"scene {index} instructions", scene.ExtraInstructions));
+                    texts.Add(new($"scene {index} start", scene.StartingState));
+                    texts.Add(new($"scene {index} action", scene.PrimaryAction));
+                    texts.Add(new($"scene {index} end", scene.EndingState));
+                    texts.Add(new($"scene {index} keyframe prompt", scene.StudioPrompt));
+                }
+            }
+        }
+        return texts.Where(text => !string.IsNullOrWhiteSpace(text.Value)).ToList();
+    }
+
     public async Task<Result> DeleteAsync(Guid id, long revision, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);

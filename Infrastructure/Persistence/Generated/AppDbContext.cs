@@ -84,6 +84,14 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<MockupTemplatePrintifyLink> MockupTemplatePrintifyLinks { get; set; }
 
+    public virtual DbSet<ModerationAllowlist> ModerationAllowlists { get; set; }
+
+    public virtual DbSet<ModerationCheck> ModerationChecks { get; set; }
+
+    public virtual DbSet<ModerationSetting> ModerationSettings { get; set; }
+
+    public virtual DbSet<ModerationTerm> ModerationTerms { get; set; }
+
     public virtual DbSet<MusicTrack> MusicTracks { get; set; }
 
     public virtual DbSet<NotificationAlert> NotificationAlerts { get; set; }
@@ -2214,6 +2222,124 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.UpdatedBy)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("mockup_template_printify_links_updated_by_fkey");
+        });
+
+        modelBuilder.Entity<ModerationAllowlist>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_allowlist_pkey");
+
+            entity.ToTable("moderation_allowlist");
+
+            entity.HasIndex(e => e.Phrase, "uq_moderation_allowlist_phrase").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.Note).HasColumnName("note");
+            entity.Property(e => e.Phrase).HasColumnName("phrase");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<ModerationCheck>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_checks_pkey");
+
+            entity.ToTable("moderation_checks");
+
+            entity.HasIndex(e => e.CreatedAt, "ix_moderation_checks_created").IsDescending();
+
+            entity.HasIndex(e => new { e.DecidedBy, e.CreatedAt }, "ix_moderation_checks_decider").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.SubjectType, e.SubjectId, e.CreatedAt }, "ix_moderation_checks_subject").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "ix_moderation_checks_user").IsDescending(false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.Categories)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("categories");
+            entity.Property(e => e.ContentExcerpt).HasColumnName("content_excerpt");
+            entity.Property(e => e.ContentHash)
+                .HasMaxLength(64)
+                .IsFixedLength()
+                .HasColumnName("content_hash");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DecidedBy).HasColumnName("decided_by");
+            entity.Property(e => e.Decision).HasColumnName("decision");
+            entity.Property(e => e.Direction).HasColumnName("direction");
+            entity.Property(e => e.Feature).HasColumnName("feature");
+            entity.Property(e => e.LatencyMs).HasColumnName("latency_ms");
+            entity.Property(e => e.Model).HasColumnName("model");
+            entity.Property(e => e.PolicyVersion).HasColumnName("policy_version");
+            entity.Property(e => e.Reason).HasColumnName("reason");
+            entity.Property(e => e.SubjectId).HasColumnName("subject_id");
+            entity.Property(e => e.SubjectType).HasColumnName("subject_type");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
+        modelBuilder.Entity<ModerationSetting>(entity =>
+        {
+            entity.HasKey(e => e.Key).HasName("moderation_settings_pkey");
+
+            entity.ToTable("moderation_settings");
+
+            entity.Property(e => e.Key).HasColumnName("key");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.Value).HasColumnName("value");
+        });
+
+        modelBuilder.Entity<ModerationTerm>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_terms_pkey");
+
+            entity.ToTable("moderation_terms");
+
+            entity.HasIndex(e => e.Term, "uq_moderation_terms_term").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.Category).HasColumnName("category");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.Language)
+                .HasMaxLength(5)
+                .HasDefaultValueSql("'en'::character varying")
+                .HasColumnName("language");
+            entity.Property(e => e.MatchType)
+                .HasDefaultValueSql("'word'::text")
+                .HasColumnName("match_type");
+            entity.Property(e => e.MatchUnaccented)
+                .HasDefaultValue(false)
+                .HasColumnName("match_unaccented");
+            entity.Property(e => e.Note).HasColumnName("note");
+            entity.Property(e => e.Severity).HasColumnName("severity");
+            entity.Property(e => e.Term).HasColumnName("term");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
         });
 
         modelBuilder.Entity<MusicTrack>(entity =>
