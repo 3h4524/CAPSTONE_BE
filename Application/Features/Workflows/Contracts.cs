@@ -256,8 +256,11 @@ public sealed record VideoQualityJobPayload(Guid VideoId, int? SceneOrder = null
     IReadOnlyList<VideoQualitySceneJobTarget>? SceneTargets = null);
 /// <param name="Failure">Why the scene has no clip, when Google answered without one.</param>
 /// <param name="Resubmissions">How often the scene was sent again after Google dropped a clip without charging for it.</param>
+/// <param name="KeyId">The platform key the operation was started with, which its progress is asked with too; null for a
+/// Seller's own key or a scene started before the platform had several keys.</param>
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
-    string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0);
+    string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0,
+    string? KeyId = null);
 /// <param name="TargetSceneOrder">The one scene selected for an isolated generation or regeneration. Stored clips for the other scenes remain reusable.</param>
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates,
     int? TargetSceneOrder = null);

@@ -53,7 +53,8 @@ public sealed class DesignGenerationServiceTests
         DesignTemplate? template = null,
         Action<Product>? editProduct = null,
         TestEntitlements? entitlements = null,
-        string[]? designStatuses = null)
+        string[]? designStatuses = null,
+        ISystemApiKeyPool? systemKeys = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -185,7 +186,7 @@ public sealed class DesignGenerationServiceTests
             [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)),
-            entitlements ?? TestEntitlements.AllowAll());
+            entitlements ?? TestEntitlements.AllowAll(), systemKeys: systemKeys);
 
         return new Fixture
         {
@@ -295,6 +296,55 @@ public sealed class DesignGenerationServiceTests
         result.Error.Code.Should().Be("MSG35");
         result.Error.Message.Should().Contain("Ideogram");
         fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    private static ISystemApiKeyPool PlatformIdeogramKeys()
+    {
+        var pool = new Mock<ISystemApiKeyPool>();
+        pool.Setup(x => x.HasKeys(ImageGenerationProviders.Ideogram)).Returns(true);
+        return pool.Object;
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithThePlatformsKeys_StartsAnIdeogramJobWithoutAKeyOfTheSellers()
+    {
+        var fixture = CreateFixture(hasGeminiKey: false, systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Queue.Verify(x => x.Enqueue(fixture.Job.Id), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithThePlatformsKeys_OverItsDailyDesignImageCap_IsRefused()
+    {
+        var entitlements = TestEntitlements.AllowAll();
+        entitlements.CapsReached[PlanFeatures.DailyDesignImageCap] = true;
+        var fixture = CreateFixture(hasGeminiKey: false, entitlements: entitlements, systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().NotBe("MSG35");
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithoutThePlatformsKeys_StillNeedsTheSellersOwnKey()
+    {
+        var features = PlanFeatures.All.ToDictionary(feature => feature.Code, feature => new PlanFeatureValue(true, null));
+        features[PlanFeatures.SystemImageKeys] = new PlanFeatureValue(false, null);
+        var fixture = CreateFixture(hasGeminiKey: false, entitlements: TestEntitlements.Plan(features: features),
+            systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG35");
     }
 
     [TestMethod]

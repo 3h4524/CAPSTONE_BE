@@ -412,6 +412,84 @@ public sealed class AiShotJobServiceTests
         minimax.VerifyNoOtherCalls();
     }
 
+    // The platform holds several MiniMax keys; the pool hands out the second one, and finds it again by its id.
+    private static (Mock<ISystemApiKeyPool> Pool, Mock<ISystemApiKeyLease> Lease) PooledMiniMaxKey(bool usedUp = false)
+    {
+        var lease = new Mock<ISystemApiKeyLease>();
+        lease.SetupGet(x => x.ApiKey).Returns("pool-key-2");
+        lease.SetupGet(x => x.KeyId).Returns("0123456789ab");
+        lease.SetupGet(x => x.Provider).Returns(AiVideoModel.ProviderKey);
+        var pool = new Mock<ISystemApiKeyPool>();
+        pool.Setup(x => x.HasKeys(AiVideoModel.ProviderKey)).Returns(true);
+        pool.Setup(x => x.AcquireAsync(AiVideoModel.ProviderKey, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(usedUp ? null : lease.Object);
+        pool.Setup(x => x.FindKey(AiVideoModel.ProviderKey, "0123456789ab")).Returns("pool-key-2");
+        return (pool, lease);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_MiniMaxOnThePlatformsKeys_SubmitsWithAPooledKeyAndAsksAboutItWithTheSameKey()
+    {
+        var minimax = new Mock<IAiVideoGenerationStrategy>();
+        minimax.Setup(x => x.StartAsync("pool-key-2", It.IsAny<string>(), "Move gently.", "9:16", 8, true,
+                It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("minimax-task-123");
+        minimax.Setup(x => x.PollAsync("pool-key-2", "minimax-task-123", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VeoOperationResult(false, null, null));
+        var factory = new Mock<IAiVideoGenerationStrategyFactory>();
+        factory.Setup(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey)).Returns(minimax.Object);
+        var (pool, lease) = PooledMiniMaxKey();
+        var service = Service(providerKey: AiVideoModel.ProviderKey, modelKey: AiVideoModel.ModelKey,
+            model: AiVideoModel.ModelName, providerFactory: factory.Object, systemKeys: pool.Object);
+
+        (await service.StartAsync(job.Id, 0, Lease(), default)).IsSuccess.Should().BeTrue();
+        State().KeyId.Should().Be("0123456789ab");
+        (await service.PollAsync(job.Id, 0, Lease(), default)).Value.Status.Should().Be("polling");
+
+        minimax.Verify(x => x.PollAsync("pool-key-2", "minimax-task-123", It.IsAny<CancellationToken>()), Times.Once);
+        lease.Verify(x => x.RefundAsync(It.IsAny<CancellationToken>()), Times.Never, "the clip is being made and paid for");
+        lease.Verify(x => x.DisposeAsync(), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_EveryPlatformMiniMaxKeyUsedUpToday_SubmitsNothingAndSaysSo()
+    {
+        var minimax = new Mock<IAiVideoGenerationStrategy>();
+        var factory = new Mock<IAiVideoGenerationStrategyFactory>();
+        factory.Setup(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey)).Returns(minimax.Object);
+        var (pool, _) = PooledMiniMaxKey(usedUp: true);
+        var service = Service(providerKey: AiVideoModel.ProviderKey, modelKey: AiVideoModel.ModelKey,
+            model: AiVideoModel.ModelName, providerFactory: factory.Object, systemKeys: pool.Object);
+
+        var result = await service.StartAsync(job.Id, 0, Lease(), default);
+
+        result.Error.Code.Should().Be("AiVideoDailyLimitReached");
+        State().Status.Should().Be("pending");
+        minimax.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow(401, true)]
+    [DataRow(400, false)]
+    [DataRow(429, false)]
+    public async Task StartAsync_PlatformMiniMaxKeyRefused_GivesTheUseBackAndPassesARefusedKeyOver(int status, bool keyRefused)
+    {
+        var minimax = new Mock<IAiVideoGenerationStrategy>();
+        minimax.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+                It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiVideoProviderException(status, "refused"));
+        var factory = new Mock<IAiVideoGenerationStrategyFactory>();
+        factory.Setup(x => x.Resolve(AiVideoModel.ProviderKey, AiVideoModel.ModelKey)).Returns(minimax.Object);
+        var (pool, lease) = PooledMiniMaxKey();
+        var service = Service(providerKey: AiVideoModel.ProviderKey, modelKey: AiVideoModel.ModelKey,
+            model: AiVideoModel.ModelName, providerFactory: factory.Object, systemKeys: pool.Object);
+
+        (await service.StartAsync(job.Id, 0, Lease(), default)).IsFailure.Should().BeTrue();
+
+        lease.Verify(x => x.DisableForTodayAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), keyRefused ? Times.Once() : Times.Never());
+        lease.Verify(x => x.RefundAsync(It.IsAny<CancellationToken>()), keyRefused ? Times.Never() : Times.Once());
+    }
+
     private AiShotLeaseRequest Lease() => new(job.LeaseToken!.Value);
 
     private AiShotJobState State() => WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates.Single();
@@ -422,7 +500,8 @@ public sealed class AiShotJobServiceTests
 
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true,
         string providerKey = VeoVideoModel.ProviderKey, string modelKey = VeoVideoModel.ModelKey,
-        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null)
+        string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null,
+        ISystemApiKeyPool? systemKeys = null)
     {
         var product = fixture.AddProduct();
         var run = fixture.AddRun(product);
@@ -440,6 +519,7 @@ public sealed class AiShotJobServiceTests
             .ReturnsAsync(connected ? "plain-key" : null);
         fixture.Storage.Setup(x => x.SignRead(source.StorageKey, "image", source.StorageVersion, false)).Returns("https://signed.example/source");
         return new(fixture.Jobs.Object, fixture.Assets.Object, videoCredentials.Object, fixture.State.Object,
-            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier);
+            fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier,
+            systemKeys: systemKeys);
     }
 }

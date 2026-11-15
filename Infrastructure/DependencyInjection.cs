@@ -132,6 +132,11 @@ public static class DependencyInjection
         // configuration rather than asking each Seller to connect a MiniMax account.
         services.AddOptions<MiniMaxOptions>()
             .Bind(configuration.GetSection(MiniMaxOptions.SectionName));
+        // The platform's own Ideogram and MiniMax keys, used in turn up to a daily limit each; counted in Redis.
+        services.AddOptions<SystemApiKeysOptions>()
+            .Configure(options => SystemApiKeysOptions.Read(configuration, options));
+        services.AddSingleton<ISystemApiKeyUsageStore, RedisSystemApiKeyUsageStore>();
+        services.AddSingleton<ISystemApiKeyPool, SystemApiKeyPool>();
         services.AddScoped<IAiVideoCredentialResolver, AiVideoCredentialResolver>();
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
         services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy

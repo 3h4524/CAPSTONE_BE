@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.UsageStatistics;
 using APCS.Application.UnitTests.TestSupport;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -42,6 +43,7 @@ public sealed class PlanEntitlementServiceTests
         Subscription? subscription,
         int mockupsRenderedToday = 0,
         IFeatureCatalog? catalog = null,
+        IReadOnlyList<ApiUsageRecord>? usageToday = null,
         params SubscriptionFeatureGrant[] grants)
     {
         var subscriptions = new Mock<ISubscriptionRepository>();
@@ -68,13 +70,40 @@ public sealed class PlanEntitlementServiceTests
             subscriptions.Object,
             mockupRepository.Object,
             Mock.Of<IRepository<PromoVideo>>(),
-            Mock.Of<IRepository<ApiUsageRecord>>(),
+            UsageRepository(usageToday ?? []),
             apiKeys.Object,
             allowances.Object,
             new TestPlanSettings(),
             catalog ?? new TestFeatureCatalog(),
             GrantRepository(grants),
             SubscriptionTestData.CreateTimeProvider());
+    }
+
+    private static IRepository<ApiUsageRecord> UsageRepository(IReadOnlyList<ApiUsageRecord> records)
+    {
+        var repository = new Mock<IRepository<ApiUsageRecord>>();
+        repository.Setup(candidate => candidate.Query()).Returns(() => records.AsQueryable().BuildMock());
+        return repository.Object;
+    }
+
+    private static ApiUsageRecord UsedToday(string feature) => new()
+    {
+        Id = Guid.NewGuid(), UserId = UserId, Provider = "ideogram", Feature = feature, RequestUnits = 1, Status = "success",
+        CreatedAt = SubscriptionTestData.UtcNow.UtcDateTime.AddMinutes(-1)
+    };
+
+    [TestMethod]
+    public async Task RequireDailyCapacityAsync_AiImageCap_CountsDesignImagesModelPhotosAndLifestyleMockups()
+    {
+        var plan = CreatePlan(new PlanFeature { FeatureCode = PlanFeatures.DailyDesignImageCap, IsEnabled = true, LimitValue = 3 });
+        // A design image or model photo, and a lifestyle mockup; listing content is not an image.
+        var usage = new[] { UsedToday(UsageFeatures.ImageGeneration), UsedToday(UsageFeatures.Mockup), UsedToday(UsageFeatures.Listing) };
+        var service = CreateService(SubscriptionTestData.CreateActiveSubscription(plan), usageToday: usage);
+
+        (await service.RequireDailyCapacityAsync(UserId, PlanFeatures.DailyDesignImageCap)).IsSuccess.Should().BeTrue();
+        var over = await service.RequireDailyCapacityAsync(UserId, PlanFeatures.DailyDesignImageCap, 2);
+        over.Error.Code.Should().Be("Plan.DailyCapReached");
+        over.Error.Message.Should().Contain("AI images");
     }
 
     private static IRepository<SubscriptionFeatureGrant> GrantRepository(SubscriptionFeatureGrant[] grants)

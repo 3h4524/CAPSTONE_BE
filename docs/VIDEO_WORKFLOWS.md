@@ -86,6 +86,21 @@ For this Windows workspace, `./scripts/Start-VideoDev.ps1` starts the Release AP
 
 Keep existing PostgreSQL, Cloudinary, Redis and authentication configuration. Add the platform-owned MiniMax credential to the API's ignored environment file or secret manager as `MiniMax__ApiKey`; it is used for every new H3 request and is never exposed to the frontend or worker. Add `MediaWorker__ApiKey` to the same environment: a random 32–256-character secret. Do not put either credential in workflow JSON or frontend environment variables. Configure the worker value as `MEDIA_WORKER_API_KEY`; copy `media-worker/.env.example` to its ignored `.env` and replace the placeholder. Set `AI_SCENE_CONCURRENCY` from 1 to 4 to cap concurrently submitted/polled scenes per worker. The default is 1 so paid video requests are submitted sequentially; raise it only after confirming that the system MiniMax account handles concurrent generations reliably. Never use the placeholder as a real credential.
 
+The platform can hold several MiniMax keys (and several Ideogram keys, for plans with the `system_image_keys` feature), handed out by `ISystemApiKeyPool`. List them in the same environment, separated by `;`, with an optional daily limit per key (UTC day, counted in Redis so every API instance shares it), an optional limit of requests at a time per key, and how the keys are taken:
+
+```
+SystemApiKeys__MiniMax__Keys=first-key;second-key
+SystemApiKeys__MiniMax__DailyLimitPerKey=100
+SystemApiKeys__Ideogram__Keys=first-key;second-key
+SystemApiKeys__Ideogram__DailyLimitPerKey=500
+SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
+SystemApiKeys__Ideogram__Strategy=fill
+```
+
+`Strategy` is `fill` by default: the first key until it is used up or refused for the day, then the next one; a request that finds every place of a key taken goes on to the next key rather than waiting. `rotate` starts each request at the next key, so the uses spread evenly over the keys.
+
+`MiniMax__ApiKey` and `IDEOGRAM_API_KEY` still count as one key each. A key the provider refuses (401/403 for MiniMax, a refused account for Ideogram) is passed over until the end of the day. Each scene remembers the key it was submitted with, and its progress is asked with that key. Keys of one provider account share that account's own limits (Ideogram allows 10 images in flight per account), so only keys of different accounts add capacity.
+
 Apply the additive database-first schema to the intended database after taking the normal backup. The script reads `ConnectionStrings__DefaultConnection` without printing it. It includes nullable product custom fields and mockup-template ownership already expected by the source but absent from the inspected database, plus the nullable `mockup_images.garment_color` and `mockup_images.background_color` fields selected by the current entity mapping. It does not delete existing business rows or require EF migrations.
 
 ```powershell
