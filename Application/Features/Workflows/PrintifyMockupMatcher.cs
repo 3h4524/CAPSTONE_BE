@@ -161,7 +161,7 @@ public sealed class PrintifyMockupMatcher(
     private sealed record Offer(PrintifyProviderDto Provider, PrintifyCatalogDto Catalog, string[] Colors, int Order);
 
     /// <summary>A name compared without case, punctuation or extra spaces: "Bella+Canvas 3001" is "bella canvas 3001".</summary>
-    internal static string Key(string name) => Regex.Replace(name.ToLowerInvariant(), "[^a-z0-9]+", " ").Trim();
+    internal static string Key(string name) => Regex.Replace(name.ToLowerInvariant(), "[^a-z0-9]+", " ", RegexOptions.None, TimeSpan.FromMilliseconds(100)).Trim();
 
     private static bool IsUnitedStates(string? country) =>
         country is not null && (country.Equals("US", StringComparison.OrdinalIgnoreCase) || country.Equals("USA", StringComparison.OrdinalIgnoreCase)
