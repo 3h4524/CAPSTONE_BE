@@ -58,7 +58,7 @@ services:
     volumes:
       - keyring:/data/keyring
       - models:/app/models
-    mem_limit: 3g
+    mem_limit: 5g
     depends_on:
       postgres-prod:
         condition: service_healthy
@@ -77,8 +77,8 @@ services:
     environment:
       APCS_API_URL: http://api:8080
     shm_size: 1gb
-    mem_limit: 2500m
-    cpus: 1.5
+    mem_limit: 4g
+    cpus: 3
     depends_on:
       api:
         condition: service_healthy
@@ -126,14 +126,14 @@ services:
     image: pgvector/pgvector:pg18
     env_file: ${ENV_DIR:-/opt/apcs/env}/postgres-prod.env
     command: >-
-      postgres -c shared_buffers=256MB -c max_connections=100
+      postgres -c shared_buffers=512MB -c max_connections=100
       -c log_min_duration_statement=2000 -c timezone=UTC
     ports:
       - "${PROD_DB_BIND:-127.0.0.1}:2510:5432"
     volumes:
       - pg_prod:/var/lib/postgresql
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
-    mem_limit: 1g
+    mem_limit: 2g
     shm_size: 256mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d apcs"]
