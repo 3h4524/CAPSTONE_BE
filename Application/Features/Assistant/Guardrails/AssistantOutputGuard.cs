@@ -71,7 +71,7 @@ public sealed partial class AssistantOutputGuard
     public string Sanitize(string text) => LeakDetected ? string.Empty : Redact(text);
 
     public IReadOnlyList<string> MentionedToolNames(string text) =>
-        toolNames.Where(name => Regex.IsMatch(text, $@"\b{Regex.Escape(name)}\b")).ToArray();
+        toolNames.Where(name => Regex.IsMatch(text, $@"\b{Regex.Escape(name)}\b", RegexOptions.None, TimeSpan.FromMilliseconds(100))).ToArray();
 
     private string Redact(string text)
     {
