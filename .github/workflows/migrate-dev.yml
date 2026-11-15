@@ -44,7 +44,7 @@ jobs:
 
       - name: Open an IAP tunnel to the dev database
         run: |
-          gcloud compute start-iap-tunnel "$VM_NAME" 5432 --local-host-port=localhost:15432 \
+          gcloud compute start-iap-tunnel "$DB_VM_NAME" 5432 --local-host-port=localhost:15432 \
             --zone "$GCP_ZONE" --project "$GCP_PROJECT" > /tmp/iap-tunnel.log 2>&1 &
           for _ in $(seq 1 30); do
             nc -z localhost 15432 && exit 0

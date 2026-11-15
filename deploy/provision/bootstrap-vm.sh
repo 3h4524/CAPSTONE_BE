@@ -62,9 +62,11 @@ if [ ! -f "$tls/server.key" ]; then
   chmod 644 "$tls/server.crt"
 fi
 
-cat > /etc/cron.d/apcs-restore-test <<'CRON'
+if [ "${INSTALL_RESTORE_TEST:-true}" = true ]; then
+  cat > /etc/cron.d/apcs-restore-test <<'CRON'
 0 3 * * 0 deploy cd /opt/apcs/deploy && set -a && . /opt/apcs/env/backup.env && set +a && ./scripts/restore-test.sh latest >> /var/log/apcs-restore-test.log 2>&1
 CRON
-touch /var/log/apcs-restore-test.log && chown deploy:deploy /var/log/apcs-restore-test.log
+  touch /var/log/apcs-restore-test.log && chown deploy:deploy /var/log/apcs-restore-test.log
+fi
 
 echo "Bootstrap done on $(hostname) ($DEV_DB_HOSTNAME)"
