@@ -3580,6 +3580,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("recommendations");
             entity.Property(e => e.StyleModifiers).HasColumnName("style_modifiers");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");

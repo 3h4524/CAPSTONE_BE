@@ -359,7 +359,7 @@ public sealed class PrintifyService(
             }
             var sideWidth = sideAreas.Max(area => area!.Width);
             var sidePlacement = await MockupPlacementAsync(productId, sideMockupId, design, sideWidth, sideAreas.Max(area => area!.Height), cancellationToken);
-            morePlacements.Add(new PrintifyPlacement(sidePosition, sidePlacement.Scale, sidePlacement.X, sidePlacement.Y));
+            morePlacements.Add(new PrintifyPlacement(sidePosition, sidePlacement.Scale, sidePlacement.X, sidePlacement.Y, sidePlacement.Angle));
             printWidth = Math.Max(printWidth, sidePlacement.PrintedWidthPx(sideWidth));
         }
 
@@ -371,7 +371,7 @@ public sealed class PrintifyService(
             selected.Select(variant => variant.Size).OfType<string>().Distinct().ToArray(),
             // Printify passes the description on to Etsy, so it carries the AI disclosure Etsy requires.
             title, EtsyListingText.WithAiDisclosure(request.Description), tags, request.Price, placement.Scale, position, placement.X, placement.Y,
-            morePlacements.Count == 0 ? null : morePlacements);
+            morePlacements.Count == 0 ? null : morePlacements, placement.Angle);
         var payloadJson = JsonSerializer.Serialize(payload, Json);
         var key = $"product:{productId}:create:{Hash(payloadJson)}";
 
@@ -438,7 +438,7 @@ public sealed class PrintifyService(
                 title, payload.Description, tags, request.BlueprintId, request.PrintProviderId,
                 // Every variant the provider makes is sent; only the chosen ones are sold.
                 variants.Select(variant => new PrintifyVariantPrice(variant.Id, priceCents, chosen.Contains(variant.Id))).ToArray(),
-                image.Id, position, placement.Scale, placement.X, placement.Y, morePlacements.Count == 0 ? null : morePlacements), cancellationToken);
+                image.Id, position, placement.Scale, placement.X, placement.Y, morePlacements.Count == 0 ? null : morePlacements, placement.Angle), cancellationToken);
         }
         catch (PrintifyApiException exception)
         {
@@ -621,21 +621,26 @@ public sealed class PrintifyService(
                 Job = mockup.BatchJobProduct != null ? mockup.BatchJobProduct.BatchJob.Config : null,
             })
             .SingleOrDefaultAsync(cancellationToken);
-        if (shown is null || BatchMockups.Common.MockupRules.ParsePrintArea(shown.Area) is not { } area || shown.Job is null || shown.DesignImageId is null)
+        // Printify's print area on the template photo, and where the template puts the design inside it.
+        if (shown is null || BatchMockups.Common.MockupRules.PrintifyFrameOf(shown.Area) is not { } frame
+            || BatchMockups.Common.MockupRules.ParsePrintLayout(shown.Area)?.Main is not { } placed)
             return fitted;
 
         // The seller's own box for this mock-up: same design, template and garment color.
         var color = shown.GarmentColor?.TrimStart('#');
-        var box = BatchMockups.Common.MockupRules.ReadOverrides(shown.Job)
-            .Where(entry => entry.Key.StartsWith($"{shown.DesignImageId:N}.", StringComparison.Ordinal)
-                && entry.Value is { Removed: false, PrintArea: not null } && entry.Value.MockupTemplateId == shown.TemplateId
-                && string.Equals(entry.Value.GarmentColor?.TrimStart('#'), color, StringComparison.OrdinalIgnoreCase))
-            .Select(entry => entry.Value.PrintArea!)
-            .FirstOrDefault();
-        return box is null
-            ? fitted
-            : PrintPlacement.FromMockup(area, new MockupPosition(box.X, box.Y, box.Width, box.Height),
-                design.ImageWidthPx, design.ImageHeightPx, areaWidth, areaHeight);
+        var own = shown.Job is null || shown.DesignImageId is null
+            ? null
+            : BatchMockups.Common.MockupRules.ReadOverrides(shown.Job)
+                .Where(entry => entry.Key.StartsWith($"{shown.DesignImageId:N}.", StringComparison.Ordinal)
+                    && entry.Value is { Removed: false } && entry.Value.MockupTemplateId == shown.TemplateId
+                    && string.Equals(entry.Value.GarmentColor?.TrimStart('#'), color, StringComparison.OrdinalIgnoreCase))
+                .Select(entry => entry.Value.PrintArea is { } moved
+                    ? placed with { X = moved.X, Y = moved.Y, Width = moved.Width, Height = moved.Height, Rotation = 0 }
+                    : entry.Value.Areas?.FirstOrDefault(area => area.Key == BatchMockups.Common.MockupRules.MainAreaKey))
+                .FirstOrDefault(box => box is not null);
+        var box = own ?? placed;
+        return PrintPlacement.FromMockup(frame, BatchMockups.Common.MockupRules.AreaPosition(box), design.ImageWidthPx, design.ImageHeightPx,
+            areaWidth, areaHeight, box.Rotation);
     }
 
     /// <summary>
@@ -872,7 +877,7 @@ public sealed class PrintifyService(
         Guid DesignId, long BlueprintId, string? BlueprintTitle, long PrintProviderId, string? PrintProviderTitle,
         IReadOnlyList<long> VariantIds, IReadOnlyList<string> Colors, IReadOnlyList<string> Sizes,
         string Title, string Description, IReadOnlyList<string> Tags, decimal Price, double Scale, string Position, double X = 0.5, double Y = 0.5,
-        IReadOnlyList<PrintifyPlacement>? MorePlacements = null);
+        IReadOnlyList<PrintifyPlacement>? MorePlacements = null, int Angle = 0);
 
     /// <summary>The front mock-up a print follows, and an approved mock-up of each other side of its garment, by side.</summary>
     internal sealed record MockupSides(Guid? FrontId, IReadOnlyList<(string View, Guid MockupId)> Others);

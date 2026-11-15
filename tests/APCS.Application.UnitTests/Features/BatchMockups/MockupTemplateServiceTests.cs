@@ -3049,21 +3049,28 @@ public sealed class MockupTemplateServiceTests
     }
 
     [TestMethod]
-    public async Task UpdateAsync_PrintifyTemplate_IsRenamedButKeepsItsPhotoAndPrintArea()
+    public async Task UpdateAsync_PrintifyTemplate_MovesTheDesignInsidePrintifysPrintAreaButKeepsItsPhoto()
     {
         var id = Guid.NewGuid();
-        var templates = TemplateRepository(PrintifyTemplate(id));
+        var template = PrintifyTemplate(id);
+        var templates = TemplateRepository(template);
         SetupGetById(templates, id);
         var images = MockImages();
         MockupTemplateService Service() => CreateService(Guid.NewGuid(), templates: templates, images: images);
 
         var renamed = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 500, 500, 400, 400, null), system: true);
-        var moved = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 450, 500, 400, 400, null), system: true);
+        var inside = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 550, 520, 200, 150, null), system: true);
+        var config = template.PrintAreaConfig;
+        var outside = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 450, 500, 400, 400, null), system: true);
         var photo = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 500, 500, 400, 400, SampleFile()), system: true);
 
         renamed.IsSuccess.Should().BeTrue();
         renamed.Value.Name.Should().Be("Bella Tee");
-        moved.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
+        inside.IsSuccess.Should().BeTrue();
+        MockupRules.ParsePrintArea(config).Should().Be(new MockupPosition(550, 520, 200, 150));
+        MockupRules.PrintifyFrameOf(config).Should().Be(new MockupPosition(500, 500, 400, 400));
+        outside.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Validation);
+        outside.Error.Message.Should().Contain("Printify print area");
         photo.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
         images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }

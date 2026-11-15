@@ -431,8 +431,13 @@ public sealed class MockupTemplateService(
         var current = MockupRules.ParsePrintLayout(template.PrintAreaConfig);
         var areas = RequestedAreas(request.Areas, new MockupPosition(request.X, request.Y, request.Width, request.Height), current);
         var view = request.View ?? current?.View;
-        if (printifyLinked && (!SameAreas(areas, current?.Areas) || view != current?.View))
+        // Printify's print area stays; the design's place inside it is the main print area, moved as in Printify's editor.
+        var printifyFrame = printifyLinked ? MockupRules.PrintifyFrameOf(template.PrintAreaConfig) : null;
+        if (printifyLinked && (printifyFrame is null || view != current?.View
+            || !SameAreas(areas.Skip(1).ToList(), current?.Areas.Skip(1).ToList()) || areas.Count == 0 || areas[0].Key != MockupRules.MainAreaKey))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PrintifyPhotoLocked());
+        if (printifyFrame is { } frame && !MockupRules.LiesWithin(areas[0], frame))
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.OutsidePrintifyArea(template.Name));
         PreparedBasePhoto? prepared = null;
         if (photo is not null)
         {
@@ -479,6 +484,8 @@ public sealed class MockupTemplateService(
         template.Name = MockupRules.IsOtherView(template) ? await SideNameAsync(request.Name, template.Id, cancellationToken) : request.Name.Trim();
         template.ProductType = request.ProductType;
         template.PrintAreaConfig = MockupRules.KeepViewLinks(template.PrintAreaConfig, MockupRules.SerializePrintLayout(view, areas));
+        if (printifyFrame is { } kept)
+            template.PrintAreaConfig = MockupRules.WithPrintifyFrame(template.PrintAreaConfig, kept);
         template.OutputWidthPx = outputWidth;
         template.OutputHeightPx = outputHeight;
         template.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
@@ -1269,14 +1276,14 @@ public sealed class MockupTemplateService(
         }
         // A Printify template's print area is Printify's print area: the design moves inside it, never past it.
         if ((requested.PrintArea is not null || requested.Areas is not null)
-            && MockupRules.ParsePrintLayout(template.PrintAreaConfig) is { } printifyLayout
+            && MockupRules.PrintifyFrameOf(template.PrintAreaConfig) is { } printifyFrame
             && await PrintifyLinkAsync(template.Id, cancellationToken) is not null)
         {
             var placed = requested.Areas?.FirstOrDefault(item => item.Key == MockupRules.MainAreaKey)
                 ?? (requested.PrintArea is { } moved
                     ? new MockupAreaDto(MockupRules.MainAreaKey, null, moved.X, moved.Y, moved.Width, moved.Height, Source: MockupRules.SourceSame)
                     : null);
-            if (placed is not null && !MockupRules.LiesWithin(placed, MockupRules.AreaPosition(printifyLayout.Main)))
+            if (placed is not null && !MockupRules.LiesWithin(placed, printifyFrame))
                 return Result.Failure<MockupOverrideDto>(MockupErrors.OutsidePrintifyArea(template.Name));
         }
 

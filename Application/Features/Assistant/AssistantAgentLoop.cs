@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Assistant.Common;
+using APCS.Application.Features.Assistant.Guardrails;
 using APCS.Application.Features.Assistant.Tools;
 using APCS.Application.Features.Rag.Dtos;
 using APCS.Domain.Entities;
@@ -16,6 +17,7 @@ public sealed partial class AssistantAgentLoop(
     IAssistantChatModel chatModel,
     AssistantPromptBuilder promptBuilder,
     AssistantToolRegistry registry,
+    AssistantInputGuard inputGuard,
     AssistantKnowledgeBase knowledgeBase,
     IRepository<AssistantConversation> conversations,
     IRepository<AssistantMessage> messages,
@@ -26,6 +28,7 @@ public sealed partial class AssistantAgentLoop(
     private const string KnowledgeToolName = "search_faq";
     private const string PrefetchCallId = "prefetch";
     private const string CachedModelName = "cache";
+    private const string GuardrailModelName = "guardrail";
     private const int ReplayChunkChars = 48;
     private const int MaxEmptyRetries = 1;
     private const string EmptyResponseMessage = "Podi could not come up with an answer. Please rephrase or try again.";
@@ -45,13 +48,27 @@ public sealed partial class AssistantAgentLoop(
         Func<AssistantTurnEnd>? cancelledAs = null)
     {
         var state = new AssistantTurnState();
+        var outputGuard = new AssistantOutputGuard(AssistantPromptBuilder.Instructions, registry.Names);
         try
         {
             await foreach (var streamEvent in RunTurnAsync(session, state, cancellationToken))
-                yield return streamEvent;
+            {
+                var safeText = streamEvent.Data is AssistantDeltaEventData delta ? outputGuard.Push(delta.Text) : outputGuard.Flush();
+                if (outputGuard.LeakDetected)
+                    break;
+                if (safeText.Length > 0)
+                    yield return AssistantStreamEvent.Delta(safeText);
+                if (streamEvent.Data is not AssistantDeltaEventData)
+                    yield return streamEvent;
+            }
+
+            var tail = outputGuard.Flush();
+            if (tail.Length > 0 && !outputGuard.LeakDetected)
+                yield return AssistantStreamEvent.Delta(tail);
         }
         finally
         {
+            ApplyOutputGuard(session, state, outputGuard);
             var end = state.Error is { } error ? AssistantTurnEnd.Failed(error)
                 : state.Finished ? AssistantTurnEnd.Done
                 : cancellationToken.IsCancellationRequested ? cancelledAs?.Invoke() ?? AssistantTurnEnd.Stopped
@@ -71,7 +88,7 @@ public sealed partial class AssistantAgentLoop(
             yield break;
         }
 
-        if (state.UsedOnlyKnowledgeTools && state.LastToolFailure is null)
+        if (state.UsedOnlyKnowledgeTools && state.LastToolFailure is null && !state.Guarded)
             await knowledgeBase.SaveAnswerAsync(session, new AssistantCachedAnswer(state.Text, state.Citations), CancellationToken.None);
 
         yield return AssistantStreamEvent.Done(session.AssistantMessageId, state.Model ?? chatModel.ModelName, state.InputTokens, state.OutputTokens);
@@ -83,6 +100,22 @@ public sealed partial class AssistantAgentLoop(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var toolContext = new AssistantToolContext(session.ConversationId, session.UserId, session.Caller, session.Context);
+
+        var verdict = inputGuard.Check(session.Message);
+        if (verdict.Kind == AssistantInputVerdictKind.Block)
+        {
+            AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.InputBlock, verdict.Rule!, session, session.Message);
+            var refusal = AssistantInputGuard.RefusalFor(session.Message);
+            state.AppendText(refusal);
+            state.Guard(GuardrailModelName);
+            state.Finished = true;
+            yield return AssistantStreamEvent.Delta(refusal);
+            yield break;
+        }
+
+        var flagged = verdict.Kind == AssistantInputVerdictKind.Flag;
+        if (flagged)
+            AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.InputFlag, verdict.Rule!, session, session.Message);
 
         var cachedAnswer = await knowledgeBase.GetAnswerAsync(session, cancellationToken);
         if (cachedAnswer is not null)
@@ -105,7 +138,7 @@ public sealed partial class AssistantAgentLoop(
 
         var tools = registry.Resolve(toolContext);
         var declarations = tools.Select(tool => tool.Declaration).ToArray();
-        var conversation = promptBuilder.Build(session, articles).ToList();
+        var conversation = promptBuilder.Build(session, articles, flagged).ToList();
         var endTurn = false;
         var completionCheckUsed = false;
         var isCompletionCheck = false;
@@ -142,6 +175,8 @@ public sealed partial class AssistantAgentLoop(
                     }
 
                     var (code, message) = AssistantErrors.FromModelFailure(update.FailureCode);
+                    if (code == AssistantErrors.BlockedCode)
+                        AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.ModelBlocked, update.FailureCode ?? code, session);
                     state.Error = new AssistantErrorData(code, message);
                     yield break;
                 }
@@ -380,6 +415,24 @@ public sealed partial class AssistantAgentLoop(
         await unitOfWork.SaveChangesAsync(CancellationToken.None);
     }
 
+    private void ApplyOutputGuard(AssistantChatSession session, AssistantTurnState state, AssistantOutputGuard outputGuard)
+    {
+        if (outputGuard.LeakDetected)
+        {
+            AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.PromptLeak, "system_prompt_overlap", session);
+            state.ReplaceText(string.Empty);
+            state.Guard(state.Model ?? GuardrailModelName);
+            state.Error = new AssistantErrorData(AssistantErrors.BlockedCode, AssistantErrors.BlockedMessage);
+            return;
+        }
+
+        state.ReplaceText(outputGuard.Sanitize(state.Text));
+        foreach (var rule in outputGuard.RedactedSecretRules)
+            AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.SecretRedacted, rule, session);
+        foreach (var toolName in outputGuard.MentionedToolNames(state.Text))
+            AssistantGuardrailLog.Triggered(logger, AssistantGuardrailKinds.ToolNameMention, toolName, session);
+    }
+
     private sealed class AssistantTurnState
     {
         private readonly StringBuilder text = new();
@@ -413,7 +466,17 @@ public sealed partial class AssistantAgentLoop(
 
         public bool UsedOnlyKnowledgeTools => ToolCalls.All(call => call.Name == KnowledgeToolName) && clientActions.Count == 0 && pendingActionIds.Count == 0 && choices is null;
 
+        public bool Guarded { get; private set; }
+
         public void AppendText(string value) => text.Append(value);
+
+        public void ReplaceText(string value) => text.Clear().Append(value);
+
+        public void Guard(string model)
+        {
+            Guarded = true;
+            Model = model;
+        }
 
         public string WithParagraphBreak(string value) =>
             text.Length == 0 || text[^1] == '\n' || value.StartsWith('\n') ? value : $"\n\n{value}";

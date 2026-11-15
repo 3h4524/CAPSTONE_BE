@@ -2,9 +2,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Features.StyleArtPresets.Common;
 using APCS.IntegrationTests.TestSupport;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace APCS.IntegrationTests.StyleArtPresets;
@@ -1099,6 +1101,9 @@ public sealed class StyleArtPresetEndpointTests
         command.Parameters.AddWithValue("user_id", (object?)userId ?? DBNull.Value);
 
         await command.ExecuteNonQueryAsync();
+
+        if (userId is null)
+            await _host.Factory.Services.GetRequiredService<ICacheService>().RemoveAsync(StyleArtPresetCacheKeys.SystemRows);
 
         return name;
     }

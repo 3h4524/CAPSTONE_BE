@@ -27,13 +27,14 @@ public sealed record PrintifyVariantPrice(long Id, long PriceCents, bool IsEnabl
 /// <param name="Scale">The design's width relative to the print area's width; 1 fills it.</param>
 /// <param name="X">The design's center across the print area (0–1).</param>
 /// <param name="Y">The design's center down the print area (0–1).</param>
-public sealed record PrintifyPlacement(string Position, double Scale, double X, double Y);
+public sealed record PrintifyPlacement(string Position, double Scale, double X, double Y, int Angle = 0);
 
 /// <summary>A product to create: one design on a print area of every chosen variant, and on any further areas given.</summary>
 /// <param name="Scale">The design's width relative to the print area's width; 1 fills it.</param>
 /// <param name="X">The design's center across the print area (0–1).</param>
 /// <param name="Y">The design's center down the print area (0–1).</param>
 /// <param name="MorePlacements">The same design in other print areas (the back, a sleeve), each placed on its own.</param>
+/// <param name="Angle">Whole degrees the design is turned clockwise about its center.</param>
 public sealed record PrintifyNewProduct(
     string Title,
     string Description,
@@ -46,7 +47,8 @@ public sealed record PrintifyNewProduct(
     double Scale,
     double X = 0.5,
     double Y = 0.5,
-    IReadOnlyList<PrintifyPlacement>? MorePlacements = null);
+    IReadOnlyList<PrintifyPlacement>? MorePlacements = null,
+    int Angle = 0);
 
 /// <summary>
 /// A throwaway product printing one image, centered and filling the area, on several print areas (<c>front</c>,

@@ -153,7 +153,7 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
         var matte = segmenter.Segment(photo, width, height, quick)
             ?? throw new InvalidOperationException("The segmentation model could not process this photo.");
         if (garmentSelection is null)
-            return matte;
+            return FillGarmentHoles(pixels, matte, width, height);
 
         // Where the matte cut into the garment (white on a white wall), the clothes model puts it back.
         if (clothes is { IsAvailable: true } && clothes.UpperClothes(photo, width, height) is { } upper)

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
+using APCS.Application.Abstractions.Storage;
 using FluentAssertions;
 
 namespace APCS.Application.UnitTests.Features.BatchMockups;
@@ -153,6 +154,21 @@ public sealed class MockupPrintAreaRulesTests
         read[templateId].Should().HaveCount(2);
         read[templateId]["sleeve-left"].Should().Be(new MockupAreaSourceDto(MockupRules.SourceDesign, logo));
         read[templateId]["main"].Kind.Should().Be(MockupRules.SourceSame);
+    }
+
+    [TestMethod]
+    public void PrintifyFrameOf_IsTheStoredFrame_OrTheMainAreaOfATemplateNeverMoved()
+    {
+        var never = "{\"x\":500,\"y\":500,\"width\":400,\"height\":400,\"unit\":\"px\",\"views\":{\"back\":\"" + Guid.NewGuid() + "\"}}";
+        var moved = MockupRules.WithPrintifyFrame(
+            MockupRules.KeepViewLinks(never, MockupRules.SerializePrintLayout(null, [Main with { X = 550, Y = 520, Width = 200, Height = 150 }])),
+            new MockupPosition(500, 500, 400, 400));
+
+        MockupRules.PrintifyFrameOf(never).Should().Be(new MockupPosition(500, 500, 400, 400));
+        MockupRules.PrintifyFrameOf(moved).Should().Be(new MockupPosition(500, 500, 400, 400));
+        MockupRules.ParsePrintArea(moved).Should().Be(new MockupPosition(550, 520, 200, 150));
+        MockupRules.ViewTemplateIds(moved).Should().ContainKey(MockupRules.ViewBack);
+        MockupRules.PrintifyFrameOf(null).Should().BeNull();
     }
 
     [TestMethod]

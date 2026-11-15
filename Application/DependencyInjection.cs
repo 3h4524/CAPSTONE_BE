@@ -87,6 +87,7 @@ public static class DependencyInjection
         services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<Features.Admin.MockupTemplates.IAdminMockupTemplateService, Features.Admin.MockupTemplates.AdminMockupTemplateService>();
+        services.AddScoped<Features.Admin.StyleArtPresets.IAdminStyleArtPresetService, Features.Admin.StyleArtPresets.AdminStyleArtPresetService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
@@ -154,6 +155,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListVideoTemplatesTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.EstimateRunCostTool>();
         services.AddScoped<Features.Assistant.IAssistantRunProgressReader, Features.Assistant.AssistantRunProgressReader>();
+        services.AddSingleton<Features.Assistant.Guardrails.AssistantInputGuard>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetRunProgressTool>();
         services.AddSingleton<Features.Assistant.Tools.ClientActions.WorkflowCanvasPatchSimulator>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.EditWorkflowCanvasTool>();

@@ -138,7 +138,7 @@ public sealed class PrintifyClientHttpTests
 
         await Create().CreateProductAsync("t", 777, new PrintifyNewProduct("Cat Tee", "Soft.", ["cat"], 6, 99,
             [new PrintifyVariantPrice(101, 2499, true)], "img-1", "front", 0.8, 0.5, 0.3,
-            [new PrintifyPlacement("back", 0.6, 0.5, 0.25)]), default);
+            [new PrintifyPlacement("back", 0.6, 0.5, 0.25, -15)], Angle: 20), default);
 
         using var body = JsonDocument.Parse(bodies[0]);
         var placeholders = body.RootElement.GetProperty("print_areas")[0].GetProperty("placeholders");
@@ -148,6 +148,8 @@ public sealed class PrintifyClientHttpTests
         placeholders[1].GetProperty("position").GetString().Should().Be("back");
         placeholders[1].GetProperty("images")[0].GetProperty("id").GetString().Should().Be("img-1");
         placeholders[1].GetProperty("images")[0].GetProperty("scale").GetDouble().Should().Be(0.6);
+        placeholders[0].GetProperty("images")[0].GetProperty("angle").GetInt32().Should().Be(20);
+        placeholders[1].GetProperty("images")[0].GetProperty("angle").GetInt32().Should().Be(-15);
     }
 
     [TestMethod]

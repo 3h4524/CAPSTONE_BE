@@ -109,6 +109,31 @@ public sealed class GeminiAssistantChatModelTests
     }
 
     [TestMethod]
+    public async Task StreamAsync_WhenGeminiFiltersTheAnswer_ReportsContentBlocked()
+    {
+        var clients = new Dictionary<string, FakeChatClient> { ["key-1"] = FakeChatClient.Filtered() };
+        var model = CreateModel(new AssistantOptions { ApiKeys = ["key-1"] }, clients);
+
+        var updates = await CollectAsync(model);
+
+        updates.Should().ContainSingle(update => update.Kind == AssistantModelUpdateKind.Failed)
+            .Which.FailureCode.Should().Be("content_blocked");
+    }
+
+    [TestMethod]
+    public async Task StreamAsync_SendsSafetySettingsForTheFourHarmCategories()
+    {
+        var clients = new Dictionary<string, FakeChatClient> { ["key-1"] = FakeChatClient.Answering("hello") };
+        var model = CreateModel(new AssistantOptions { ApiKeys = ["key-1"] }, clients);
+
+        await CollectAsync(model);
+
+        var config = clients["key-1"].LastOptions!.RawRepresentationFactory!(null!).Should().BeOfType<Google.GenAI.Types.GenerateContentConfig>().Subject;
+        config.SafetySettings.Should().HaveCount(4)
+            .And.OnlyContain(setting => setting.Threshold == Google.GenAI.Types.HarmBlockThreshold.BlockMediumAndAbove);
+    }
+
+    [TestMethod]
     public async Task StreamAsync_AfterSwitchingKeys_StartsTheNextRequestWithTheWorkingKey()
     {
         var clients = new Dictionary<string, FakeChatClient>
@@ -194,9 +219,13 @@ public sealed class GeminiAssistantChatModelTests
         return updates;
     }
 
-    private sealed class FakeChatClient(string? text, Exception? failure, int failingCalls) : IChatClient
+    private sealed class FakeChatClient(string? text, Exception? failure, int failingCalls, ChatFinishReason? finishReason = null) : IChatClient
     {
         public int Calls { get; private set; }
+
+        public ChatOptions? LastOptions { get; private set; }
+
+        public static FakeChatClient Filtered() => new(null, null, 0, ChatFinishReason.ContentFilter);
 
         public static FakeChatClient Failing(Exception failure) => new(null, failure, int.MaxValue);
 
@@ -213,10 +242,11 @@ public sealed class GeminiAssistantChatModelTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Calls++;
+            LastOptions = options;
             await Task.Yield();
             if (failure is not null && Calls <= failingCalls)
                 throw failure;
-            yield return new ChatResponseUpdate(ChatRole.Assistant, text);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, text) { FinishReason = finishReason };
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

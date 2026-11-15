@@ -52,7 +52,8 @@ public sealed class DesignGenerationService(
     IPlanEntitlementService entitlements,
     IDesignTextCheckQueue? textCheckQueue = null,
     IContentModerationService? moderation = null,
-    IMediaStorage? mediaStorage = null) : IDesignGenerationService
+    IMediaStorage? mediaStorage = null,
+    ISystemApiKeyPool? systemKeys = null) : IDesignGenerationService
 {
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
@@ -113,11 +114,11 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the chosen image provider must exist before the job can start.
+        // BR51: a valid, connected key for the chosen image provider must exist before the job can start, unless the
+        // plan makes the images on the platform's keys.
         var imageProvider = request.ImageProvider ?? ImageGenerationProviders.Default;
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, rows.Count * request.VariationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // The plan sets how many products, variations and parallel jobs a run may use.
         var planError = await CheckPlanAsync(userId, job.Id, rows.Count, request.VariationCount, request.RequireApproval, cancellationToken);
@@ -237,14 +238,13 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the job's image provider must still exist.
+        // BR51: a valid, connected key for the job's image provider must still exist (or the plan's platform keys).
         var imageProvider = ReadImageProvider(job.Config);
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var (variationCount, _) = ReadConfig(job.Config);
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, failedRows.Count * variationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // A retry is held to the plan in effect now, which may have changed since the first run.
-        var (variationCount, _) = ReadConfig(job.Config);
         var planError = await CheckPlanAsync(userId, job.Id, failedRows.Count, variationCount, ReadRequireApproval(job.Config), cancellationToken, newRun: false);
         if (planError is not null) return Result.Failure<StartGenerationResponseDto>(planError);
 
@@ -359,17 +359,17 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the job's image provider must still exist.
+        // The Seller may ask for a different number of designs than the job first made.
+        var variationCount = request.VariationCount ?? ReadConfig(job.Config).VariationCount;
+
+        // BR51: a valid, connected key for the job's image provider must still exist (or the plan's platform keys).
         var imageProvider = ReadImageProvider(job.Config);
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, variationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // BR50: generating again consumes quota again.
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
         if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
-        // The Seller may ask for a different number of designs than the job first made.
-        var variationCount = request.VariationCount ?? ReadConfig(job.Config).VariationCount;
         var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
         if (variationCount > subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0))
             return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
@@ -472,27 +472,37 @@ public sealed class DesignGenerationService(
             await FailJobAsync(job.Id, $"Image generation with {ImageGenerationProviders.Label(providerName)} is not available.", cancellationToken);
             return;
         }
+        // On a plan with the platform's keys the images are made on those; the Seller's own key, when they have one that
+        // works, takes over once the platform's are used up for the day.
+        var useSystemKeys = await UsesSystemKeysAsync(job.UserId, providerName, cancellationToken);
         var ownedKeys = await apiKeys.ListOwnedAsync(job.UserId, cancellationToken);
         var providerKey = ownedKeys.FirstOrDefault(key =>
             string.Equals(key.ServiceProvider, providerName, StringComparison.OrdinalIgnoreCase) && key.IsActive == true);
-        if (providerKey is null)
+        if (providerKey is null && !useSystemKeys)
         {
             // Defensive only: StartAsync already required a valid key moments earlier. The job is failed rather
             // than left queued, where nothing would ever finish it.
             await FailJobAsync(job.Id, $"The {ImageGenerationProviders.Label(providerName)} API key is no longer available.", cancellationToken);
             return;
         }
-        string apiKeyPlain;
-        try
+        string? apiKeyPlain = null;
+        if (providerKey is not null)
         {
-            apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
-        }
-        catch (CryptographicException)
-        {
-            // A key is encrypted with the key ring of the server it was saved through, which another server sharing the
-            // database does not have.
-            await FailJobAsync(job.Id, UnreadableKeyMessage(providerName), cancellationToken);
-            return;
+            try
+            {
+                apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
+            }
+            catch (CryptographicException) when (!useSystemKeys)
+            {
+                // A key is encrypted with the key ring of the server it was saved through, which another server sharing
+                // the database does not have.
+                await FailJobAsync(job.Id, UnreadableKeyMessage(providerName), cancellationToken);
+                return;
+            }
+            catch (CryptographicException)
+            {
+                // Only the stand-in for the platform's keys, which this server goes without.
+            }
         }
         var requireApproval = ReadRequireApproval(job.Config);
         // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
@@ -538,7 +548,7 @@ public sealed class DesignGenerationService(
 
         // Images are mostly waiting on the provider, so several are requested at once, up to what the Seller's key allows.
         var run = new JobRun(job, imageProvider, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus, new JobStop(),
-            printedPhrases);
+            printedPhrases, useSystemKeys);
         var maxImages = settings.Value.MaxConcurrentImagesFor(imageProvider.Provider);
         using var imageSlots = new SemaphoreSlim(maxImages);
         // Just enough products at once to keep every slot busy, so the products shown as being generated are the
@@ -726,8 +736,11 @@ public sealed class DesignGenerationService(
     }
 
     // What every product of a job being processed shares. PrintedPhrases is null when the text of designs is not checked.
-    private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string ApiKey, string AspectRatio, int VariationCount,
-        bool? RequireApproval, string ReviewedStatus, JobStop Stop, IReadOnlyDictionary<Guid, string?>? PrintedPhrases = null);
+    // With UseSystemKeys the images are made on the platform's keys, and ApiKey (the Seller's own, null without one) only
+    // once those are used up for the day.
+    private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string? ApiKey, string AspectRatio, int VariationCount,
+        bool? RequireApproval, string ReviewedStatus, JobStop Stop, IReadOnlyDictionary<Guid, string?>? PrintedPhrases = null,
+        bool UseSystemKeys = false);
 
     // The designs a product already has in the job when it is generated again: the new ones are numbered after them,
     // and the product keeps them, so it does not fail when none of the new ones can be made.
@@ -907,7 +920,7 @@ public sealed class DesignGenerationService(
             ImageGenerationResult result;
             try
             {
-                result = await run.ImageProvider.GenerateAsync(run.ApiKey, request.Prompt, run.AspectRatio, transparent, enrich, providerTimeout.Token);
+                result = await GenerateImageAsync(run, request.Prompt, transparent, enrich, providerTimeout.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -1371,6 +1384,44 @@ public sealed class DesignGenerationService(
         string.Equals(key.ServiceProvider, provider, StringComparison.OrdinalIgnoreCase)
         && key.IsActive == true && key.LastCheckSucceeded == true
         && (!key.ExpiresAt.HasValue || key.ExpiresAt > now);
+
+    // Whether a Seller's images are made on the platform's keys: their plan includes it and the platform has keys for
+    // the provider.
+    private async Task<bool> UsesSystemKeysAsync(Guid userId, string provider, CancellationToken cancellationToken) =>
+        systemKeys?.HasKeys(provider) == true
+        && (await entitlements.GetAsync(userId, cancellationToken)).IsEnabled(PlanFeatures.SystemImageKeys);
+
+    /// <summary>
+    /// BR51: what a run of <paramref name="images"/> images needs to start. On the platform's keys, room under the plan's
+    /// daily design image cap; otherwise a connected key of the Seller's own for the provider.
+    /// </summary>
+    private async Task<Error?> CheckImageKeyAsync(Guid userId, string provider, int images, DateTime now, CancellationToken cancellationToken)
+    {
+        if (await UsesSystemKeysAsync(userId, provider, cancellationToken))
+        {
+            var cap = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyDesignImageCap, images, cancellationToken);
+            return cap.IsFailure ? cap.Error : null;
+        }
+
+        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
+        return ownedKeys.Any(key => IsUsableKey(key, provider, now)) ? null : DesignGenerationErrors.MissingApiKey(provider);
+    }
+
+    /// <summary>
+    /// Makes one image on the Seller's key, or on the platform's keys in turn
+    /// (<see cref="SystemApiKeyPoolExtensions.GenerateImageAsync"/>): once those are used up the Seller's own key, when
+    /// they have one, takes over; without one the job stops asking.
+    /// </summary>
+    private async Task<ImageGenerationResult> GenerateImageAsync(JobRun run, string prompt, bool transparent, bool enrich,
+        CancellationToken cancellationToken)
+    {
+        var provider = run.ImageProvider;
+        if (!run.UseSystemKeys || systemKeys is null)
+            return await provider.GenerateAsync(run.ApiKey!, prompt, run.AspectRatio, transparent, enrich, cancellationToken);
+
+        return await systemKeys.GenerateImageAsync(provider.Provider, run.ApiKey,
+            key => provider.GenerateAsync(key, prompt, run.AspectRatio, transparent, enrich, cancellationToken), cancellationToken);
+    }
 
     // What the Seller is told when the server running the job cannot decrypt their key, and what to do about it.
     private static string UnreadableKeyMessage(string provider) =>

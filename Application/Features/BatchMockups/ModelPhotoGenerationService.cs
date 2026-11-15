@@ -7,6 +7,7 @@ using APCS.Application.Features.Batches.Validators;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
+using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.Extensions.Logging;
@@ -17,7 +18,7 @@ namespace APCS.Application.Features.BatchMockups;
 public interface IModelPhotoGenerationService
 {
     /// <summary>
-    /// Has Ideogram make a photo of the people described in a plain white t-shirt, with the caller's Ideogram key, and
+    /// Has Ideogram make a photo of the people described in a plain white t-shirt, with the caller's Ideogram key (or the platform's), and
     /// saves it as a model photo: the seller's own, or the shared library's when <paramref name="system"/>.
     /// </summary>
     Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default);
@@ -38,7 +39,9 @@ public sealed class ModelPhotoGenerationService(
     IEnumerable<IImageGenerationProvider> imageProviders,
     IMockupMapService maps,
     TimeProvider time,
-    ILogger<ModelPhotoGenerationService> logger) : IModelPhotoGenerationService
+    ILogger<ModelPhotoGenerationService> logger,
+    IPlanEntitlementService? entitlements = null,
+    ISystemApiKeyPool? systemKeys = null) : IModelPhotoGenerationService
 {
     public async Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default)
     {
@@ -53,16 +56,35 @@ public sealed class ModelPhotoGenerationService(
         if (imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Ideogram) is not { } ideogram)
             return Result.Failure<MockupTemplateResponseDto>(Error.Failure("ModelPhotoGenerationUnavailable", "Making model photos with AI is not available."));
 
+        // On the platform's keys: an Admin making a photo for the shared library, or a Seller whose plan includes them
+        // (within its daily cap). The caller's own key, when they have one, takes over once those are used up for today.
+        var platform = await PlatformKeysAsync(userId, system, cancellationToken);
+        if (platform && !system && entitlements is not null)
+        {
+            var cap = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyDesignImageCap, 1, cancellationToken);
+            if (cap.IsFailure) return Result.Failure<MockupTemplateResponseDto>(cap.Error);
+        }
         var key = (await keys.ListOwnedAsync(userId, cancellationToken)).FirstOrDefault(x =>
             x.ServiceProvider == ImageGenerationProviders.Ideogram && x.IsActive == true && x.LastCheckSucceeded == true);
-        if (key is null)
+        if (key is null && !platform)
             return Result.Failure<MockupTemplateResponseDto>(Error.Conflict("MissingApiKey", "Connect a valid Ideogram API key before making a model photo with AI."));
 
         var (prompt, aspectRatio) = ModelPhotoPrompts.Build(request.Attributes);
         ImageGenerationResult generated;
+        var noOwnKey = false;
         try
         {
-            generated = await ideogram.GenerateAsync(credentials.Unprotect(key.KeyValueEncrypted), prompt, aspectRatio, cancellationToken: cancellationToken);
+            string? ownKey = null;
+            if (key is not null)
+            {
+                try { ownKey = credentials.Unprotect(key.KeyValueEncrypted); }
+                catch (CryptographicException) when (platform) { }
+            }
+            noOwnKey = ownKey is null;
+            generated = platform
+                ? await systemKeys!.GenerateImageAsync(ImageGenerationProviders.Ideogram, ownKey,
+                    apiKey => ideogram.GenerateAsync(apiKey, prompt, aspectRatio, cancellationToken: cancellationToken), cancellationToken)
+                : await ideogram.GenerateAsync(ownKey!, prompt, aspectRatio, cancellationToken: cancellationToken);
         }
         catch (Exception error) when (error is HttpRequestException or InvalidOperationException or CryptographicException)
         {
@@ -72,6 +94,10 @@ public sealed class ModelPhotoGenerationService(
         if (!generated.IsSuccess)
         {
             logger.LogWarning("A model photo was not made with AI: {Reason}", generated.ErrorMessage);
+            // Every platform key was used up or refused, and the caller has no key of their own to go on with.
+            if (platform && noOwnKey && generated.StopsJob)
+                return Result.Failure<MockupTemplateResponseDto>(
+                    Error.Failure("SystemImageKeysUsedUp", SystemApiKeyPoolExtensions.UsedUpMessage(ImageGenerationProviders.Ideogram)));
             return Result.Failure<MockupTemplateResponseDto>(generated.IsBlocked
                 ? Error.Validation("Ideogram declined to make this photo. Try again, or choose other people.")
                 : Failed());
@@ -122,6 +148,13 @@ public sealed class ModelPhotoGenerationService(
     // The middle of the photo's upper half, where a chest print sits on a person framed head to mid-thigh.
     internal static MockupPosition ChestArea(int width, int height) =>
         new((int)(width * 0.35), (int)(height * 0.3), Math.Max(1, (int)(width * 0.3)), Math.Max(1, (int)(height * 0.25)));
+
+    // Whether the photo is made on the platform's Ideogram keys: the platform has some, and the photo is for the shared
+    // library or the Seller's plan includes them.
+    private async Task<bool> PlatformKeysAsync(Guid userId, bool system, CancellationToken cancellationToken) =>
+        systemKeys?.HasKeys(ImageGenerationProviders.Ideogram) == true
+        && (system || (entitlements is not null
+            && (await entitlements.GetAsync(userId, cancellationToken)).IsEnabled(PlanFeatures.SystemImageKeys)));
 
     private static Error Failed() => Error.Failure("ModelPhotoGenerationFailed", "Ideogram could not make the photo. Try again.");
 }
