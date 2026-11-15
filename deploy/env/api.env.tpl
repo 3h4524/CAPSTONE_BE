@@ -53,7 +53,7 @@ PayOS__ClientId=${PAYOS_CLIENT_ID}
 PayOS__ApiKey=${PAYOS_API_KEY}
 PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
 PayOS__UsdToVndRate=25000
-PayOS__TestAmountVnd=0
+PayOS__TestAmountVnd=2000
 
 Gemini__Embeddings__ApiKey=${GEMINI_API_KEY}
 Gemini__TextGeneration__ApiKey=${GEMINI_API_KEY}
