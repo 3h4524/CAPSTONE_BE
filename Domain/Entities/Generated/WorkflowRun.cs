@@ -27,6 +27,10 @@ public partial class WorkflowRun
 
     public Guid? ParentRunId { get; set; }
 
+    public Guid? RunGroupId { get; set; }
+
+    public string? ArtworkGroupKey { get; set; }
+
     public string? ErrorMessage { get; set; }
 
     public DateTime CreatedAt { get; set; }
@@ -46,6 +50,8 @@ public partial class WorkflowRun
     public virtual Product Product { get; set; } = null!;
 
     public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
+
+    public virtual WorkflowRunGroup? RunGroup { get; set; }
 
     public virtual User User { get; set; } = null!;
 

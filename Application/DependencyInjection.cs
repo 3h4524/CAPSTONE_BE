@@ -63,6 +63,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Shops.ShopService>();
         services.AddScoped<Features.Shops.IShopService>(provider => provider.GetRequiredService<Features.Shops.ShopService>());
         services.AddScoped<Features.Shops.IEtsyPublishingService, Features.Shops.EtsyPublishingService>();
+        services.AddScoped<Features.Shops.IListingPace, Features.Shops.ListingPace>();
         services.AddScoped<Features.Shops.IPrintifyService, Features.Shops.PrintifyService>();
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
@@ -75,13 +76,27 @@ public static class DependencyInjection
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        // Shared templates of Printify products, made by admins with the server's own Printify token.
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyAdminCatalog>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyColorMapService>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyTemplateBuilder, APCS.Application.Features.BatchMockups.Printify.PrintifyTemplateBuilder>();
         services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
+        services.AddScoped<Features.Admin.MockupTemplates.IAdminMockupTemplateService, Features.Admin.MockupTemplates.AdminMockupTemplateService>();
+        services.AddScoped<Features.Admin.StyleArtPresets.IAdminStyleArtPresetService, Features.Admin.StyleArtPresets.AdminStyleArtPresetService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
         services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
+        services.AddSingleton<Features.Moderation.ModerationBlocklistCache>();
+        services.AddSingleton<Features.Moderation.ModerationRuntimeSettings>();
+        services.AddScoped<Features.Admin.Moderation.IAdminModerationService, Features.Admin.Moderation.AdminModerationService>();
+        services.AddScoped<Abstractions.Moderation.IContentModerationService, Features.Moderation.ContentModerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
         services.AddScoped<Features.Workflows.WorkflowPublishConnections>();
@@ -89,11 +104,17 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IVideoPromptPreparationService, Features.Workflows.VideoPromptPreparationService>();
         services.AddScoped<Features.Workflows.IVideoExperienceContextService, Features.Workflows.VideoExperienceContextService>();
         services.AddScoped<Features.Workflows.WorkflowRuntime>();
+        services.AddScoped<Features.Workflows.IPrintifyMockupMatcher, Features.Workflows.PrintifyMockupMatcher>();
         services.AddScoped<Features.Workflows.IWorkflowPublishService, Features.Workflows.WorkflowPublishService>();
         services.AddScoped<Features.Workflows.IWorkflowService, Features.Workflows.WorkflowService>();
         services.AddScoped<Features.Workflows.IWorkflowRunService, Features.Workflows.WorkflowRunService>();
         services.AddScoped<Features.Workflows.IWorkflowRunReconciler, Features.Workflows.WorkflowRunReconciler>();
         services.AddScoped<Features.Workflows.IMediaLeaseRecovery, Features.Workflows.MediaLeaseRecovery>();
+        services.AddScoped<Features.Workflows.IRunTargetConfigResolver, Features.Workflows.RunTargetConfigResolver>();
+        services.AddScoped<Features.Workflows.IWorkflowRunGroupService, Features.Workflows.WorkflowRunGroupService>();
+        services.AddScoped<Features.Workflows.IRunCostEstimateService, Features.Workflows.RunCostEstimateService>();
+        services.AddScoped<Features.Workflows.IRunGroupExportService, Features.Workflows.RunGroupExportService>();
+        services.AddScoped<Features.Workflows.IRunGroupPlanner, Features.Workflows.RunGroupPlanner>();
         services.AddScoped<Features.Workflows.IMockupAssetService, Features.Workflows.MockupAssetService>();
         services.AddScoped<Features.Workflows.IGeneratedMockupSourceService, Features.Workflows.GeneratedMockupSourceService>();
         services.AddScoped<Features.Workflows.ILifestyleMockupService, Features.Workflows.LifestyleMockupService>();
@@ -113,6 +134,8 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.Validators.MockupMetadataValidator>();
         services.AddScoped<Features.Assistant.IAssistantService, Features.Assistant.AssistantService>();
         services.AddScoped<Features.Assistant.AssistantAgentLoop>();
+        services.AddScoped<Features.Assistant.AssistantTurnReader>();
+        services.AddScoped<Features.Assistant.IAssistantTurnRunner, Features.Assistant.AssistantTurnRunner>();
         services.AddScoped<Features.Assistant.AssistantKnowledgeBase>();
         services.AddScoped<Features.Assistant.AssistantPromptBuilder>();
         services.AddScoped<Features.Assistant.AssistantToolRegistry>();
@@ -130,12 +153,24 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListStylePresetsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListMockupTemplatesTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListVideoTemplatesTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.EstimateRunCostTool>();
+        services.AddScoped<Features.Assistant.IAssistantRunProgressReader, Features.Assistant.AssistantRunProgressReader>();
+        services.AddSingleton<Features.Assistant.Guardrails.AssistantInputGuard>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetRunProgressTool>();
         services.AddSingleton<Features.Assistant.Tools.ClientActions.WorkflowCanvasPatchSimulator>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.EditWorkflowCanvasTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.NavigateTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.ArrangeWorkflowCanvasTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.RunWorkflowTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.SaveWorkflowTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.ContinueRunTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.StartWorkflowRunTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.WorkflowRunActionTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.ReviewDesignsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.ReviewMockupsTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.CreateWorkflowTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.CreateBatchTool>();
+        services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.AddBatchProductsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.OfferChoicesTool>();
         services.AddScoped<IListingContentService, ListingContentService>();
         // The test reports are files on the machine that ran the suite, so the service keeps

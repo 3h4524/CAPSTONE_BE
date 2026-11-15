@@ -182,13 +182,13 @@ async function execute(job: WorkerJob) {
       let zip = join(directory, "package.zip");
       if (payload.storyboard && payload.productName) {
         const outputImages: ExportProduct["images"] = [];
-        for (const [index, mockup] of [...(payload.approvedMockups ?? [])].sort((a, b) => a.id.localeCompare(b.id)).entries()) {
+        for (const [index, mockup] of (payload.approvedMockups ?? []).entries()) {
           const source = assets.get(`mockups/${mockup.id}.png`);
           if (!source || !mockup.sha256) throw new Error("An approved mockup disappeared during ZIP export");
           pngSource(source.data, mockup.sha256);
           outputImages.push({ id: mockup.id, path: `mockup/mockup-${String(index + 1).padStart(2, "0")}.png`, file: source.file, version: mockup.storageVersion, sha256: mockup.sha256 });
         }
-        for (const [index, design] of [...(payload.designs ?? [])].sort((a, b) => a.id.localeCompare(b.id)).entries()) {
+        for (const [index, design] of (payload.designs ?? []).entries()) {
           const source = assets.get(`designs/${design.id}`);
           if (!source) throw new Error("An approved design disappeared during ZIP export");
           const extension = (design.fileFormat ?? "png").toLowerCase();
@@ -215,7 +215,7 @@ async function execute(job: WorkerJob) {
         const mainVideo = assets.get("video.mp4"), thumbnail = assets.get("thumbnail.png");
         if (!mainVideo || !thumbnail) throw new Error("The approved video or thumbnail is missing");
         const packages = await packageBatchExport(directory, [{ id: payload.manifest.productId, name: payload.productName,
-          type: payload.productType ?? "product", images: outputImages, listing: payload.listing ?? null,
+          type: payload.productType ?? "product", images: outputImages, listing: payload.listing ?? null, guide: payload.etsyGuide ?? null,
           videos: [{ id: payload.videoId, version: payload.manifest.version, file: mainVideo.file,
             storageVersion: payload.videoStorageVersion ?? payload.manifest.fingerprint, thumbnailFile: thumbnail.file,
             thumbnailVersion: payload.thumbnailStorageVersion ?? payload.manifest.fingerprint,

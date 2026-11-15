@@ -21,6 +21,14 @@ public interface IMockupCompositor
     /// <param name="layers">Optional realism layers; <see langword="null"/> gives a plain overlay.</param>
     string BuildCompositeUrl(string baseImageUrl, string overlayStorageKey, MockupPosition position, MockupLayers? layers = null);
 
+    /// <summary>
+    /// Returns a URL that renders several designs on <paramref name="baseImageUrl"/>, one per placement, such as a
+    /// chest print, a sleeve logo and a back print on the same photo. The design sizes on
+    /// <paramref name="layers"/> and its <see cref="MockupLayers.DesignCorners"/> / <see cref="MockupLayers.MorePlacements"/>
+    /// are not used: every placement carries its own.
+    /// </summary>
+    string BuildCompositeUrl(string baseImageUrl, IReadOnlyList<MockupPlacement> placements, MockupLayers? layers = null);
+
     /// <summary>The PNG delivery URL of another image stored with the same provider as <paramref name="baseImageUrl"/>.</summary>
     string BuildAssetUrl(string baseImageUrl, string storageKey);
 }
@@ -30,6 +38,64 @@ public sealed record MockupPosition(int X, int Y, int Width, int Height);
 
 /// <summary>A point in pixels, relative to the top-left corner of the base image.</summary>
 public sealed record MockupPoint(double X, double Y);
+
+/// <summary>One design laid on a mock-up photo.</summary>
+/// <param name="OverlayStorageKey">The design image's storage key, as on <c>DesignImage.StorageKey</c>.</param>
+/// <param name="Area">The print area it is fitted into and centered in.</param>
+/// <param name="DesignWidthPx">The design image's own width; with the height it lets the design be fitted exactly.</param>
+/// <param name="DesignHeightPx">The design image's own height.</param>
+/// <param name="Rotation">Degrees the design is turned about the print area's center, clockwise; 0 keeps it straight.</param>
+/// <param name="Corners">Where the design's four corners go instead (top-left, top-right, bottom-right, bottom-left).</param>
+public sealed record MockupPlacement(
+    string OverlayStorageKey,
+    MockupPosition Area,
+    int? DesignWidthPx,
+    int? DesignHeightPx,
+    double Rotation = 0,
+    IReadOnlyList<MockupPoint>? Corners = null);
+
+/// <summary>Turning rectangles on a photo.</summary>
+public static class MockupGeometry
+{
+    /// <summary>
+    /// The corners of <paramref name="rect"/> turned <paramref name="degrees"/> clockwise about its center: top-left,
+    /// top-right, bottom-right, bottom-left of the rectangle as it was.
+    /// </summary>
+    public static IReadOnlyList<MockupPoint> RotateCorners(MockupPosition rect, double degrees)
+    {
+        var radians = degrees * Math.PI / 180;
+        var (cos, sin) = (Math.Cos(radians), Math.Sin(radians));
+        var centerX = rect.X + rect.Width / 2.0;
+        var centerY = rect.Y + rect.Height / 2.0;
+        MockupPoint Turn(double x, double y)
+        {
+            var (dx, dy) = (x - centerX, y - centerY);
+            // Image rows grow downwards, so this turns clockwise as seen. Rounded so a quarter turn's floating-point
+            // dust does not widen the box around the corners by a pixel.
+            return new MockupPoint(Math.Round(centerX + dx * cos - dy * sin, 6), Math.Round(centerY + dx * sin + dy * cos, 6));
+        }
+        return
+        [
+            Turn(rect.X, rect.Y),
+            Turn(rect.X + rect.Width, rect.Y),
+            Turn(rect.X + rect.Width, rect.Y + rect.Height),
+            Turn(rect.X, rect.Y + rect.Height),
+        ];
+    }
+
+    /// <summary>The pixel box around <paramref name="rect"/> turned <paramref name="degrees"/> about its center.</summary>
+    public static MockupPosition RotatedBounds(MockupPosition rect, double degrees)
+    {
+        if (degrees == 0)
+            return rect;
+        var corners = RotateCorners(rect, degrees);
+        var left = (int)Math.Floor(corners.Min(point => point.X));
+        var top = (int)Math.Floor(corners.Min(point => point.Y));
+        var right = (int)Math.Ceiling(corners.Max(point => point.X));
+        var bottom = (int)Math.Ceiling(corners.Max(point => point.Y));
+        return new MockupPosition(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+    }
+}
 
 /// <summary>
 /// Extra layers for a realistic composite. Every part is optional and is skipped when missing.

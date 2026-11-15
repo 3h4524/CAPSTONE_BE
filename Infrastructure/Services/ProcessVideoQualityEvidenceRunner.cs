@@ -13,6 +13,8 @@ public sealed class ProcessVideoQualityEvidenceRunner(IOptions<VideoQualityOptio
 {
     private const int MaximumOutputLength = 20_000;
 
+    public bool IsEnabled => options.Value.Enabled;
+
     public async Task<VideoQualityEvidenceResult> EvaluateAsync(VideoQualityEvidenceRequest request,
         CancellationToken cancellationToken = default)
     {

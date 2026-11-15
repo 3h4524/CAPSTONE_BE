@@ -93,20 +93,59 @@ public sealed class AiShotQuoteServiceTests
     }
 
     [TestMethod]
-    [DataRow(false, true)]
-    [DataRow(true, false)]
-    public async Task QuoteAsync_CancelledRunWithoutCompletedTargetScene_RejectsQuote(bool regenerate, bool selectScene)
+    public async Task QuoteAsync_CancelledRunRegeneratingEveryClip_RejectsQuote()
     {
         var context = CreateContext();
         context.Run.Status = "cancelled";
         context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
 
-        var result = await context.Service.QuoteAsync(context.Run.Id,
-            new(Config(context.Asset), Regenerate: regenerate, SceneOrder: selectScene ? 0 : null), default);
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset), Regenerate: true), default);
 
         result.IsFailure.Should().BeTrue();
         result.Error.Code.Should().Be("InvalidCheckpoint");
         context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_CancelledRunWithASceneButNoRegeneration_IsRefused()
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
+
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset), SceneOrder: 0), default);
+
+        result.IsFailure.Should().BeTrue();
+        context.Signer.Verify(item => item.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_StoppedRun_QuotesTheClipsGoingOnWouldMake()
+    {
+        var context = CreateContext();
+        context.Run.Status = "cancelled";
+        context.Fixture.NodeRows.Single(item => item.NodeType == "generate-video").Status = "cancelled";
+
+        var result = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset)), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.NewClips.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task QuoteAsync_TheRunsOwnSettings_ChangeNothingTheSellerHasNotSeen()
+    {
+        var context = CreateContext();
+        var generate = context.Fixture.NodeRows.Single(item => item.WorkflowRunId == context.Run.Id && item.NodeType == "generate-video");
+        generate.InputSnapshot = WorkflowJson.Write(Config(context.Asset));
+
+        var same = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset)), default);
+        var longer = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset, "full_video", 15)), default);
+        var regenerate = await context.Service.QuoteAsync(context.Run.Id, new(Config(context.Asset), Regenerate: true), default);
+
+        same.Value.ChangesWhatIsMade.Should().BeFalse();
+        longer.Value.ChangesWhatIsMade.Should().BeTrue();
+        regenerate.Value.ChangesWhatIsMade.Should().BeTrue();
     }
 
     [TestMethod]
@@ -186,66 +225,53 @@ public sealed class AiShotQuoteServiceTests
         context.Signer.Verify(x => x.Sign(It.IsAny<AiShotQuoteClaims>()), Times.Never);
     }
 
+    // The cost was shown when the seller started or changed the run: paid clips need no second confirmation.
     [TestMethod]
-    public async Task VerifyAsync_ExpiredQuote_RejectsWithoutReplanning()
+    public async Task VerifyAsync_WithoutAToken_GoesOn()
     {
         var context = CreateContext();
         var config = Config(context.Asset);
-        (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
-        context.Fixture.Time.Advance(TimeSpan.FromMinutes(11));
 
-        var result = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
+        var result = await context.Service.VerifyAsync(context.Run, config, null, false, null, default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+    }
+
+    [TestMethod]
+    public async Task VerifyAsync_MissingSystemMiniMaxKey_StillRefuses()
+    {
+        var context = CreateContext(systemKeyConfigured: false);
+
+        var result = await context.Service.VerifyAsync(context.Run, Config(context.Asset), null, false, null, default);
 
         result.IsFailure.Should().BeTrue();
-        result.Error.Message.Should().Contain("Confirm");
+        result.Error.Message.Should().Contain("system MiniMax API key");
     }
 
+    // A token that no longer matches (expired, another run, another choice, a newer source) is ignored: the run goes on
+    // with a prompt planned from the current settings and images instead of the one reviewed earlier.
     [TestMethod]
-    public async Task VerifyAsync_MissingOrDifferentRunToken_RejectsConfirmation()
+    public async Task VerifyAsync_StaleTokens_GoOnWithoutTheReviewedPrompt()
     {
         var context = CreateContext();
         var config = Config(context.Asset);
         (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
-
-        var missing = await context.Service.VerifyAsync(context.Run, config, null, false, null, default);
-        context.Claims = context.Claims! with { RunId = Guid.NewGuid() };
-        var foreignToken = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
-
-        missing.IsFailure.Should().BeTrue();
-        foreignToken.IsFailure.Should().BeTrue();
-        missing.Error.Message.Should().Contain("Confirm");
-        foreignToken.Error.Message.Should().Contain("Confirm");
-    }
-
-    [TestMethod]
-    public async Task VerifyAsync_RegenerationChoiceOrAHigherCostChanged_RejectsStaleQuote()
-    {
-        var context = CreateContext();
-        var config = Config(context.Asset);
-        (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
+        var generate = context.Fixture.NodeRows.Single(item => item.WorkflowRunId == context.Run.Id && item.NodeType == "generate-video");
+        var before = generate.OutputSnapshot;
 
         var wrongChoice = await context.Service.VerifyAsync(context.Run, config, "signed-quote", true, null, default);
         var costlier = await context.Service.VerifyAsync(context.Run, Config(context.Asset, "full_video", 15), "signed-quote", false, null, default);
-
-        wrongChoice.IsFailure.Should().BeTrue();
-        costlier.Error.Code.Should().Be("AiShotQuoteChanged");
-    }
-
-    // Prompt snapshots record the approved source revision. A newer source must be reviewed before it can be rendered.
-    [TestMethod]
-    public async Task VerifyAsync_SourceChangedAtTheSameCost_RequiresAnotherReview()
-    {
-        var context = CreateContext();
-        var config = Config(context.Asset);
-        (await context.Service.QuoteAsync(context.Run.Id, new(config), default)).IsSuccess.Should().BeTrue();
-
         context.Asset.ContentHash = new string('b', 64);
         context.Asset.MetadataRevision++;
         context.Asset.ApprovedRevision++;
         var changedSource = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
+        context.Claims = context.Claims! with { RunId = Guid.NewGuid() };
+        var foreign = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
+        context.Fixture.Time.Advance(TimeSpan.FromMinutes(11));
+        var expired = await context.Service.VerifyAsync(context.Run, config, "signed-quote", false, null, default);
 
-        changedSource.IsFailure.Should().BeTrue();
-        changedSource.Error.Code.Should().Be("AiShotQuoteChanged");
+        new[] { wrongChoice, costlier, changedSource, foreign, expired }.Should().OnlyContain(result => result.IsSuccess);
+        generate.OutputSnapshot.Should().Be(before);
     }
 
     [TestMethod]
@@ -262,6 +288,76 @@ public sealed class AiShotQuoteServiceTests
         var snapshot = WorkflowJson.Read<AiShotPromptSnapshot>(generate.OutputSnapshot);
         snapshot.ConfigFingerprint.Should().Be(context.Claims!.ConfigFingerprint);
         snapshot.Storyboard.Fingerprint.Should().Be(context.Claims.PromptSnapshot!.Fingerprint);
+    }
+
+    [TestMethod]
+    public async Task QuoteBatchAsync_SeveralDesigns_AddsUpEveryClipAndBindsTheTokenToTheGroup()
+    {
+        var context = CreateContext();
+        var groupId = Guid.NewGuid();
+        var plans = BatchPlans(context);
+
+        var result = await context.Service.QuoteBatchAsync(groupId, plans, default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.NewClips.Should().Be(2);
+        result.Value.EstimatedCostUsd.Should().Be(.96m);
+        result.Value.Note.Should().Contain("2 videos");
+        context.Claims.Should().Match<AiShotQuoteClaims>(x => x.RunId == groupId && x.EstimatedCostUsd == .96m
+            && !x.Regenerate && x.SceneOrder == null && x.ConfigFingerprint != null);
+    }
+
+    [TestMethod]
+    public async Task QuoteBatchAsync_StandardVideosOnly_HasNothingToQuote()
+    {
+        var context = CreateContext();
+        var standard = new PlannedVideo(context.Run, new GenerateVideoConfig(), "Tee · Design 1", "sources");
+
+        var result = await context.Service.QuoteBatchAsync(Guid.NewGuid(), [standard], default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("No design of this run makes an AI video clip");
+    }
+
+    [TestMethod]
+    public async Task VerifyBatchAsync_AiDesigns_StartWithoutAToken()
+    {
+        var context = CreateContext();
+        var plans = BatchPlans(context);
+
+        var result = await context.Service.VerifyBatchAsync(Guid.NewGuid(), plans, null, default);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task VerifyBatchAsync_StandardVideosOnly_NeedsNoConfirmedCost()
+    {
+        var context = CreateContext();
+        var standard = new PlannedVideo(context.Run, new GenerateVideoConfig(), "Tee · Design 1", "sources");
+
+        var result = await context.Service.VerifyBatchAsync(Guid.NewGuid(), [standard], null, default);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    /// <summary>Two designs of a batch run: the preview product's, and one whose run does not exist yet.</summary>
+    private static PlannedVideo[] BatchPlans(Context context)
+    {
+        var other = context.Fixture.AddProduct();
+        var otherAsset = context.Fixture.AddAsset(other);
+        var planned = new WorkflowRun
+        {
+            Id = Guid.NewGuid(), WorkflowId = context.Run.WorkflowId, ProductId = other.Id, UserId = WorkflowTestData.Owner,
+            DefinitionSnapshot = context.Run.DefinitionSnapshot, WorkflowRevision = 4, Revision = 1, Status = "queued",
+            IdempotencyKey = "group:1", RequestHash = "group", CreatedAt = WorkflowTestData.Now.UtcDateTime,
+            UpdatedAt = WorkflowTestData.Now.UtcDateTime
+        };
+        return
+        [
+            new(context.Run, Config(context.Asset), "Tee · Design 1", "sources-1"),
+            new(planned, Config(otherAsset), "Mug · Design 1", "sources-2"),
+        ];
     }
 
     private static GenerateVideoConfig Config(MockupImage source, string coverage = "single_scene", int duration = 12) =>

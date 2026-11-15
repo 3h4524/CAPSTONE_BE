@@ -7,4 +7,6 @@ public interface IAssistantConversationRepository : IRepository<AssistantConvers
     Task<int> SoftDeleteAsync(Guid userId, Guid? conversationId, Guid? exceptConversationId, DateTime nowUtc, CancellationToken cancellationToken = default);
 
     Task<int> PurgeDeletedAsync(CancellationToken cancellationToken = default);
+
+    Task<int> MarkStreamingMessagesInterruptedAsync(DateTime createdBeforeUtc, CancellationToken cancellationToken = default);
 }

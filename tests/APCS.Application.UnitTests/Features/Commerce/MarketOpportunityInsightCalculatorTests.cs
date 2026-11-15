@@ -77,4 +77,46 @@ public sealed class MarketOpportunityInsightCalculatorTests
         result.DataSource.Should().Be("synthetic");
         result.SyntheticEvidenceCount.Should().Be(1);
     }
+
+    private static MarketOpportunityEvidenceInput Seen(string listing, int favorites, int day, int hour = 12) =>
+        new(listing, "seller", "Listing", null, 20, "USD", favorites, 1000, new DateTime(2026, 1, day, hour, 0, 0));
+
+    [TestMethod]
+    public void Calculate_AListingGainingFavoritesFaster_IsRising_AndCountsItsDailyGain()
+    {
+        var opportunity = new MarketOpportunity { Confidence = 0.6m, ScoreBreakdown = "{}" };
+        // 2 then 2 favorites a day, then 6 and 6: the pace tripled.
+        var evidence = new[] { Seen("a", 10, 1), Seen("a", 12, 2), Seen("a", 14, 3), Seen("a", 20, 4), Seen("a", 26, 5) };
+
+        var result = MarketOpportunityInsightCalculator.Calculate(opportunity, evidence, new DateTime(2026, 1, 5));
+
+        result.FavoritesPerDay.Should().Be(4);
+        result.EngagementChangePercent.Should().Be(200);
+        result.EngagementTrend.Should().Be("up");
+    }
+
+    [TestMethod]
+    public void DemandVelocity_ANewListingJoiningTheEvidence_IsNotGrowth_AndADaysLastFiguresCount()
+    {
+        // Listing b appears late with many favorites; listing a is steady at 3 a day, read twice on day 2.
+        var evidence = new[]
+        {
+            Seen("a", 10, 1), Seen("a", 11, 2, hour: 8), Seen("a", 13, 2, hour: 20), Seen("a", 16, 3), Seen("a", 19, 4),
+            Seen("b", 500, 4),
+        };
+
+        var (perDay, change) = MarketOpportunityInsightCalculator.DemandVelocity(evidence);
+
+        perDay.Should().Be(3);
+        change.Should().Be(0);
+    }
+
+    [TestMethod]
+    public void DemandVelocity_ListingsSeenOnOneDayOnly_GiveNoReading()
+    {
+        var (perDay, change) = MarketOpportunityInsightCalculator.DemandVelocity([Seen("a", 10, 1), Seen("b", 40, 1)]);
+
+        perDay.Should().BeNull();
+        change.Should().BeNull();
+    }
 }

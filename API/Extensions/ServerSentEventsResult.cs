@@ -1,14 +1,11 @@
-using System.Text.Json;
-using APCS.Application.Features.Assistant.Common;
+using APCS.Application.Abstractions.Caching;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace APCS.Api.Extensions;
 
-public sealed class ServerSentEventsResult(IAsyncEnumerable<AssistantStreamEvent> events) : IActionResult
+public sealed class ServerSentEventsResult(IAsyncEnumerable<AssistantTurnEntry> events) : IActionResult
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public async Task ExecuteResultAsync(ActionContext context)
     {
         var httpContext = context.HttpContext;
@@ -24,8 +21,7 @@ public sealed class ServerSentEventsResult(IAsyncEnumerable<AssistantStreamEvent
         {
             await foreach (var item in events.WithCancellation(cancellationToken))
             {
-                var data = JsonSerializer.Serialize(item.Data, item.Data.GetType(), JsonOptions);
-                await response.WriteAsync($"event: {item.Type}\ndata: {data}\n\n", cancellationToken);
+                await response.WriteAsync($"id: {item.Id}\nevent: {item.Type}\ndata: {item.Data}\n\n", cancellationToken);
                 await response.Body.FlushAsync(cancellationToken);
             }
         }

@@ -13,6 +13,12 @@ public sealed record VideoQualityEvidenceResult(string Status, string EvaluatorV
 /// <summary>Runs optional local quality tooling without making a video-generation request.</summary>
 public interface IVideoQualityEvidenceRunner
 {
+    /// <summary>
+    /// Whether automatic scene evaluation is turned on. False when this API has it turned off: no evaluation job should
+    /// be queued, and scenes are recorded as skipped.
+    /// </summary>
+    bool IsEnabled => true;
+
     Task<VideoQualityEvidenceResult> EvaluateAsync(VideoQualityEvidenceRequest request,
         CancellationToken cancellationToken = default);
 

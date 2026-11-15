@@ -93,6 +93,37 @@ public sealed class VideoPlanningServiceTests
     }
 
     [TestMethod]
+    public async Task ListVideoPacksAsync_RotatingShowcase_ReturnsFourStandardScenesWithoutAi()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.TemplateRows.Add(new()
+        {
+            Id = Guid.NewGuid(), Code = "standard_rotate_showcase", Name = "Rotating Showcase", Type = "video_pack",
+            Platform = "etsy", DurationSeconds = 14, AspectRatio = "9:16", Resolution = "720p", IsSystemTemplate = true,
+            IsActive = true, TemplateVersion = 1,
+            // As seeded by migrations/*_standard_rotate_showcase_video_pack.sql.
+            EffectsConfig = """
+                {"videoPack": {"scenes": [
+                  {"id": "rotate_zoom_in", "mode": "standard", "durationSeconds": 4, "transitionIn": "cut", "transitionDurationFrames": 0, "standardMotionPreset": "rotate_zoom_cw"},
+                  {"id": "rotate_back", "mode": "standard", "durationSeconds": 3, "transitionIn": "fade", "transitionDurationFrames": 10, "standardMotionPreset": "rotate_ccw"},
+                  {"id": "rotate_forward", "mode": "standard", "durationSeconds": 3, "transitionIn": "fade", "transitionDurationFrames": 10, "standardMotionPreset": "rotate_cw"},
+                  {"id": "rotate_finale", "mode": "standard", "durationSeconds": 4, "transitionIn": "fade", "transitionDurationFrames": 10, "standardMotionPreset": "rotate_zoom_ccw"}],
+                 "description": "Four rotating camera moves on your product images, without AI.",
+                 "requiresCharacter": false, "requiresSharedMockup": false}}
+                """,
+        });
+
+        var pack = (await Service(fixture).ListVideoPacksAsync(default)).Value.Should().ContainSingle().Which;
+
+        pack.Should().Match<VideoPackDefinition>(item => item.Code == "standard_rotate_showcase" && item.TotalDurationSeconds == 14 &&
+            !item.RequiresCharacter && !item.RequiresSharedMockup);
+        pack.Scenes.Should().OnlyContain(scene => scene.Mode == "standard");
+        pack.Scenes.Sum(scene => scene.DurationSeconds).Should().Be(pack.TotalDurationSeconds);
+        pack.Scenes.Select(scene => scene.StandardMotionPreset).Should().Equal("rotate_zoom_cw", "rotate_ccw", "rotate_cw", "rotate_zoom_ccw");
+        pack.Scenes.Select(scene => scene.TransitionIn).Should().Equal("cut", "fade", "fade", "fade");
+    }
+
+    [TestMethod]
     [DataRow("{}")]
     [DataRow("not-json")]
     [DataRow("")]
@@ -283,6 +314,54 @@ public sealed class VideoPlanningServiceTests
         var result = await Service(fixture).PreviewAsync(product.Id, request, default);
         result.Error.Message.Should().Be("Invalid video configuration or mockup selection.");
         fixture.Assets.Verify(x => x.FindAsync(It.IsAny<Expression<Func<MockupImage, bool>>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_ForDesign_MovesScenesOfThePreviewProductOntoTheDesignsMockups()
+    {
+        var fixture = new WorkflowTestData();
+        var template = Guid.NewGuid();
+        var preview = fixture.AddProduct();
+        var design = fixture.AddProduct();
+        var previewMockup = fixture.AddAsset(preview); previewMockup.MockupTemplateId = template; previewMockup.VariantKey = "white";
+        var designMockup = fixture.AddAsset(design); designMockup.MockupTemplateId = template; designMockup.VariantKey = "white";
+        var config = new GenerateVideoConfig(Mode: "standard", DurationSeconds: 6,
+            AiScenes: [new(MockupId: previewMockup.Id, Mode: "standard", DurationSeconds: 6, StandardMotionPreset: "zoom")]);
+        var groups = WorkflowTestData.Repository(new List<WorkflowRunGroup>(), x => x.Id);
+        var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
+        var service = new VideoPlanningService(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object,
+            fixture.CharacterModels.Object, new(), new(), new(), targetResolver: new RunTargetConfigResolver(fixture.Assets.Object, fixture.Products.Object, groups.Object));
+
+        var plain = await service.PreviewAsync(design.Id, new(config, [], "artwork-main"), default);
+        var forDesign = await service.PreviewAsync(design.Id, new(config, [], "artwork-main", ForDesign: true), default);
+
+        plain.IsFailure.Should().BeTrue();
+        forDesign.IsSuccess.Should().BeTrue(forDesign.IsFailure ? forDesign.Error.Message : null);
+        forDesign.Value.Scenes.Should().OnlyContain(scene => scene.MockupId == designMockup.Id);
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_ForDesignWithAnAiSceneLeftWithoutAnImage_IsCheckedAsABatchSceneList()
+    {
+        var fixture = new WorkflowTestData();
+        var design = fixture.AddProduct();
+        fixture.AddAsset(design);
+        // A batch run's AI scene may leave its image open: each design's own is picked for it.
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 6,
+            AiScenes: [new(MockupId: null, Mode: "ai", DurationSeconds: 6)]);
+        var groups = WorkflowTestData.Repository(new List<WorkflowRunGroup>(), x => x.Id);
+        var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
+        var service = new VideoPlanningService(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object,
+            fixture.CharacterModels.Object, new(), new(), new(), targetResolver: new RunTargetConfigResolver(fixture.Assets.Object, fixture.Products.Object, groups.Object));
+
+        var batchErrors = new APCS.Application.Features.Workflows.Validators.GenerateVideoConfigValidator().ValidateForBatch(config).Errors;
+        batchErrors.Should().BeEmpty(string.Join(" | ", batchErrors.Select(x => x.ErrorMessage)));
+
+        var plain = await service.PreviewAsync(design.Id, new(config, [], "artwork-main"), default);
+        var forDesign = await service.PreviewAsync(design.Id, new(config, [], "artwork-main", ForDesign: true), default);
+
+        plain.Error.Message.Should().Be("Invalid video configuration or mockup selection.");
+        (forDesign.IsFailure ? forDesign.Error.Message : null).Should().NotBe("Invalid video configuration or mockup selection.");
     }
 
     private static VideoPlanningService Service(WorkflowTestData fixture)

@@ -117,6 +117,51 @@ public sealed class ImageSharpMockupMapGeneratorTests
         mask[100, 100].A.Should().Be(255);
     }
 
+    [TestMethod]
+    public void GenerateGarmentMask_FabricTheModelTookForBackdrop_IsPutBackButBackdropSeenThroughIsNot()
+    {
+        // A light garment on a gray backdrop. The model misses a plain patch of fabric, and a window through the
+        // garment (a tote's handle) shows the backdrop.
+        var photo = Png(200, 200, (x, y) =>
+            x is >= 40 and < 160 && y is >= 40 and < 160 && !(x is >= 110 and < 140 && y is >= 110 and < 140)
+                ? new Rgba32(240, 240, 240)
+                : new Rgba32(128, 128, 128));
+        var segmenter = new FakeGarmentSegmenter((x, y) =>
+            x is >= 0.2 and < 0.8 && y is >= 0.2 and < 0.8
+            && !(x is >= 0.3 and < 0.4 && y is >= 0.3 and < 0.4)
+            && !(x is >= 0.55 and < 0.7 && y is >= 0.55 and < 0.7));
+
+        using var mask = Image.Load<Rgba32>(new ImageSharpMockupMapGenerator(segmenter).GenerateGarmentMask(photo).MaskPng);
+
+        mask[70, 70].A.Should().Be(255, "the missed fabric is garment");
+        mask[125, 125].A.Should().Be(0, "the backdrop seen through the garment stays out");
+        mask[10, 10].A.Should().Be(0);
+    }
+
+    [TestMethod]
+    public void FillGarmentHoles_PatchTheModelWasUnsureOf_BecomesSolidButTheSoftOutlineStays()
+    {
+        var pixels = new Rgba32[40 * 40];
+        var matte = new byte[40 * 40];
+        for (var y = 0; y < 40; y++)
+            for (var x = 0; x < 40; x++)
+            {
+                var inside = x is >= 5 and < 35 && y is >= 5 and < 35;
+                pixels[y * 40 + x] = inside ? new Rgba32(240, 240, 240) : new Rgba32(255, 255, 255);
+                // A soft outline one pixel wide, and a half-sure patch in the middle.
+                matte[y * 40 + x] = !inside ? (byte)0
+                    : x is 5 or 34 || y is 5 or 34 ? (byte)180
+                    : x is >= 15 and < 25 && y is >= 15 and < 25 ? (byte)170
+                    : (byte)255;
+            }
+
+        ImageMaskOps.FillGarmentHoles(pixels, matte, 40, 40);
+
+        matte[20 * 40 + 20].Should().Be(255, "the unsure patch is inside the garment");
+        matte[5 * 40 + 20].Should().Be(180, "the outline's soft edge is kept");
+        matte[0].Should().Be(0);
+    }
+
     // ---- Finding the garment a person wears, with the clothes model ----
 
     [TestMethod]

@@ -94,6 +94,80 @@ public sealed class CloudinaryMockupCompositorTests
             .Should().BeLessThan(url.IndexOf("fl_layer_apply,e_multiply,g_north_west,x_0,y_0", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public void BuildCompositeUrl_OneStraightPlacement_IsTheSameAsTheDesignAlone()
+    {
+        var layers = new MockupLayers(1024, 1024, "mockup-templates/t-displace", "mockup-templates/t-mask", "#1F2A44", MultiplyDesign: false);
+        var alone = compositor.BuildCompositeUrl(Base, "design-images/d", new MockupPosition(100, 200, 300, 400), layers);
+
+        var placed = compositor.BuildCompositeUrl(Base, [new MockupPlacement("design-images/d", new MockupPosition(100, 200, 300, 400), 1024, 1024)], layers);
+
+        placed.Should().Be(alone);
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_TwoDesigns_FitsEachInItsOwnAreaAtItsOwnSizeAndRecolorsOnce()
+    {
+        var url = compositor.BuildCompositeUrl(Base,
+            [
+                new MockupPlacement("design-images/front", new MockupPosition(100, 200, 300, 300), 1024, 1024),
+                new MockupPlacement("design-images/logo", new MockupPosition(600, 260, 200, 200), 500, 250),
+            ],
+            new MockupLayers(null, null, "mockup-templates/t-displace", "mockup-templates/t-mask", "#1F2A44"));
+
+        url.Should().Contain("l_apcs:design-images:front/c_scale,w_300,h_300/")
+            .And.Contain("fl_layer_apply,g_north_west,x_100,y_200/")
+            // The wide logo is fitted to the area's width and centered in its height.
+            .And.Contain("l_apcs:design-images:logo/c_scale,w_200,h_100/")
+            .And.Contain("fl_layer_apply,g_north_west,x_600,y_310/");
+        CountOf(url, "e_colorize:100,co_rgb:1F2A44").Should().Be(1);
+        url.IndexOf("design-images:front", StringComparison.Ordinal).Should().BeLessThan(url.IndexOf("design-images:logo", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_QuarterTurn_WarpsTheDesignOntoItsTurnedCorners()
+    {
+        var url = compositor.BuildCompositeUrl(Base,
+            [new MockupPlacement("design-images/d", new MockupPosition(100, 200, 300, 300), 1024, 1024, Rotation: 90)],
+            new MockupLayers(null, null, "mockup-templates/t-displace", null, null));
+
+        // Turned clockwise: the top-left corner goes to the top right, and so on round the square.
+        url.Should().Be(
+            "https://res.cloudinary.com/demo/image/upload/"
+            + "l_apcs:design-images:d/c_scale,w_300,h_300/e_distort:300:0:300:300:0:300:0:0/c_crop,g_north_west,x_0,y_0,w_300,h_300/"
+            + "l_apcs:mockup-templates:t-displace/c_crop,g_north_west,x_100,y_200,w_300,h_300/e_displace,fl_layer_apply,x_6,y_6/"
+            + "fl_layer_apply,g_north_west,x_100,y_200/"
+            + "v1700000000/apcs/mockup-templates/t.webp");
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_SlightTurn_LaysTheDesignInTheBoxAroundItsTurnedCorners()
+    {
+        var url = compositor.BuildCompositeUrl(Base,
+            [new MockupPlacement("design-images/d", new MockupPosition(100, 200, 300, 300), 1024, 1024, Rotation: 30)], null);
+
+        // A 300 px square turned 30 degrees spans 300 * (cos 30 + sin 30) = 410 px, about the same center.
+        url.Should().Contain("c_scale,w_410,h_410/e_distort:").And.Contain("fl_layer_apply,g_north_west,x_45,y_145/");
+    }
+
+    [TestMethod]
+    public void BuildCompositeUrl_NoPlacements_Throws()
+    {
+        var act = () => compositor.BuildCompositeUrl(Base, Array.Empty<MockupPlacement>());
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [TestMethod]
+    public void RotatedBounds_StraightOrQuarterTurnOfASquare_IsTheSquare()
+    {
+        var square = new MockupPosition(100, 200, 300, 300);
+
+        MockupGeometry.RotatedBounds(square, 0).Should().Be(square);
+        MockupGeometry.RotatedBounds(square, 90).Should().Be(square);
+        MockupGeometry.RotatedBounds(new MockupPosition(0, 0, 200, 100), 90).Should().Be(new MockupPosition(50, -50, 100, 200));
+    }
+
     private static int CountOf(string text, string part) =>
         (text.Length - text.Replace(part, "", StringComparison.Ordinal).Length) / part.Length;
 

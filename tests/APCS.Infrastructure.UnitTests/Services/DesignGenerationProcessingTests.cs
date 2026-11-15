@@ -11,10 +11,13 @@ using APCS.Application.Features.DesignGeneration.Validators;
 using APCS.Common.Constants;
 using APCS.Domain.Entities;
 using APCS.Infrastructure.BackgroundServices;
+using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Persistence;
 using APCS.Infrastructure.Persistence.Repositories;
+using APCS.Infrastructure.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
 
@@ -132,7 +135,11 @@ public sealed class DesignGenerationProcessingTests
         await using var db = CreateContext();
         var jobId = await SeedFinishedJobAsync(db, products: 2, variations: 2, requireApproval: false);
 
-        (await db.DesignImages.ToListAsync()).Should().OnlyContain(i => i.ApprovalStatus == "approved");
+        // A product keeps one approved design: the first of each product stays approved and its other design is rejected.
+        var images = await db.DesignImages.ToListAsync();
+        images.Should().HaveCount(4);
+        images.GroupBy(i => i.ProductId).Should().OnlyContain(group => group.Count(i => i.ApprovalStatus == "approved") == 1 && group.Count(i => i.ApprovalStatus == "rejected") == 1);
+        images.Where(i => i.ApprovalStatus == "approved").Should().OnlyContain(i => i.VariationIndex == 1);
         (await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).ToListAsync()).Should().OnlyContain(r => r.Status == BatchJobProductStatuses.Approved);
         (await db.Products.ToListAsync()).Should().OnlyContain(p => p.ProcessingStatus == BatchJobProductStatuses.Approved);
 
@@ -164,7 +171,7 @@ public sealed class DesignGenerationProcessingTests
         var result = await CreateService(db).SetImageApprovalAsync(jobId, new SetImageApprovalRequestDto([firstProductImage.Id], "approved"));
 
         result.IsSuccess.Should().BeTrue();
-        (result.Value.UpdatedCount, result.Value.Approved, result.Value.Pending, result.Value.Rejected).Should().Be((1, 1, 3, 0));
+        (result.Value.UpdatedCount, result.Value.Approved, result.Value.Pending, result.Value.Rejected).Should().Be((2, 1, 2, 1), "approving one design rejects the product's other one");
         db.ChangeTracker.Clear();
         (await db.DesignImages.FindAsync(firstProductImage.Id))!.ApprovalStatus.Should().Be("approved");
         var after = await db.BatchJobProducts.Where(r => r.BatchJobId == jobId).OrderBy(r => r.SequenceOrder).ToListAsync();
@@ -208,7 +215,8 @@ public sealed class DesignGenerationProcessingTests
         result.Value.UpdatedCount.Should().Be(2, "the rejected image is not overridden by approve all");
         db.ChangeTracker.Clear();
         (await db.DesignImages.FindAsync(images[0].Id))!.ApprovalStatus.Should().Be("rejected");
-        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "approved")).Should().Be(2);
+        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "approved")).Should().Be(1, "a product keeps one approved design");
+        (await db.DesignImages.CountAsync(i => i.ApprovalStatus == "rejected")).Should().Be(2);
     }
 
     [TestMethod]
@@ -1629,7 +1637,8 @@ public sealed class DesignGenerationProcessingTests
         Mock<IPublicImageService>? storage = null,
         int maxConcurrentImages = 1,
         Mock<IApiKeyCredentials>? credentials = null,
-        IDesignTextCheckQueue? textCheckQueue = null)
+        IDesignTextCheckQueue? textCheckQueue = null,
+        ISystemApiKeyPool? systemKeys = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -1665,7 +1674,105 @@ public sealed class DesignGenerationProcessingTests
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)),
-            new AllowAllEntitlements(), textCheckQueue);
+            new AllowAllEntitlements(), textCheckQueue, systemKeys: systemKeys);
+    }
+
+    // ---- The platform's own Ideogram keys ----
+
+    private static SystemApiKeyPool SystemIdeogramKeys(string keys, int? dailyLimit = null)
+    {
+        var settings = new Dictionary<string, string?> { ["SystemApiKeys:Ideogram:Keys"] = keys };
+        if (dailyLimit is not null) settings["SystemApiKeys:Ideogram:DailyLimitPerKey"] = dailyLimit.ToString();
+        var options = new SystemApiKeysOptions();
+        SystemApiKeysOptions.Read(new ConfigurationBuilder().AddInMemoryCollection(settings).Build(), options);
+        return new SystemApiKeyPool(Microsoft.Extensions.Options.Options.Create(options), new InMemorySystemApiKeyUsageStore(),
+            new FakeTimeProvider(UtcNow), Microsoft.Extensions.Logging.Abstractions.NullLogger<SystemApiKeyPool>.Instance);
+    }
+
+    private static Mock<IImageGenerationProvider> IdeogramAnswering(Func<string, ImageGenerationResult> answer)
+    {
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
+        provider.SetupGet(x => x.SupportsTransparentBackground).Returns(true);
+        provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string key, string _, string _, bool _, bool _, CancellationToken _) => answer(key));
+        return provider;
+    }
+
+    private static async Task RemoveOwnKeysAsync(AppDbContext db)
+    {
+        db.ApiKeys.RemoveRange(await db.ApiKeys.ToListAsync());
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_PlanWithThePlatformsKeys_MakesTheImagesOnThemWithoutAKeyOfTheSellers()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        await RemoveOwnKeysAsync(db);
+        var provider = IdeogramAnswering(_ => ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        await CreateService(db, provider: provider, systemKeys: SystemIdeogramKeys("platform-a;platform-b")).ProcessBatchJobAsync(jobId);
+
+        // The keys are filled in order: the first one has uses left, so it makes both.
+        provider.Verify(x => x.GenerateAsync("platform-a", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        provider.Verify(x => x.GenerateAsync("platform-b", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+        (await db.BatchJobs.SingleAsync()).Status.Should().Be(BatchJobStatuses.Completed);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_APlatformKeyTheProviderRefuses_IsPassedOverForTheNextOne()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = IdeogramAnswering(key => key == "platform-a"
+            ? ImageGenerationResult.AccountRefused("Ideogram returned 402: out of credits", "ideogram-4")
+            : ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        await CreateService(db, provider: provider, systemKeys: SystemIdeogramKeys("platform-a;platform-b")).ProcessBatchJobAsync(jobId);
+
+        // Refused once, then never asked again that day.
+        provider.Verify(x => x.GenerateAsync("platform-a", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        provider.Verify(x => x.GenerateAsync("platform-b", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+        (await db.BatchJobs.SingleAsync()).Status.Should().Be(BatchJobStatuses.Completed);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_PlatformKeysUsedUp_TheSellersOwnKeyTakesOver()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = IdeogramAnswering(_ => ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        await CreateService(db, provider: provider, systemKeys: SystemIdeogramKeys("platform-a", dailyLimit: 1)).ProcessBatchJobAsync(jobId);
+
+        provider.Verify(x => x.GenerateAsync("platform-a", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        provider.Verify(x => x.GenerateAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(2);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_PlatformKeysUsedUpAndNoKeyOfTheSellers_StopsAskingAndSaysWhy()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 2, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        await RemoveOwnKeysAsync(db);
+        var provider = IdeogramAnswering(_ => ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        await CreateService(db, provider: provider, systemKeys: SystemIdeogramKeys("platform-a", dailyLimit: 1)).ProcessBatchJobAsync(jobId);
+
+        provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        (await db.BatchJobLogs.Where(log => log.EventType == "generation_stopped").Select(log => log.Message).SingleAsync())
+            .Should().Contain("as many Ideogram images as it allows today");
     }
 
     // Keeps what design generation hands to the background text check.

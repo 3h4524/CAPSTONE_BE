@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(78);
+        mappedTables.Should().HaveCount(85);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_character_models", "ai_prompts", "api_keys", "api_usage_records", "assistant_conversations",
@@ -32,12 +32,12 @@ public sealed class DatabaseFirstModelTests
             "listing_contents", "listing_descriptions", "listing_generation_history", "listing_tags",
             "listing_tag_items", "listing_titles", "market_listing_snapshots", "market_opportunities",
             "market_opportunity_evidence", "media_jobs", "mockup_images", "mockup_templates",
-            "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
-            "plan_features", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
+            "mockup_template_printify_links", "moderation_allowlist", "moderation_checks", "moderation_settings", "moderation_terms", "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
+            "plan_features", "printify_color_map", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
             "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
             "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",
-            "video_templates", "workflows", "workflow_node_runs", "workflow_runs",
+            "video_templates", "workflows", "workflow_node_runs", "workflow_runs", "workflow_run_groups",
             "seller_opportunities", "seller_research_profiles", "opportunity_analysis_runs", "test_report_runs",
             "plan_ai_reviews", "plan_settings", "subscription_feature_grants", "translation_entries", "usage_allowances",
             "rag_documents", "rag_chunks", "rag_embeddings", "market_query_observations"

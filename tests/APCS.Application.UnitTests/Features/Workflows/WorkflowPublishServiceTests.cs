@@ -21,6 +21,8 @@ public sealed class WorkflowPublishServiceTests
     private readonly Mock<IWorkflowPublishQueue> queue = new();
     private readonly Mock<IPrintifyService> printify = new();
     private readonly Mock<IEtsyPublishingService> etsy = new();
+    private readonly Mock<IListingPace> pace = new();
+    private readonly Mock<IPrintifyMockupMatcher> matcher = new();
     private readonly Guid designId = Guid.NewGuid();
     private readonly Guid mockupId = Guid.NewGuid();
     private WorkflowRuntime runtime = null!;
@@ -54,7 +56,7 @@ public sealed class WorkflowPublishServiceTests
         printify.Setup(x => x.GetDraftAsync(run.ProductId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new PrintifyDraftResponseDto(
             run.ProductId, "Cat tee", new PrintifyConnectionDto("connected", 777, "APCSCo", "etsy", "key", null, 0), "Cat Tee", "A soft tee.", ["cat"], [],
             [new ShopDesignDto(designId, "https://cdn.test/d.png", 4500, 5400, "png", 3, true)],
-            [new EtsyDraftMockupDto(mockupId, "https://cdn.test/m.png", 1080, 1080)], null,
+            [new EtsyDraftMockupDto(mockupId, "https://cdn.test/m.png", 1080, 1080)],
             new PrintifyProductSettingsDto(null, null, null, null, [], [], 24.99m), [], true)));
         printify.Setup(x => x.GetCatalogAsync(6, 99, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new PrintifyCatalogDto(6, 99,
             [new(101, "White / S", "White", "S"), new(102, "White / M", "White", "M"), new(103, "Black / S", "Black", "S")],
@@ -67,7 +69,7 @@ public sealed class WorkflowPublishServiceTests
             .ReturnsAsync(Result.Success(Product("publishing")));
 
         return new WorkflowPublishService(fixture.Nodes.Object, fixture.Runs.Object, fixture.State.Object, fixture.Unit.Object, runtime,
-            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance);
+            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance, pace.Object, matcher.Object);
     }
 
     private PrintifyProductDto Product(string state, string? listingId = null) => new(run.ProductId, "p-1", "Cat Tee", state, listingId,
@@ -77,17 +79,82 @@ public sealed class WorkflowPublishServiceTests
 
     private WorkflowNodeRun Step(string type) => fixture.NodeRows.Single(x => x.NodeType == type);
 
+    // Push to Printify runs on its own beside the line, so Publish to Etsy does not wait for it.
     [TestMethod]
-    public async Task AdvanceAsync_PackageExported_QueuesTheFirstPublishStep()
+    public async Task AdvanceAsync_PackageExported_QueuesPrintifyAndEtsyEachOnItsOwn()
     {
         Create(("publish-printify", PrintifySettings), ("publish-etsy", EtsySettings));
 
         await runtime.AdvanceAsync(run, default);
 
         Step("publish-printify").Status.Should().Be("running");
-        Step("publish-etsy").Status.Should().Be("pending");
+        Step("publish-etsy").Status.Should().Be("running");
         run.Status.Should().Be("running");
         queue.Verify(x => x.Enqueue(Step("publish-printify").Id, null), Times.Once);
+        queue.Verify(x => x.Enqueue(Step("publish-etsy").Id, null), Times.Once);
+    }
+
+    // Printify failing does not stop the video: only its step fails while the video part is still at work.
+    [TestMethod]
+    public async Task ProcessAsync_PrintifyFailsWhileTheVideoRenders_LeavesTheVideoGoing()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        printify.Setup(x => x.CreateProductAsync(run.ProductId, It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<PrintifyProductDto>(Error.Failure("shop.printify_rejected", "Printify did not accept it.")));
+        await runtime.AdvanceAsync(run, default);
+        var generate = Step("generate-video");
+        generate.Status = "running";
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("failed");
+        generate.Status.Should().Be("running");
+        run.Status.Should().Be("running");
+    }
+
+    // A video that failed does not stop Printify: it carries on and publishes the design and its mock-ups.
+    [TestMethod]
+    public async Task ProcessAsync_VideoFailed_PrintifyStillPublishes()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        await runtime.AdvanceAsync(run, default);
+        Step("generate-video").Status = "failed";
+        run.Status = "failed";
+
+        var wait = await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        wait.Should().Be(WorkflowPublishService.PollEvery);
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+        run.Status.Should().Be("failed", "the video's failure is still the run's to retry");
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_PrintifyWhileTheVideoWaitsForReview_IsStillWorkedOn()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        await runtime.AdvanceAsync(run, default);
+        run.Status = "waiting_for_review";
+
+        (await service.ProcessAsync(Step("publish-printify").Id, default)).Should().Be(WorkflowPublishService.PollEvery);
+        run.Status.Should().Be("waiting_for_review");
+    }
+
+    [TestMethod]
+    public async Task RetryAction_OnlyPrintifyFailed_RunsItAgainWithoutTouchingTheVideo()
+    {
+        Create(("publish-printify", PrintifySettings));
+        var printifyStep = Step("publish-printify");
+        printifyStep.Status = "failed"; printifyStep.ErrorMessage = "Printify was down.";
+        var review = Step("review-video");
+        review.Status = "waiting_for_review";
+        run.Status = "waiting_for_review";
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(run.Revision, "retry"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        printifyStep.Status.Should().Be("running");
+        printifyStep.Attempt.Should().Be(2);
+        run.Status.Should().Be("waiting_for_review");
     }
 
     [TestMethod]
@@ -100,7 +167,7 @@ public sealed class WorkflowPublishServiceTests
 
         wait.Should().Be(WorkflowPublishService.PollEvery);
         printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request =>
-            request.DesignId == designId && request.VariantIds.SequenceEqual(new long[] { 101, 102 })), It.IsAny<CancellationToken>()), Times.Once);
+            request.DesignId == designId && request.VariantIds.SequenceEqual(new long[] { 101, 102 }) && request.PlacementMockupId == null), It.IsAny<CancellationToken>()), Times.Once);
         var expected = PrintifyPricing.PriceForProfit(10.10m, 4.75m, 10m);
         printify.Verify(x => x.PublishAsync(run.ProductId, "p-1", It.Is<PublishPrintifyProductRequestDto>(request =>
             request.Prices.All(price => price.Price == expected)), It.IsAny<CancellationToken>()), Times.Once);
@@ -153,6 +220,110 @@ public sealed class WorkflowPublishServiceTests
 
         Step("publish-printify").Status.Should().Be("failed");
         run.ErrorMessage.Should().Contain("Image has low quality");
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_TheShopReachedItsListingPace_WaitsWithoutSendingAnything()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        var retryAt = WorkflowTestData.Now.UtcDateTime.AddMinutes(40);
+        pace.Setup(x => x.CheckAsync(run.UserId, It.IsAny<CancellationToken>())).ReturnsAsync(new ListingPaceDecision(false, retryAt, "pace"));
+        await runtime.AdvanceAsync(run, default);
+
+        var wait = await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        wait.Should().Be(TimeSpan.FromMinutes(40));
+        Step("publish-printify").Status.Should().Be("running");
+        Step("publish-printify").Stage.Should().Contain("listing pace");
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<Guid>(), It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_PrintifyOnly_DoesNotWaitForTheShopsListingPace()
+    {
+        var service = Create(("publish-printify", new { blueprintId = 6, blueprintTitle = "Softstyle Tee", printProviderId = 99,
+            colors = new[] { "White" }, sizes = new[] { "S", "M" }, targetProfit = 10, publishToEtsy = false }));
+        pace.Setup(x => x.CheckAsync(run.UserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListingPaceDecision(false, WorkflowTestData.Now.UtcDateTime.AddMinutes(40), "pace"));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Stage.Should().NotContain("listing pace");
+        pace.Verify(x => x.CheckAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<Guid>(), It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_StoppedWhilePrintifyMadeTheProduct_RecordsTheProductMade()
+    {
+        var service = Create(("publish-printify", new { blueprintId = 6, blueprintTitle = "Softstyle Tee", printProviderId = 99,
+            colors = new[] { "White" }, sizes = new[] { "S", "M" }, targetProfit = 10, publishToEtsy = false }));
+        await runtime.AdvanceAsync(run, default);
+        // The seller presses Stop while Printify is making the product.
+        printify.Setup(x => x.CreateProductAsync(run.ProductId, It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()))
+            .Callback(() => { run.Status = "cancelled"; Step("publish-printify").Status = "cancelled"; })
+            .ReturnsAsync(Result.Success(Product("created")));
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("succeeded");
+        run.Status.Should().Be("cancelled");
+    }
+
+    private void EtsyDraftWith(params EtsyDraftMockupDto[] mockups) =>
+        etsy.Setup(x => x.GetDraftAsync(run.ProductId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new EtsyDraftResponseDto(
+            run.ProductId, "Cat tee", ShopConnectionStatuses.Connected, "APCSCo", "USD", "Cat Tee", "A tee.", ["cat"], [], mockups, null,
+            new EtsyListingSettingsDto(null, 999, null, null, "physical", "i_did", "made_to_order", null, null, []), [], [], [], [], [])));
+
+    private static readonly object PhysicalSettings = new
+    {
+        listingType = "physical", price = 24.99, taxonomyId = 482, taxonomyPath = "T-shirts", shippingProfileId = 55, madeBy = "partner", productionPartnerIds = new[] { 7L },
+    };
+
+    [TestMethod]
+    public async Task ProcessAsync_EtsyPhysical_OpensOnAPhotoNotMadeWithAi_AndNamesThePartner()
+    {
+        var service = Create(("publish-etsy", PhysicalSettings));
+        var real = Guid.NewGuid();
+        EtsyDraftWith(new EtsyDraftMockupDto(mockupId, "https://cdn.test/ai.png", 1080, 1080, AiMade: true), new EtsyDraftMockupDto(real, "https://cdn.test/m.png", 1080, 1080));
+        etsy.Setup(x => x.PublishDraftAsync(run.ProductId, It.IsAny<PublishEtsyDraftRequestDto>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new PublishEtsyDraftResponseDto("987", "https://www.etsy.com/your/shops/me/listing-editor/edit/987", 2, false, false, [], 0)));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-etsy").Id, default);
+
+        etsy.Verify(x => x.PublishDraftAsync(run.ProductId, It.Is<PublishEtsyDraftRequestDto>(request =>
+            request.MockupIds.SequenceEqual(new[] { real, mockupId }) && request.ProductionPartnerIds.SequenceEqual(new long[] { 7 })),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_EtsyPhysicalWithOnlyAiPhotos_FailsTheStep()
+    {
+        var service = Create(("publish-etsy", PhysicalSettings));
+        EtsyDraftWith(new EtsyDraftMockupDto(mockupId, "https://cdn.test/ai.png", 1080, 1080, AiMade: true));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-etsy").Id, default);
+
+        Step("publish-etsy").Status.Should().Be("failed");
+        Step("publish-etsy").ErrorMessage.Should().Contain("made with AI");
+        etsy.Verify(x => x.PublishDraftAsync(It.IsAny<Guid>(), It.IsAny<PublishEtsyDraftRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public void EtsyPublishConfig_APhysicalItem_MustSayWhoMakesIt_AndNameThePartner()
+    {
+        var physical = new EtsyPublishConfig("physical", 24.99m, 999, 2078, null, "i_did", "made_to_order", 55, true);
+
+        physical.Problem().Should().Contain("who makes this item");
+        (physical with { MadeBy = "partner" }).Problem().Should().Contain("production partner");
+        (physical with { MadeBy = "partner", ProductionPartnerIds = [7] }).Problem().Should().BeNull();
+        (physical with { MadeBy = "partner", ProductionPartnerIds = [7] }).Partners.Should().Equal(7);
+        (physical with { MadeBy = "me", ProductionPartnerIds = [7] }).Partners.Should().BeEmpty();
+        // A download is made by no one.
+        (physical with { ListingType = "download", ShippingProfileId = null }).Problem().Should().BeNull();
     }
 
     [TestMethod]
@@ -214,5 +385,118 @@ public sealed class WorkflowPublishServiceTests
 
         price.Should().Be(23.99m);
         PrintifyPricing.EstimatedProfit(price, 10.10m, 4.75m).Should().BeGreaterThanOrEqualTo(10m);
+    }
+
+    /// <summary>Sets the run's Apply mock-up node to the given Printify products, by product type.</summary>
+    private void MockupFor(Dictionary<string, object> products)
+    {
+        var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
+        var config = JsonSerializer.SerializeToElement(new { printifyProducts = products });
+        var nodes = definition.Nodes.Any(node => node.Type == "apply-mockup")
+            ? definition.Nodes.Select(node => node.Type == "apply-mockup" ? node with { Config = config } : node).ToArray()
+            : definition.Nodes.Append(new WorkflowNode("mockup", "apply-mockup", "Apply mock-up", new(), config)).ToArray();
+        run.DefinitionSnapshot = WorkflowJson.Write(definition with { Nodes = nodes });
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_ApplyMockupChoseThePrintifyProduct_CreatesThatProductInItsPrintArea()
+    {
+        var service = Create(("publish-printify", new { targetProfit = 10 }));
+        MockupFor(new()
+        {
+            ["tshirt"] = new { blueprintId = 6, blueprintTitle = "Softstyle Tee", printProviderId = 99, colors = new[] { "Black" }, sizes = new[] { "S" }, position = "front" },
+        });
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request =>
+            request.BlueprintId == 6 && request.PrintProviderId == 99 && request.VariantIds.SequenceEqual(new long[] { 103 }) && request.Position == "front"
+            // The print follows the listing's first mock-up, and the listing opens on Printify's photo of the garment.
+            && request.PlacementMockupId == mockupId),
+            It.IsAny<CancellationToken>()), Times.Once);
+        printify.Verify(x => x.SyncAsync(run.ProductId, "p-1", It.Is<SyncPrintifyProductRequestDto>(media => media.AfterPrintifyPhoto), It.IsAny<CancellationToken>()));
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_ApplyMockupChoseThePrintifyProduct_TheSellerCanLeadWithTheirMockup()
+    {
+        var service = Create(("publish-printify", new { targetProfit = 10, leadPhoto = "apcs" }));
+        MockupFor(new()
+        {
+            ["tshirt"] = new { blueprintId = 6, blueprintTitle = "Softstyle Tee", printProviderId = 99, colors = new[] { "Black" }, sizes = new[] { "S" } },
+        });
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        printify.Verify(x => x.SyncAsync(run.ProductId, "p-1", It.Is<SyncPrintifyProductRequestDto>(media => !media.AfterPrintifyPhoto), It.IsAny<CancellationToken>()));
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_ApplyMockupHasNoPrintifyProductForTheType_FailsTheStepNamingIt()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        MockupFor(new()
+        {
+            ["mug"] = new { blueprintId = 68, printProviderId = 1, colors = new[] { "White" }, sizes = new[] { "11oz" } },
+        });
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("failed");
+        Step("publish-printify").ErrorMessage.Should().Contain("tshirt");
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<Guid>(), It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_Printify_ProductReadFromTheMockups_IsMadeAsTheyShow()
+    {
+        var service = Create(("publish-printify", new { source = "mockup", targetProfit = 10 }));
+        matcher.Setup(x => x.MatchAsync(run.ProductId, It.IsAny<PrintifyPublishConfig>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<PrintifyMockupMatch?>(new PrintifyMockupMatch(
+                new PrintifyProductSetup(6, "Softstyle Tee", 99, "Monster Digital", ["White"], ["S", "M"], "front"), "Softstyle Tee",
+                ["No Printify color is set for #123456; left out."])));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request =>
+            request.BlueprintId == 6 && request.PrintProviderId == 99 && request.VariantIds.SequenceEqual(new long[] { 101, 102 })
+            && request.PlacementMockupId == mockupId), It.IsAny<CancellationToken>()), Times.Once);
+        var state = WorkflowJson.Read<PublishNodeState>(Step("publish-printify").OutputSnapshot);
+        state.MadeAs.Should().Be("Softstyle Tee by Monster Digital in White (S, M)");
+        state.Warnings.Should().Contain("No Printify color is set for #123456; left out.");
+        state.MockupsAfterPrintify.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_Printify_TheSellersOwnTemplatesWithoutAProduct_FailsAndAsksForOne()
+    {
+        var service = Create(("publish-printify", new { targetProfit = 10 }));
+        matcher.Setup(x => x.MatchAsync(run.ProductId, It.IsAny<PrintifyPublishConfig>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<PrintifyMockupMatch?>(null));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("failed");
+        Step("publish-printify").ErrorMessage.Should().Contain("your own templates");
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<Guid>(), It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_Printify_ManualSource_DoesNotReadTheMockups()
+    {
+        var service = Create(("publish-printify", new { source = "manual", blueprintId = 6, blueprintTitle = "Softstyle Tee", printProviderId = 99,
+            colors = new[] { "White" }, sizes = new[] { "S" }, targetProfit = 10 }));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        matcher.Verify(x => x.MatchAsync(It.IsAny<Guid>(), It.IsAny<PrintifyPublishConfig>(), It.IsAny<CancellationToken>()), Times.Never);
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request =>
+            request.VariantIds.SequenceEqual(new long[] { 101 })), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

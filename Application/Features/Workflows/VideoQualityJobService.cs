@@ -36,6 +36,20 @@ public sealed class VideoQualityJobService(IRepository<WorkflowRun> runs, IRepos
         if (targets.Count == 0) return;
         var orders = targets.Select(target => target.SceneOrder).ToArray();
 
+        // With evaluation turned off, record the scenes as skipped instead of queueing a job.
+        // A queued job could be claimed by another API sharing this database and fail there.
+        if (!evidenceRunner.IsEnabled)
+        {
+            var skipped = AutomaticVideoQualityPayload.Read(video.QaResult);
+            foreach (var order in orders)
+                skipped = skipped.Complete(order, new VideoSceneEvaluationResponse("skipped", time.GetUtcNow(), "video-quality-v1",
+                    new Dictionary<string, object?>(), "Automatic scene evaluation is turned off."));
+            video.QaResult = AutomaticVideoQualityPayload.Write(video.QaResult, skipped);
+            video.UpdatedAt = time.GetUtcNow().UtcDateTime;
+            await unitOfWork.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
         var payload = AutomaticVideoQualityPayload.Read(video.QaResult).Queue(orders, time.GetUtcNow());
         video.QaResult = AutomaticVideoQualityPayload.Write(video.QaResult, payload);
         video.UpdatedAt = time.GetUtcNow().UtcDateTime;

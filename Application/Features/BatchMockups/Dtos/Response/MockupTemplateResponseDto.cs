@@ -20,6 +20,8 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Response;
 /// <param name="Kind">'garment' for a photo of the garment alone, 'model' for a person wearing it.</param>
 /// <param name="Attributes">For a model photo, who is in it; null when not told.</param>
 /// <param name="AiGenerated">Whether the photo was made by AI rather than uploaded.</param>
+/// <param name="Views">The template's photos of its other sides (back, left sleeve, right sleeve), each a template of its own; null when it has none.</param>
+/// <param name="Printify">The Printify product the photo shows, with its colors; null for a template not linked to Printify.</param>
 public sealed record MockupTemplateResponseDto(
     Guid Id,
     string Name,
@@ -39,4 +41,6 @@ public sealed record MockupTemplateResponseDto(
     bool AllowBackground = false,
     string Kind = "garment",
     APCS.Application.Features.BatchMockups.Common.ModelAttributesDto? Attributes = null,
-    bool AiGenerated = false);
+    bool AiGenerated = false,
+    IReadOnlyList<MockupTemplateResponseDto>? Views = null,
+    MockupTemplatePrintifyDto? Printify = null);

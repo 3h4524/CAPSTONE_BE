@@ -75,4 +75,14 @@ public sealed class EtsyListingTextTests
         validator.Validate(Request(type: "download", shipping: null) with { DesignIds = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray() })
             .IsValid.Should().BeFalse();
     }
+
+    [TestMethod]
+    public void WithAiDisclosure_AddsTheSentenceOnce_AfterTheSellersText()
+    {
+        var once = EtsyListingText.WithAiDisclosure("  A soft cat tee.  ");
+
+        once.Should().Be($"A soft cat tee.\n\n{EtsyListingText.AiDisclosure}");
+        EtsyListingText.WithAiDisclosure(once).Should().Be(once);
+        EtsyListingText.WithAiDisclosure(null).Should().Be(EtsyListingText.AiDisclosure);
+    }
 }

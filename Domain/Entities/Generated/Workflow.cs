@@ -27,5 +27,7 @@ public partial class Workflow
 
     public virtual User User { get; set; } = null!;
 
+    public virtual ICollection<WorkflowRunGroup> WorkflowRunGroups { get; set; } = new List<WorkflowRunGroup>();
+
     public virtual ICollection<WorkflowRun> WorkflowRuns { get; set; } = new List<WorkflowRun>();
 }

@@ -67,6 +67,8 @@ public partial class User
 
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 
+    public virtual ICollection<MockupTemplatePrintifyLink> MockupTemplatePrintifyLinks { get; set; } = new List<MockupTemplatePrintifyLink>();
+
     public virtual ICollection<MockupTemplate> MockupTemplates { get; set; } = new List<MockupTemplate>();
 
     public virtual ICollection<NotificationAlert> NotificationAlerts { get; set; } = new List<NotificationAlert>();
@@ -110,6 +112,8 @@ public partial class User
     public virtual ICollection<UserRole> UserRoleGrantedByNavigations { get; set; } = new List<UserRole>();
 
     public virtual ICollection<UserRole> UserRoleUsers { get; set; } = new List<UserRole>();
+
+    public virtual ICollection<WorkflowRunGroup> WorkflowRunGroups { get; set; } = new List<WorkflowRunGroup>();
 
     public virtual ICollection<WorkflowRun> WorkflowRuns { get; set; } = new List<WorkflowRun>();
 

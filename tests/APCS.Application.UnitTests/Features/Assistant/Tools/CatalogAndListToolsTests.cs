@@ -1,5 +1,6 @@
 using System.Text.Json;
 using APCS.Application.Features.Assistant.Catalog;
+using APCS.Application.Features.Assistant.Dtos.Request;
 using APCS.Application.Features.Assistant.Tools;
 using APCS.Application.Features.Assistant.Tools.Query;
 using APCS.Application.Features.BatchMockups;
@@ -80,6 +81,19 @@ public sealed class CatalogAndListToolsTests
 
         tools.Select(tool => tool.IsAvailable(Context(seller: false))).Should().AllBeEquivalentTo(false);
         tools.Select(tool => tool.IsAvailable(Context())).Should().AllBeEquivalentTo(true);
+    }
+
+    [TestMethod]
+    public void GetNodeCatalog_IsNotOfferedWhenTheCatalogIsAlreadyInThePrompt()
+    {
+        var canvas = new AssistantCanvasDto(Guid.NewGuid(), 1, false, [], []);
+        var withCanvas = new AssistantToolContext(Guid.NewGuid(), AssistantTestSupport.UserId, AssistantTestSupport.Seller,
+            new AssistantClientContextDto("/workflows", canvas.WorkflowId, null, null, canvas));
+        var onDashboard = new AssistantToolContext(Guid.NewGuid(), AssistantTestSupport.UserId, AssistantTestSupport.Seller,
+            new AssistantClientContextDto("/dashboard", null, null, null, null));
+
+        new GetNodeCatalogTool().IsAvailable(withCanvas).Should().BeFalse();
+        new GetNodeCatalogTool().IsAvailable(onDashboard).Should().BeTrue();
     }
 
     [TestMethod]

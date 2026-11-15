@@ -44,20 +44,18 @@ public sealed class WorkflowGraphValidatorTests
     private static readonly object PrintifySettings = new { blueprintId = 6, printProviderId = 99, colors = new[] { "White" }, sizes = new[] { "M" }, targetProfit = 10 };
     private static readonly object EtsySettings = new { listingType = "download", price = 4.99, taxonomyId = 2078 };
 
-    // Appends publish steps after Export ZIP (node-5), in the order given.
+    // Push to Printify branches off Mockup Approval (node-2); the other publish steps follow Export ZIP (node-5) in order.
     private static WorkflowDefinition WithPublish(WorkflowDefinition definition, params (string Type, object Config)[] steps)
     {
         var nodes = steps.Select((step, i) => new WorkflowNode("publish-" + i, step.Type, step.Type, new(), JsonSerializer.SerializeToElement(step.Config))).ToArray();
-        var line = new[] { "node-5" }.Concat(nodes.Select(x => x.Id)).ToArray();
-        return definition with
-        {
-            Nodes = definition.Nodes.Concat(nodes).ToArray(),
-            Edges = definition.Edges.Concat(line.Skip(1).Select((target, i) => new WorkflowEdge("publish-edge-" + i, line[i], target))).ToArray()
-        };
+        var line = new[] { "node-5" }.Concat(nodes.Where(x => x.Type != "publish-printify").Select(x => x.Id)).ToArray();
+        var edges = line.Skip(1).Select((target, i) => new WorkflowEdge("publish-edge-" + i, line[i], target))
+            .Concat(nodes.Where(x => x.Type == "publish-printify").Select(x => new WorkflowEdge("to-printify", "node-2", x.Id)));
+        return definition with { Nodes = definition.Nodes.Concat(nodes).ToArray(), Edges = definition.Edges.Concat(edges).ToArray() };
     }
 
     [TestMethod]
-    public void Validate_PublishStepsAfterExportZip_AreAccepted()
+    public void Validate_PrintifyOffMockupApprovalAndEtsyAfterExportZip_AreAccepted()
     {
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
             ("publish-printify", PrintifySettings), ("publish-etsy", EtsySettings));
@@ -65,19 +63,109 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
-    public void Validate_EtsyBeforePrintify_RejectsGraph()
+    public void Validate_PrintifyOffApplyMockup_IsAccepted()
     {
-        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
-            ("publish-etsy", EtsySettings), ("publish-printify", PrintifySettings));
-        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), ("publish-printify", PrintifySettings));
+        definition = definition with { Edges = definition.Edges.Select(x => x.Id == "to-printify" ? x with { Source = "node-1" } : x).ToArray() };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    // Printify takes the design and its mock-ups, not the video: it cannot wait for the video at the end of the run.
+    [TestMethod]
+    [DataRow("node-3")]
+    [DataRow("node-4")]
+    [DataRow("node-5")]
+    public void Validate_PrintifyAfterTheVideoSteps_IsRejected(string source)
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), ("publish-printify", PrintifySettings));
+        definition = definition with { Edges = definition.Edges.Select(x => x.Id == "to-printify" ? x with { Source = source } : x).ToArray() };
+        _validator.Validate(definition)!.Message.Should().Contain("after Apply Mockup or Mockup Approval");
+    }
+
+    [TestMethod]
+    public void Validate_StepsAfterPrintify_AreRejected()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), ("publish-printify", PrintifySettings));
+        var etsy = new WorkflowNode("etsy", "publish-etsy", "publish-etsy", new(), JsonSerializer.SerializeToElement(EtsySettings));
+        definition = definition with { Nodes = [.. definition.Nodes, etsy], Edges = [.. definition.Edges, new("after-printify", "publish-0", etsy.Id)] };
+        _validator.Validate(definition)!.Message.Should().Contain("ends its branch");
     }
 
     [TestMethod]
     public void Validate_PrintifyWithoutAProductType_SaysWhatIsMissing()
     {
         var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
-            ("publish-printify", new { colors = new[] { "White" }, sizes = new[] { "M" } }));
+            ("publish-printify", new { source = "manual", colors = new[] { "White" }, sizes = new[] { "M" } }));
         _validator.Validate(definition)!.Message.Should().Contain("product type");
+    }
+
+    [TestMethod]
+    public void Validate_PrintifyReadFromTheMockups_NeedsNoProductOnTheNode()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", new { targetProfit = 10 }));
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_VideoWithoutExportZip_PublishesToEtsyAfterReviewVideo()
+    {
+        var full = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-printify", new { targetProfit = 10 }), ("publish-etsy", EtsySettings));
+        var export = full.Nodes.Single(x => x.Type == "export-zip");
+        var review = full.Nodes.Single(x => x.Type == "review-video");
+        var etsy = full.Nodes.Single(x => x.Type == "publish-etsy");
+        var definition = full with
+        {
+            Nodes = full.Nodes.Where(x => x != export).ToArray(),
+            Edges = [.. full.Edges.Where(x => x.Source != export.Id && x.Target != export.Id), new("to-etsy", review.Id, etsy.Id)],
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_TwoExportZips_AreRejected()
+    {
+        var full = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        var second = new WorkflowNode("export-2", "export-zip", "Export ZIP", new(), JsonSerializer.SerializeToElement(new { }));
+        var definition = full with { Nodes = [.. full.Nodes, second], Edges = [.. full.Edges, new("to-export-2", "node-5", second.Id)] };
+        _validator.Validate(definition)!.Message.Should().Contain("Export ZIP may appear once");
+    }
+
+    [TestMethod]
+    public void Validate_PublishRightAfterMockupApprovalWithoutAVideo_IsAccepted()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoButWithExportZip_SaysTheZipNeedsTheVideo()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var export = new WorkflowNode("export", "export-zip", "Export ZIP", new(), JsonSerializer.SerializeToElement(new { }));
+        var gate = definition.Nodes.Single(x => x.Type == "approval-gate");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = [.. definition.Nodes, export],
+            Edges = [.. definition.Edges.Where(x => x.Target != printify.Id), new("to-export", gate.Id, export.Id), new("to-printify", export.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("need Generate Video");
+    }
+
+    [TestMethod]
+    public void Validate_PublishWithoutAVideoOrMockupApproval_IsRejected()
+    {
+        var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
+        var mockup = definition.Nodes.Single(x => x.Type == "apply-mockup");
+        var printify = definition.Nodes.Single(x => x.Type == "publish-printify");
+        definition = definition with
+        {
+            Nodes = definition.Nodes.Where(x => x.Type != "approval-gate").ToArray(),
+            Edges = [.. definition.Edges.Where(x => x.Source == definition.Nodes[0].Id), new("to-printify", mockup.Id, printify.Id)],
+        };
+        _validator.Validate(definition)!.Message.Should().Contain("Mockup Approval");
     }
 
     [TestMethod]
@@ -203,6 +291,18 @@ public sealed class WorkflowGraphValidatorTests
             Edges = definition.Edges.Where(x => x.Source != "node-0")
                 .Concat(line.Skip(1).Select((target, i) => new WorkflowEdge("design-edge-" + i, line[i], target))).ToArray()
         };
+    }
+
+    [TestMethod]
+    public void SupportsBatchVideos_AiSceneList_IsAllowedButOneProductsSettingsAreNot()
+    {
+        var scenes = new AiVideoSceneOptions[] { new(Mode: "ai", TemplateCode: "cinematic_product_showcase") };
+        var ai = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: scenes);
+
+        WorkflowGraphValidator.SupportsBatchVideos(ai).Should().BeTrue();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { AiScenes = null }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { Template = "product_on_model_pack" }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(new GenerateVideoConfig()).Should().BeTrue();
     }
 
     [TestMethod]

@@ -263,8 +263,33 @@ public sealed class MediaJobServiceTests
         job.LeaseExpiresAt.Should().Be(WorkflowTestData.Now.AddMinutes(2).AddSeconds(30).UtcDateTime);
         fixture.NodeRows.Single(x => x.Id == job.WorkflowNodeRunId).Progress.Should().Be(40);
         fixture.NodeRows.Single(x => x.Id == job.WorkflowNodeRunId).Stage.Should().Be("Rendering");
-        fixture.State.Verify(x => x.LockRunAsync(run.Id, cancellation.Token), Times.Once);
-        fixture.Unit.Verify(x => x.SaveChangesAsync(cancellation.Token), Times.Once);
+        // One statement on the job: the run the seller's page reads is not locked.
+        fixture.State.Verify(x => x.RenewLeaseAsync(job.Id, job.LeaseToken!.Value, "Rendering", 20, WorkflowTestData.Now.AddSeconds(30).UtcDateTime,
+            WorkflowTestData.Now.AddMinutes(2).AddSeconds(30).UtcDateTime, MediaJobService.ProgressStep, cancellation.Token), Times.Once);
+        fixture.State.Verify(x => x.LockRunAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.Unit.Verify(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task HeartbeatAsync_SmallProgressInSameStage_RenewsLeaseWithoutTellingPages()
+    {
+        var fixture = new WorkflowTestData();
+        var notifier = new Mock<IWorkflowRunNotifier>();
+        var service = new MediaJobService(fixture.Jobs.Object, fixture.Nodes.Object, fixture.Assets.Object, fixture.Videos.Object, fixture.Scenes.Object,
+            fixture.Exports.Object, fixture.Items.Object, fixture.State.Object, fixture.Unit.Object, fixture.Storage.Object, fixture.Runtime, fixture.Time,
+            runNotifier: notifier.Object);
+        var run = fixture.AddRun(fixture.AddProduct());
+        var job = fixture.AddJob(run); job.Stage = "Rendering";
+        var node = fixture.NodeRows.Single(x => x.Id == job.WorkflowNodeRunId); node.Stage = "Rendering"; node.Progress = 40;
+
+        (await service.HeartbeatAsync(job.Id, new(job.LeaseToken!.Value, "Rendering", 42), default)).IsSuccess.Should().BeTrue();
+        job.Progress.Should().Be(42);
+        node.Progress.Should().Be(40);
+        notifier.Verify(x => x.ProgressAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        (await service.HeartbeatAsync(job.Id, new(job.LeaseToken!.Value, "Rendering", 47), default)).IsSuccess.Should().BeTrue();
+        node.Progress.Should().Be(47);
+        notifier.Verify(x => x.ProgressAsync(run.Id, null, "Rendering", 47, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
@@ -290,7 +315,7 @@ public sealed class MediaJobServiceTests
         var result = await fixture.MediaService.HeartbeatAsync(job.Id, new(job.LeaseToken!.Value, "Rendering", 90), default);
         result.Error.Code.Should().Be("LeaseLost");
         job.Progress.Should().Be(40);
-        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+        job.LeaseExpiresAt.Should().Be(WorkflowTestData.Now.AddMinutes(2).UtcDateTime);
     }
 
     [TestMethod]
@@ -361,6 +386,26 @@ public sealed class MediaJobServiceTests
         run.Revision.Should().Be(8);
         fixture.NodeRows.Single(x => x.NodeType == "review-video").Status.Should().Be("waiting_for_review");
         fixture.ExportRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task CompleteAsync_ReviewVideoInAutoMode_ApprovesTheVideoAndStartsTheExport()
+    {
+        var fixture = RenderFixture();
+        ReviewAutomatically(fixture);
+        var job = fixture.JobRows.Single();
+        SetupVerification(fixture);
+
+        var result = await fixture.MediaService.CompleteAsync(job.Id, Completion(job), default);
+
+        result.IsSuccess.Should().BeTrue();
+        var video = fixture.VideoRows.Single();
+        video.ApprovalStatus.Should().Be("approved");
+        video.ApprovedBy.Should().Be(WorkflowTestData.Owner);
+        fixture.NodeRows.Single(x => x.NodeType == "review-video").Status.Should().Be("succeeded");
+        fixture.NodeRows.Single(x => x.NodeType == "export-zip").Status.Should().Be("running");
+        fixture.RunRows.Single().Status.Should().Be("running");
+        fixture.ExportRows.Should().ContainSingle();
     }
 
     [TestMethod]
@@ -574,6 +619,19 @@ public sealed class MediaJobServiceTests
         var job = fixture.AddJob(run);
         job.Payload = WorkflowJson.Write(new RenderJobPayload(fixture.VideoRows.Single().Id, board));
         return fixture;
+    }
+
+    /// <summary>Sets the run's Review Video step to approve automatically.</summary>
+    private static void ReviewAutomatically(WorkflowTestData fixture)
+    {
+        var run = fixture.RunRows.Single();
+        var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
+        run.DefinitionSnapshot = WorkflowJson.Write(definition with
+        {
+            Nodes = definition.Nodes.Select(node => node.Type == "review-video"
+                ? node with { Config = JsonSerializer.SerializeToElement(new ReviewVideoConfig("auto"), WorkflowJson.Options) }
+                : node).ToArray(),
+        });
     }
 
     private static async Task<WorkflowTestData> ExportFixtureAsync()

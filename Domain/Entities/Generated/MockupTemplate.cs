@@ -59,6 +59,8 @@ public partial class MockupTemplate
 
     public virtual ICollection<MockupImage> MockupImages { get; set; } = new List<MockupImage>();
 
+    public virtual MockupTemplatePrintifyLink? MockupTemplatePrintifyLink { get; set; }
+
     public virtual ICollection<ProductMockupTemplate> ProductMockupTemplates { get; set; } = new List<ProductMockupTemplate>();
 
     public virtual User? User { get; set; }

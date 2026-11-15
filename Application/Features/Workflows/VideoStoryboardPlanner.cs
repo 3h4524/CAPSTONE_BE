@@ -20,6 +20,24 @@ public sealed class VideoStoryboardPlanner
     public static string? KnownArtworkGroup(IReadOnlyList<MockupImage> owned, string? configured) =>
         !string.IsNullOrEmpty(configured) && owned.Any(x => x.ArtworkGroupKey == configured) ? configured : null;
 
+    /// <summary>The mock-ups in the order a template prefers them: its roles first, then color, then the larger image.</summary>
+    private static List<MockupImage> Preferred(IReadOnlyList<MockupImage> eligible, string template)
+    {
+        var roles = template switch
+        {
+            "design_detail" => new[] { "Hero", "ArtworkDetail", "AlternativeAngle", "Lifestyle" },
+            "variant_showcase" => new[] { "Hero", "Variant", "AlternativeAngle", "Lifestyle" },
+            _ => new[] { "Hero", "AlternativeAngle", "Lifestyle", "ArtworkDetail" }
+        };
+        return eligible
+            .OrderBy(x => template == "design_detail" && HasDetail(x) ? 0 : 1)
+            .ThenBy(x => Array.IndexOf(roles, x.Role) < 0 ? 99 : Array.IndexOf(roles, x.Role))
+            .ThenBy(x => x.VariantKey, StringComparer.Ordinal)
+            .ThenByDescending(x => (long)x.MockupWidthPx * x.MockupHeightPx)
+            .ThenBy(x => x.Id)
+            .ToList();
+    }
+
     public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config,
         IReadOnlyList<VideoTemplate>? aiVideoTemplates = null,
         IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences = null)
@@ -59,19 +77,7 @@ public sealed class VideoStoryboardPlanner
         if (templateVersion >= 2 && template == "variant_showcase" &&
             eligible.Select(x => x.VariantKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Count() < 2)
             return Result.Failure<Storyboard>(Error.Validation("Variant Showcase requires at least two named variants."));
-        var roles = template switch
-        {
-            "design_detail" => new[] { "Hero", "ArtworkDetail", "AlternativeAngle", "Lifestyle" },
-            "variant_showcase" => new[] { "Hero", "Variant", "AlternativeAngle", "Lifestyle" },
-            _ => new[] { "Hero", "AlternativeAngle", "Lifestyle", "ArtworkDetail" }
-        };
-        var preferred = eligible
-            .OrderBy(x => template == "design_detail" && HasDetail(x) ? 0 : 1)
-            .ThenBy(x => Array.IndexOf(roles, x.Role) < 0 ? 99 : Array.IndexOf(roles, x.Role))
-            .ThenBy(x => x.VariantKey, StringComparer.Ordinal)
-            .ThenByDescending(x => (long)x.MockupWidthPx * x.MockupHeightPx)
-            .ThenBy(x => x.Id)
-            .ToList();
+        var preferred = Preferred(eligible, template);
         var ordered = templateVersion >= 2 && template == "variant_showcase"
             ? preferred.GroupBy(x => string.IsNullOrWhiteSpace(x.VariantKey) ? x.Id.ToString() : x.VariantKey!, StringComparer.Ordinal)
                 .Select(x => x.First()).Concat(preferred).DistinctBy(x => x.Id).Take(4).ToList()
@@ -245,9 +251,6 @@ public sealed class VideoStoryboardPlanner
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} must use its approved Lifestyle image directly with P1 prompt rules."));
             if (usesP1Rules && source.Role != "Lifestyle")
                 return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} needs an approved Lifestyle image with a person for P1 prompt rules."));
-
-            if (definition.RequiresLifestyle && !settings.RightsConfirmed)
-                return Result.Failure<Storyboard>(Error.Validation($"AI scene {index + 1} requires confirmation that you have rights to use the selected image with people."));
 
             var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
             var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
@@ -439,8 +442,6 @@ public sealed class VideoStoryboardPlanner
         source ??= options.Concept == "material_detail" ? eligible.FirstOrDefault(HasMarkedDetail) ?? eligible[0] : eligible[0];
         if (source == null || !eligible.Any(x => x.Id == source.Id))
             return Result.Failure<Storyboard>(Error.Validation("The selected AI Shot source is not an approved mockup."));
-        if (options.Concept is "lifestyle_motion" or "product_in_use" && !options.RightsConfirmed)
-            return Result.Failure<Storyboard>(Error.Validation("Lifestyle AI Shots need image-rights confirmation for the selected image."));
         var modelKey = config.AiVideoModelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelKey : AiVideoModel.ModelKey;
         var model = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
         var modelPrice = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LitePricePerSecondUsd : AiVideoModel.PricePerSecondUsd;

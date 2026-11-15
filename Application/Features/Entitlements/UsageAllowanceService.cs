@@ -41,6 +41,9 @@ public sealed class UsageAllowanceService(
     private const string DesignGenerationJob = "design_generation";
     private const string VideoNode = "generate-video";
     private const string StandardVideo = "standard";
+    private const string FailedRun = "failed";
+    private const string StoppedRun = "cancelled";
+    private const string FailedVideo = "failed";
 
     /// <inheritdoc />
     public async Task<UsageAllowanceSummary> GetAsync(
@@ -146,11 +149,16 @@ public sealed class UsageAllowanceService(
 
     private Task<int> CountAsync(Guid userId, string code, AllowanceWindow window, CancellationToken cancellationToken) => code switch
     {
-        // A run counts as a full run when it has a video step.
-        UsageAllowances.FullRuns => workflowNodes.Query().CountAsync(
-            node => node.NodeType == VideoNode && node.WorkflowRun.UserId == userId
-                && node.WorkflowRun.CreatedAt >= window.From && node.WorkflowRun.CreatedAt < window.To,
-            cancellationToken),
+        // A run counts as a full run when it has a video step. The runs of one batch video run (one per design)
+        // are one full run together. A run that failed or was stopped is not counted, so it can be retried or resumed:
+        // going on with it counts it again.
+        UsageAllowances.FullRuns => workflowNodes.Query()
+            .Where(node => node.NodeType == VideoNode && node.WorkflowRun.UserId == userId
+                && node.WorkflowRun.Status != FailedRun && node.WorkflowRun.Status != StoppedRun
+                && node.WorkflowRun.CreatedAt >= window.From && node.WorkflowRun.CreatedAt < window.To)
+            .Select(node => node.WorkflowRun.RunGroupId ?? node.WorkflowRun.Id)
+            .Distinct()
+            .CountAsync(cancellationToken),
         UsageAllowances.DesignRuns => batchJobs.Query().CountAsync(
             job => job.UserId == userId && job.JobType == DesignGenerationJob
                 && job.StartedAt >= window.From && job.StartedAt < window.To,
@@ -166,8 +174,9 @@ public sealed class UsageAllowanceService(
             mockup => mockup.Product.UserId == userId && mockup.SourceType == MockupSources.Generated
                 && mockup.CreatedAt >= window.From && mockup.CreatedAt < window.To,
             cancellationToken),
+        // A video that failed (or whose run was stopped before it was made) is not counted.
         UsageAllowances.Videos => videos.Query().CountAsync(
-            video => video.Product.UserId == userId && video.Mode == StandardVideo
+            video => video.Product.UserId == userId && video.Mode == StandardVideo && video.Status != FailedVideo
                 && video.CreatedAt >= window.From && video.CreatedAt < window.To,
             cancellationToken),
         UsageAllowances.Listings => usageRecords.Query().CountAsync(

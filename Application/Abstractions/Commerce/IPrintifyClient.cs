@@ -23,8 +23,18 @@ public sealed record PrintifyUploadedImage(string Id, int Width, int Height);
 /// <summary>A variant of a new product: its retail price in cents and whether it is sold.</summary>
 public sealed record PrintifyVariantPrice(long Id, long PriceCents, bool IsEnabled);
 
-/// <summary>A product to create: one design centered on one print area of every chosen variant.</summary>
+/// <summary>The design printed in one more print area of a product, such as <c>back</c> or <c>left_sleeve</c>.</summary>
 /// <param name="Scale">The design's width relative to the print area's width; 1 fills it.</param>
+/// <param name="X">The design's center across the print area (0–1).</param>
+/// <param name="Y">The design's center down the print area (0–1).</param>
+public sealed record PrintifyPlacement(string Position, double Scale, double X, double Y, int Angle = 0);
+
+/// <summary>A product to create: one design on a print area of every chosen variant, and on any further areas given.</summary>
+/// <param name="Scale">The design's width relative to the print area's width; 1 fills it.</param>
+/// <param name="X">The design's center across the print area (0–1).</param>
+/// <param name="Y">The design's center down the print area (0–1).</param>
+/// <param name="MorePlacements">The same design in other print areas (the back, a sleeve), each placed on its own.</param>
+/// <param name="Angle">Whole degrees the design is turned clockwise about its center.</param>
 public sealed record PrintifyNewProduct(
     string Title,
     string Description,
@@ -34,7 +44,29 @@ public sealed record PrintifyNewProduct(
     IReadOnlyList<PrintifyVariantPrice> Variants,
     string ImageId,
     string Position,
-    double Scale);
+    double Scale,
+    double X = 0.5,
+    double Y = 0.5,
+    IReadOnlyList<PrintifyPlacement>? MorePlacements = null,
+    int Angle = 0);
+
+/// <summary>
+/// A throwaway product printing one image, centered and filling the area, on several print areas (<c>front</c>,
+/// <c>back</c>…) of every variant: what its mock-ups show is where Printify prints.
+/// </summary>
+public sealed record PrintifyProbeProduct(
+    string Title,
+    long BlueprintId,
+    long PrintProviderId,
+    IReadOnlyList<long> VariantIds,
+    string ImageId,
+    IReadOnlyList<string> Positions);
+
+/// <summary>
+/// A mock-up photo of a product: <c>Src</c> is its URL, <c>VariantIds</c> the product variants it shows and
+/// <c>Position</c> the print area it faces, as Printify says.
+/// </summary>
+public sealed record PrintifyProductImage(string Src, IReadOnlyList<long> VariantIds, string? Position, bool IsDefault);
 
 /// <summary>A product variant with what Printify charges (<c>CostCents</c>) and what the buyer pays (<c>PriceCents</c>).</summary>
 public sealed record PrintifyProductVariant(long Id, string Title, long CostCents, long PriceCents, bool IsEnabled, bool IsAvailable);
@@ -50,7 +82,8 @@ public sealed record PrintifyProduct(
     string? ExternalId,
     string? ExternalHandle,
     IReadOnlyList<PrintifyProductVariant> Variants,
-    IReadOnlyList<string> ImageUrls);
+    IReadOnlyList<string> ImageUrls,
+    IReadOnlyList<PrintifyProductImage>? Images = null);
 
 public enum PrintifyFailureKind
 {
@@ -95,7 +128,15 @@ public interface IPrintifyClient
     /// <summary>Printify fetches the image from <paramref name="sourceUrl"/>, the recommended way for large files.</summary>
     Task<PrintifyUploadedImage> UploadImageAsync(string token, string fileName, string sourceUrl, CancellationToken cancellationToken);
 
+    /// <summary>Uploads an image sent with the request, for a small file that has no public URL.</summary>
+    Task<PrintifyUploadedImage> UploadImageContentsAsync(string token, string fileName, byte[] contents, CancellationToken cancellationToken);
+
     Task<PrintifyProduct> CreateProductAsync(string token, long shopId, PrintifyNewProduct product, CancellationToken cancellationToken);
+
+    /// <summary>Creates an unpublished product only to read its mock-ups; delete it with <see cref="DeleteProductAsync"/>.</summary>
+    Task<PrintifyProduct> CreateProbeProductAsync(string token, long shopId, PrintifyProbeProduct product, CancellationToken cancellationToken);
+
+    Task DeleteProductAsync(string token, long shopId, string productId, CancellationToken cancellationToken);
 
     Task<PrintifyProduct> GetProductAsync(string token, long shopId, string productId, CancellationToken cancellationToken);
 

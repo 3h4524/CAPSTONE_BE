@@ -175,8 +175,15 @@ public sealed class PlanEntitlementService(
             PlanFeatures.DailyListingCap => await usageRecords.Query().CountAsync(
                 record => record.UserId == userId && record.Feature == UsageFeatures.Listing && record.CreatedAt >= dayStart,
                 cancellationToken),
+            // A video that failed, or whose run was stopped before it was made, is not counted.
             PlanFeatures.DailyVideoCap => await videos.Query().CountAsync(
-                video => video.Product.UserId == userId && video.Mode == "standard" && video.CreatedAt >= dayStart,
+                video => video.Product.UserId == userId && video.Mode == "standard" && video.Status != "failed" && video.CreatedAt >= dayStart,
+                cancellationToken),
+            // Every AI image made today (designs, model photos, lifestyle mockups): on a plan with the platform's keys
+            // they are made on those.
+            PlanFeatures.DailyDesignImageCap => await usageRecords.Query().CountAsync(
+                record => record.UserId == userId && record.CreatedAt >= dayStart
+                    && (record.Feature == UsageFeatures.ImageGeneration || record.Feature == UsageFeatures.Mockup),
                 cancellationToken),
             _ => throw new ArgumentOutOfRangeException(nameof(capCode), capCode, "Not a daily cap feature."),
         };
@@ -187,6 +194,7 @@ public sealed class PlanEntitlementService(
         PlanFeatures.DailyMockupCap => "mockups",
         PlanFeatures.DailyListingCap => "listings",
         PlanFeatures.DailyVideoCap => "videos",
+        PlanFeatures.DailyDesignImageCap => "AI images",
         _ => capCode,
     };
 }

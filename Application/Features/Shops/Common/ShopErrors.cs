@@ -36,6 +36,13 @@ public static class ShopErrors
             ? "Etsy did not accept the listing. Check the category, shipping profile and price, then try again."
             : $"Etsy did not accept the listing: {reason}");
 
+    public static Error ListingPace(string reason) => new("shop.listing_pace", reason, ErrorType.Conflict);
+
+    public static Error NoRealPhoto() => Error.Validation(ListingPhotos.NoRealPhoto);
+
+    public static Error NoProductionPartner() =>
+        Error.Validation("Your Etsy shop lists no production partner, which Etsy requires for items Printify makes. Add Printify under Shop Manager > Settings > Production partners, then publish again.");
+
     public static Error DesignNotApproved() =>
         Error.Validation("Only approved designs of this product can be sent.");
 
@@ -73,6 +80,11 @@ public static class EtsyConnectionOutcomes
     public const string Expired = "expired";
     /// <summary>The Etsy account has no shop to connect.</summary>
     public const string NoShop = "no_shop";
+    /// <summary>
+    /// Another APCS account already connected this Etsy shop. One shop answers to one account: Etsy reads a shop run
+    /// from several accounts as possible fraud.
+    /// </summary>
+    public const string ShopTaken = "shop_taken";
     public const string Failed = "failed";
 }
 

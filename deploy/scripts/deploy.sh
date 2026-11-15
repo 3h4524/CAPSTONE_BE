@@ -44,6 +44,21 @@ wait_healthy() {
   return 1
 }
 
+prune_old_images() {
+  local registry repo ref repos keep=("$tag")
+  registry="$(grep -E '^REGISTRY=' .env | cut -d= -f2- || true)"
+  [ -f "$releases_dir/$target.prev" ] && keep+=("$(cat "$releases_dir/$target.prev")")
+  case "$target" in
+    api) repos=(apcs-api apcs-media-worker) ;;
+    fe) repos=(apcs-fe) ;;
+  esac
+  for repo in "${repos[@]}"; do
+    while read -r ref; do
+      [[ " ${keep[*]} " == *" ${ref##*:} "* ]] || docker rmi "$ref" > /dev/null 2>&1 || true
+    done < <(docker images --format '{{.Repository}}:{{.Tag}}' "$registry/$repo")
+  done
+}
+
 previous="$(grep -E "^$variable=" .env | cut -d= -f2- || true)"
 echo "Deploying $target: ${previous:-none} -> $tag"
 
@@ -55,6 +70,7 @@ if wait_healthy; then
   [ -n "$previous" ] && [ "$previous" != "$tag" ] && echo "$previous" > "$releases_dir/$target.prev"
   echo "$tag" > "$releases_dir/$target.current"
   echo "Deployed $target $tag"
+  prune_old_images
   exit 0
 fi
 

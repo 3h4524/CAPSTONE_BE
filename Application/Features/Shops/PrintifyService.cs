@@ -36,7 +36,6 @@ public sealed class PrintifyService(
     IRepository<Product> products,
     IRepository<DesignImage> designs,
     IRepository<MockupImage> mockups,
-    IRepository<PromoVideo> videos,
     IRepository<PrintifyIntegration> integrations,
     IRepository<PrintifyUploadLog> uploads,
     IMediaStorage storage,
@@ -45,7 +44,9 @@ public sealed class PrintifyService(
     TimeProvider timeProvider,
     IValidator<CreatePrintifyProductRequestDto> createValidator,
     IValidator<PublishPrintifyProductRequestDto> publishValidator,
-    ILogger<PrintifyService> logger) : IPrintifyService
+    ILogger<PrintifyService> logger,
+    IPrintFileSource? printFiles = null,
+    IListingPace? pace = null) : IPrintifyService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan CatalogLifetime = TimeSpan.FromDays(1);
@@ -234,7 +235,11 @@ public sealed class PrintifyService(
                 variants.Select(variant => variant.Color).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 variants.Select(variant => variant.Size).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 variants.SelectMany(variant => variant.Placeholders).Select(area => area.Position).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                us?.First, us?.Additional));
+                us?.First, us?.Additional,
+                variants.SelectMany(variant => variant.Placeholders)
+                    .GroupBy(area => area.Position, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => new PrintifyPrintAreaDto(group.Key, group.Max(area => area.Width), group.Max(area => area.Height)))
+                    .ToArray()));
         }
         catch (PrintifyApiException exception)
         {
@@ -263,9 +268,8 @@ public sealed class PrintifyService(
         if (approvedDesigns.Length == 0)
             warnings.Add("This product has no approved design yet; approve one before sending it to Printify.");
         var approvedMockups = (await ApprovedMockupsAsync(productId, cancellationToken))
-            .Select(mockup => new EtsyDraftMockupDto(mockup.Id, storage.SignRead(mockup.StorageKey, "image", mockup.StorageVersion), mockup.MockupWidthPx, mockup.MockupHeightPx))
+            .Select(mockup => new EtsyDraftMockupDto(mockup.Id, storage.SignRead(mockup.StorageKey, "image", mockup.StorageVersion), mockup.MockupWidthPx, mockup.MockupHeightPx, ListingPhotos.IsAiMade(mockup)))
             .ToArray();
-        var video = await ApprovedVideoAsync(productId, cancellationToken);
 
         var connection = (await ResolveAsync(userId, refresh: false, cancellationToken)).Connection;
         if (connection.Status == PrintifyStatuses.Connected && connection.SalesChannel != "etsy")
@@ -289,8 +293,6 @@ public sealed class PrintifyService(
         return Result.Success(new PrintifyDraftResponseDto(
             product.Id, product.Name, connection, title, content.IsSuccess ? content.Value.Description : product.InputDescription, tags,
             warnings, approvedDesigns, approvedMockups,
-            video is null ? null : new EtsyDraftVideoDto(video.Id, video.VideoDurationSeconds,
-                video.ThumbnailStorageKey is null ? null : storage.SignRead(video.ThumbnailStorageKey, "image", video.ThumbnailStorageVersion)),
             await LastSettingsAsync(userId, cancellationToken), history, etsyConnected));
     }
 
@@ -331,13 +333,45 @@ public sealed class PrintifyService(
         if (position is null || selected.Any(variant => variant.Placeholders.All(area => area.Position != position)))
             return Result.Failure<PrintifyProductDto>(Error.Validation("Not every chosen variant can be printed in that area; choose another print area or fewer variants."));
 
+        // The largest print area of the chosen variants: Printify fits the same placement to every size.
+        var areas = selected.SelectMany(variant => variant.Placeholders).Where(area => area.Position == position).ToArray();
+        var areaWidth = areas.Max(area => area.Width);
+        var areaHeight = areas.Max(area => area.Height);
+        var sides = request.PlacementMockupId is { } shownId
+            ? await MockupSidesAsync(productId, shownId, request.PrintMockupSides, cancellationToken)
+            : new MockupSides(null, []);
+        var placement = sides.FrontId is { } frontId
+            ? await MockupPlacementAsync(productId, frontId, design, areaWidth, areaHeight, cancellationToken)
+            : new PrintPlacement(request.X, request.Y, request.Scale);
+        var printWidth = placement.PrintedWidthPx(areaWidth);
+
+        // Each other side the mock-ups print the design on goes on Printify's area for it, placed as that mock-up shows.
+        var morePlacements = new List<PrintifyPlacement>();
+        var sideWarnings = new List<string>();
+        foreach (var (view, sideMockupId) in sides.Others)
+        {
+            var sidePosition = PrintifyPositionOf(view);
+            var sideAreas = selected.Select(variant => variant.Placeholders.FirstOrDefault(area => area.Position == sidePosition)).ToArray();
+            if (sidePosition is null || sideAreas.Any(area => area is null))
+            {
+                sideWarnings.Add($"This provider does not print the {SideLabel(view)}, so the design shown there on the mock-ups is not printed.");
+                continue;
+            }
+            var sideWidth = sideAreas.Max(area => area!.Width);
+            var sidePlacement = await MockupPlacementAsync(productId, sideMockupId, design, sideWidth, sideAreas.Max(area => area!.Height), cancellationToken);
+            morePlacements.Add(new PrintifyPlacement(sidePosition, sidePlacement.Scale, sidePlacement.X, sidePlacement.Y, sidePlacement.Angle));
+            printWidth = Math.Max(printWidth, sidePlacement.PrintedWidthPx(sideWidth));
+        }
+
         var (title, _) = EtsyListingText.Title(request.Title);
         var (tags, _) = EtsyListingText.Tags(request.Tags);
         var payload = new CreatePayload(design.Id, request.BlueprintId, request.BlueprintTitle, request.PrintProviderId, request.PrintProviderTitle,
             request.VariantIds.Order().ToArray(),
             selected.Select(variant => variant.Color).OfType<string>().Distinct().ToArray(),
             selected.Select(variant => variant.Size).OfType<string>().Distinct().ToArray(),
-            title, request.Description.Trim(), tags, request.Price, request.Scale, position);
+            // Printify passes the description on to Etsy, so it carries the AI disclosure Etsy requires.
+            title, EtsyListingText.WithAiDisclosure(request.Description), tags, request.Price, placement.Scale, position, placement.X, placement.Y,
+            morePlacements.Count == 0 ? null : morePlacements, placement.Angle);
         var payloadJson = JsonSerializer.Serialize(payload, Json);
         var key = $"product:{productId}:create:{Hash(payloadJson)}";
 
@@ -360,6 +394,7 @@ public sealed class PrintifyService(
             }
         }
 
+        // A product only made on Printify is no Etsy listing yet: the shop's pace is kept when it is published (PublishAsync).
         var now = timeProvider.GetUtcNow().UtcDateTime;
         if (log is null)
         {
@@ -381,16 +416,29 @@ public sealed class PrintifyService(
         }
 
         PrintifyProduct created;
+        // A design narrower than its print is sent enlarged to the print's width, so Printify gets the pixels it prints.
+        var printFile = design.ImageWidthPx < printWidth ? printFiles?.Resized(design.ImageUrl, design.ImageWidthPx, design.ImageHeightPx, printWidth) : null;
         try
         {
-            // Printify fetches the original design from its public URL: the recommended route for large files.
-            var image = await printify.UploadImageAsync(token, ProductDesigns.FileName(design, 1), design.ImageUrl, cancellationToken);
+            // Printify fetches the design from its public URL: the recommended route for large files.
+            PrintifyUploadedImage image;
+            try
+            {
+                image = await printify.UploadImageAsync(token, ProductDesigns.FileName(design, 1), printFile ?? design.ImageUrl, cancellationToken);
+            }
+            catch (PrintifyApiException exception) when (printFile is not null && exception.Kind is PrintifyFailureKind.Rejected or PrintifyFailureKind.Unavailable)
+            {
+                // The enlarged file could not be fetched (an upscale the storage plan refuses): the original still prints.
+                logger.LogWarning("The enlarged print file of design {DesignId} was refused ({Kind}); sending the original.", design.Id, exception.Kind);
+                printFile = null;
+                image = await printify.UploadImageAsync(token, ProductDesigns.FileName(design, 1), design.ImageUrl, cancellationToken);
+            }
             var priceCents = PrintifyPricing.ToCents(request.Price);
             created = await printify.CreateProductAsync(token, shopId, new PrintifyNewProduct(
                 title, payload.Description, tags, request.BlueprintId, request.PrintProviderId,
                 // Every variant the provider makes is sent; only the chosen ones are sold.
                 variants.Select(variant => new PrintifyVariantPrice(variant.Id, priceCents, chosen.Contains(variant.Id))).ToArray(),
-                image.Id, position, request.Scale), cancellationToken);
+                image.Id, position, placement.Scale, placement.X, placement.Y, morePlacements.Count == 0 ? null : morePlacements, placement.Angle), cancellationToken);
         }
         catch (PrintifyApiException exception)
         {
@@ -410,10 +458,8 @@ public sealed class PrintifyService(
         await integrations.UpdateAsync(integration, saveChange: false, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        var warnings = new List<string>();
-        if (design.ImageWidthPx < 3000)
-            warnings.Add($"The design is {design.ImageWidthPx}px wide; Printify recommends about 4500px for a sharp print on a shirt front. Check the preview on Printify.");
-        return Result.Success(ToDto(productId, created, state, shipping, alreadyCreated: false, warnings));
+        return Result.Success(ToDto(productId, created, state, shipping, alreadyCreated: false,
+            [.. PrintWarnings(design, placement, printWidth, printFile is not null), .. sideWarnings]));
     }
 
     public async Task<Result<PrintifyProductDto>> PublishAsync(Guid productId, string printifyProductId, PublishPrintifyProductRequestDto request, CancellationToken cancellationToken = default)
@@ -426,6 +472,13 @@ public sealed class PrintifyService(
             return Result.Failure<PrintifyProductDto>(context.Error);
         var (access, log) = context.Value;
         var (integration, token, shopId, _) = access;
+        // Etsy requires items a partner makes to name it; a listing without one can cost the seller the shop.
+        if (await MissingProductionPartnerAsync(cancellationToken))
+            return Result.Failure<PrintifyProductDto>(ShopErrors.NoProductionPartner());
+        // Publishing makes the product an Etsy listing: it counts toward the shop's pace, unless it was sent already.
+        if (pace is not null && LogState.Read(log.ApiResponse).PublishRequestedAt is null
+            && await pace.CheckAsync(integration.UserId, cancellationToken) is { Allowed: false } paced)
+            return Result.Failure<PrintifyProductDto>(ShopErrors.ListingPace(paced.Reason!));
 
         try
         {
@@ -484,8 +537,10 @@ public sealed class PrintifyService(
         var now = timeProvider.GetUtcNow();
         if (product.ExternalId is { } listingId)
         {
+            if (state.Stage != PrintifyStages.Published && await MissingProductionPartnerAsync(cancellationToken))
+                warnings.Add(NoProductionPartner);
             state = state with { Stage = PrintifyStages.Published, EtsyListingId = listingId };
-            if (!state.MediaAttempted && (request.MockupIds.Count > 0 || request.IncludeVideo))
+            if (!state.MediaAttempted && request.MockupIds.Count > 0)
             {
                 var (attached, mediaWarnings) = await AttachMediaAsync(productId, listingId, request, product.Title, cancellationToken);
                 state = state with { MediaAttempted = true, MediaAttached = attached };
@@ -508,14 +563,97 @@ public sealed class PrintifyService(
         return Result.Success(ToDto(productId, product, state, shipping, alreadyCreated: false, warnings));
     }
 
-    /// <summary>Adds approved APCS mock-ups (in front of Printify's) and the video to Printify's Etsy listing.</summary>
+    /// <summary>Below this the print looks soft; Printify's print areas are drawn at 300 DPI.</summary>
+    internal const int SoftPrintDpi = 150;
+
+    /// <summary>What the seller should check on Printify's preview: a soft print, or a design the mock-up placed off the print area.</summary>
+    internal static IReadOnlyList<string> PrintWarnings(DesignImage design, PrintPlacement placement, int printWidth, bool enlarged)
+    {
+        var warnings = new List<string>();
+        // The design's own pixels decide the sharpness; enlarging it only spares Printify's low-resolution refusal.
+        var dpi = printWidth > 0 && design.ImageWidthPx > 0 ? (int)Math.Round(300.0 * design.ImageWidthPx / printWidth) : 300;
+        if (dpi < SoftPrintDpi)
+            warnings.Add($"The design is {design.ImageWidthPx}px wide for a print {printWidth}px wide (about {dpi} DPI){(enlarged ? "; it was enlarged for Printify but may print soft" : "")}. Check the preview on Printify.");
+        if (placement.Adjusted)
+            warnings.Add("The mock-up places the design partly outside Printify's print area, so it is printed smaller or moved inside it. Check the preview on Printify.");
+        return warnings;
+    }
+
+    internal const string NoProductionPartner =
+        "Your Etsy shop lists no production partner. Etsy requires one for items a partner makes: add Printify under Shop Manager > Settings > Production partners, then add it to this listing.";
+
+    /// <summary>
+    /// True when the seller's Etsy shop names no production partner, which Etsy requires for print-on-demand items and
+    /// may treat as misrepresenting who makes them. False when it has one or Etsy cannot be asked.
+    /// </summary>
+    private async Task<bool> MissingProductionPartnerAsync(CancellationToken cancellationToken)
+    {
+        if (currentUser.UserId is not Guid userId || await EtsyAccessAsync(userId, cancellationToken) is not { } connection)
+            return false;
+        try
+        {
+            return await etsy.GetProductionPartnersAsync(connection.AccessToken, connection.Integration.EtsyShopId, cancellationToken) is { Count: 0 };
+        }
+        catch (Exception exception) when (exception is EtsyApiException or HttpRequestException)
+        {
+            logger.LogWarning("Production partners of Etsy shop {ShopId} could not be read: {Error}.", connection.Integration.EtsyShopId, exception.GetType().Name);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Where the design sits on an approved mock-up of this product, as a placement in Printify's print area. The
+    /// template's print area stands for Printify's; a box the seller moved or resized on the mock-up places the design in
+    /// it. A mock-up that cannot be read gives the design as large as fits, centered, as the template shows it.
+    /// </summary>
+    private async Task<PrintPlacement> MockupPlacementAsync(Guid productId, Guid mockupId, DesignImage design, int areaWidth, int areaHeight,
+        CancellationToken cancellationToken)
+    {
+        var fitted = PrintPlacement.Fitted(design.ImageWidthPx, design.ImageHeightPx, areaWidth, areaHeight);
+        var shown = await mockups.Query()
+            .Where(mockup => mockup.Id == mockupId && mockup.ProductId == productId && mockup.DeletedAt == null && mockup.MockupTemplateId != null)
+            .Select(mockup => new
+            {
+                mockup.DesignImageId,
+                TemplateId = mockup.MockupTemplateId!.Value,
+                mockup.GarmentColor,
+                Area = mockup.MockupTemplate!.PrintAreaConfig,
+                Job = mockup.BatchJobProduct != null ? mockup.BatchJobProduct.BatchJob.Config : null,
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+        // Printify's print area on the template photo, and where the template puts the design inside it.
+        if (shown is null || BatchMockups.Common.MockupRules.PrintifyFrameOf(shown.Area) is not { } frame
+            || BatchMockups.Common.MockupRules.ParsePrintLayout(shown.Area)?.Main is not { } placed)
+            return fitted;
+
+        // The seller's own box for this mock-up: same design, template and garment color.
+        var color = shown.GarmentColor?.TrimStart('#');
+        var own = shown.Job is null || shown.DesignImageId is null
+            ? null
+            : BatchMockups.Common.MockupRules.ReadOverrides(shown.Job)
+                .Where(entry => entry.Key.StartsWith($"{shown.DesignImageId:N}.", StringComparison.Ordinal)
+                    && entry.Value is { Removed: false } && entry.Value.MockupTemplateId == shown.TemplateId
+                    && string.Equals(entry.Value.GarmentColor?.TrimStart('#'), color, StringComparison.OrdinalIgnoreCase))
+                .Select(entry => entry.Value.PrintArea is { } moved
+                    ? placed with { X = moved.X, Y = moved.Y, Width = moved.Width, Height = moved.Height, Rotation = 0 }
+                    : entry.Value.Areas?.FirstOrDefault(area => area.Key == BatchMockups.Common.MockupRules.MainAreaKey))
+                .FirstOrDefault(box => box is not null);
+        var box = own ?? placed;
+        return PrintPlacement.FromMockup(frame, BatchMockups.Common.MockupRules.AreaPosition(box), design.ImageWidthPx, design.ImageHeightPx,
+            areaWidth, areaHeight, box.Rotation);
+    }
+
+    /// <summary>
+    /// Adds approved APCS mock-ups (in front of Printify's, or just behind its first photo) to Printify's Etsy listing.
+    /// A Printify product carries the design and its mock-ups only: no video goes with it.
+    /// </summary>
     private async Task<(int Attached, IReadOnlyList<string> Warnings)> AttachMediaAsync(
         Guid productId, string listingId, SyncPrintifyProductRequestDto request, string title, CancellationToken cancellationToken)
     {
         var warnings = new List<string>();
         if (currentUser.UserId is not Guid userId || await EtsyAccessAsync(userId, cancellationToken) is not { } connection)
         {
-            warnings.Add("Connect Etsy on the Shop page to add the APCS mock-ups and video to this listing.");
+            warnings.Add("Connect Etsy on the Shop page to add the APCS mock-ups to this listing.");
             return (0, warnings);
         }
 
@@ -527,28 +665,15 @@ public sealed class PrintifyService(
             try
             {
                 var image = await storage.ReadImageAsync(mockup.StorageKey, mockup.StorageVersion, cancellationToken);
+                // Rank 1 is the photo the listing opens on; behind Printify's, it stays the garment Printify ships.
                 await etsy.UploadListingImageAsync(connection.AccessToken, connection.Integration.EtsyShopId, listingId, image,
-                    $"apcs-mockup-{index + 1}.png", index + 1, title, cancellationToken);
+                    $"apcs-mockup-{index + 1}.png", index + (request.AfterPrintifyPhoto ? 2 : 1), title, cancellationToken);
                 attached++;
             }
             catch (Exception exception) when (exception is EtsyApiException or HttpRequestException or IOException)
             {
                 logger.LogWarning("Mock-up {Index} for Etsy listing {ListingId} failed: {Error}.", index + 1, listingId, exception.GetType().Name);
                 warnings.Add($"Mock-up {index + 1} could not be added to the Etsy listing{(exception is EtsyApiException { Reason: { } reason } ? $": {reason}" : ".")}");
-            }
-        }
-        if (request.IncludeVideo && await ApprovedVideoAsync(productId, cancellationToken) is { } video)
-        {
-            try
-            {
-                await etsy.UploadListingVideoAsync(connection.AccessToken, connection.Integration.EtsyShopId, listingId,
-                    storage.SignRead(video.StorageKey!, "video", video.StorageVersion), title, cancellationToken);
-                attached++;
-            }
-            catch (EtsyApiException exception)
-            {
-                logger.LogWarning("Video for Etsy listing {ListingId} failed: {Kind}.", listingId, exception.Kind);
-                warnings.Add($"The video could not be added to the Etsy listing{(exception.Reason is { } reason ? $": {reason}" : ".")}");
             }
         }
         return (attached, warnings);
@@ -720,17 +845,12 @@ public sealed class PrintifyService(
 
     private async Task<IReadOnlyList<MockupImage>> ApprovedMockupsAsync(Guid productId, CancellationToken cancellationToken) =>
         await mockups.Query()
+            .Include(mockup => mockup.MockupTemplate)
             .Where(mockup => mockup.ProductId == productId && mockup.DeletedAt == null && mockup.ApprovalStatus == "approved"
                 && mockup.ApprovedRevision == mockup.MetadataRevision)
             .OrderBy(mockup => mockup.CreatedAt)
             .Take(Validators.PublishEtsyDraftValidator.MaxImages)
             .ToListAsync(cancellationToken);
-
-    private Task<PromoVideo?> ApprovedVideoAsync(Guid productId, CancellationToken cancellationToken) =>
-        videos.Query()
-            .Where(video => video.ProductId == productId && video.DeletedAt == null && video.ApprovalStatus == "approved" && video.StorageKey != null)
-            .OrderByDescending(video => video.UpdatedAt ?? video.CreatedAt)
-            .FirstOrDefaultAsync(cancellationToken);
 
     private static T? Deserialize<T>(string? json) where T : class
     {
@@ -756,7 +876,62 @@ public sealed class PrintifyService(
     internal sealed record CreatePayload(
         Guid DesignId, long BlueprintId, string? BlueprintTitle, long PrintProviderId, string? PrintProviderTitle,
         IReadOnlyList<long> VariantIds, IReadOnlyList<string> Colors, IReadOnlyList<string> Sizes,
-        string Title, string Description, IReadOnlyList<string> Tags, decimal Price, double Scale, string Position);
+        string Title, string Description, IReadOnlyList<string> Tags, decimal Price, double Scale, string Position, double X = 0.5, double Y = 0.5,
+        IReadOnlyList<PrintifyPlacement>? MorePlacements = null, int Angle = 0);
+
+    /// <summary>The front mock-up a print follows, and an approved mock-up of each other side of its garment, by side.</summary>
+    internal sealed record MockupSides(Guid? FrontId, IReadOnlyList<(string View, Guid MockupId)> Others);
+
+    /// <summary>Printify's print area for a side of an APCS template, or null for a side Printify has no area for.</summary>
+    internal static string? PrintifyPositionOf(string view) => view switch
+    {
+        BatchMockups.Common.MockupRules.ViewBack => "back",
+        BatchMockups.Common.MockupRules.ViewLeft => "left_sleeve",
+        BatchMockups.Common.MockupRules.ViewRight => "right_sleeve",
+        _ => null,
+    };
+
+    private static string SideLabel(string view) => view switch
+    {
+        BatchMockups.Common.MockupRules.ViewLeft => "left sleeve",
+        BatchMockups.Common.MockupRules.ViewRight => "right sleeve",
+        _ => view,
+    };
+
+    /// <summary>
+    /// The front mock-up of the garment the given mock-up shows (itself, or its front when it shows another side), and
+    /// with <paramref name="withSides"/> the first approved mock-up of each other side of that template, preferring the
+    /// front's garment color.
+    /// </summary>
+    private async Task<MockupSides> MockupSidesAsync(Guid productId, Guid shownId, bool withSides, CancellationToken cancellationToken)
+    {
+        var approved = await mockups.Query()
+            .Include(mockup => mockup.MockupTemplate)
+            .Where(mockup => mockup.ProductId == productId && mockup.DeletedAt == null && mockup.ApprovalStatus == "approved"
+                && mockup.ApprovedRevision == mockup.MetadataRevision && mockup.MockupTemplate != null)
+            .OrderBy(mockup => mockup.CreatedAt)
+            .ToListAsync(cancellationToken);
+        var shown = approved.FirstOrDefault(mockup => mockup.Id == shownId);
+        if (shown is null)
+            return new MockupSides(shownId, []);
+        var mainId = BatchMockups.Common.MockupRules.MainTemplateId(shown.MockupTemplate!.PrintAreaConfig) ?? shown.MockupTemplate.Id;
+        var front = shown.MockupTemplateId == mainId ? shown : approved.FirstOrDefault(mockup => mockup.MockupTemplateId == mainId);
+        if (front is null || !withSides)
+            return new MockupSides(front?.Id ?? shownId, []);
+
+        var others = new List<(string, Guid)>();
+        var views = BatchMockups.Common.MockupRules.ViewTemplateIds(front.MockupTemplate!.PrintAreaConfig);
+        foreach (var view in BatchMockups.Common.MockupRules.OtherViews.Where(views.ContainsKey))
+        {
+            var sideTemplateId = views[view];
+            var onSide = approved.Where(mockup => mockup.MockupTemplateId == sideTemplateId).ToArray();
+            var side = onSide.FirstOrDefault(mockup => string.Equals(mockup.GarmentColor, front.GarmentColor, StringComparison.OrdinalIgnoreCase))
+                ?? onSide.FirstOrDefault();
+            if (side is not null)
+                others.Add((view, side.Id));
+        }
+        return new MockupSides(front.Id, others);
+    }
 
     /// <summary>How far a created product got, kept as the log row's <c>api_response</c>.</summary>
     internal sealed record LogState(string Stage, string? EtsyListingId, DateTime? PublishRequestedAt, int MediaAttached, bool MediaAttempted)

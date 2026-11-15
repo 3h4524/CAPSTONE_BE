@@ -26,4 +26,13 @@ public sealed class AssistantConversationRepository(AppDbContext dbContext)
         await context.AssistantConversations
             .Where(item => item.DeletedAt != null)
             .ExecuteDeleteAsync(cancellationToken);
+
+    public async Task<int> MarkStreamingMessagesInterruptedAsync(DateTime createdBeforeUtc, CancellationToken cancellationToken = default) =>
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $$"""
+            UPDATE public.assistant_messages
+            SET metadata = jsonb_set(metadata, '{status}', '"interrupted"')
+            WHERE role = 'assistant' AND metadata->>'status' = 'streaming' AND created_at < {{createdBeforeUtc}}
+            """,
+            cancellationToken);
 }

@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using APCS.Api.Controllers;
 using APCS.Api.Extensions;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Features.Assistant;
 using APCS.Application.Features.Assistant.Common;
 using APCS.Application.Features.Assistant.Dtos.Request;
@@ -11,6 +12,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Moq;
 
 namespace APCS.Api.UnitTests.Controllers;
@@ -19,24 +21,55 @@ namespace APCS.Api.UnitTests.Controllers;
 public sealed class AssistantControllerTests
 {
     private readonly Mock<IAssistantService> service = new(MockBehavior.Strict);
+    private readonly Mock<IAssistantRunProgressReader> runProgress = new(MockBehavior.Strict);
 
     private AssistantController Controller(params string[] roles)
     {
         var identity = new ClaimsIdentity(roles.Select(role => new Claim(ClaimTypes.Role, role)), "test");
-        return new AssistantController(service.Object)
+        return new AssistantController(service.Object, runProgress.Object)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) } }
         };
     }
 
-    private static async IAsyncEnumerable<AssistantStreamEvent> NoEvents()
+    private static async IAsyncEnumerable<AssistantTurnEntry> NoEvents()
     {
         await Task.CompletedTask;
         yield break;
     }
 
     private static AssistantChatSession Session() =>
-        new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new AssistantCaller(true, false), "hi", null, []);
+        new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new AssistantCaller(true, false), "hi", null, []);
+
+    [TestMethod]
+    public async Task GetRunProgress_ReturnsTheProgressOfTheWorkflow()
+    {
+        var workflowId = Guid.NewGuid();
+        var progress = new AssistantRunProgressResponseDto(workflowId, "Flow", AssistantRunStages.MockupApproval, AssistantRunStates.WaitingForUser, "Approve the mock-ups.");
+        runProgress.Setup(reader => reader.ReadAsync(workflowId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(progress));
+
+        var result = await Controller(AuthConstants.UserRole).GetRunProgress(workflowId, default);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(progress);
+    }
+
+    [TestMethod]
+    public async Task GetRunProgress_WhenTheWorkflowIsMissing_ReturnsNotFound()
+    {
+        var workflowId = Guid.NewGuid();
+        runProgress.Setup(reader => reader.ReadAsync(workflowId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<AssistantRunProgressResponseDto>(Error.NotFound("WorkflowNotFound", "Workflow not found.")));
+
+        var result = await Controller(AuthConstants.UserRole).GetRunProgress(workflowId, default);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [TestMethod]
+    public void GetRunProgress_IsSellerOnly() =>
+        typeof(AssistantController).GetMethod(nameof(AssistantController.GetRunProgress))!
+            .GetCustomAttributes(typeof(AuthorizeAttribute), false).Cast<AuthorizeAttribute>()
+            .Single().Roles.Should().Be(AuthConstants.UserRole);
 
     [TestMethod]
     public async Task Chat_WhenStartFails_ReturnsProblemDetails()
@@ -90,7 +123,7 @@ public sealed class AssistantControllerTests
         var detail = new AssistantConversationDetailResponseDto(id, "t", [], []);
         var action = new AssistantActionResultResponseDto(
             new(id, "tool", "Title", "Summary", "executed", DateTime.UtcNow, null, null),
-            new(Guid.NewGuid(), "assistant", "done", default, DateTime.UtcNow));
+            new(Guid.NewGuid(), "assistant", "done", default, DateTime.UtcNow, "done"));
         service.Setup(s => s.ListConversationsAsync(cancellation.Token)).ReturnsAsync(Result.Success(list));
         service.Setup(s => s.GetConversationAsync(id, cancellation.Token)).ReturnsAsync(Result.Success(detail));
         service.Setup(s => s.ConfirmActionAsync(id, cancellation.Token)).ReturnsAsync(Result.Success(action));
@@ -113,6 +146,80 @@ public sealed class AssistantControllerTests
         var result = await Controller(AuthConstants.UserRole).ConfirmAction(Guid.NewGuid(), default);
 
         result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+    }
+
+    [TestMethod]
+    public async Task StreamMessage_PrefersLastEventIdHeaderOverQuery()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var id = Guid.NewGuid();
+        service.Setup(s => s.AttachToTurnAsync(id, "5-0", cancellation.Token))
+            .ReturnsAsync(Result.Success<IAsyncEnumerable<AssistantTurnEntry>>(NoEvents()));
+
+        var result = await Controller(AuthConstants.UserRole).StreamMessage(id, "3-0", "5-0", cancellation.Token);
+
+        result.Should().BeOfType<ServerSentEventsResult>();
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task StreamMessage_WithoutHeader_UsesAfterQuery()
+    {
+        var id = Guid.NewGuid();
+        service.Setup(s => s.AttachToTurnAsync(id, "3-0", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success<IAsyncEnumerable<AssistantTurnEntry>>(NoEvents()));
+
+        var result = await Controller(AuthConstants.UserRole).StreamMessage(id, "3-0", null, default);
+
+        result.Should().BeOfType<ServerSentEventsResult>();
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task StreamMessage_WhenStreamExpired_ReturnsProblem404WithCode()
+    {
+        service.Setup(s => s.AttachToTurnAsync(It.IsAny<Guid>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.StreamNotFound()));
+
+        var result = await Controller(AuthConstants.UserRole).StreamMessage(Guid.NewGuid(), null, null, default);
+
+        var problem = result.Should().BeOfType<ObjectResult>().Subject;
+        problem.StatusCode.Should().Be(StatusCodes.Status404NotFound);
+        problem.Value.Should().BeOfType<ProblemDetails>().Which.Extensions["code"].Should().Be("assistant.stream_not_found");
+    }
+
+    [TestMethod]
+    public async Task StopMessage_WhenSignalled_ReturnsAccepted()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var id = Guid.NewGuid();
+        service.Setup(s => s.StopTurnAsync(id, cancellation.Token)).ReturnsAsync(Result.Success());
+
+        var result = await Controller(AuthConstants.UserRole).StopMessage(id, cancellation.Token);
+
+        result.Should().BeOfType<AcceptedResult>();
+        service.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task StopMessage_WhenTurnEnded_ReturnsConflict()
+    {
+        service.Setup(s => s.StopTurnAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(AssistantErrors.NotStreaming()));
+
+        var result = await Controller(AuthConstants.UserRole).StopMessage(Guid.NewGuid(), default);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+    }
+
+    [TestMethod]
+    public void StreamMessage_IsNotLimitedByTheChatRatePolicy()
+    {
+        var method = typeof(AssistantController).GetMethod(nameof(AssistantController.StreamMessage))!;
+
+        method.GetCustomAttributes(typeof(EnableRateLimitingAttribute), true).Should().BeEmpty();
+        typeof(AssistantController).GetMethod(nameof(AssistantController.Chat))!
+            .GetCustomAttributes(typeof(EnableRateLimitingAttribute), true).Should().ContainSingle();
     }
 
     [TestMethod]

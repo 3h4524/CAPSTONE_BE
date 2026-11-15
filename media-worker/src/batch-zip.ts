@@ -8,7 +8,8 @@ import archiver from "archiver";
 /** The caller resolves these files from an authorized immutable asset snapshot. */
 export type BatchZipAsset = { path: string; file: string; id: string; version?: string | null; sha256?: string | null };
 export type BatchZipListing = { title: string; description: string; tags: string[]; version: number };
-export type BatchZipProduct = { id: string; name: string; type: string; assets: BatchZipAsset[]; listing?: BatchZipListing | null; warnings?: string[] };
+/** guide: how to list the product on Etsy by hand, written beside its folders as ETSY-LISTING-GUIDE.txt. */
+export type BatchZipProduct = { id: string; name: string; type: string; assets: BatchZipAsset[]; listing?: BatchZipListing | null; warnings?: string[]; guide?: string | null };
 type CheckedAsset = BatchZipAsset & { size: number; hash: string };
 type CheckedProduct = Omit<BatchZipProduct, "assets"> & { folder: string; assets: CheckedAsset[]; listingFiles: Record<string, string> };
 
@@ -16,6 +17,8 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/i;
 const GROUPS = ["design", "mockup", "video", "listing"] as const;
 const RESERVE = 128 * 1024;
+export const GUIDE_FILE = "ETSY-LISTING-GUIDE.txt";
+const MAX_GUIDE_BYTES = 64 * 1024;
 const MAX_UPLOAD_BYTES = 400 * 1024 * 1024;
 
 function folderFor(product: BatchZipProduct) {
@@ -68,6 +71,7 @@ export async function createBatchZipParts(directory: string, products: BatchZipP
       assets.push({ ...asset, path, size: info.size, hash });
     }
     const listing = listingFiles(product.listing);
+    if (product.guide && Buffer.byteLength(product.guide) > MAX_GUIDE_BYTES) throw new Error("Listing guide is too large");
     if (!assets.length && !Object.keys(listing).length) throw new Error(`Product ${product.id} has no exportable content`);
     prepared.push({ ...product, folder, assets, listingFiles: listing });
   }
@@ -78,6 +82,7 @@ export async function createBatchZipParts(directory: string, products: BatchZipP
   for (const product of prepared) {
     const contentBytes = product.assets.reduce((sum, asset) => sum + asset.size, 0)
       + Object.values(product.listingFiles).reduce((sum, value) => sum + Buffer.byteLength(value), 0)
+      + (product.guide ? Buffer.byteLength(product.guide) : 0)
       + (product.assets.length + Object.keys(product.listingFiles).length + 8) * 2048;
     if (contentBytes + RESERVE > maxPartBytes) throw new Error(`Product ${product.id} exceeds the ZIP part size limit`);
     if (current.length && bytes + contentBytes > maxPartBytes) { parts.push(current); current = []; bytes = RESERVE; }
@@ -100,7 +105,8 @@ export async function createBatchZipParts(directory: string, products: BatchZipP
           const summaries = part.map(product => {
             const manifest = { schemaVersion: 2, productId: product.id, name: product.name, type: product.type,
               files: [...product.assets.map(asset => ({ path: asset.path, id: asset.id, version: asset.version ?? null, sha256: asset.hash })),
-                ...Object.keys(product.listingFiles).map(path => ({ path, id: "listing", version: String(product.listing!.version), sha256: createHash("sha256").update(product.listingFiles[path]!).digest("hex") }))],
+                ...Object.keys(product.listingFiles).map(path => ({ path, id: "listing", version: String(product.listing!.version), sha256: createHash("sha256").update(product.listingFiles[path]!).digest("hex") })),
+                ...(product.guide ? [{ path: GUIDE_FILE, id: "guide", version: null, sha256: createHash("sha256").update(product.guide).digest("hex") }] : [])],
               missing: GROUPS.filter(group => group === "listing" ? !product.listing : !product.assets.some(asset => asset.path.startsWith(`${group}/`))),
               warnings: product.warnings ?? [] };
             for (const group of GROUPS) archive.append(Buffer.alloc(0), { name: `${product.folder}/${group}/` });
@@ -113,11 +119,12 @@ export async function createBatchZipParts(directory: string, products: BatchZipP
               archive.append(input.pipe(verifier), { name: `${product.folder}/${asset.path}` });
             }
             for (const [path, content] of Object.entries(product.listingFiles)) archive.append(content, { name: `${product.folder}/${path}` });
+            if (product.guide) archive.append(product.guide, { name: `${product.folder}/${GUIDE_FILE}` });
             archive.append(JSON.stringify(manifest, null, 2), { name: `${product.folder}/manifest.json` });
             return { productId: product.id, folder: product.folder, missing: manifest.missing };
           });
           archive.append(JSON.stringify({ schemaVersion: 2, part: index + 1, parts: parts.length, products: summaries }, null, 2), { name: "manifest.json" });
-          archive.append("Each product contains design, mockup, video and listing folders. See each manifest for included and missing files.\n", { name: "README.txt" });
+          archive.append("Each product contains design, mockup, video and listing folders. See each manifest for included and missing files. To list a product on Etsy yourself, follow the ETSY-LISTING-GUIDE.txt in its folder when it has one.\n", { name: "README.txt" });
           void archive.finalize().catch(reject);
         });
         if ((await stat(temporary)).size > maxPartBytes) throw new Error("ZIP part exceeds the size limit");

@@ -6,6 +6,8 @@ using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
+using APCS.Application.Features.Entitlements;
+using APCS.Application.UnitTests.TestSupport;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -124,7 +126,75 @@ public sealed class ModelPhotoGenerationServiceTests
         _usage.Verify(x => x.AddAsync(It.IsAny<ApiUsageRecord>(), true, It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    private ModelPhotoGenerationService Service()
+    private static TestEntitlements PlatformKeysPlan() =>
+        TestEntitlements.Plan(features: new Dictionary<string, PlanFeatureValue> { [PlanFeatures.SystemImageKeys] = new(true, null) });
+
+    private void PlatformKeyMakes(string key) =>
+        _provider.Setup(x => x.GenerateAsync(key, It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+    [TestMethod]
+    public async Task GenerateAsync_PlanWithThePlatformsKeys_MakesThePhotoOnThemWithoutAKeyOfTheSellers()
+    {
+        _keys.Setup(x => x.ListOwnedAsync(Seller, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        PlatformKeyMakes("platform-key");
+
+        var result = await Service(PlatformKeysPlan(), new FakeSystemApiKeyPool("ideogram", ("platform-key", 5)))
+            .GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("single", "adult", "female")), system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        _usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.Feature == "image_generation"), true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_ForTheSharedLibrary_IsMadeOnThePlatformsKeysWhateverThePlan()
+    {
+        _keys.Setup(x => x.ListOwnedAsync(Seller, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+        PlatformKeyMakes("platform-key");
+
+        var result = await Service(TestEntitlements.Free(), new FakeSystemApiKeyPool("ideogram", ("platform-key", 5)))
+            .GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("single", "adult", "female")), system: true);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_PlanWithoutThePlatformsKeys_StillNeedsTheSellersKey()
+    {
+        _keys.Setup(x => x.ListOwnedAsync(Seller, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+        var result = await Service(TestEntitlements.Free(), new FakeSystemApiKeyPool("ideogram", ("platform-key", 5)))
+            .GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("single", "adult", "female")), system: false);
+
+        result.Error.Code.Should().Be("MissingApiKey");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_PlatformKeysDailyCapReached_IsRefusedBeforeAnythingIsMade()
+    {
+        var plan = PlatformKeysPlan();
+        plan.CapsReached[PlanFeatures.DailyDesignImageCap] = true;
+
+        var result = await Service(plan, new FakeSystemApiKeyPool("ideogram", ("platform-key", 5)))
+            .GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("single", "adult", "female")), system: false);
+
+        result.Error.Code.Should().Be("Plan.DailyCapReached");
+        _provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_PlatformKeysUsedUp_WithoutAKeyOfTheSellers_SaysSo()
+    {
+        _keys.Setup(x => x.ListOwnedAsync(Seller, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+        var result = await Service(PlatformKeysPlan(), new FakeSystemApiKeyPool("ideogram", ("platform-key", 0)))
+            .GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("single", "adult", "female")), system: false);
+
+        result.Error.Code.Should().Be("SystemImageKeysUsedUp");
+        _usage.Verify(x => x.AddAsync(It.IsAny<ApiUsageRecord>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private ModelPhotoGenerationService Service(IPlanEntitlementService? entitlements = null, ISystemApiKeyPool? systemKeys = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(true);
@@ -132,6 +202,7 @@ public sealed class ModelPhotoGenerationServiceTests
         var credentials = new Mock<IApiKeyCredentials>();
         credentials.Setup(x => x.Unprotect("encrypted")).Returns("plain-key");
         return new ModelPhotoGenerationService(currentUser.Object, _modelPhotos.Object, _templates.Object, _usage.Object, _keys.Object,
-            credentials.Object, [_provider.Object], _maps.Object, TimeProvider.System, NullLogger<ModelPhotoGenerationService>.Instance);
+            credentials.Object, [_provider.Object], _maps.Object, TimeProvider.System, NullLogger<ModelPhotoGenerationService>.Instance,
+            entitlements, systemKeys);
     }
 }

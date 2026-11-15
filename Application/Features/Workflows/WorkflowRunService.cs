@@ -22,7 +22,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     IRepository<PromoVideo> videos, IRepository<MediaJob> jobs, IWorkflowStateRepository state, IUnitOfWork uow,
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
-    IPlanEntitlementService entitlements, WorkflowPublishConnections publishConnections, ISceneVideoNotifier? sceneNotifier = null) : IWorkflowRunService
+    IPlanEntitlementService entitlements, WorkflowPublishConnections publishConnections, ISceneVideoNotifier? sceneNotifier = null,
+    IRunTargetConfigResolver? targetResolver = null, IWorkflowRunNotifier? runNotifier = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -75,6 +76,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 Status = "pending", Attempt = 1, InputSnapshot = node.Config.GetRawText(), OutputSnapshot = "{}", CreatedAt = now, UpdatedAt = now }, cancellationToken: ct);
         await uow.SaveChangesAsync(ct);
         await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
         return Result.Success(await MapAsync(run, ct));
     }
     // Only reads: it is polled while a video renders, so it must not lock the run the worker writes to. A job that
@@ -123,16 +125,45 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         if (run is null || run.UserId != user.UserId) return Result.Failure<RunResponse>(Missing());
         if (run.Revision != request.ExpectedRevision) return Result.Failure<RunResponse>(Stale());
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == id, ct);
-        // A run that only writes a listing has none of the video steps the actions below work on.
-        if (request.Action is "resume_mockups" or "approve_video" or "reject_video" or "rerender" or "retry" or "regenerate_ai_shot" &&
-            checkpoints.All(x => x.NodeType != "generate-video"))
+        // A run that only writes a listing has none of the video steps the actions below work on. One that publishes
+        // without a video still waits at Mockup Approval and can retry a failed publish step, but has nothing else.
+        var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
+        var publishesWithoutVideo = !hasVideo && checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
+        if (!hasVideo && request.Action is "resume_mockups" or "approve_video" or "reject_video" or "rerender" or "retry" or "regenerate_ai_shot" &&
+            !(publishesWithoutVideo && request.Action is "resume_mockups" or "retry"))
             return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run has no video step."));
-        if (request.Action == "cancel")
+        if (publishesWithoutVideo && request.Action == "retry" &&
+            !checkpoints.Any(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed"))
+            return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
+        // Push to Printify runs beside the video, so a retry takes it again on its own, whatever the video is doing;
+        // when another step failed too, the retry goes on below with that one.
+        var printifyRetry = request.Action == "retry" && run.Status != "cancelled"
+            ? checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep && x.Status == "failed")
+            : null;
+        var onlyPrintify = printifyRetry is not null && !checkpoints.Any(x => x.Status == "failed" && x != printifyRetry);
+        if (printifyRetry is not null)
+        {
+            printifyRetry.Status = "pending"; printifyRetry.Attempt++; printifyRetry.ErrorMessage = null; printifyRetry.Stage = null;
+        }
+        if (onlyPrintify)
+        {
+            // The video part may still be working or waiting for review: only a run that failed because of Printify
+            // goes back to running.
+            if (run.Status == "failed") { run.Status = "running"; run.ErrorMessage = null; }
+            await runtime.AdvanceAsync(run, ct);
+        }
+        else if (request.Action == "cancel")
         {
             if (run.Status is "completed" or "cancelled") return Result.Failure<RunResponse>(Error.Conflict("RunFinished", "Run is already finished."));
             run.Status = "cancelled"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
             foreach (var n in checkpoints.Where(x => x.Status != "succeeded")) n.Status = "cancelled";
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && (x.Status == "queued" || x.Status == "leased"), ct)) { job.Status = "cancelled"; job.LeaseToken = null; }
+            await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct);
+        }
+        else if (request.Action == "resume")
+        {
+            var resumed = await ResumeAsync(run, checkpoints, request, ct);
+            if (resumed.IsFailure) return Result.Failure<RunResponse>(resumed.Error);
         }
         else if (request.Action == "resume_mockups")
         {
@@ -140,12 +171,16 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var gate = checkpoints.Single(x => x.NodeType == "approval-gate");
             var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
             var config = WorkflowJson.Config<MockupConfig>(definition.Nodes.Single(x => x.Type == "apply-mockup"));
-            var generate = checkpoints.Single(x => x.NodeType == "generate-video");
-            var videoConfig = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+            // Without a video the approved mock-ups go to the publish steps, and nothing here is paid for.
+            var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
+            var videoConfig = generate is null ? null : WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
             var approved = await runtime.ApprovedAssetsAsync(run, config, videoConfig, ct);
             if (approved.Count == 0) return Result.Failure<RunResponse>(Error.Conflict("WaitingForInput", "Select and approve at least one current mockup or keyframe."));
-            var consent = await quotes.VerifyAsync(run, videoConfig, request.AiShotQuoteToken, false, null, ct);
-            if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
+            if (videoConfig is not null)
+            {
+                var consent = await quotes.VerifyAsync(run, videoConfig, request.AiShotQuoteToken, false, null, ct);
+                if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
+            }
             gate.Status = "succeeded"; gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision) });
             run.Status = "running"; await runtime.AdvanceAsync(run, ct);
         }
@@ -212,6 +247,14 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     return Result.Failure<RunResponse>(Error.Conflict("SceneNotStored", "The selected scene has no stored clip to regenerate."));
                 }
             }
+            // A child run of a batch makes one design's video: settings sent from the canvas name the preview
+            // product's images, so they are rewritten to this design's before anything else reads them.
+            if (request.Config != null && run.RunGroupId != null && targetResolver != null)
+            {
+                var resolved = await targetResolver.ResolveForRunAsync(run, request.Config, ct);
+                if (resolved.Error != null) return Result.Failure<RunResponse>(Error.Validation(resolved.Error));
+                request = request with { Config = resolved.Config };
+            }
             if (request.Config != null)
             {
                 if (!capabilities.IsModeEnabled(request.Config.Mode)) return Result.Failure<RunResponse>(new("UnsupportedVideoMode", "This video mode is unavailable.", ErrorType.Validation));
@@ -227,7 +270,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     return Result.Failure<RunResponse>(Error.Conflict("StoryboardChanged", "Storyboard changed. Preview again before rendering."));
             }
             var selectedConfig = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-            var failedExportOnly = request.Action == "retry" && checkpoints.Single(x => x.NodeType == "export-zip").Status == "failed";
+            // Export ZIP is optional: a run without it has only the video to make again.
+            var export = checkpoints.SingleOrDefault(x => x.NodeType == "export-zip");
+            var failedExportOnly = request.Action == "retry" && export is { Status: "failed" };
             if (!failedExportOnly)
             {
                 if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
@@ -239,8 +284,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
                 if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             }
-            var failedExport = checkpoints.Single(x => x.NodeType == "export-zip");
-            if (failedExportOnly) failedExport.Status = "pending";
+            if (failedExportOnly) export!.Status = "pending";
             else
             {
                 // A retry sends the settings on the canvas too. Only settings that differ from the run's make a new
@@ -270,7 +314,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     }
                     else if (previousJob is not null) previousJob.Payload = "{}";
                 }
-                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
+                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending";
+                if (export is not null) export.Status = "pending";
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";
             run.Status = "running"; run.ErrorMessage = null; if (reopenCancelledScene) run.CompletedAt = null;
@@ -280,30 +325,85 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         run.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (sceneNotifier != null) await sceneNotifier.ChangedAsync(run.Id, ct);
+        if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
         return Result.Success(await MapAsync(run, ct));
     }
     private async Task<RunResponse> MapAsync(WorkflowRun run, CancellationToken ct) => new(run.Id, run.WorkflowId, run.ProductId, run.Status,
         run.Revision, run.WorkflowRevision, run.CreatedAt, run.ErrorMessage,
-        (await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct)).Select(x => new NodeRunResponse(x.Id, x.NodeId, x.NodeType, x.Status, x.Attempt, x.Stage, x.Progress, x.ErrorMessage, JsonSerializer.Deserialize<JsonElement>(x.OutputSnapshot))).ToArray());
+        (await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct)).Select(x => new NodeRunResponse(x.Id, x.NodeId, x.NodeType, x.Status, x.Attempt, x.Stage, x.Progress, x.ErrorMessage, JsonSerializer.Deserialize<JsonElement>(x.OutputSnapshot))).ToArray(),
+        run.RunGroupId, run.ArtworkGroupKey);
+
+    private Task<Result> CheckVideoPlanAsync(Guid userId, GenerateVideoConfig config, CancellationToken ct) =>
+        VideoPlanChecks.CheckAsync(entitlements, userId, config, 1, ct);
+
     /// <summary>
-    /// Checks a video configuration against the Seller's plan: AI video and landscape output are
-    /// plan features, and standard renders count toward Free's or the trial's allowance and the
-    /// daily safety cap.
+    /// Goes on with a stopped run from the step it stopped at, keeping what it had made: finished steps stay finished and
+    /// stored AI clips are used again. Settings sent with it (a scene made longer...) replace the video's: only the
+    /// clips they change are made again. Nothing asks for a second confirmation of the cost.
     /// </summary>
-    private async Task<Result> CheckVideoPlanAsync(Guid userId, GenerateVideoConfig config, CancellationToken ct)
+    private async Task<Result> ResumeAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, RunActionRequest request, CancellationToken ct)
     {
-        if (config.Mode == "ai_shot") return await entitlements.RequireFeatureAsync(userId, PlanFeatures.AiVideo, ct);
-        var standard = await entitlements.RequireFeatureAsync(userId, PlanFeatures.StandardVideo, ct);
-        if (standard.IsFailure) return standard;
-        if (config.OutputFormat == "landscape")
+        if (run.Status != "cancelled")
+            return Result.Failure(Error.Conflict("InvalidCheckpoint", "Only a stopped run can be resumed."));
+        // A stopped run is not counted against the plan (see UsageAllowanceService): going on with it counts again,
+        // unless another run of its batch run still counts for the full run.
+        var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
+        if (generate is not null && !await GroupStillCountsAsync(run, ct))
         {
-            var format = await entitlements.RequireFeatureAsync(userId, PlanFeatures.AllVideoFormats, ct);
-            if (format.IsFailure) return format;
+            var fullRun = await entitlements.RequireAllowanceAsync(run.UserId, UsageAllowances.FullRuns, cancellationToken: ct);
+            if (fullRun.IsFailure) return fullRun;
         }
-        var allowance = await entitlements.RequireAllowanceAsync(userId, UsageAllowances.Videos, cancellationToken: ct);
-        if (allowance.IsFailure) return allowance;
-        return await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyVideoCap, cancellationToken: ct);
+        var now = time.GetUtcNow().UtcDateTime;
+        if (generate is not null)
+        {
+            var config = request.Config;
+            // A run of a batch makes one design's video: settings sent from the canvas name the preview product's images.
+            if (config != null && run.RunGroupId != null && targetResolver != null)
+            {
+                var resolved = await targetResolver.ResolveForRunAsync(run, config, ct);
+                if (resolved.Error != null) return Result.Failure(Error.Validation(resolved.Error));
+                config = resolved.Config;
+            }
+            if (config != null)
+            {
+                if (!capabilities.IsModeEnabled(config.Mode)) return Result.Failure(new("UnsupportedVideoMode", "This video mode is unavailable.", ErrorType.Validation));
+                var validation = await validator.ValidateAsync(config, ct);
+                if (!validation.IsValid) return Result.Failure(Error.Validation(string.Join(" ", validation.Errors.Select(x => x.ErrorMessage))));
+            }
+            var current = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+            var changed = config != null && WorkflowJson.Write(config) != WorkflowJson.Write(current);
+            // A video that was finished before the stop is kept unless its settings changed.
+            if (generate.Status != "succeeded" || changed)
+            {
+                var selected = config ?? current;
+                var videoCheck = await CheckVideoPlanAsync(run.UserId, selected, ct);
+                if (videoCheck.IsFailure) return videoCheck;
+                var consent = await quotes.VerifyAsync(run, selected, request.AiShotQuoteToken, false, null, ct);
+                if (consent.IsFailure) return consent;
+                if (changed)
+                {
+                    generate.InputSnapshot = WorkflowJson.Write(selected);
+                    generate.Attempt++;
+                }
+                generate.Status = "cancelled"; generate.OutputSnapshot = "{}";
+                foreach (var step in checkpoints.Where(x => x.NodeType is "review-video" or "export-zip")) step.Status = "cancelled";
+            }
+        }
+        WorkflowRunStops.Reopen(run, checkpoints, now);
+        if (run.RunGroupId is Guid groupId && await state.LockRunGroupAsync(groupId, ct) is { Status: "cancelled" } group)
+        {
+            // Going on with one design's run brings its stopped batch run back to running.
+            group.Status = "running"; group.CompletedAt = null; group.Revision++; group.UpdatedAt = now;
+        }
+        run.Status = "running";
+        await runtime.AdvanceAsync(run, ct);
+        return Result.Success();
     }
+
+    /// <summary>Whether another run of the same batch run is still counted as its full run (not stopped or failed).</summary>
+    private async Task<bool> GroupStillCountsAsync(WorkflowRun run, CancellationToken ct) =>
+        run.RunGroupId is Guid groupId &&
+        (await runs.FindAsync(x => x.RunGroupId == groupId && x.Id != run.Id && x.Status != "cancelled" && x.Status != "failed", ct)).Count > 0;
 
     private static Error Missing() => Error.NotFound("WorkflowRunNotFound", "Workflow run not found.");
     private static Error Stale() => Error.Conflict("StaleRevision", "The workflow or video changed. Reload before continuing.");

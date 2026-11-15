@@ -119,6 +119,23 @@ public sealed class ShopServiceTests
     }
 
     [TestMethod]
+    public async Task CompleteEtsyConnectionAsync_AShopAnotherAccountConnected_IsRefused()
+    {
+        var service = Create();
+        Pending("s1");
+        rows.Add(new EtsyIntegration { Id = Guid.NewGuid(), UserId = Guid.NewGuid(), EtsyShopId = "12345", ShopName = "WildFigStudio", IsActive = true });
+        etsy.Setup(x => x.ExchangeCodeAsync("code", "verifier", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new EtsyTokenSet("access", "refresh", clock.GetUtcNow().AddHours(1)));
+        etsy.Setup(x => x.GetOwnShopIdAsync("access", It.IsAny<CancellationToken>())).ReturnsAsync("12345");
+
+        var result = await service.CompleteEtsyConnectionAsync("code", "s1", null);
+
+        result.Outcome.Should().Be(EtsyConnectionOutcomes.ShopTaken);
+        result.RedirectUrl.Should().EndWith("?etsy=shop_taken");
+        rows.Should().ContainSingle().Which.UserId.Should().NotBe(userId);
+    }
+
+    [TestMethod]
     public async Task CompleteEtsyConnectionAsync_StoresEncryptedTokensAndTheReconnectDeadline()
     {
         var service = Create();

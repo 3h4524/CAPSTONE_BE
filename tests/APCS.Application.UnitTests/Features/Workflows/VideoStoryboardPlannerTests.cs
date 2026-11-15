@@ -131,6 +131,28 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
+    public void Plan_RotatingShowcasePack_TurnsEverySceneAlternatingTheDirection()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var asset = fixture.AddAsset(product);
+        // The scenes of the "standard_rotate_showcase" video pack (migrations/*_standard_rotate_showcase_video_pack.sql).
+        AiVideoSceneOptions Scene(int seconds, string motion, bool first) =>
+            new(MockupId: asset.Id, DurationSeconds: seconds, Mode: "standard", StandardMotionPreset: motion,
+                TransitionIn: first ? "cut" : "fade", TransitionDurationFrames: first ? 0 : 10);
+        var config = new GenerateVideoConfig(Mode: "standard", Template: "standard_rotate_showcase", TemplateVersion: 1, DurationSeconds: 14,
+            AiScenes: [Scene(4, "rotate_zoom_cw", true), Scene(3, "rotate_ccw", false), Scene(3, "rotate_cw", false), Scene(4, "rotate_zoom_ccw", false)]);
+
+        var result = _planner.Plan(product, [asset], config);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Mode.Should().Be("standard");
+        result.Value.Scenes.Select(scene => scene.Motion).Should().Equal("rotate_zoom_cw", "rotate_ccw", "rotate_cw", "rotate_zoom_ccw");
+        result.Value.Scenes.Select(scene => Math.Sign(scene.EndRotation - scene.StartRotation)).Should().Equal(1, -1, 1, -1);
+        result.Value.Scenes.Select(scene => scene.EndScale > scene.StartScale).Should().Equal(true, false, false, true);
+    }
+
+    [TestMethod]
     public void Plan_VersionTwoSingleUnmarkedAsset_PreservesTheSelectedCameraMotion()
     {
         var fixture = new WorkflowTestData();
@@ -645,15 +667,14 @@ public sealed class VideoStoryboardPlannerTests
     [DataRow("Hero", false)]
     [DataRow("Lifestyle", true)]
     [DataRow("Hero", true)]
-    public void Plan_LifestyleConcept_NeedsImageRightsWhateverTheImageRole(string role, bool rights)
+    public void Plan_LifestyleConcept_NeedsNoImageRightsConfirmation(string role, bool rights)
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product, role);
         var result = _planner.Plan(product, [source], new(Mode: "ai_shot",
             AiShotOptions: new(Concept: "lifestyle_motion", MockupId: source.Id, RightsConfirmed: rights)));
-        result.IsSuccess.Should().Be(rights);
-        if (!rights) result.Error.Message.Should().Contain("image-rights confirmation");
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
     }
 
     [TestMethod]

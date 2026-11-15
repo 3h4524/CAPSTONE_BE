@@ -1,5 +1,6 @@
 using APCS.Application.Features.Assistant.Dtos.Request;
 using APCS.Application.Features.Assistant.Tools.ClientActions;
+using APCS.Application.Features.Workflows;
 using FluentAssertions;
 
 namespace APCS.Application.UnitTests.Features.Assistant.Tools;
@@ -7,10 +8,8 @@ namespace APCS.Application.UnitTests.Features.Assistant.Tools;
 [TestClass]
 public sealed class WorkflowCanvasPatchSimulatorTests
 {
-    private static readonly IReadOnlySet<string> Allowed = new HashSet<string>
-    {
-        "product-input", "prompt-synthesis", "design-image", "design-approval", "apply-mockup", "approval-gate", "generate-video", "generate-listing"
-    };
+    private static readonly IReadOnlySet<string> Allowed =
+        new WorkflowCapabilityRegistry().Get().Nodes.Where(node => node.Enabled).Select(node => node.Type).ToHashSet();
 
     private readonly WorkflowCanvasPatchSimulator simulator = new();
 
@@ -49,7 +48,7 @@ public sealed class WorkflowCanvasPatchSimulatorTests
 
     [TestMethod]
     public void Simulate_TypeNotEnabled_IsRejected() =>
-        Run(Op("add_node", "n1", "publish-etsy")).Errors.Should().ContainSingle().Which.Should().Contain("not available");
+        Run(Op("add_node", "n1", "upscale-image")).Errors.Should().ContainSingle().Which.Should().Contain("not available");
 
     [TestMethod]
     public void Simulate_ConnectToSelf_IsRejected() =>
@@ -280,7 +279,7 @@ public sealed class WorkflowCanvasPatchSimulatorTests
     {
         var canvas = PipelineCanvas(("e", "export-zip"));
 
-        simulator.Simulate(canvas, [Op("update_config", nodeId: "e", configJson: """{"x":1}""")], new HashSet<string> { "export-zip" })
+        simulator.Simulate(canvas, [Op("update_config", nodeId: "e", configJson: """{"x":1}""")], Allowed)
             .Errors.Should().ContainSingle().Which.Should().Contain("no settings");
     }
 
@@ -300,5 +299,96 @@ public sealed class WorkflowCanvasPatchSimulatorTests
         var canvas = PipelineCanvas(("p", "prompt-synthesis"));
 
         simulator.Simulate(canvas, [Op("update_config", nodeId: "p", configJson: """{"stylePresetId":""}""")], Allowed).Errors.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Simulate_AddPublishToEtsyAfterExportZip_IsAllowed()
+    {
+        var canvas = PipelineCanvas(("z", "export-zip"));
+
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-etsy", after: "z"), Op("connect", source: "z", target: "p")], Allowed);
+
+        result.Errors.Should().BeEmpty();
+        result.Operations[0].Label.Should().Be("Publish to Etsy");
+    }
+
+    [TestMethod]
+    [DataRow("apply-mockup")]
+    [DataRow("approval-gate")]
+    public void Simulate_AddPushToPrintifyOffTheMockupSteps_IsAllowed(string sourceType)
+    {
+        var canvas = PipelineCanvas(("m", sourceType), ("v", "generate-video"));
+
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-printify", after: "m"), Op("connect", source: "m", target: "p")], Allowed);
+
+        result.Errors.Should().BeEmpty();
+        result.Operations[0].Label.Should().Be("Push to Printify");
+    }
+
+    // Printify takes the design and its mock-ups, not the video.
+    [TestMethod]
+    public void Simulate_PushToPrintifyAfterExportZip_IsRefused()
+    {
+        var canvas = PipelineCanvas(("z", "export-zip"));
+
+        var result = simulator.Simulate(canvas, [Op("add_node", "p", "publish-printify", after: "z"), Op("connect", source: "z", target: "p")], Allowed);
+
+        result.Errors.Should().ContainSingle().Which.Should().Contain("after Apply mock-up or Mockup Approval");
+    }
+
+    [TestMethod]
+    public void Simulate_StepAfterPushToPrintify_IsRefused()
+    {
+        var canvas = PipelineCanvas(("g", "approval-gate"), ("p", "publish-printify"), ("e", "publish-etsy"));
+
+        var result = simulator.Simulate(canvas, [Op("connect", source: "p", target: "e")], Allowed);
+
+        result.Errors.Should().ContainSingle().Which.Should().Contain("ends its branch");
+    }
+
+    [TestMethod]
+    public void Simulate_AddNodeWithConfig_ValidatesExpandsAndCarriesTheConfig()
+    {
+        var result = Run(Op("add_node", "v", "generate-video", configJson: """{"outputFormat":"portrait","standardOptions.transition":"fade"}"""));
+
+        result.Errors.Should().BeEmpty();
+        var config = result.Result.Nodes.Single(node => node.Id == "v").Config;
+        config.GetProperty("outputFormat").GetString().Should().Be("portrait");
+        config.GetProperty("standardOptions").GetProperty("transition").GetString().Should().Be("fade");
+        var sent = result.Operations.Single().Config!.Value;
+        sent.GetProperty("outputFormat").GetString().Should().Be("portrait");
+        sent.GetProperty("standardOptions").GetProperty("transition").GetString().Should().Be("fade");
+    }
+
+    [TestMethod]
+    public void Simulate_AddNodeWithoutConfig_SendsNoConfig() =>
+        Run(Op("add_node", "n1", "design-image")).Operations.Single().Config.Should().BeNull();
+
+    [TestMethod]
+    [DataRow("""{"quality":"high"}""", "'quality' is not a setting")]
+    [DataRow("""{"variants":9}""", "variants")]
+    [DataRow("""{"imageProvider":"midjourney"}""", "imageProvider")]
+    [DataRow("[1,2]", "must be a JSON object")]
+    [DataRow("not json", "must be a JSON object")]
+    public void Simulate_AddNodeWithInvalidConfig_IsRejectedLikeUpdateConfig(string configJson, string expected)
+    {
+        var result = Run(Op("add_node", "n1", "design-image", configJson: configJson));
+
+        result.Errors.Should().ContainSingle().Which.Should().StartWith("add_node:").And.Contain(expected);
+        result.Result.Nodes.Should().NotContain(node => node.Id == "n1");
+    }
+
+    [TestMethod]
+    public void Simulate_AddNodeWithConfigLargerThanLimit_IsRejected() =>
+        Run(Op("add_node", "n1", "design-image", configJson: "{\"v\":\"" + new string('x', 8200) + "\"}")).Errors.Should().ContainSingle().Which.Should().Contain("too large");
+
+    [TestMethod]
+    public void Snapshot_ReturnsTheCanvasAsADefinitionWithoutChanges()
+    {
+        var definition = simulator.Snapshot(Canvas());
+
+        definition.Nodes.Select(node => node.Id).Should().Equal("a", "b");
+        definition.Edges.Should().ContainSingle().Which.Should().Match<WorkflowEdge>(edge => edge.Source == "a" && edge.Target == "b");
+        definition.Nodes[0].Config.GetProperty("keep").GetInt32().Should().Be(1);
     }
 }

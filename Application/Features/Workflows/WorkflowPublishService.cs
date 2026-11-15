@@ -39,7 +39,10 @@ public sealed class WorkflowPublishService(
     IPrintifyService printify,
     IEtsyPublishingService etsy,
     TimeProvider time,
-    ILogger<WorkflowPublishService> logger) : IWorkflowPublishService
+    ILogger<WorkflowPublishService> logger,
+    IListingPace? pace = null,
+    IPrintifyMockupMatcher? matcher = null,
+    IWorkflowRunNotifier? runNotifier = null) : IWorkflowPublishService
 {
     /// <summary>How often a product Printify is publishing is checked.</summary>
     internal static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(20);
@@ -55,25 +58,42 @@ public sealed class WorkflowPublishService(
 
     public async Task<IReadOnlyList<Guid>> UnfinishedAsync(CancellationToken cancellationToken) =>
         await nodes.Query()
-            .Where(node => (node.NodeType == "publish-printify" || node.NodeType == "publish-etsy") && node.Status == "running"
-                && node.WorkflowRun.Status == "running")
+            .Where(node => node.Status == "running"
+                && (node.NodeType == WorkflowCapabilityRegistry.PrintifyStep
+                    ? node.WorkflowRun.Status != "cancelled" && node.WorkflowRun.Status != "completed"
+                    : node.NodeType == "publish-etsy" && node.WorkflowRun.Status == "running"))
             .Select(node => node.Id)
             .ToListAsync(cancellationToken);
+
+    /// <summary>
+    /// Whether a step of a run in this state is still worked on. Push to Printify runs beside the video, so it goes on
+    /// while the video waits for review or has failed; Publish to Etsy follows the video and needs the run running.
+    /// </summary>
+    private static bool Works(string nodeType, string runStatus) => nodeType == WorkflowCapabilityRegistry.PrintifyStep
+        ? runStatus is not ("cancelled" or "completed")
+        : runStatus == "running";
 
     public async Task<TimeSpan?> ProcessAsync(Guid nodeRunId, CancellationToken cancellationToken)
     {
         var snapshot = await nodes.Query().Where(node => node.Id == nodeRunId)
-            .Select(node => new { node.NodeType, node.Status, node.InputSnapshot, node.OutputSnapshot, node.WorkflowRunId, node.Attempt, RunStatus = node.WorkflowRun.Status, node.WorkflowRun.ProductId })
+            .Select(node => new { node.NodeType, node.Status, node.InputSnapshot, node.OutputSnapshot, node.WorkflowRunId, node.Attempt, RunStatus = node.WorkflowRun.Status, node.WorkflowRun.ProductId, node.WorkflowRun.DefinitionSnapshot, node.WorkflowRun.Product.ProductType, node.WorkflowRun.UserId })
             .SingleOrDefaultAsync(cancellationToken);
-        if (snapshot is not { Status: "running", RunStatus: "running" } || !WorkflowCapabilityRegistry.PublishSteps.Contains(snapshot.NodeType))
+        if (snapshot is not { Status: "running" } || !WorkflowCapabilityRegistry.PublishSteps.Contains(snapshot.NodeType)
+            || !Works(snapshot.NodeType, snapshot.RunStatus))
             return null;
 
         var current = ReadState(snapshot.OutputSnapshot);
         Outcome outcome;
         try
         {
+            // A new listing waits its turn instead of failing: the step carries on by itself once the shop may list again.
+            // A product only made on Printify adds no Etsy listing, so it never waits for the shop's pace.
+            if (current.Stage != "publishing" && pace is not null && AddsEtsyListing(snapshot.NodeType, snapshot.InputSnapshot)
+                && await pace.CheckAsync(snapshot.UserId, cancellationToken) is { Allowed: false, RetryAtUtc: { } retryAt })
+                outcome = Outcome.Wait(current, retryAt);
+            else
             outcome = snapshot.NodeType == "publish-printify"
-                ? await PrintifyAsync(snapshot.ProductId, snapshot.InputSnapshot, current, cancellationToken)
+                ? await PrintifyAsync(snapshot.ProductId, snapshot.InputSnapshot, Source(snapshot.DefinitionSnapshot), snapshot.ProductType, current, cancellationToken)
                 : await EtsyAsync(snapshot.ProductId, snapshot.InputSnapshot, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -88,7 +108,10 @@ public sealed class WorkflowPublishService(
         // The run may have been cancelled, or the step retried, while Printify or Etsy was answering.
         var fresh = await nodes.Query().Where(row => row.Id == nodeRunId).Select(row => new { row.Status, row.Attempt, RunStatus = row.WorkflowRun.Status })
             .SingleOrDefaultAsync(cancellationToken);
-        if (run is null || node is null || fresh is not { Status: "running", RunStatus: "running" } || fresh.Attempt != snapshot.Attempt)
+        // Stopped while Printify or Etsy was already making it: the product exists, so the step says so (the run stays stopped).
+        var madeAnyway = outcome.Kind == OutcomeKind.Done && fresh is { Status: "cancelled" };
+        if (run is null || node is null || fresh is null || fresh.Attempt != snapshot.Attempt
+            || (!madeAnyway && (fresh.Status != "running" || !Works(snapshot.NodeType, fresh.RunStatus))))
             return null;
 
         var now = time.GetUtcNow().UtcDateTime;
@@ -99,11 +122,23 @@ public sealed class WorkflowPublishService(
                 node.OutputSnapshot = WorkflowJson.Write(outcome.State);
                 node.Status = "succeeded"; node.Stage = "Published"; node.Progress = 100; node.ErrorMessage = null;
                 run.Revision++; run.UpdatedAt = now;
-                await runtime.AdvanceAsync(run, cancellationToken);
+                // Push to Printify ends its own branch: the run goes on only if it was waiting for it to finish.
+                if (run.Status == "running") await runtime.AdvanceAsync(run, cancellationToken);
+                break;
+            case OutcomeKind.Failed when snapshot.NodeType == WorkflowCapabilityRegistry.PrintifyStep:
+                // Printify failing does not stop the video: only its step fails, and the run reports it once the video
+                // part is done too (WorkflowRuntime.AdvanceAsync).
+                node.Status = "failed"; node.Stage = null; node.Progress = 0; node.ErrorMessage = outcome.Message;
+                run.Revision++; run.UpdatedAt = now;
+                if (run.Status == "running") await runtime.AdvanceAsync(run, cancellationToken);
                 break;
             case OutcomeKind.Failed:
                 await runtime.FailAsync(run, node.Id, outcome.Message!, cancellationToken);
                 run.UpdatedAt = now;
+                break;
+            case OutcomeKind.Waiting:
+                node.Stage = $"Waiting until {outcome.RetryAtUtc:HH:mm} UTC: the shop's listing pace"; node.Progress = 0;
+                run.Revision++; run.UpdatedAt = now;
                 break;
             default:
                 node.OutputSnapshot = WorkflowJson.Write(outcome.State);
@@ -113,16 +148,69 @@ public sealed class WorkflowPublishService(
         }
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return outcome.Kind == OutcomeKind.Pending ? PollEvery : null;
+        // The pages following the run, or its batch, read it again: the step ran in the background, beside the video.
+        if (runNotifier is not null) await runNotifier.RunChangedAsync(run, cancellationToken);
+        return outcome.Kind switch
+        {
+            OutcomeKind.Pending => PollEvery,
+            OutcomeKind.Waiting => outcome.RetryAtUtc!.Value - now > PollEvery ? outcome.RetryAtUtc.Value - now : PollEvery,
+            _ => null,
+        };
     }
 
-    private async Task<Outcome> PrintifyAsync(Guid productId, string input, PublishNodeState current, CancellationToken cancellationToken)
+    /// <summary>Whether the step adds a listing to the seller's Etsy shop: Publish to Etsy, or Push to Printify publishing to Etsy.</summary>
+    internal static bool AddsEtsyListing(string nodeType, string input)
     {
-        var config = WorkflowJson.Read<PrintifyPublishConfig>(input);
-        if (config.Problem() is { } problem)
-            return Outcome.Fail(problem);
+        if (nodeType != WorkflowCapabilityRegistry.PrintifyStep) return true;
+        try { return WorkflowJson.Read<PrintifyPublishConfig>(input).PublishToEtsy != false; }
+        catch (System.Text.Json.JsonException) { return true; }
+    }
+
+    /// <summary>The Printify products set on Apply mock-up, or null when the definition cannot be read.</summary>
+    private static MockupPrintifyConfig? Source(string definition)
+    {
+        try { return MockupPrintifyConfig.From(WorkflowJson.Read<WorkflowDefinition>(definition)); }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    private async Task<Outcome> PrintifyAsync(Guid productId, string input, MockupPrintifyConfig? source, string productType,
+        PublishNodeState current, CancellationToken cancellationToken)
+    {
+        // Already created and publishing: only follow it, without reading the catalog again.
         if (current is { Stage: "publishing", PrintifyProductId: { } publishingId })
             return await FollowAsync(productId, publishingId, current, cancellationToken);
+        var config = WorkflowJson.Read<PrintifyPublishConfig>(input);
+        var fromMockup = false;
+        string? madeAs = null;
+        IReadOnlyList<string> matchWarnings = [];
+        if (source is { HasProducts: true })
+        {
+            // The mock-ups show this garment, so Printify makes exactly it: the listing and the item shipped match.
+            if (source.SetupFor(productType) is not { } setup)
+                return Outcome.Fail($"Apply mock-up has no Printify product for {productType}; choose a linked template there, then retry this step.");
+            config = config.WithSetup(setup);
+            fromMockup = true;
+        }
+        else if (config.FromMockups && matcher is not null)
+        {
+            // System templates are named after the Printify product and their colors are mapped to Printify's names,
+            // so the approved mock-ups say what Printify makes; the seller's own templates leave it to this node.
+            var match = await matcher.MatchAsync(productId, config, cancellationToken);
+            if (match.IsFailure)
+                return Outcome.Fail($"Push to Printify: {match.Error.Message}");
+            if (match.Value is { } matched)
+            {
+                config = config.WithSetup(matched.Setup);
+                fromMockup = true;
+                madeAs = matched.Summary;
+                matchWarnings = matched.Warnings;
+            }
+            else if (config.BlueprintId is not > 0)
+                return Outcome.Fail("Push to Printify: the approved mock-ups use your own templates, so the Printify product cannot be read from them. "
+                    + "Choose the product, provider, colors and sizes on Push to Printify, then retry this step.");
+        }
+        if (config.Problem() is { } problem)
+            return Outcome.Fail(problem);
 
         var draft = await printify.GetDraftAsync(productId, cancellationToken);
         if (draft.IsFailure)
@@ -147,15 +235,19 @@ public sealed class WorkflowPublishService(
         if (variantIds.Length > Shops.Validators.CreatePrintifyProductValidator.MaxVariants)
             return Outcome.Fail($"The chosen colors and sizes make {variantIds.Length} variants; Etsy allows {Shops.Validators.CreatePrintifyProductValidator.MaxVariants}.");
 
+        // Set on Apply mock-up, the print follows the mock-ups: where and how large the design sits on the garment's front,
+        // and on each other side (back, sleeves) the approved mock-ups show it on.
+        var placementMockup = fromMockup ? draft.Value.Mockups.FirstOrDefault() : null;
         var created = await printify.CreateProductAsync(productId, new CreatePrintifyProductRequestDto(
             design.Id, config.BlueprintId.Value, config.BlueprintTitle, config.PrintProviderId.Value, config.PrintProviderTitle,
-            variantIds, draft.Value.Title, draft.Value.Description, draft.Value.Tags, PrintifyService.DefaultPrice), cancellationToken);
+            variantIds, draft.Value.Title, draft.Value.Description, draft.Value.Tags, PrintifyService.DefaultPrice, Position: config.Position,
+            PlacementMockupId: placementMockup?.Id, PrintMockupSides: fromMockup), cancellationToken);
         if (created.IsFailure)
             return Outcome.Fail(created.Error.Message);
         var product = created.Value;
-        var warnings = product.Warnings.ToList();
+        var warnings = matchWarnings.Concat(product.Warnings).ToList();
         if (config.PublishToEtsy == false)
-            return Outcome.Done(new PublishNodeState("done", product.PrintifyProductId, Warnings: warnings));
+            return Outcome.Done(new PublishNodeState("done", product.PrintifyProductId, Warnings: warnings, MadeAs: madeAs));
 
         // Each variant is priced against what Printify charges for it, so larger sizes cost the buyer more.
         var profit = config.TargetProfit ?? PrintifyPublishConfig.DefaultProfit;
@@ -168,8 +260,10 @@ public sealed class WorkflowPublishService(
             return Outcome.Fail(published.Error.Message);
 
         var media = config.AddMockups == false ? [] : draft.Value.Mockups.Take(AttachedMockups).Select(mockup => mockup.Id).ToArray();
+        var leadPhoto = config.LeadPhoto ?? (fromMockup ? "printify" : "apcs");
         var next = new PublishNodeState("publishing", product.PrintifyProductId, time.GetUtcNow().UtcDateTime,
-            Warnings: warnings, MockupIds: media, IncludeVideo: config.AddMockups != false && draft.Value.Video is not null);
+            Warnings: warnings, MockupIds: media,
+            MockupsAfterPrintify: string.Equals(leadPhoto, "printify", StringComparison.OrdinalIgnoreCase), MadeAs: madeAs);
         return await FollowAsync(productId, product.PrintifyProductId, next, cancellationToken);
     }
 
@@ -177,7 +271,7 @@ public sealed class WorkflowPublishService(
     private async Task<Outcome> FollowAsync(Guid productId, string printifyProductId, PublishNodeState current, CancellationToken cancellationToken)
     {
         var synced = await printify.SyncAsync(productId, printifyProductId,
-            new SyncPrintifyProductRequestDto(current.MockupIds ?? [], current.IncludeVideo), cancellationToken);
+            new SyncPrintifyProductRequestDto(current.MockupIds ?? [], current.MockupsAfterPrintify), cancellationToken);
         if (synced.IsFailure)
             return Outcome.Fail(synced.Error.Message);
         var product = synced.Value;
@@ -207,9 +301,15 @@ public sealed class WorkflowPublishService(
             return Outcome.Fail(content.ConnectionStatus == ShopConnectionStatuses.Unavailable
                 ? "Etsy is not answering right now. Retry this step in a moment."
                 : "Connect your Etsy shop on the Shop page, then retry this step.");
-        var mockupIds = content.Mockups.Take(10).Select(mockup => mockup.Id).ToArray();
+        // A physical listing opens on a photo that shows the item as it is; photos made with AI follow it.
+        var photos = config.Type == "physical" && content.Mockups.FirstOrDefault(mockup => !mockup.AiMade) is { } real
+            ? content.Mockups.Where(mockup => mockup.Id != real.Id).Prepend(real)
+            : content.Mockups;
+        var mockupIds = photos.Take(10).Select(mockup => mockup.Id).ToArray();
         if (mockupIds.Length == 0)
             return Outcome.Fail("Publish to Etsy needs at least one approved mock-up for the listing photos.");
+        if (config.Type == "physical" && content.Mockups.All(mockup => mockup.AiMade))
+            return Outcome.Fail($"Publish to Etsy: {ListingPhotos.NoRealPhoto}");
         var designIds = config.Type == "download" ? content.Designs.Take(Shops.Validators.PublishEtsyDraftValidator.MaxFiles).Select(design => design.Id).ToArray() : [];
         if (config.Type == "download" && designIds.Length == 0)
             return Outcome.Fail("A digital listing needs an approved design for buyers to download.");
@@ -217,7 +317,7 @@ public sealed class WorkflowPublishService(
         var result = await etsy.PublishDraftAsync(productId, new PublishEtsyDraftRequestDto(
             content.Title, content.Description, content.Tags, config.Price!.Value, config.Quantity ?? 999, config.TaxonomyId!.Value, config.TaxonomyPath,
             config.Type, config.WhoMade ?? "i_did", config.WhenMade ?? "made_to_order",
-            config.Type == "physical" ? config.ShippingProfileId : null, null, [], mockupIds,
+            config.Type == "physical" ? config.ShippingProfileId : null, null, config.Partners, mockupIds,
             config.IncludeVideo != false && content.Video is not null, designIds), cancellationToken);
         if (result.IsFailure)
             return Outcome.Fail(result.Error.Message);
@@ -238,12 +338,14 @@ public sealed class WorkflowPublishService(
         }
     }
 
-    private enum OutcomeKind { Done, Pending, Failed }
+    private enum OutcomeKind { Done, Pending, Failed, Waiting }
 
-    private sealed record Outcome(OutcomeKind Kind, PublishNodeState? State, string? Message)
+    private sealed record Outcome(OutcomeKind Kind, PublishNodeState? State, string? Message, DateTime? RetryAtUtc = null)
     {
         public static Outcome Done(PublishNodeState state) => new(OutcomeKind.Done, state, null);
         public static Outcome Pending(PublishNodeState state) => new(OutcomeKind.Pending, state, null);
         public static Outcome Fail(string message) => new(OutcomeKind.Failed, null, message);
+        /// <summary>Nothing was sent: the shop reached its listing pace, so the step tries again at <paramref name="retryAt"/>.</summary>
+        public static Outcome Wait(PublishNodeState state, DateTime retryAt) => new(OutcomeKind.Waiting, state, null, retryAt);
     }
 }

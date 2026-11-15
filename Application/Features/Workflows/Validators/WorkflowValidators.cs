@@ -5,6 +5,24 @@ namespace APCS.Application.Features.Workflows.Validators;
 
 public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVideoConfig>
 {
+    private const string BatchKey = "batch";
+
+    /// <summary>
+    /// Checks settings that make the video of every design of a batch run, the workflow's shared ones or a product's or
+    /// design's own: a scene may leave its image to be chosen for each design.
+    /// </summary>
+    public FluentValidation.Results.ValidationResult ValidateForBatch(GenerateVideoConfig config) => Validate(BatchContext(config));
+
+    public Task<FluentValidation.Results.ValidationResult> ValidateForBatchAsync(GenerateVideoConfig config, CancellationToken ct) =>
+        ValidateAsync(BatchContext(config), ct);
+
+    private static ValidationContext<GenerateVideoConfig> BatchContext(GenerateVideoConfig config)
+    {
+        var context = new ValidationContext<GenerateVideoConfig>(config);
+        context.RootContextData[BatchKey] = true;
+        return context;
+    }
+
     public GenerateVideoConfigValidator()
     {
         RuleFor(x => x.Mode).Must(x => x is "standard" or "ai_shot");
@@ -41,8 +59,10 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             double.IsFinite(scene.AiCropPosition.X) && double.IsFinite(scene.AiCropPosition.Y) &&
             scene.AiCropPosition.X is >= 0 and <= 1 && scene.AiCropPosition.Y is >= 0 and <= 1))
             .WithMessage("AI scene crop position must be between 0 and 1.");
+        // A batch run picks each design's image for a scene itself (SceneSourceResolver: the matching mock-up, the
+        // design's model photo for a scene with a person, else its main mock-up), so only a video's own settings need one.
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.MockupId is Guid id && id != Guid.Empty))
-            .When(x => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 })
+            .When((x, context) => x.Mode == "ai_shot" && x.AiScenes is { Count: > 0 } && !context.RootContextData.ContainsKey(BatchKey))
             .WithMessage("Choose an approved product image or keyframe for every scene.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.Mode == "standard"
                 ? scene.DurationSeconds is >= 1 and <= VideoDurationPolicy.MaximumVideoSeconds
@@ -75,7 +95,7 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
         RuleFor(x => x).Must(x => x.Template != "product_on_model_pack" || x.Mode == "ai_shot" &&
             x.AiScenes is { Count: 3 } && x.AiScenes.All(scene => scene.Mode == "ai" &&
                 scene.StartFrameMode == "studio" && scene.StudioFrameId is Guid frame && frame != Guid.Empty &&
-                scene.MockupId == x.SharedMockupId && scene.RightsConfirmed))
+                scene.MockupId == x.SharedMockupId))
             .WithMessage("Product on Model needs three AI scenes with current reviewed start frames from the shared mockup.");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
@@ -93,8 +113,6 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             (x.FullSceneMockupIds is null || x.FullSceneMockupIds.Count <= 2 && x.FullSceneMockupIds.All(id => id != Guid.Empty)));
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "full_video" || x.DurationSeconds is 8 or 15)
             .WithMessage("Full AI videos must be 8 or 15 seconds.");
-        RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Concept is not ("lifestyle_motion" or "product_in_use") || x.AiShotOptions.RightsConfirmed)
-            .WithMessage("Confirm rights to use the people in the Lifestyle image for AI video generation, with a parent's or guardian's consent for anyone under 18.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is { Count: > 0 } || x.AiShotOptions?.Coverage != "single_scene" || x.DurationSeconds is >= 12 and <= 15)
             .WithMessage("A mixed AI Shot video must be 12–15 seconds.");
     }

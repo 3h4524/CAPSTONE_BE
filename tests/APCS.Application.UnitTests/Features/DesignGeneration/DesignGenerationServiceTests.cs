@@ -3,6 +3,7 @@ using APCS.Application.Features.Entitlements;
 using APCS.Application.UnitTests.TestSupport;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchProductPrompts.Common;
@@ -37,6 +38,7 @@ public sealed class DesignGenerationServiceTests
         public required Mock<IUnitOfWork> UnitOfWork { get; init; }
         public required DesignGenerationService Service { get; init; }
         public required Guid OwnerId { get; init; }
+        public IReadOnlyList<DesignImage> Images { get; init; } = [];
     }
 
     private static Fixture CreateFixture(
@@ -51,7 +53,10 @@ public sealed class DesignGenerationServiceTests
         int[]? existingPromptVersions = null,
         DesignTemplate? template = null,
         Action<Product>? editProduct = null,
-        TestEntitlements? entitlements = null)
+        TestEntitlements? entitlements = null,
+        string[]? designStatuses = null,
+        IContentModerationService? moderation = null,
+        ISystemApiKeyPool? systemKeys = null)
     {
         var batchId = Guid.NewGuid();
         var job = new BatchJob
@@ -98,6 +103,14 @@ public sealed class DesignGenerationServiceTests
                 }
             }
             : Array.Empty<DesignImage>();
+        if (designStatuses is not null)
+            images = designStatuses.Select((status, index) => new DesignImage
+            {
+                Id = Guid.NewGuid(), ProductId = product.Id, AiPromptId = Guid.NewGuid(), BatchJobId = job.Id,
+                BatchJobProductId = row.Id, ImageUrl = $"https://img/{index + 1}.png", VariationIndex = index + 1, ImageWidthPx = 1024,
+                ImageHeightPx = 1024, ApprovalStatus = status, ImageGeneratorModel = "m", StorageProvider = "cloudinary",
+                StorageKey = "k", FileFormat = "png", CreatedAt = UtcNow.UtcDateTime
+            }).ToArray();
         var imageRepo = MockRepo(images);
         var templateRepo = MockRepo(template is null ? Array.Empty<DesignTemplate>() : new[] { template });
         var styleRepo = MockRepo(Array.Empty<StyleArtPreset>());
@@ -175,12 +188,12 @@ public sealed class DesignGenerationServiceTests
             [Mock.Of<IImageGenerationProvider>()], Mock.Of<IPublicImageService>(), Mock.Of<IDesignBackgroundRemover>(), queue.Object,
             Mock.Of<IBatchJobClaims>(), unitOfWork.Object, new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(1)),
-            entitlements ?? TestEntitlements.AllowAll());
+            entitlements ?? TestEntitlements.AllowAll(), moderation: moderation, systemKeys: systemKeys);
 
         return new Fixture
         {
             Job = job, Rows = [row], AddedPrompts = addedPrompts,
-            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId
+            Queue = queue, UnitOfWork = unitOfWork, Service = service, OwnerId = UserId, Images = images
         };
     }
 
@@ -192,6 +205,93 @@ public sealed class DesignGenerationServiceTests
         repo.Setup(x => x.UpdateAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         repo.Setup(x => x.AddAsync(It.IsAny<TEntity>(), false, It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
         return repo;
+    }
+
+    private static Fixture ReviewFixture(params string[] statuses) =>
+        CreateFixture(jobStatus: BatchJobStatuses.Completed, rowStatus: BatchJobProductStatuses.ImageReviewRequired, designStatuses: statuses);
+
+    [TestMethod]
+    public async Task StartAsync_InstructionsBlockedByTheContentPolicy_DoesNotStartTheJob()
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(),
+                It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new ModerationVerdict(ModerationDecision.Block,
+                [new ModerationFinding(ModerationCategories.Hate, ModerationSeverity.High, "the job instructions")], ModerationDeciders.Gemini));
+        var fixture = CreateFixture(moderation: moderation.Object);
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id, ValidRequest() with { Instructions = "something hateful" });
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        fixture.Job.Status.Should().Be(BatchJobStatuses.Draft);
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_DesignWhoseContentCheckCouldNotRun_IsNotApproved()
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.GetLatestOutputDecisionAsync(ModerationSubjects.DesignImage, It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ModerationDecision.Unchecked);
+        var fixture = CreateFixture(jobStatus: BatchJobStatuses.Completed, rowStatus: BatchJobProductStatuses.ImageReviewRequired,
+            designStatuses: ["pending"], moderation: moderation.Object);
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[0].Id], ApprovalStatuses.Approved));
+
+        result.Error.Code.Should().Be("ModerationPending");
+        fixture.Images[0].ApprovalStatus.Should().Be(ApprovalStatuses.Pending);
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_ApprovingADesign_RejectsTheOtherDesignsOfItsProduct()
+    {
+        var fixture = ReviewFixture("approved", "pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[2].Id], ApprovalStatuses.Approved));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("rejected", "rejected", "approved");
+        result.Value.Approved.Should().Be(1);
+        result.Value.Pending.Should().Be(0);
+        fixture.Rows[0].Status.Should().Be(BatchJobProductStatuses.Approved);
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_TwoDesignsOfOneProduct_IsRefused()
+    {
+        var fixture = ReviewFixture("pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto(fixture.Images.Select(image => image.Id).ToList(), ApprovalStatuses.Approved));
+
+        result.IsFailure.Should().BeTrue();
+        fixture.Images.Should().OnlyContain(image => image.ApprovalStatus == "pending");
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_ApproveEveryRemaining_ApprovesTheFirstDesignOfEachProduct()
+    {
+        var fixture = ReviewFixture("rejected", "pending", "pending");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id, new SetImageApprovalRequestDto(null, ApprovalStatuses.Approved));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("rejected", "approved", "rejected");
+    }
+
+    [TestMethod]
+    public async Task SetImageApprovalAsync_TakingBackAnApproval_LeavesTheOtherDesignsAlone()
+    {
+        var fixture = ReviewFixture("approved", "rejected");
+
+        var result = await fixture.Service.SetImageApprovalAsync(fixture.Job.Id,
+            new SetImageApprovalRequestDto([fixture.Images[0].Id], ApprovalStatuses.Pending));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Images.Select(image => image.ApprovalStatus).Should().Equal("pending", "rejected");
+        fixture.Rows[0].Status.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
     }
 
     [TestMethod]
@@ -231,6 +331,55 @@ public sealed class DesignGenerationServiceTests
         result.Error.Code.Should().Be("MSG35");
         result.Error.Message.Should().Contain("Ideogram");
         fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    private static ISystemApiKeyPool PlatformIdeogramKeys()
+    {
+        var pool = new Mock<ISystemApiKeyPool>();
+        pool.Setup(x => x.HasKeys(ImageGenerationProviders.Ideogram)).Returns(true);
+        return pool.Object;
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithThePlatformsKeys_StartsAnIdeogramJobWithoutAKeyOfTheSellers()
+    {
+        var fixture = CreateFixture(hasGeminiKey: false, systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsSuccess.Should().BeTrue();
+        fixture.Queue.Verify(x => x.Enqueue(fixture.Job.Id), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithThePlatformsKeys_OverItsDailyDesignImageCap_IsRefused()
+    {
+        var entitlements = TestEntitlements.AllowAll();
+        entitlements.CapsReached[PlanFeatures.DailyDesignImageCap] = true;
+        var fixture = CreateFixture(hasGeminiKey: false, entitlements: entitlements, systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().NotBe("MSG35");
+        fixture.Queue.Verify(x => x.Enqueue(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PlanWithoutThePlatformsKeys_StillNeedsTheSellersOwnKey()
+    {
+        var features = PlanFeatures.All.ToDictionary(feature => feature.Code, feature => new PlanFeatureValue(true, null));
+        features[PlanFeatures.SystemImageKeys] = new PlanFeatureValue(false, null);
+        var fixture = CreateFixture(hasGeminiKey: false, entitlements: TestEntitlements.Plan(features: features),
+            systemKeys: PlatformIdeogramKeys());
+
+        var result = await fixture.Service.StartAsync(fixture.Job.Id,
+            new StartGenerationRequestDto(null, null, 1, "1:1", ImageProvider: ImageGenerationProviders.Ideogram));
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("MSG35");
     }
 
     [TestMethod]

@@ -100,6 +100,7 @@ public sealed class PlanInsightsService(
         (PlanFeatures.DailyMockupCap, "mockups"),
         (PlanFeatures.DailyListingCap, "listings"),
         (PlanFeatures.DailyVideoCap, "standard_videos"),
+        (PlanFeatures.DailyDesignImageCap, "design_images"),
     ];
 
     /// <inheritdoc />

@@ -7,34 +7,73 @@ using APCS.Domain.Entities;
 
 namespace APCS.Application.Features.Workflows;
 
-/// <summary>Requests a short-lived, exact-cost consent before paid AI video generation.</summary>
+/// <summary>
+/// Asks what paid AI video generation would cost: the clips not made yet, to show the seller when they start or change
+/// something. The token it returns carries a prompt the seller reviewed; no paid step requires it.
+/// </summary>
 public sealed record AiShotQuoteRequest(GenerateVideoConfig? Config = null, bool Regenerate = false, int? SceneOrder = null,
     string? ExpectedStoryboardFingerprint = null);
 /// <summary>A quote bound to one run, storyboard, and set of missing AI clips.</summary>
+/// <param name="ChangesWhatIsMade">
+/// The request makes clips the run's own settings did not: other settings than the run's, or a regeneration. The cost
+/// of the run's own clips was shown when it started, so the canvas shows this quote only when it is true.
+/// </param>
 public sealed record AiShotQuoteResponse(string Token, decimal EstimatedCostUsd, int NewClips, DateTimeOffset ExpiresAtUtc,
-    string Model, string Note);
+    string Model, string Note, IReadOnlyList<AiShotQuoteItem>? Items = null, bool ChangesWhatIsMade = false);
+
+/// <summary>One design's part of a batch quote: its new AI clips, how long they are together, and their cost.</summary>
+public sealed record AiShotQuoteItem(string Label, int Clips, decimal Seconds, decimal EstimatedCostUsd);
+
+/// <summary>
+/// One design of a batch video run, before its run exists: the run it would get, the settings resolved for it, and
+/// the state of the images those settings name.
+/// </summary>
+/// <param name="Label">The design in a message, as "<c>Product · Design 1</c>".</param>
+/// <param name="SourceFingerprint">The design's approved images with their revisions, so a changed image voids the quote.</param>
+public sealed record PlannedVideo(WorkflowRun Run, GenerateVideoConfig Config, string Label, string SourceFingerprint);
 
 public interface IAiShotQuoteService
 {
     Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct);
+
+    /// <summary>
+    /// Checks that these AI clips can be made (the plan includes AI video, the provider has a key, the scenes resolve).
+    /// The cost was shown when the seller started or changed the run, so no confirmation token is required; a token
+    /// that still matches carries the prompt the seller reviewed into the render.
+    /// </summary>
     Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct);
+
+    /// <summary>What every AI clip of a batch video run costs together, quoted once for the whole group.</summary>
+    Task<Result<AiShotQuoteResponse>> QuoteBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, CancellationToken ct);
+
+    /// <summary>Checks that the plan includes AI video when these designs make AI clips; no confirmation token is required.</summary>
+    Task<Result> VerifyBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, string? token, CancellationToken ct);
 }
 
 public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<WorkflowNodeRun> nodes,
     IRepository<MediaJob> jobs, IAiVideoCredentialResolver videoCredentials, WorkflowRuntime runtime, IAiShotQuoteSigner signer,
-    TimeProvider time, IPlanEntitlementService entitlements) : IAiShotQuoteService
+    TimeProvider time, IPlanEntitlementService entitlements, IRunTargetConfigResolver? targetResolver = null) : IAiShotQuoteService
 {
     public async Task<Result<AiShotQuoteResponse>> QuoteAsync(Guid runId, AiShotQuoteRequest request, CancellationToken ct)
     {
         var run = await runs.GetByIdAsync(runId, ct);
         if (run == null || run.UserId != user.UserId) return Result.Failure<AiShotQuoteResponse>(Error.NotFound("RunNotFound", "Run not found."));
         var reopenCancelledScene = run.Status == "cancelled" && request.Regenerate && request.SceneOrder.HasValue;
-        if (run.Status is not ("waiting_for_input" or "waiting_for_review" or "failed") && !reopenCancelledScene)
+        // A stopped run is quoted for what going on with it would make: the clips it has not stored yet.
+        var resumeStopped = run.Status == "cancelled" && !request.Regenerate;
+        if (run.Status is not ("waiting_for_input" or "waiting_for_review" or "failed") && !reopenCancelledScene && !resumeStopped)
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
         var node = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).SingleOrDefault();
         if (node is null || (reopenCancelledScene && node.Status != "succeeded"))
             return Result.Failure<AiShotQuoteResponse>(Error.Conflict("InvalidCheckpoint", "The run is not ready for AI Shot confirmation."));
         var config = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
+        // A run of a batch makes one design's video: settings sent from the canvas name the preview product's images.
+        if (request.Config != null && run.RunGroupId != null && targetResolver != null)
+        {
+            var resolved = await targetResolver.ResolveForRunAsync(run, request.Config, ct);
+            if (resolved.Error != null) return Result.Failure<AiShotQuoteResponse>(Error.Validation(resolved.Error));
+            config = resolved.Config;
+        }
         if (!HasAiVideoScene(config))
             return Result.Failure<AiShotQuoteResponse>(Error.Validation("This storyboard has no AI video scenes to quote."));
         if (request.SceneOrder.HasValue && !request.Regenerate)
@@ -51,9 +90,12 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             .Where(x => !request.SceneOrder.HasValue || x.SceneOrder == request.SceneOrder.Value)
             .Select(x => x.Model).Distinct(StringComparer.Ordinal));
         var configFingerprint = WorkflowJson.Hash(WorkflowJson.Write(config));
+        var changesWhatIsMade = request.Regenerate
+            || WorkflowJson.Write(config) != WorkflowJson.Write(WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot));
         return Result.Success(new AiShotQuoteResponse(signer.Sign(new(run.Id, board.Fingerprint, request.Regenerate, cost, expires,
             request.SceneOrder, configFingerprint, board)),
-            cost, count, expires, models, "Estimate only. The system MiniMax account is billed for successful generations."));
+            cost, count, expires, models, "Estimate only. The system MiniMax account is billed for successful generations.",
+            ChangesWhatIsMade: changesWhatIsMade));
     }
 
     public async Task<Result> VerifyAsync(WorkflowRun run, GenerateVideoConfig config, string? token, bool regenerate, int? sceneOrder, CancellationToken ct)
@@ -63,35 +105,81 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
             return regenerate
                 ? Result.Failure(Error.Validation("Only an AI video scene can be regenerated."))
                 : Result.Success();
+        // The seller saw the cost of the clips still to make when they started the run or changed it: what is left is
+        // made without a second confirmation. This still refuses what cannot be made (no AI video on the plan, no key).
+        var current = await EvaluateAsync(run, config, regenerate, sceneOrder, ct);
+        if (current.IsFailure) return Result.Failure(current.Error);
+
+        // A prompt the seller reviewed before rendering is the one rendered, while it still matches these settings and images.
         var claims = string.IsNullOrWhiteSpace(token) ? null : signer.Read(token);
-        if (claims == null || claims.ExpiresAtUtc <= time.GetUtcNow() || claims.RunId != run.Id || claims.Regenerate != regenerate || claims.SceneOrder != sceneOrder)
-            return Result.Failure(Error.Validation("Confirm the current AI Shot cost before continuing."));
         var configFingerprint = WorkflowJson.Hash(WorkflowJson.Write(config));
-        if (claims.PromptSnapshot is not null && claims.ConfigFingerprint is not null)
+        if (claims is { PromptSnapshot: not null } && claims.ExpiresAtUtc > time.GetUtcNow() && claims.RunId == run.Id
+            && claims.Regenerate == regenerate && claims.SceneOrder == sceneOrder
+            && string.Equals(claims.ConfigFingerprint, configFingerprint, StringComparison.Ordinal)
+            && string.Equals(claims.StoryboardFingerprint, claims.PromptSnapshot.Fingerprint, StringComparison.Ordinal)
+            && SameSourceSnapshot(claims.PromptSnapshot, current.Value.Board))
         {
-            if (!string.Equals(claims.ConfigFingerprint, configFingerprint, StringComparison.Ordinal)
-                || !string.Equals(claims.StoryboardFingerprint, claims.PromptSnapshot.Fingerprint, StringComparison.Ordinal))
-                return Result.Failure(Error.Conflict("AiShotQuoteChanged", "The reviewed AI prompt snapshot changed. Request a new quote before continuing."));
-            var current = await EvaluateAsync(run, config, regenerate, sceneOrder, ct);
-            if (current.IsFailure) return Result.Failure(current.Error);
-            if (current.Value.Cost > claims.EstimatedCostUsd)
-                return Result.Failure(Error.Conflict("AiShotQuoteChanged", "The estimated AI Shot cost increased. Review the updated cost before continuing."));
-            if (!SameSourceSnapshot(claims.PromptSnapshot, current.Value.Board))
-                return Result.Failure(Error.Conflict("AiShotQuoteChanged", "An approved source image changed. Review the current prompt before continuing."));
             var node = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).Single();
             node.OutputSnapshot = WorkflowJson.Write(new AiShotPromptSnapshot(configFingerprint, claims.PromptSnapshot));
-            return Result.Success();
+        }
+        return Result.Success();
+    }
+
+    public async Task<Result<AiShotQuoteResponse>> QuoteBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, CancellationToken ct)
+    {
+        var paid = plans.Where(plan => NeedsConsent(plan.Config)).ToArray();
+        if (paid.Length == 0)
+            return Result.Failure<AiShotQuoteResponse>(Error.Validation("No design of this run makes an AI video clip."));
+        var planCheck = await entitlements.RequireFeatureAsync(paid[0].Run.UserId, PlanFeatures.AiVideo, ct);
+        if (planCheck.IsFailure) return Result.Failure<AiShotQuoteResponse>(planCheck.Error);
+
+        var cost = 0m;
+        var clips = 0;
+        var models = new List<string>();
+        var items = new List<AiShotQuoteItem>(paid.Length);
+        foreach (var plan in paid)
+        {
+            // The run does not exist yet, so this plans the design's storyboard exactly as its run would.
+            var planned = await runtime.PlanAsync(plan.Run, plan.Config, ct);
+            if (planned.IsFailure)
+                return Result.Failure<AiShotQuoteResponse>(Error.Validation($"{plan.Label}: {planned.Error.Message}"));
+            var shots = planned.Value.AiShots ?? [];
+            foreach (var provider in shots.Select(shot => shot.ProviderKey).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (await videoCredentials.ResolveAsync(plan.Run.UserId, provider, ct) is not null) continue;
+                return Result.Failure<AiShotQuoteResponse>(Error.Validation(string.Equals(provider, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase)
+                    ? "AI video is temporarily unavailable because the system MiniMax API key is not configured."
+                    : $"Connect a valid {ProviderName(provider)} API key before generating AI video."));
+            }
+            var designCost = shots.Sum(shot => shot.DurationSeconds * shot.PricePerSecondUsd);
+            items.Add(new(plan.Label, shots.Count, shots.Sum(shot => (decimal)shot.DurationSeconds), designCost));
+            cost += designCost;
+            clips += shots.Count;
+            models.AddRange(shots.Select(shot => shot.Model));
         }
 
-        // Tokens issued before prompt snapshots were introduced remain valid only when their
-        // newly planned cost is still within the confirmed maximum.
-        var evaluated = await EvaluateAsync(run, config, regenerate, sceneOrder, ct);
-        if (evaluated.IsFailure) return Result.Failure(evaluated.Error);
-        var (_, cost, _) = evaluated.Value;
-        return cost <= claims.EstimatedCostUsd
-            ? Result.Success()
-            : Result.Failure(Error.Conflict("AiShotQuoteChanged", "The estimated AI Shot cost increased. Review the updated cost before continuing."));
+        var fingerprint = BatchFingerprint(plans);
+        var expires = time.GetUtcNow().AddMinutes(10);
+        return Result.Success(new AiShotQuoteResponse(
+            signer.Sign(new(groupId, fingerprint, false, cost, expires, null, fingerprint, null)),
+            cost, clips, expires, string.Join(", ", models.Distinct(StringComparer.Ordinal)),
+            $"Estimate only for {paid.Length} video{(paid.Length == 1 ? "" : "s")}. The system MiniMax account is billed for successful generations.", items));
     }
+
+    public async Task<Result> VerifyBatchAsync(Guid groupId, IReadOnlyList<PlannedVideo> plans, string? token, CancellationToken ct)
+    {
+        // The seller saw what the AI clips cost when pressing Run: the videos start without a second confirmation.
+        var paid = plans.FirstOrDefault(plan => NeedsConsent(plan.Config));
+        return paid is null ? Result.Success() : await entitlements.RequireFeatureAsync(paid.Run.UserId, PlanFeatures.AiVideo, ct);
+    }
+
+    /// <summary>What a quoted cost is bound to: every design that gets a video, with its settings and its images.</summary>
+    private static string BatchFingerprint(IReadOnlyList<PlannedVideo> plans) => WorkflowJson.Hash(WorkflowJson.Write(plans
+        .Select(plan => new { plan.Run.ProductId, plan.Run.ArtworkGroupKey, plan.Config, plan.SourceFingerprint })
+        .OrderBy(plan => plan.ProductId).ThenBy(plan => plan.ArtworkGroupKey, StringComparer.Ordinal).ToArray()));
+
+    /// <summary>Whether these settings make paid AI clips, so the seller has to confirm their cost.</summary>
+    private static bool NeedsConsent(GenerateVideoConfig config) => config.Mode == "ai_shot" && HasAiVideoScene(config);
 
     private static bool HasAiVideoScene(GenerateVideoConfig config) =>
         config.AiScenes is not { Count: > 0 } || config.AiScenes.Any(scene => scene.Mode != "standard");
@@ -127,7 +215,8 @@ public sealed class AiShotQuoteService(ICurrentUser user, IRepository<WorkflowRu
                 state.SceneOrder == sceneOrder.Value && state.Status == "stored" &&
                 !string.IsNullOrEmpty(state.StorageKey) && !string.IsNullOrEmpty(state.StorageVersion))))
             return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("SceneNotStored", "The selected scene has no stored clip to regenerate."));
-        if (run.Status == "cancelled" && previousShots.Any(shot => stored.All(state => state.SceneOrder != shot.SceneOrder ||
+        // Only for replacing one clip of a stopped run; going on with a stopped run makes whatever it has not stored.
+        if (run.Status == "cancelled" && sceneOrder.HasValue && previousShots.Any(shot => stored.All(state => state.SceneOrder != shot.SceneOrder ||
                 state.Fingerprint != shot.Fingerprint || state.Status != "stored" ||
                 string.IsNullOrEmpty(state.StorageKey) || string.IsNullOrEmpty(state.StorageVersion))))
             return Result.Failure<(Storyboard, decimal, int)>(Error.Conflict("OtherScenesIncomplete", "Finish the other AI scenes before replacing this clip."));

@@ -107,6 +107,42 @@ public sealed class ModelPhotoMockupServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_MockupWithSeveralPrintAreas_CarriesItsMainAreaOntoTheModel()
+    {
+        var (product, design, template, garment) = Mockup("#1F2A44");
+        var row = new BatchJobProduct { Id = Guid.NewGuid(), BatchJobId = Guid.NewGuid() };
+        _rows.Add(row);
+        var slot = MockupRules.SlotKey(design.Id, template.Id, "#1F2A44");
+        _batches.Add(new BatchJob
+        {
+            Id = row.BatchJobId,
+            Config = $"{{\"mockupOverrides\":{{\"{slot}\":{{\"mockupTemplateId\":\"{template.Id}\",\"garmentColor\":\"#1F2A44\",\"areas\":["
+                + "{\"key\":\"main\",\"x\":1100,\"y\":600,\"width\":900,\"height\":600,\"rotation\":10,\"source\":\"same\"}]}}}"
+        });
+        garment.BatchJobProductId = row.Id;
+        var model = AddModelPhoto();
+
+        var result = await _service.GenerateAsync(product.Id, new(garment.Id, model.Id), default);
+
+        result.IsSuccess.Should().BeTrue();
+        _compositor.Verify(x => x.BuildCompositeUrl(model.BaseImageUrl, design.StorageKey, new MockupPosition(500, 500, 300, 200), It.IsAny<MockupLayers?>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_MockupOfTheBackOfTheGarment_IsRefused()
+    {
+        var (product, _, template, garment) = Mockup("#1F2A44");
+        template.PrintAreaConfig = MockupRules.SerializePrintLayout(MockupRules.ViewBack,
+            MockupRules.ParsePrintLayout(template.PrintAreaConfig)!.Areas);
+        var model = AddModelPhoto();
+
+        var result = await _service.GenerateAsync(product.Id, new(garment.Id, model.Id), default);
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+        result.Error.Message.Should().Contain("front");
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_PhotoOfSeveralPeople_PutsTheDesignOnEachOfTheirShirts()
     {
         var (product, design, template, garment) = Mockup("#1F2A44");

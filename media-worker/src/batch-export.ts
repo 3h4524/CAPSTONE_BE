@@ -17,7 +17,7 @@ export type ExportVideo = {
 };
 export type ExportProduct = {
   id: string; name: string; type: string; images: BatchZipAsset[];
-  videos: ExportVideo[]; listing?: BatchZipListing | null;
+  videos: ExportVideo[]; listing?: BatchZipListing | null; guide?: string | null;
 };
 export interface SceneRenderer {
   renderScene(props: SceneRenderProps, directory: string, signal: AbortSignal): Promise<{ video: string }>;
@@ -67,7 +67,7 @@ export async function packageBatchExport(directory: string, products: ExportProd
           file: rendered.video, id: video.id, version: video.storageVersion });
       }
     }
-    output.push({ id: product.id, name: product.name, type: product.type, assets, listing: product.listing,
+    output.push({ id: product.id, name: product.name, type: product.type, assets, listing: product.listing, guide: product.guide,
       warnings: product.videos.filter(video => !video.includeScenes && video.sceneWarning).map(video => video.sceneWarning!) });
   }
   return createBatchZipParts(directory, output, maxPartBytes, signal);

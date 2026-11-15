@@ -82,6 +82,16 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<MockupTemplate> MockupTemplates { get; set; }
 
+    public virtual DbSet<MockupTemplatePrintifyLink> MockupTemplatePrintifyLinks { get; set; }
+
+    public virtual DbSet<ModerationAllowlist> ModerationAllowlists { get; set; }
+
+    public virtual DbSet<ModerationCheck> ModerationChecks { get; set; }
+
+    public virtual DbSet<ModerationSetting> ModerationSettings { get; set; }
+
+    public virtual DbSet<ModerationTerm> ModerationTerms { get; set; }
+
     public virtual DbSet<MusicTrack> MusicTracks { get; set; }
 
     public virtual DbSet<NotificationAlert> NotificationAlerts { get; set; }
@@ -99,6 +109,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<PlanFeature> PlanFeatures { get; set; }
 
     public virtual DbSet<PlanSetting> PlanSettings { get; set; }
+
+    public virtual DbSet<PrintifyColorMap> PrintifyColorMaps { get; set; }
 
     public virtual DbSet<PrintifyIntegration> PrintifyIntegrations { get; set; }
 
@@ -167,6 +179,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<WorkflowNodeRun> WorkflowNodeRuns { get; set; }
 
     public virtual DbSet<WorkflowRun> WorkflowRuns { get; set; }
+
+    public virtual DbSet<WorkflowRunGroup> WorkflowRunGroups { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -2173,6 +2187,161 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("mockup_templates_user_id_fkey");
         });
 
+        modelBuilder.Entity<MockupTemplatePrintifyLink>(entity =>
+        {
+            entity.HasKey(e => e.MockupTemplateId).HasName("mockup_template_printify_links_pkey");
+
+            entity.ToTable("mockup_template_printify_links");
+
+            entity.HasIndex(e => e.BlueprintId, "idx_mockup_template_printify_links_blueprint");
+
+            entity.Property(e => e.MockupTemplateId)
+                .ValueGeneratedNever()
+                .HasColumnName("mockup_template_id");
+            entity.Property(e => e.BlueprintId).HasColumnName("blueprint_id");
+            entity.Property(e => e.BlueprintImageUrl).HasColumnName("blueprint_image_url");
+            entity.Property(e => e.BlueprintTitle).HasColumnName("blueprint_title");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefaultSizes)
+                .HasDefaultValueSql("'{}'::text[]")
+                .HasColumnName("default_sizes");
+            entity.Property(e => e.PrintProviderId).HasColumnName("print_provider_id");
+            entity.Property(e => e.PrintProviderTitle).HasColumnName("print_provider_title");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.MockupTemplate).WithOne(p => p.MockupTemplatePrintifyLink)
+                .HasForeignKey<MockupTemplatePrintifyLink>(d => d.MockupTemplateId)
+                .HasConstraintName("mockup_template_printify_links_mockup_template_id_fkey");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.MockupTemplatePrintifyLinks)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("mockup_template_printify_links_updated_by_fkey");
+        });
+
+        modelBuilder.Entity<ModerationAllowlist>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_allowlist_pkey");
+
+            entity.ToTable("moderation_allowlist");
+
+            entity.HasIndex(e => e.Phrase, "uq_moderation_allowlist_phrase").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.Note).HasColumnName("note");
+            entity.Property(e => e.Phrase).HasColumnName("phrase");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
+        modelBuilder.Entity<ModerationCheck>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_checks_pkey");
+
+            entity.ToTable("moderation_checks");
+
+            entity.HasIndex(e => e.CreatedAt, "ix_moderation_checks_created").IsDescending();
+
+            entity.HasIndex(e => new { e.DecidedBy, e.CreatedAt }, "ix_moderation_checks_decider").IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.SubjectType, e.SubjectId, e.CreatedAt }, "ix_moderation_checks_subject").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "ix_moderation_checks_user").IsDescending(false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.Categories)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("categories");
+            entity.Property(e => e.ContentExcerpt).HasColumnName("content_excerpt");
+            entity.Property(e => e.ContentHash)
+                .HasMaxLength(64)
+                .IsFixedLength()
+                .HasColumnName("content_hash");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DecidedBy).HasColumnName("decided_by");
+            entity.Property(e => e.Decision).HasColumnName("decision");
+            entity.Property(e => e.Direction).HasColumnName("direction");
+            entity.Property(e => e.Feature).HasColumnName("feature");
+            entity.Property(e => e.LatencyMs).HasColumnName("latency_ms");
+            entity.Property(e => e.Model).HasColumnName("model");
+            entity.Property(e => e.PolicyVersion).HasColumnName("policy_version");
+            entity.Property(e => e.Reason).HasColumnName("reason");
+            entity.Property(e => e.SubjectId).HasColumnName("subject_id");
+            entity.Property(e => e.SubjectType).HasColumnName("subject_type");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
+        modelBuilder.Entity<ModerationSetting>(entity =>
+        {
+            entity.HasKey(e => e.Key).HasName("moderation_settings_pkey");
+
+            entity.ToTable("moderation_settings");
+
+            entity.Property(e => e.Key).HasColumnName("key");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.Value).HasColumnName("value");
+        });
+
+        modelBuilder.Entity<ModerationTerm>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("moderation_terms_pkey");
+
+            entity.ToTable("moderation_terms");
+
+            entity.HasIndex(e => e.Term, "uq_moderation_terms_term").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.Category).HasColumnName("category");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.Language)
+                .HasMaxLength(5)
+                .HasDefaultValueSql("'en'::character varying")
+                .HasColumnName("language");
+            entity.Property(e => e.MatchType)
+                .HasDefaultValueSql("'word'::text")
+                .HasColumnName("match_type");
+            entity.Property(e => e.MatchUnaccented)
+                .HasDefaultValue(false)
+                .HasColumnName("match_unaccented");
+            entity.Property(e => e.Note).HasColumnName("note");
+            entity.Property(e => e.Severity).HasColumnName("severity");
+            entity.Property(e => e.Term).HasColumnName("term");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+        });
+
         modelBuilder.Entity<MusicTrack>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("music_tracks_pkey");
@@ -2509,6 +2678,37 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.UpdatedBy)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_plan_settings_updated_by");
+        });
+
+        modelBuilder.Entity<PrintifyColorMap>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("printify_color_map_pkey");
+
+            entity.ToTable("printify_color_map");
+
+            entity.HasIndex(e => new { e.Hex, e.BlueprintId }, "uq_printify_color_map_blueprint")
+                .IsUnique()
+                .HasFilter("(blueprint_id IS NOT NULL)");
+
+            entity.HasIndex(e => e.Hex, "uq_printify_color_map_shared")
+                .IsUnique()
+                .HasFilter("(blueprint_id IS NULL)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.BlueprintId).HasColumnName("blueprint_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Hex)
+                .HasMaxLength(7)
+                .IsFixedLength()
+                .HasColumnName("hex");
+            entity.Property(e => e.PrintifyName).HasColumnName("printify_name");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
         });
 
         modelBuilder.Entity<PrintifyIntegration>(entity =>
@@ -3380,6 +3580,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnType("jsonb")
                 .HasColumnName("recommendations");
             entity.Property(e => e.StyleModifiers).HasColumnName("style_modifiers");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
@@ -4202,9 +4405,16 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.UserId, e.IdempotencyKey }, "workflow_runs_user_id_idempotency_key_key").IsUnique();
 
+            entity.HasIndex(e => e.RunGroupId, "idx_workflow_runs_run_group").HasFilter("(run_group_id IS NOT NULL)");
+
+            entity.HasIndex(e => e.CreatedAt, "idx_workflow_runs_group_queue").HasFilter("(((status)::text = 'queued'::text) AND (run_group_id IS NOT NULL))");
+
             entity.Property(e => e.Id)
                 .ValueGeneratedNever()
                 .HasColumnName("id");
+            entity.Property(e => e.ArtworkGroupKey)
+                .HasMaxLength(100)
+                .HasColumnName("artwork_group_key");
             entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -4226,6 +4436,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Revision)
                 .HasDefaultValue(1L)
                 .HasColumnName("revision");
+            entity.Property(e => e.RunGroupId).HasColumnName("run_group_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(40)
                 .HasColumnName("status");
@@ -4239,6 +4450,10 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.ParentRun).WithMany(p => p.InverseParentRun)
                 .HasForeignKey(d => d.ParentRunId)
                 .HasConstraintName("workflow_runs_parent_run_id_fkey");
+
+            entity.HasOne(d => d.RunGroup).WithMany(p => p.WorkflowRuns)
+                .HasForeignKey(d => d.RunGroupId)
+                .HasConstraintName("workflow_runs_run_group_id_fkey");
 
             entity.HasOne(d => d.Product).WithMany(p => p.WorkflowRuns)
                 .HasForeignKey(d => d.ProductId)
@@ -4254,6 +4469,65 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.WorkflowId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("workflow_runs_workflow_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkflowRunGroup>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workflow_run_groups_pkey");
+
+            entity.ToTable("workflow_run_groups");
+
+            entity.HasIndex(e => new { e.UserId, e.WorkflowId, e.CreatedAt }, "idx_workflow_run_groups_owner_workflow").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.UserId, e.IdempotencyKey }, "workflow_run_groups_user_id_idempotency_key_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .ValueGeneratedNever()
+                .HasColumnName("id");
+            entity.Property(e => e.BatchId).HasColumnName("batch_id");
+            entity.Property(e => e.BatchJobId).HasColumnName("batch_job_id");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DefinitionSnapshot)
+                .HasColumnType("jsonb")
+                .HasColumnName("definition_snapshot");
+            entity.Property(e => e.ErrorMessage)
+                .HasMaxLength(1000)
+                .HasColumnName("error_message");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(100)
+                .HasColumnName("idempotency_key");
+            entity.Property(e => e.RequestHash)
+                .HasMaxLength(64)
+                .HasColumnName("request_hash");
+            entity.Property(e => e.Revision)
+                .HasDefaultValue(1L)
+                .HasColumnName("revision");
+            entity.Property(e => e.Status)
+                .HasMaxLength(40)
+                .HasColumnName("status");
+            entity.Property(e => e.TargetOverrides)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("target_overrides");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkflowId).HasColumnName("workflow_id");
+            entity.Property(e => e.WorkflowRevision).HasColumnName("workflow_revision");
+
+            entity.HasOne(d => d.User).WithMany(p => p.WorkflowRunGroups)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_run_groups_user_id_fkey");
+
+            entity.HasOne(d => d.Workflow).WithMany(p => p.WorkflowRunGroups)
+                .HasForeignKey(d => d.WorkflowId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("workflow_run_groups_workflow_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

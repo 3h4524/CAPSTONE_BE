@@ -78,6 +78,56 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task StartAsync_AutoMockupApproval_ApprovesTheWaitingMockupsAndGoesOn()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var waiting = WorkflowTestData.Asset(product.Id);
+        waiting.ApprovalStatus = "pending";
+        waiting.ApprovedRevision = null;
+        fixture.AssetRows.Add(waiting);
+        var workflow = fixture.AddWorkflow(product, gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-run"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+        waiting.ApprovalStatus.Should().Be("approved");
+        waiting.ApprovedRevision.Should().Be(waiting.MetadataRevision);
+        waiting.ApprovedBy.Should().Be(WorkflowTestData.Owner);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalWithAnAiScene_GoesOnWithoutASecondConfirmation()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var waiting = WorkflowTestData.Asset(product.Id);
+        waiting.ApprovalStatus = "pending";
+        fixture.AssetRows.Add(waiting);
+        var ai = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 6, AiScenes: [new AiVideoSceneOptions(MockupId: waiting.Id, DurationSeconds: 6)]);
+        var workflow = fixture.AddWorkflow(product, ai, gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-ai-run"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+        waiting.ApprovalStatus.Should().Be("approved");
+    }
+
+    [TestMethod]
+    public async Task StartAsync_AutoMockupApprovalWithoutAnyMockup_WaitsForOne()
+    {
+        var fixture = new WorkflowTestData();
+        var workflow = fixture.AddWorkflow(fixture.AddProduct(), gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "auto-empty-run"), default);
+
+        result.Value.Status.Should().Be("waiting_for_input");
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("waiting_for_input");
+    }
+
+    [TestMethod]
     public async Task StartAsync_PrintifyNotConnected_RefusesBeforeCreatingRun()
     {
         var fixture = new WorkflowTestData();
@@ -126,6 +176,25 @@ public sealed class WorkflowRunServiceTests
         result.IsSuccess.Should().BeTrue();
         fixture.RunRows.Should().ContainSingle();
         fixture.NodeRows.Should().Contain(x => x.NodeType == "publish-etsy" && x.Status == "pending");
+    }
+
+    [TestMethod]
+    public async Task ResumeMockups_StartsPrintifyAndTheVideoTogether_RightAfterMockupApproval()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        fixture.AddAsset(product);
+        var workflow = fixture.AddPublishWorkflow(product);
+        var run = (await fixture.RunService.StartAsync(workflow.Id, new(4, "printify-first"), default)).Value;
+
+        var resumed = await fixture.RunService.ActionAsync(run.Id, new(run.Revision, "resume_mockups"), default);
+
+        resumed.IsSuccess.Should().BeTrue(resumed.IsFailure ? resumed.Error.Message : null);
+        var steps = fixture.NodeRows.Where(x => x.WorkflowRunId == run.Id).ToArray();
+        var printify = steps.Single(x => x.NodeType == "publish-printify");
+        printify.Status.Should().Be("running", "Printify takes the design and the approved mock-ups, not the video");
+        steps.Single(x => x.NodeType == "generate-video").Status.Should().NotBe("pending", "the video does not wait for Printify");
+        steps.Single(x => x.NodeType == "publish-etsy").Status.Should().Be("pending", "Publish to Etsy follows the video");
     }
 
     [TestMethod]
@@ -208,6 +277,102 @@ public sealed class WorkflowRunServiceTests
         fixture.JobRows.Should().BeEmpty();
         fixture.Quotes.Verify(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(),
             It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PublishWithoutVideo_WaitsAtMockupApproval()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.AddAsset(fixture.AddProduct());
+        var workflow = fixture.AddPublishWithoutVideoWorkflow(fixture.ProductRows.Single());
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-only"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Status.Should().Be("waiting_for_input");
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("waiting_for_input");
+        fixture.NodeRows.Single(x => x.NodeType == "publish-printify").Status.Should().Be("pending");
+        fixture.VideoRows.Should().BeEmpty();
+        fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ContinueAtMockupApprovalWithoutVideo_QueuesThePublishStep()
+    {
+        var fixture = new WorkflowTestData();
+        var asset = fixture.AddAsset(fixture.AddProduct());
+        var workflow = fixture.AddPublishWithoutVideoWorkflow(fixture.ProductRows.Single());
+        var started = (await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-only"), default)).Value;
+
+        var result = await fixture.RunService.ActionAsync(started.Id, new(started.Revision, "resume_mockups"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Status.Should().Be("running");
+        var gate = fixture.NodeRows.Single(x => x.NodeType == "approval-gate");
+        gate.Status.Should().Be("succeeded");
+        gate.OutputSnapshot.Should().Contain(asset.Id.ToString());
+        var publish = fixture.NodeRows.Single(x => x.NodeType == "publish-printify");
+        publish.Status.Should().Be("running");
+        publish.Stage.Should().Be("Queued");
+        fixture.VideoRows.Should().BeEmpty();
+        // Nothing paid for follows Mockup Approval without a video, so no cost is confirmed.
+        fixture.Quotes.Verify(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(),
+            It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_PublishWithoutVideoAndAutoApproval_ApprovesAndGoesStraightToPublishing()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var waiting = WorkflowTestData.Asset(product.Id);
+        waiting.ApprovalStatus = "pending";
+        waiting.ApprovedRevision = null;
+        fixture.AssetRows.Add(waiting);
+        var workflow = fixture.AddPublishWithoutVideoWorkflow(product, gateMode: "auto");
+
+        var result = await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-auto"), default);
+
+        result.Value.Status.Should().Be("running");
+        waiting.ApprovalStatus.Should().Be("approved");
+        fixture.NodeRows.Single(x => x.NodeType == "approval-gate").Status.Should().Be("succeeded");
+        fixture.NodeRows.Single(x => x.NodeType == "publish-printify").Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    [DataRow("retry")]
+    [DataRow("rerender")]
+    [DataRow("approve_video")]
+    public async Task ActionAsync_VideoActionOrRetryWithoutAFailedPublish_IsRefusedOnARunWithoutVideo(string action)
+    {
+        var fixture = new WorkflowTestData();
+        fixture.AddAsset(fixture.AddProduct());
+        var workflow = fixture.AddPublishWithoutVideoWorkflow(fixture.ProductRows.Single());
+        var started = (await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-only"), default)).Value;
+
+        var result = await fixture.RunService.ActionAsync(started.Id, new(started.Revision, action), default);
+
+        result.Error.Code.Should().Be("InvalidCheckpoint");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryAFailedPublishWithoutVideo_RunsThePublishStepAgain()
+    {
+        var fixture = new WorkflowTestData();
+        fixture.AddAsset(fixture.AddProduct());
+        var workflow = fixture.AddPublishWithoutVideoWorkflow(fixture.ProductRows.Single(), gateMode: "auto");
+        var started = (await fixture.RunService.StartAsync(workflow.Id, new(4, "publish-auto"), default)).Value;
+        var run = fixture.RunRows.Single();
+        var publish = fixture.NodeRows.Single(x => x.NodeType == "publish-printify");
+        publish.Status = "failed"; publish.ErrorMessage = "Printify is down.";
+        run.Status = "failed";
+
+        var result = await fixture.RunService.ActionAsync(started.Id, new(run.Revision, "retry"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        publish.Status.Should().Be("running");
+        publish.Attempt.Should().Be(2);
+        run.Status.Should().Be("running");
     }
 
     [TestMethod]
@@ -326,6 +491,38 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_ApproveVideo_ExportsPhotosInEtsyOrder_WithAGuideToListByHand()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        var video = fixture.VideoRows.Single();
+        var real = fixture.AssetRows.Single();
+        real.CreatedAt = WorkflowTestData.Now.UtcDateTime;
+        // Made earlier, but by AI: it goes after the photo of the real garment.
+        var ai = WorkflowTestData.Asset(real.ProductId, "Lifestyle");
+        ai.SourceType = "ai_generated";
+        ai.CreatedAt = WorkflowTestData.Now.UtcDateTime.AddHours(-1);
+        fixture.AssetRows.Add(ai);
+
+        await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", video.Id, 2), default);
+
+        var payload = WorkflowJson.Read<ExportJobPayload>(fixture.JobRows.Single().Payload);
+        payload.ApprovedMockups!.Select(x => (x.Id, x.AiMade)).Should().Equal((real.Id, false), (ai.Id, true));
+        payload.EtsyGuide.Should().Contain("mockup/mockup-01.png").And.Contain("mockup/mockup-02.png  [made with AI]")
+            .And.Contain($"video/final/v001__{video.Id}/video.mp4").And.Contain(EtsyListingText.AiDisclosure);
+        fixture.ItemRows.Single().IncludeMockupImages.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void EtsyGuide_AWorkflowThatPushesToPrintify_WarnsThatAHandMadeListingIsNotFulfilled()
+    {
+        var guide = ExportEtsyGuide.Build("Cat tee", "tshirt", [new("mockup/mockup-01.png", false)], [], "video/final/v001__x/video.mp4",
+            hasListing: true, etsy: null, viaPrintify: true);
+
+        guide.Should().Contain("not linked to Printify").And.Contain("keep its last paragraph").And.Contain("Production partners");
+    }
+
+    [TestMethod]
     public async Task ActionAsync_RejectVideo_KeepsReviewCheckpointWithoutExport()
     {
         var fixture = new WorkflowTestData();
@@ -423,6 +620,52 @@ public sealed class WorkflowRunServiceTests
         generate.InputSnapshot.Should().Contain("Second try");
         fixture.VideoRows.Should().HaveCount(2);
         fixture.VideoRows.MaxBy(x => x.VersionNumber)!.ConfigSnapshot.Should().Contain("Second try");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ResumeAfterStoppingAtReview_KeepsTheFinishedVideoAndWaitsForReviewAgain()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        var video = fixture.VideoRows.Single();
+        var finished = video.Status;
+        (await fixture.RunService.ActionAsync(run.Id, new(7, "cancel"), default)).IsSuccess.Should().BeTrue();
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(run.Revision, "resume"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Status.Should().Be("waiting_for_review");
+        fixture.VideoRows.Should().ContainSingle().Which.Status.Should().Be(finished);
+        fixture.NodeRows.Should().NotContain(x => x.Status == "cancelled");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ResumeAfterStoppingWhileRendering_MakesTheSameVersionAgain()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture); run.Status = "running";
+        var video = fixture.VideoRows.Single(); video.Status = "rendering";
+        video.Fingerprint = new VideoStoryboardPlanner().Plan(fixture.ProductRows.Single(), fixture.AssetRows, new()).Value.Fingerprint;
+        fixture.NodeRows.Single(x => x.NodeType == "generate-video").Status = "running";
+        fixture.NodeRows.Single(x => x.NodeType == "review-video").Status = "pending";
+        (await fixture.RunService.ActionAsync(run.Id, new(7, "cancel"), default)).IsSuccess.Should().BeTrue();
+        video.Status.Should().Be("failed", "a video the stop left unfinished is not counted against the plan");
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(run.Revision, "resume"), default);
+
+        result.Value.Status.Should().Be("running");
+        fixture.VideoRows.Should().ContainSingle().Which.Status.Should().Be("queued");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ResumeOfARunThatWasNotStopped_IsRefused()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "resume"), default);
+
+        result.Error.Code.Should().Be("InvalidCheckpoint");
     }
 
     [TestMethod]
@@ -629,6 +872,40 @@ public sealed class WorkflowRunServiceTests
         run.Status = "cancelled";
         run.CompletedAt = WorkflowTestData.Now.UtcDateTime;
         return (run, config, job);
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_ApproveVideoWithoutExportZip_GoesStraightToPushToPrintify()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture);
+        fixture.NodeRows.RemoveAll(x => x.NodeType == "export-zip");
+        var publish = new WorkflowNodeRun { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "publish-printify", NodeType = "publish-printify",
+            Status = "pending", Attempt = 1, InputSnapshot = WorkflowJson.Write(new { targetProfit = 10 }), OutputSnapshot = "{}" };
+        fixture.NodeRows.Add(publish);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "approve_video", fixture.VideoRows.Single().Id, 2), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.ExportRows.Should().BeEmpty();
+        publish.Status.Should().Be("running");
+        run.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_RetryAFailedVideoWithoutExportZip_RendersAgain()
+    {
+        var fixture = new WorkflowTestData();
+        var run = PrepareReview(fixture); run.Status = "failed";
+        fixture.NodeRows.RemoveAll(x => x.NodeType == "export-zip");
+        fixture.VideoRows.Single().Status = "failed";
+        fixture.NodeRows.Single(x => x.NodeType == "generate-video").Status = "failed";
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "retry"), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Status.Should().Be("running");
+        fixture.NodeRows.Single(x => x.NodeType == "review-video").Status.Should().Be("pending");
     }
 
     internal static WorkflowRun PrepareReview(WorkflowTestData fixture)

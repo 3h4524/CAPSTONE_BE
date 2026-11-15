@@ -67,7 +67,8 @@ public sealed record MarketOpportunityInsights(
     int? FreshnessAgeDays,
     int FreshnessScore,
     IReadOnlyDictionary<string, double> MarketScoreBreakdown,
-    IReadOnlyList<MarketOpportunityEvidenceResponse> Evidence);
+    IReadOnlyList<MarketOpportunityEvidenceResponse> Evidence,
+    double? FavoritesPerDay = null);
 
 public sealed record MarketOpportunityEvidenceResponse(
     string Title,
@@ -181,6 +182,9 @@ public interface IOpportunityService
     Task<SellerResearchProfileResponse> SaveProfileAsync(SellerResearchProfileRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<SellerNicheMarketInsightResponse>> GetMarketInsightsAsync(int limit = 12, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<SellerOpportunityResponse>> RefreshRankingAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Re-ranks the radar of every seller who has one, after a day's market collection; returns how many.</summary>
+    Task<int> RefreshAllRankingsAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<SellerOpportunityResponse>> ListAsync(string? state = null, int limit = 50, CancellationToken cancellationToken = default);
     Task<SellerOpportunityResponse?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<SellerOpportunityResponse?> UpdateStateAsync(Guid id, string state, CancellationToken cancellationToken = default);

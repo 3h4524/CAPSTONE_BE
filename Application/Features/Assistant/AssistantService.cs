@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.Assistant.Common;
@@ -11,6 +12,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Assistant;
 
@@ -23,11 +25,16 @@ public sealed class AssistantService(
     IAssistantConversationPurgeQueue purgeQueue,
     IUnitOfWork unitOfWork,
     IValidator<SendAssistantMessageRequestDto> sendValidator,
-    AssistantAgentLoop agentLoop,
     AssistantToolRegistry registry,
+    IAssistantTurnBuffer turnBuffer,
+    IAssistantTurnQueue turnQueue,
+    AssistantTurnReader turnReader,
+    IOptions<AssistantTurnOptions> turnOptions,
     TimeProvider timeProvider) : IAssistantService
 {
     private const string ToolMemoryKey = "toolMemory";
+    private const string StatusKey = "status";
+    private static readonly TimeSpan AssistantRowOffset = TimeSpan.FromMilliseconds(1);
 
     public async Task<Result<AssistantChatSession>> StartChatAsync(
         SendAssistantMessageRequestDto request,
@@ -41,6 +48,7 @@ public sealed class AssistantService(
             return Result.Failure<AssistantChatSession>(AssistantErrors.Unauthenticated());
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
+        var staleBefore = now - turnOptions.Value.StaleAfter;
         var text = request.Message.Trim();
         var history = new List<AssistantHistoryMessage>();
         Guid conversationId;
@@ -56,10 +64,12 @@ public sealed class AssistantService(
                 .Where(item => item.ConversationId == conversationId)
                 .OrderByDescending(item => item.CreatedAt)
                 .Take(AssistantLimits.HistoryWindow)
-                .Select(item => new { item.Role, item.Content, item.Metadata })
+                .Select(item => new { item.Role, item.Content, item.Metadata, item.CreatedAt })
                 .ToListAsync(cancellationToken);
+            if (recent.Any(item => StatusOf(item.Metadata, item.CreatedAt, staleBefore) == AssistantMessageStatuses.Streaming))
+                return Result.Failure<AssistantChatSession>(AssistantErrors.TurnInProgress());
             history.AddRange(recent.AsEnumerable().Reverse()
-                .Where(item => !string.IsNullOrWhiteSpace(item.Content))
+                .Where(item => !string.IsNullOrWhiteSpace(item.Content) && ReadStatus(item.Metadata) != AssistantMessageStatuses.Streaming)
                 .Select(item => new AssistantHistoryMessage(
                     item.Role,
                     item.Content,
@@ -95,15 +105,69 @@ public sealed class AssistantService(
             Metadata = new AssistantMessageMetadata(Route: request.Context?.Route).ToJson(),
             CreatedAt = now
         }, cancellationToken: cancellationToken);
+        var assistantMessageId = Guid.NewGuid();
+        await messages.AddAsync(new AssistantMessage
+        {
+            Id = assistantMessageId,
+            ConversationId = conversationId,
+            Role = AssistantMessageRoles.Assistant,
+            Content = string.Empty,
+            Metadata = new AssistantMessageMetadata(Kind: AssistantMessageKinds.Chat, Status: AssistantMessageStatuses.Streaming).ToJson(),
+            CreatedAt = now + AssistantRowOffset
+        }, cancellationToken: cancellationToken);
+        var opening = AssistantStreamEvent.Conversation(conversationId, userMessageId, assistantMessageId);
+        await turnBuffer.AppendAsync(assistantMessageId, opening.Type, opening.DataJson(), cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return Result.Success(new AssistantChatSession(conversationId, userMessageId, userId, caller, text, request.Context, history));
+        var session = new AssistantChatSession(conversationId, userMessageId, assistantMessageId, userId, caller, text, request.Context, history);
+        turnQueue.Enqueue(session);
+        return Result.Success(session);
     }
 
-    public IAsyncEnumerable<AssistantStreamEvent> StreamAsync(
+    public IAsyncEnumerable<AssistantTurnEntry> StreamAsync(
         AssistantChatSession session,
         CancellationToken cancellationToken = default) =>
-        agentLoop.RunAsync(session, cancellationToken);
+        turnReader.ReadAsync(
+            session.AssistantMessageId,
+            null,
+            timeProvider.GetUtcNow().UtcDateTime + turnOptions.Value.StaleAfter,
+            cancellationToken);
+
+    public async Task<Result<IAsyncEnumerable<AssistantTurnEntry>>> AttachToTurnAsync(
+        Guid messageId,
+        string? afterEventId,
+        CancellationToken cancellationToken = default)
+    {
+        if (currentUser.UserId is not { } userId)
+            return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.Unauthenticated());
+        var afterId = string.IsNullOrWhiteSpace(afterEventId) ? null : afterEventId.Trim();
+        if (afterId is not null && !IsStreamEntryId(afterId))
+            return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.InvalidEventId());
+
+        var message = await FindOwnedAssistantMessageAsync(messageId, userId, cancellationToken);
+        if (message is null)
+            return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.MessageNotFound());
+        if (!await turnBuffer.ExistsAsync(messageId, cancellationToken))
+            return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.StreamNotFound());
+
+        return Result.Success(turnReader.ReadAsync(messageId, afterId, message.CreatedAt + turnOptions.Value.StaleAfter, cancellationToken));
+    }
+
+    public async Task<Result> StopTurnAsync(Guid messageId, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.UserId is not { } userId)
+            return Result.Failure(AssistantErrors.Unauthenticated());
+
+        var message = await FindOwnedAssistantMessageAsync(messageId, userId, cancellationToken);
+        if (message is null)
+            return Result.Failure(AssistantErrors.MessageNotFound());
+        var staleBefore = timeProvider.GetUtcNow().UtcDateTime - turnOptions.Value.StaleAfter;
+        if (StatusOf(message.Metadata, message.CreatedAt, staleBefore) != AssistantMessageStatuses.Streaming)
+            return Result.Failure(AssistantErrors.NotStreaming());
+
+        await turnBuffer.RequestStopAsync(messageId, cancellationToken);
+        return Result.Success();
+    }
 
     public async Task<Result<IReadOnlyList<AssistantConversationSummaryResponseDto>>> ListConversationsAsync(
         CancellationToken cancellationToken = default)
@@ -143,11 +207,12 @@ public sealed class AssistantService(
             .OrderBy(item => item.CreatedAt)
             .ToListAsync(cancellationToken);
         var now = timeProvider.GetUtcNow().UtcDateTime;
+        var staleBefore = now - turnOptions.Value.StaleAfter;
 
         return Result.Success(new AssistantConversationDetailResponseDto(
             conversation.Id,
             conversation.Title,
-            items.Select(ToMessageDto).ToArray(),
+            items.Select(item => ToMessageDto(item, StatusOf(item.Metadata, item.CreatedAt, staleBefore))).ToArray(),
             actions.Select(action => ToActionDto(action, now)).ToArray()));
     }
 
@@ -325,11 +390,49 @@ public sealed class AssistantService(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
-        return Result.Success(new AssistantActionResultResponseDto(ToActionDto(action, now), ToMessageDto(message)));
+        return Result.Success(new AssistantActionResultResponseDto(ToActionDto(action, now), ToMessageDto(message, AssistantMessageStatuses.Done)));
     }
 
-    private static AssistantMessageResponseDto ToMessageDto(AssistantMessage message) =>
-        new(message.Id, message.Role, message.Content, PublicMetadata(message.Metadata), message.CreatedAt);
+    private async Task<AssistantMessage?> FindOwnedAssistantMessageAsync(Guid messageId, Guid userId, CancellationToken cancellationToken)
+    {
+        var message = await messages.GetByIdAsync(messageId, cancellationToken);
+        if (message is null || message.Role != AssistantMessageRoles.Assistant)
+            return null;
+        var ownsConversation = await conversations.Query()
+            .AnyAsync(item => item.Id == message.ConversationId && item.UserId == userId && item.DeletedAt == null, cancellationToken);
+        return ownsConversation ? message : null;
+    }
+
+    private static AssistantMessageResponseDto ToMessageDto(AssistantMessage message, string status) =>
+        new(message.Id, message.Role, message.Content, PublicMetadata(message.Metadata), message.CreatedAt, status);
+
+    private static string StatusOf(string? metadataJson, DateTime createdAt, DateTime staleBefore)
+    {
+        var status = ReadStatus(metadataJson);
+        return status == AssistantMessageStatuses.Streaming && createdAt < staleBefore ? AssistantMessageStatuses.Interrupted : status;
+    }
+
+    private static string ReadStatus(string? metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+            return AssistantMessageStatuses.Done;
+        try
+        {
+            return JsonNode.Parse(metadataJson) is JsonObject metadata && metadata[StatusKey] is JsonValue value && value.TryGetValue<string>(out var status)
+                ? status
+                : AssistantMessageStatuses.Done;
+        }
+        catch (JsonException)
+        {
+            return AssistantMessageStatuses.Done;
+        }
+    }
+
+    private static bool IsStreamEntryId(string value)
+    {
+        var parts = value.Split('-');
+        return parts.Length == 2 && parts.All(part => part.Length > 0 && ulong.TryParse(part, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _));
+    }
 
     private static JsonElement PublicMetadata(string metadataJson)
     {

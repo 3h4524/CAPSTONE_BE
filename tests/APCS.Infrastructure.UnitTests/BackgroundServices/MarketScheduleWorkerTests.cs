@@ -24,6 +24,7 @@ public sealed class MarketScheduleWorkerTests
     private readonly Mock<IMarketResearchService> collector = new();
     private readonly Mock<IMarketInsightScheduleService> insights = new();
     private readonly Mock<IMarketResearchQueue> queue = new();
+    private readonly Mock<IOpportunityService> radar = new();
 
     [TestMethod]
     public async Task ResearchSync_ScheduleOff_SleepsUntilSaved()
@@ -70,6 +71,18 @@ public sealed class MarketScheduleWorkerTests
         (await worker.TrySyncAsync(default)).Should().Be(DateTimeOffset.Parse("2026-11-09T00:00:00Z"));
 
         collector.Verify(x => x.SelectUnobservedQueriesAsync(It.IsAny<CommercePlatform>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<DateOnly>(), It.IsAny<CancellationToken>()), Times.Once);
+        radar.Verify(x => x.RefreshAllRankingsAsync(It.IsAny<CancellationToken>()), Times.Once, "sellers' radars are ranked again once the day is collected");
+    }
+
+    [TestMethod]
+    public async Task ResearchSync_RankingFails_StillSleepsUntilTheNextUtcDay()
+    {
+        research.Setup(x => x.GetAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Schedule(next: Now));
+        collector.Setup(x => x.SelectUnobservedQueriesAsync(It.IsAny<CommercePlatform>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<DateOnly>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+        radar.Setup(x => x.RefreshAllRankingsAsync(It.IsAny<CancellationToken>())).ThrowsAsync(new InvalidOperationException("db down"));
+
+        (await ResearchWorker().TrySyncAsync(default)).Should().Be(DateTimeOffset.Parse("2026-11-09T00:00:00Z"));
     }
 
     [TestMethod]
@@ -139,7 +152,7 @@ public sealed class MarketScheduleWorkerTests
 
     private MarketResearchSyncWorker ResearchWorker(MarketScheduleSignal? signal = null)
     {
-        var services = new ServiceCollection().AddScoped(_ => research.Object).AddScoped(_ => collector.Object).BuildServiceProvider();
+        var services = new ServiceCollection().AddScoped(_ => research.Object).AddScoped(_ => collector.Object).AddScoped(_ => radar.Object).BuildServiceProvider();
         return new(services, time, NullLogger<MarketResearchSyncWorker>.Instance, signal);
     }
 

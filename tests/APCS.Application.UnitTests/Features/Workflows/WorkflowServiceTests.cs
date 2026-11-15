@@ -9,6 +9,21 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 public sealed class WorkflowServiceTests
 {
     [TestMethod]
+    public void VideoTexts_ReadsEverySceneDirectionSharedAndPerProduct()
+    {
+        var own = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new AiVideoSceneOptions(ExtraInstructions: "product scene note")]);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiGlobalInstructions: "warm light",
+            AiScenes: [new AiVideoSceneOptions(ExtraInstructions: "slow push", StudioPrompt: "sunny cafe"), new AiVideoSceneOptions()],
+            ProductConfigs: new Dictionary<Guid, GenerateVideoConfig> { [Guid.NewGuid()] = own });
+        var definition = new WorkflowDefinition(2,
+            [new WorkflowNode("video", "generate-video", "Generate video", new(0, 0), System.Text.Json.JsonSerializer.SerializeToElement(config))],
+            []);
+
+        WorkflowService.VideoTexts(definition).Select(text => text.Value)
+            .Should().BeEquivalentTo("warm light", "slow push", "sunny cafe", "product scene note");
+    }
+
+    [TestMethod]
     public async Task SaveAsync_InvalidRequest_InvokesValidatorBeforePersistence()
     {
         var fixture = new WorkflowTestData();

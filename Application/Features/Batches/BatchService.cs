@@ -1,6 +1,8 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Batches.Dtos;
+using APCS.Application.Features.Moderation;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -19,8 +21,24 @@ public sealed class BatchService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     IValidator<SaveBatchDto> batchValidator,
-    IValidator<SaveProductDto> productValidator) : IBatchService
+    IValidator<SaveProductDto> productValidator,
+    IContentModerationService? moderation = null) : IBatchService
 {
+    // The product text that reaches the design prompt, checked before it is saved.
+    private async Task<Error?> ModerateProductAsync(SaveProductDto request, Guid? productId, bool blocklistOnly,
+        CancellationToken cancellationToken)
+    {
+        if (moderation is null) return null;
+        var verdict = await moderation.CheckTextAsync(
+            ModerationTexts.Product(request.Name, request.Niche, string.Join(", ", request.Keywords ?? []),
+                request.ProductDescription, request.DesignText, request.CustomPrompt),
+            new ModerationContext(currentUser.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Input,
+                ModerationSubjects.Product, productId),
+            cancellationToken,
+            blocklistOnly);
+        return verdict.IsBlocked ? ModerationErrors.Blocked(verdict) : null;
+    }
+
     private static Error MissingBatch => Error.NotFound("Batches.NotFound", "This batch was not found.");
     private static Error MissingProduct => Error.NotFound("Products.NotFound", "This product was not found in this batch.");
     private static Error PendingOnly => Error.Conflict("MSG31", "Only pending products can be edited or deleted.");
@@ -170,6 +188,7 @@ public sealed class BatchService(
         var name = request.Name.Trim();
         if (await products.Query().AnyAsync(x => x.BatchId == batchId && x.DeletedAt == null && x.Name.ToLower() == name.ToLower(), cancellationToken))
             return Result.Failure<ProductDto>(Error.Conflict("Products.Duplicate", "A product with this name already exists in this batch."));
+        if (await ModerateProductAsync(request, null, false, cancellationToken) is { } blocked) return Result.Failure<ProductDto>(blocked);
         var keywords = NormalizeKeywords(request.Keywords);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var product = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batchId, Name = name,
@@ -223,6 +242,13 @@ public sealed class BatchService(
                 continue;
             }
 
+            // The keyword filter only: Gemini checks each product in full before its designs are generated.
+            if (await ModerateProductAsync(item, null, true, cancellationToken) is { } blocked)
+            {
+                errors.Add(new BatchProductImportErrorDto(row, name, blocked.Message));
+                continue;
+            }
+
             var keywords = NormalizeKeywords(item.Keywords);
             var niche = Clean(item.Niche);
             inserted.Add(new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batchId, Name = name,
@@ -247,6 +273,7 @@ public sealed class BatchService(
         var name = request.Name.Trim();
         if (await products.Query().AnyAsync(x => x.Id != productId && x.BatchId == batchId && x.DeletedAt == null && x.Name.ToLower() == name.ToLower(), cancellationToken))
             return Result.Failure<ProductDto>(Error.Conflict("Products.Duplicate", "A product with this name already exists in this batch."));
+        if (await ModerateProductAsync(request, productId, false, cancellationToken) is { } blocked) return Result.Failure<ProductDto>(blocked);
         var keywords = NormalizeKeywords(request.Keywords);
         product.Name = name; product.ProductType = request.ProductType; product.NicheCategory = Clean(request.Niche);
         product.MainKeywords = string.Join(", ", keywords); product.Notes = Clean(request.SourceNotes);

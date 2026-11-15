@@ -23,7 +23,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IWorkflowStateRepository state, IUnitOfWork uow, IMediaStorage storage, WorkflowRuntime runtime, TimeProvider time,
     IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null,
     ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null,
-    ISceneVideoNotifier? sceneNotifier = null, IMediaLeaseRecovery? leaseRecovery = null) : IMediaJobService
+    ISceneVideoNotifier? sceneNotifier = null, IMediaLeaseRecovery? leaseRecovery = null,
+    IWorkflowRunNotifier? runNotifier = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
         => await ClaimCoreAsync(null, null, ct);
@@ -184,17 +185,18 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     {
         if (request.Progress is < 0 or > 100 || !new[] { "Planning", "Generating Assets", "Rendering", "Technical QA", "Uploading", "Exporting" }.Contains(request.Stage))
             return Result.Failure(Error.Validation("Invalid progress checkpoint."));
-        await using var tx = await uow.BeginTransactionAsync(ct);
-        var unlocked = await jobs.GetByIdAsync(id, ct);
-        if (unlocked == null) return Result.Failure(LeaseError());
-        var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
-        var job = await state.LockJobAsync(id, ct);
-        if (!ValidLease(job, request.LeaseToken, run)) return Result.Failure(LeaseError());
-        job!.Progress = Math.Max(job.Progress, request.Progress); job.Stage = request.Stage; job.HeartbeatAt = time.GetUtcNow().UtcDateTime;
-        job.LeaseExpiresAt = time.GetUtcNow().AddMinutes(2).UtcDateTime;
-        var node = (await nodes.GetByIdAsync(job.WorkflowNodeRunId, ct))!; node.Progress = job.Progress; node.Stage = job.Stage;
-        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success();
+        // Every render sends one every 15 seconds: one statement that locks only the job, not the run the seller's
+        // page reads, and the canvas step is written only when there is something new to show.
+        var now = time.GetUtcNow().UtcDateTime;
+        var renewal = await state.RenewLeaseAsync(id, request.LeaseToken, request.Stage, request.Progress, now, now.AddMinutes(2), ProgressStep, ct);
+        if (renewal is null) return Result.Failure(LeaseError());
+        if (renewal.StepWritten && runNotifier != null)
+            await runNotifier.ProgressAsync(renewal.RunId, renewal.RunGroupId, renewal.Stage, renewal.Progress, ct);
+        return Result.Success();
     }
+
+    /// <summary>Progress, in points, a heartbeat has to add before the canvas step is written again.</summary>
+    public const int ProgressStep = 5;
     public async Task<Result> CompleteAsync(Guid id, JobCompletion request, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
@@ -300,6 +302,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             await qualityJobs.QueueAsync(job.WorkflowRunId, qualityVideoId, null, ct);
         await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
+        if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
         return Result.Success();
     }
     private static JsonObject? ReadConfigSnapshot(string? value)
@@ -347,6 +350,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (job.Status == "failed") await runtime.FailAsync(run!, job.WorkflowNodeRunId, job.ErrorMessage, ct);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
+        if (runNotifier != null) await runNotifier.RunChangedAsync(run!, ct);
         return Result.Success();
     }
     // What the AI scene in the given state recorded about itself: its provider's refusal, or why its outcome is unknown.

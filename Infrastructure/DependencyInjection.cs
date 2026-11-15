@@ -132,6 +132,11 @@ public static class DependencyInjection
         // configuration rather than asking each Seller to connect a MiniMax account.
         services.AddOptions<MiniMaxOptions>()
             .Bind(configuration.GetSection(MiniMaxOptions.SectionName));
+        // The platform's own Ideogram and MiniMax keys, used in turn up to a daily limit each; counted in Redis.
+        services.AddOptions<SystemApiKeysOptions>()
+            .Configure(options => SystemApiKeysOptions.Read(configuration, options));
+        services.AddSingleton<ISystemApiKeyUsageStore, RedisSystemApiKeyUsageStore>();
+        services.AddSingleton<ISystemApiKeyPool, SystemApiKeyPool>();
         services.AddScoped<IAiVideoCredentialResolver, AiVideoCredentialResolver>();
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
         services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy
@@ -145,6 +150,7 @@ public static class DependencyInjection
         services.AddSingleton<IRagIngestionQueue, APCS.Infrastructure.BackgroundServices.RagIngestionQueueChannel>();
         services.AddSingleton<IMarketResearchQueue, APCS.Infrastructure.BackgroundServices.MarketResearchQueueChannel>();
         services.AddSingleton<IAssistantConversationPurgeQueue, APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeQueueChannel>();
+        services.AddSingleton<IAssistantTurnQueue, APCS.Infrastructure.BackgroundServices.AssistantTurnQueueChannel>();
         services.AddScoped<IBatchJobClaims, APCS.Infrastructure.BackgroundServices.BatchJobClaims>();
         services.AddOptions<GeminiEmbeddingOptions>()
             .Bind(configuration.GetSection(GeminiEmbeddingOptions.SectionName));
@@ -166,6 +172,9 @@ public static class DependencyInjection
         }
         services.AddOptions<GeminiTextGenerationOptions>()
             .Bind(configuration.GetSection(GeminiTextGenerationOptions.SectionName));
+        services.AddOptions<APCS.Application.Features.Moderation.ModerationOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Moderation.ModerationOptions.SectionName))
+            .ValidateDataAnnotations();
         services.AddOptions<APCS.Application.Features.Workflows.VideoPromptPreparationOptions>()
             .Bind(configuration.GetSection(APCS.Application.Features.Workflows.VideoPromptPreparationOptions.SectionName));
         services.AddScoped<IVideoFirstFramePreparer, MiniMaxFirstFramePreparer>();
@@ -187,6 +196,10 @@ public static class DependencyInjection
                     configuration[$"{GeminiEmbeddingOptions.SectionName}:ApiKey"]);
         });
         services.AddSingleton<IAssistantChatModel, GeminiAssistantChatModel>();
+        services.AddOptions<APCS.Application.Features.Assistant.Common.AssistantTurnOptions>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Assistant.Common.AssistantTurnOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
         services.AddOptions<EtsyOptions>()
             .Bind(configuration.GetSection(EtsyOptions.SectionName));
         services.AddOptions<PrintifyOptions>()
@@ -234,6 +247,14 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
         });
         services.AddScoped<IPrintifyClient, PrintifyClient>();
+        // Printify's mock-up photos, read to make templates of Printify products: no redirects, so only its own host is reached.
+        services.AddHttpClient(PrintifyMockupCalibrator.HttpClientName, (provider, client) =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(provider.GetRequiredService<IOptions<PrintifyOptions>>().Value.UserAgent);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddSingleton<IPrintifyMockupCalibrator, PrintifyMockupCalibrator>();
+        services.AddSingleton<IPrintifyAdminToken, PrintifyAdminToken>();
         services.AddHttpClient(EtsyShopClient.MediaDownloadClientName, client => client.Timeout = TimeSpan.FromMinutes(2));
         services.AddHttpClient(EtsyShopClient.UploadClientName, (provider, client) =>
         {
@@ -252,6 +273,9 @@ public static class DependencyInjection
             ConfigurationKeys.ConnectionStrings.DefaultConnection);
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowActivitySignal>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.MarketScheduleSignal>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationSignal>();
+        services.AddSingleton<IStyleArtPresetTranslationQueue>(provider =>
+            provider.GetRequiredService<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationSignal>());
         services.AddSingleton<APCS.Infrastructure.Persistence.AfterCommitInterceptor>();
         services.AddSingleton<APCS.Infrastructure.Persistence.MediaJobQueuedInterceptor>();
         services.AddDbContext<AppDbContext>((provider, options) => options
@@ -271,16 +295,26 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchJobWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RagIngestionRecoveryService>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.StyleArtPresetTranslationWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantConversationPurgeWorker>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AssistantTurnWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
+        services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();
+        services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupStartQueue, APCS.Infrastructure.BackgroundServices.RunGroupStartQueue>();
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupStartWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
         // Use cases queue steps through the transaction they run in; the worker reads the channel itself.
         services.AddScoped<IWorkflowPublishQueue, APCS.Infrastructure.BackgroundServices.TransactionalWorkflowPublishQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowPublishWorker>();
+        services.AddSingleton<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobChannel>();
+        services.AddSingleton<APCS.Application.Features.BatchMockups.Printify.IPrintifyTemplateJobQueue>(provider =>
+            provider.GetRequiredService<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobChannel>());
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.PrintifyTemplateJobWorker>();
 
         return services;
     }
@@ -298,12 +332,16 @@ public static class DependencyInjection
         services.AddScoped<IPlanRepository, PlanRepository>();
         services.AddScoped<IInvoiceRepository, InvoiceRepository>();
         services.AddScoped<IUsageStatisticRepository, UsageStatisticRepository>();
+        services.AddSingleton<APCS.Application.Abstractions.Moderation.IModerationStore, ModerationStore>();
         services.AddScoped<IApiKeyRepository, ApiKeyRepository>();
         services.AddScoped<ISupportTicketRepository, SupportTicketRepository>();
         services.AddScoped<IAssistantPendingActionRepository, AssistantPendingActionRepository>();
         services.AddScoped<IAssistantConversationRepository, AssistantConversationRepository>();
         services.AddScoped<IDesignTemplateRepository, DesignTemplateRepository>();
         services.AddScoped<IWorkflowStateRepository, WorkflowStateRepository>();
+        services.AddScoped<IMockupTemplatePrintifyLinkRepository, MockupTemplatePrintifyLinkRepository>();
+        services.AddScoped<IPrintifyColorMapRepository, PrintifyColorMapRepository>();
+        services.AddScoped<IModerationCheckRepository, ModerationCheckRepository>();
 
         return services;
     }
@@ -325,6 +363,7 @@ public static class DependencyInjection
         // A background worker sets the acting seller on its scope; a request reads the signed-in user.
         services.AddScoped<ActingUserContext>();
         services.AddScoped<ICurrentUser, CurrentUserService>();
+        services.AddScoped<APCS.Application.Abstractions.Localization.ICultureAccessor, CultureAccessorService>();
         services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IJwtService, JwtService>();
@@ -335,6 +374,7 @@ public static class DependencyInjection
         services.AddScoped<IFileStorageService, CloudinaryFileStorageService>();
         services.AddScoped<IPublicImageService, CloudinaryPublicImageService>();
         services.AddScoped<IMockupCompositor, CloudinaryMockupCompositor>();
+        services.AddSingleton<IPrintFileSource, CloudinaryPrintFileSource>();
         services.AddOptions<MockupOptions>()
             .Bind(configuration.GetSection(ConfigurationSections.Mockups));
         // Optional: without the section Free and the Pro trial use the defaults on UsageAllowanceOptions.
@@ -424,6 +464,13 @@ public static class DependencyInjection
         });
 
         services.AddScoped<ICacheService, RedisCacheService>();
+        services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
+        {
+            var redisConfiguration = StackExchange.Redis.ConfigurationOptions.Parse(redisOptions.ConnectionString);
+            redisConfiguration.AbortOnConnectFail = false;
+            return StackExchange.Redis.ConnectionMultiplexer.Connect(redisConfiguration);
+        });
+        services.AddSingleton<IAssistantTurnBuffer, RedisAssistantTurnBuffer>();
 
         return services;
     }

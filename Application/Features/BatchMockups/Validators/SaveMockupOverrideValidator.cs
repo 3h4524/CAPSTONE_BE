@@ -23,5 +23,9 @@ public sealed class SaveMockupOverrideValidator : AbstractValidator<SaveMockupOv
             .Must(area => area!.X >= 0 && area.Y >= 0 && area.Width > 0 && area.Height > 0)
             .WithMessage("The print area needs a position of 0 or more and a size above 0.")
             .When(x => x.Override?.PrintArea is not null);
+        RuleFor(x => x.Override.Areas)
+            .Must(areas => MockupRules.AreasProblem(areas, forTemplate: false) is null)
+            .WithMessage(x => MockupRules.AreasProblem(x.Override.Areas, forTemplate: false)!)
+            .When(x => x.Override?.Areas is not null);
     }
 }

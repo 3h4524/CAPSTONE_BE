@@ -24,7 +24,7 @@ public sealed class WorkflowHubTests
         var context = new Mock<HubCallerContext>();
         context.SetupGet(x => x.ConnectionId).Returns("connection");
         var groups = new Mock<IGroupManager>();
-        var hub = new WorkflowHub(runs.Object, user.Object) { Context = context.Object, Groups = groups.Object };
+        var hub = new WorkflowHub(runs.Object, Mock.Of<IRepository<WorkflowRunGroup>>(), user.Object) { Context = context.Object, Groups = groups.Object };
 
         await hub.JoinWorkflow(runId);
 
@@ -41,9 +41,47 @@ public sealed class WorkflowHubTests
         var user = new Mock<ICurrentUser>();
         user.SetupGet(x => x.UserId).Returns(Guid.NewGuid());
         var groups = new Mock<IGroupManager>();
-        var hub = new WorkflowHub(runs.Object, user.Object) { Context = Mock.Of<HubCallerContext>(), Groups = groups.Object };
+        var hub = new WorkflowHub(runs.Object, Mock.Of<IRepository<WorkflowRunGroup>>(), user.Object) { Context = Mock.Of<HubCallerContext>(), Groups = groups.Object };
 
         var action = () => hub.JoinWorkflow(runId);
+
+        await action.Should().ThrowAsync<HubException>();
+        groups.Verify(x => x.AddToGroupAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task JoinRunGroup_Owner_JoinsTheGroupOfEveryRun()
+    {
+        var owner = Guid.NewGuid();
+        var groupId = Guid.NewGuid();
+        var runGroups = new Mock<IRepository<WorkflowRunGroup>>();
+        runGroups.Setup(x => x.GetByIdAsync(groupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkflowRunGroup { Id = groupId, UserId = owner });
+        var user = new Mock<ICurrentUser>();
+        user.SetupGet(x => x.UserId).Returns(owner);
+        var context = new Mock<HubCallerContext>();
+        context.SetupGet(x => x.ConnectionId).Returns("connection");
+        var groups = new Mock<IGroupManager>();
+        var hub = new WorkflowHub(Mock.Of<IRepository<WorkflowRun>>(), runGroups.Object, user.Object) { Context = context.Object, Groups = groups.Object };
+
+        await hub.JoinRunGroup(groupId);
+
+        groups.Verify(x => x.AddToGroupAsync("connection", $"workflow-group:{groupId:D}", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task JoinRunGroup_OtherUser_CannotSubscribe()
+    {
+        var groupId = Guid.NewGuid();
+        var runGroups = new Mock<IRepository<WorkflowRunGroup>>();
+        runGroups.Setup(x => x.GetByIdAsync(groupId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WorkflowRunGroup { Id = groupId, UserId = Guid.NewGuid() });
+        var user = new Mock<ICurrentUser>();
+        user.SetupGet(x => x.UserId).Returns(Guid.NewGuid());
+        var groups = new Mock<IGroupManager>();
+        var hub = new WorkflowHub(Mock.Of<IRepository<WorkflowRun>>(), runGroups.Object, user.Object) { Context = Mock.Of<HubCallerContext>(), Groups = groups.Object };
+
+        var action = () => hub.JoinRunGroup(groupId);
 
         await action.Should().ThrowAsync<HubException>();
         groups.Verify(x => x.AddToGroupAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);

@@ -49,6 +49,22 @@ public sealed class StartWorkflowRunToolTests
             new AssistantClientContextDto("/workflows", workflowId, null, null, canvas));
 
     [TestMethod]
+    public async Task ExecuteAsync_WhenTheWorkflowMakesDesigns_SendsTheUserToTheWorkflowScreen()
+    {
+        var id = Guid.NewGuid();
+        var workflow = Workflow(id);
+        var design = new WorkflowNode("d", "design-image", "Design image", new Point(), AssistantTestSupport.Json("{}"));
+        workflows.Setup(w => w.GetAsync(id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(workflow with { Definition = workflow.Definition with { Nodes = [.. workflow.Definition.Nodes, design] } }));
+
+        var outcome = await Tool().ExecuteAsync(Context(), AssistantTestSupport.Json($$"""{"workflowId":"{{id}}","reply":"ok"}"""), default);
+
+        outcome.Succeeded.Should().BeFalse();
+        outcome.ModelResultJson.Should().Contain("needs_workflow_screen");
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_WhenWorkflowIsNotOwned_ReturnsServiceErrorWithoutPendingAction()
     {
         var id = Guid.NewGuid();

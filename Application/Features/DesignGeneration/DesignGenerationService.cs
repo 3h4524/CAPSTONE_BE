@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Common.Validation;
@@ -12,6 +13,8 @@ using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Application.Features.DesignGeneration.Dtos.Request;
 using APCS.Application.Features.DesignGeneration.Dtos.Response;
 using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.Moderation;
+using APCS.Application.Features.Moderation.Common;
 using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -47,7 +50,10 @@ public sealed class DesignGenerationService(
     IValidator<StartGenerationRequestDto> validator,
     IOptions<DesignGenerationSettings> settings,
     IPlanEntitlementService entitlements,
-    IDesignTextCheckQueue? textCheckQueue = null) : IDesignGenerationService
+    IDesignTextCheckQueue? textCheckQueue = null,
+    IContentModerationService? moderation = null,
+    IMediaStorage? mediaStorage = null,
+    ISystemApiKeyPool? systemKeys = null) : IDesignGenerationService
 {
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
@@ -85,6 +91,9 @@ public sealed class DesignGenerationService(
         var validation = await validator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
             return Result.Failure<StartGenerationResponseDto>(validation.ToValidationError());
+        if (await ModerateInputAsync(userId, ModerationSubjects.BatchJob, batchJobId,
+                [new ModerationText("the job instructions", request.Instructions)], cancellationToken) is { } blockedInstructions)
+            return Result.Failure<StartGenerationResponseDto>(blockedInstructions);
 
         var job = await batchJobs.Query()
             .SingleOrDefaultAsync(x => x.Id == batchJobId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
@@ -105,11 +114,11 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the chosen image provider must exist before the job can start.
+        // BR51: a valid, connected key for the chosen image provider must exist before the job can start, unless the
+        // plan makes the images on the platform's keys.
         var imageProvider = request.ImageProvider ?? ImageGenerationProviders.Default;
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, rows.Count * request.VariationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // The plan sets how many products, variations and parallel jobs a run may use.
         var planError = await CheckPlanAsync(userId, job.Id, rows.Count, request.VariationCount, request.RequireApproval, cancellationToken);
@@ -229,14 +238,13 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the job's image provider must still exist.
+        // BR51: a valid, connected key for the job's image provider must still exist (or the plan's platform keys).
         var imageProvider = ReadImageProvider(job.Config);
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var (variationCount, _) = ReadConfig(job.Config);
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, failedRows.Count * variationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // A retry is held to the plan in effect now, which may have changed since the first run.
-        var (variationCount, _) = ReadConfig(job.Config);
         var planError = await CheckPlanAsync(userId, job.Id, failedRows.Count, variationCount, ReadRequireApproval(job.Config), cancellationToken, newRun: false);
         if (planError is not null) return Result.Failure<StartGenerationResponseDto>(planError);
 
@@ -307,6 +315,13 @@ public sealed class DesignGenerationService(
         if (request.Instructions?.Trim().Length > PromptRules.MaximumInstructionsLength)
             return Result.Failure<StartGenerationResponseDto>(Error.Validation(
                 $"Keep the instructions under {PromptRules.MaximumInstructionsLength} characters."));
+        if (await ModerateInputAsync(userId, ModerationSubjects.ProductPrompt, batchJobProductId,
+            [
+                new ModerationText("the instructions", request.Instructions),
+                new ModerationText("the custom image prompt", request.CustomPrompt),
+                new ModerationText("the design text", request.DesignText)
+            ], cancellationToken) is { } blockedRequest)
+            return Result.Failure<StartGenerationResponseDto>(blockedRequest);
         Guid? stylePresetId = null;
         if (!string.IsNullOrWhiteSpace(request.StyleArtPresetId))
         {
@@ -344,17 +359,17 @@ public sealed class DesignGenerationService(
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
-        // BR51: a valid, connected key for the job's image provider must still exist.
+        // The Seller may ask for a different number of designs than the job first made.
+        var variationCount = request.VariationCount ?? ReadConfig(job.Config).VariationCount;
+
+        // BR51: a valid, connected key for the job's image provider must still exist (or the plan's platform keys).
         var imageProvider = ReadImageProvider(job.Config);
-        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
-        if (!ownedKeys.Any(key => IsUsableKey(key, imageProvider, now)))
-            return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.MissingApiKey(imageProvider));
+        var keyError = await CheckImageKeyAsync(userId, imageProvider, variationCount, now, cancellationToken);
+        if (keyError is not null) return Result.Failure<StartGenerationResponseDto>(keyError);
 
         // BR50: generating again consumes quota again.
         var subscription = await subscriptions.GetActiveWithPlanAsync(userId, cancellationToken);
         if (subscription is null) return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.NoActivePlan());
-        // The Seller may ask for a different number of designs than the job first made.
-        var variationCount = request.VariationCount ?? ReadConfig(job.Config).VariationCount;
         var usage = await usageStatistics.GetCurrentPeriodAsync(userId, DateOnly.FromDateTime(now), cancellationToken);
         if (variationCount > subscription.Plan.ImageGenerationQuota - (usage?.ImagesGenerated ?? 0))
             return Result.Failure<StartGenerationResponseDto>(DesignGenerationErrors.InsufficientQuota());
@@ -457,27 +472,37 @@ public sealed class DesignGenerationService(
             await FailJobAsync(job.Id, $"Image generation with {ImageGenerationProviders.Label(providerName)} is not available.", cancellationToken);
             return;
         }
+        // On a plan with the platform's keys the images are made on those; the Seller's own key, when they have one that
+        // works, takes over once the platform's are used up for the day.
+        var useSystemKeys = await UsesSystemKeysAsync(job.UserId, providerName, cancellationToken);
         var ownedKeys = await apiKeys.ListOwnedAsync(job.UserId, cancellationToken);
         var providerKey = ownedKeys.FirstOrDefault(key =>
             string.Equals(key.ServiceProvider, providerName, StringComparison.OrdinalIgnoreCase) && key.IsActive == true);
-        if (providerKey is null)
+        if (providerKey is null && !useSystemKeys)
         {
             // Defensive only: StartAsync already required a valid key moments earlier. The job is failed rather
             // than left queued, where nothing would ever finish it.
             await FailJobAsync(job.Id, $"The {ImageGenerationProviders.Label(providerName)} API key is no longer available.", cancellationToken);
             return;
         }
-        string apiKeyPlain;
-        try
+        string? apiKeyPlain = null;
+        if (providerKey is not null)
         {
-            apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
-        }
-        catch (CryptographicException)
-        {
-            // A key is encrypted with the key ring of the server it was saved through, which another server sharing the
-            // database does not have.
-            await FailJobAsync(job.Id, UnreadableKeyMessage(providerName), cancellationToken);
-            return;
+            try
+            {
+                apiKeyPlain = apiKeyCredentials.Unprotect(providerKey.KeyValueEncrypted);
+            }
+            catch (CryptographicException) when (!useSystemKeys)
+            {
+                // A key is encrypted with the key ring of the server it was saved through, which another server sharing
+                // the database does not have.
+                await FailJobAsync(job.Id, UnreadableKeyMessage(providerName), cancellationToken);
+                return;
+            }
+            catch (CryptographicException)
+            {
+                // Only the stand-in for the platform's keys, which this server goes without.
+            }
         }
         var requireApproval = ReadRequireApproval(job.Config);
         // Automatic approval marks the images and the product approved as they are made; manual leaves them for the Seller.
@@ -523,7 +548,7 @@ public sealed class DesignGenerationService(
 
         // Images are mostly waiting on the provider, so several are requested at once, up to what the Seller's key allows.
         var run = new JobRun(job, imageProvider, apiKeyPlain, aspectRatio, variationCount, requireApproval, reviewedStatus, new JobStop(),
-            printedPhrases);
+            printedPhrases, useSystemKeys);
         var maxImages = settings.Value.MaxConcurrentImagesFor(imageProvider.Provider);
         using var imageSlots = new SemaphoreSlim(maxImages);
         // Just enough products at once to keep every slot busy, so the products shown as being generated are the
@@ -627,6 +652,40 @@ public sealed class DesignGenerationService(
     /// worked out from the same pieces the stored prompt was made of, read again now (the template, the product and the
     /// Seller's changes).
     /// </summary>
+    // Text the seller is saving for a job or product, checked before it is kept.
+    private async Task<Error?> ModerateInputAsync(Guid userId, string subjectType, Guid subjectId,
+        IReadOnlyList<ModerationText> texts, CancellationToken cancellationToken)
+    {
+        if (moderation is null) return null;
+        var verdict = await moderation.CheckTextAsync(texts,
+            new ModerationContext(userId, ModerationFeatures.DesignGeneration, ModerationDirection.Input, subjectType, subjectId),
+            cancellationToken);
+        return verdict.IsBlocked ? ModerationErrors.Blocked(verdict) : null;
+    }
+
+    // The seller's own text behind one product's prompt, just before its images are asked for: the product, its row's
+    // prompt edits, the job's instructions and a personal template. The seller-facing reason when it is blocked.
+    private async Task<string?> ModerateRowAsync(JobRun run, BatchJobProduct row, Product? product, DesignTemplate? template,
+        CancellationToken cancellationToken)
+    {
+        if (moderation is null) return null;
+        var texts = new List<ModerationText>();
+        if (product is not null)
+            texts.AddRange(ModerationTexts.Product(product.Name, product.NicheCategory, product.MainKeywords,
+                product.InputDescription, product.DesiredDesignText, product.CustomPrompt));
+        texts.Add(new ModerationText("the subject", row.CustomSubject));
+        texts.Add(new ModerationText("the art style", row.CustomArtStyle));
+        texts.Add(new ModerationText("the mood", row.CustomMoodTone));
+        texts.Add(new ModerationText("the instructions", row.CustomInstructions ?? ReadInstructions(run.Job.Config)));
+        if (template is { IsSystemTemplate: false })
+            texts.Add(new ModerationText("your design template", template.BasePrompt));
+        var verdict = await moderation.CheckTextAsync(texts,
+            new ModerationContext(run.Job.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Input,
+                ModerationSubjects.ProductPrompt, row.Id),
+            cancellationToken);
+        return verdict.IsBlocked ? ModerationPolicy.BlockedMessage(verdict) : null;
+    }
+
     private async Task<HashSet<Guid>> ThinRowsAsync(BatchJob job, IEnumerable<BatchJobProduct> rows,
         IReadOnlyDictionary<Guid, Product> productById, CancellationToken cancellationToken)
     {
@@ -677,8 +736,11 @@ public sealed class DesignGenerationService(
     }
 
     // What every product of a job being processed shares. PrintedPhrases is null when the text of designs is not checked.
-    private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string ApiKey, string AspectRatio, int VariationCount,
-        bool? RequireApproval, string ReviewedStatus, JobStop Stop, IReadOnlyDictionary<Guid, string?>? PrintedPhrases = null);
+    // With UseSystemKeys the images are made on the platform's keys, and ApiKey (the Seller's own, null without one) only
+    // once those are used up for the day.
+    private sealed record JobRun(BatchJob Job, IImageGenerationProvider ImageProvider, string? ApiKey, string AspectRatio, int VariationCount,
+        bool? RequireApproval, string ReviewedStatus, JobStop Stop, IReadOnlyDictionary<Guid, string?>? PrintedPhrases = null,
+        bool UseSystemKeys = false);
 
     // The designs a product already has in the job when it is generated again: the new ones are numbered after them,
     // and the product keeps them, so it does not fail when none of the new ones can be made.
@@ -774,6 +836,21 @@ public sealed class DesignGenerationService(
             return new(string.Join("\n", instructions), ArtworkPromptRules.IllustrationPlacement(prompt.SystemPrompt, ownPrompt, design));
         }
 
+        // Everything the seller wrote that went into this product's prompt is checked once more before any image is
+        // asked for: text saved before the guardrail existed, or imported with the keyword filter only, is checked
+        // here in full. A blocked product gets no image, as if the provider had blocked every one.
+        if (await ModerateRowAsync(run, row, product, template, cancellationToken) is { } blocked)
+        {
+            await WithDbAsync(async () =>
+            {
+                await LogAsync(job.Id, row.Id, "warning", "generation_blocked", "Content policy: " + blocked, cancellationToken);
+                await CompleteRowAsync(run, row, product,
+                    Enumerable.Range(0, variationCount).Select(_ => new VariationOutcome(false, blocked)).ToArray(),
+                    history, cancellationToken);
+            }, cancellationToken);
+            return;
+        }
+
         // Until now the product was only waiting its turn. Saved with the log entry of its first image.
         if (product is not null)
         {
@@ -843,7 +920,7 @@ public sealed class DesignGenerationService(
             ImageGenerationResult result;
             try
             {
-                result = await run.ImageProvider.GenerateAsync(run.ApiKey, request.Prompt, run.AspectRatio, transparent, enrich, providerTimeout.Token);
+                result = await GenerateImageAsync(run, request.Prompt, transparent, enrich, providerTimeout.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -881,6 +958,25 @@ public sealed class DesignGenerationService(
             // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
             // and a later regenerate with the same prompt can never overwrite an existing image.
             var designImageId = Guid.NewGuid();
+
+            // The platform's own look at the image before it is kept. A blocked image is dropped like one the provider
+            // blocked; one that could not be checked is kept but waits for approval, which checks it again.
+            var outputCheck = ModerationDecision.Allow;
+            if (moderation is not null)
+            {
+                var verdict = await moderation.CheckImageAsync(imageBytes, mimeType,
+                    new ModerationContext(job.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Output,
+                        ModerationSubjects.DesignImage, designImageId), cancellationToken);
+                if (verdict.IsBlocked)
+                {
+                    var message = ModerationPolicy.BlockedMessage(verdict);
+                    await WithDbAsync(() => LogAsync(job.Id, row.Id, "warning", "generation_blocked",
+                        "Content policy: " + message, cancellationToken), cancellationToken);
+                    return new VariationOutcome(false, message);
+                }
+                outputCheck = verdict.Decision;
+            }
+
             var storageKey = $"design-images/{designImageId:N}";
             PublicImageUploadResult uploaded;
             var uploadStarted = timeProvider.GetTimestamp();
@@ -943,7 +1039,10 @@ public sealed class DesignGenerationService(
                     ImageHeightPx = height,
                     FileFormat = FileExtension(mimeType),
                     FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
-                    ApprovalStatus = run.RequireApproval == false ? ApprovalStatuses.Approved : ApprovalStatuses.Pending,
+                    // An image the content check could not look at is never approved automatically.
+                    ApprovalStatus = run.RequireApproval == false && outputCheck != ModerationDecision.Unchecked
+                        ? ApprovalStatuses.Approved
+                        : ApprovalStatuses.Pending,
                     // 1-based: the column's DB default is 1, so EF drops a 0 and the DB stores 1 instead. A product generated
                     // again numbers its new designs after the ones it keeps.
                     VariationIndex = lastVariation + variation + 1,
@@ -965,6 +1064,24 @@ public sealed class DesignGenerationService(
         finally
         {
             imageSlots.Release();
+        }
+    }
+
+    // A product keeps one approved design. Automatic approval approves every design as it is made, so once the product is
+    // done the first of the new ones stays approved and the others, earlier ones included, are rejected.
+    private async Task KeepOneApprovedDesignAsync(BatchJobProduct row, int lastVariation, CancellationToken cancellationToken)
+    {
+        // Tracked reads: this job's own new images are already tracked, so a no-tracking copy could not be updated.
+        var approved = await designImages.FindAsync(
+            image => image.BatchJobProductId == row.Id && image.DeletedAt == null && image.ApprovalStatus == ApprovalStatuses.Approved,
+            cancellationToken);
+        var kept = approved.Where(image => image.VariationIndex > lastVariation)
+            .OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).FirstOrDefault();
+        if (kept is null) return;
+        foreach (var image in approved.Where(image => image.Id != kept.Id))
+        {
+            image.ApprovalStatus = ApprovalStatuses.Rejected;
+            await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
         }
     }
 
@@ -990,6 +1107,8 @@ public sealed class DesignGenerationService(
         if (successCount == 0 && history is not null)
             await LogAsync(job.Id, row.Id, "warning", "regenerate_failed",
                 run.Stop.Reason ?? "No new design could be made; the earlier ones are kept.", cancellationToken);
+        if (run.RequireApproval == false && successCount > 0)
+            await KeepOneApprovedDesignAsync(row, history?.LastVariation ?? 0, cancellationToken);
 
         if (product is not null)
         {
@@ -1266,6 +1385,44 @@ public sealed class DesignGenerationService(
         && key.IsActive == true && key.LastCheckSucceeded == true
         && (!key.ExpiresAt.HasValue || key.ExpiresAt > now);
 
+    // Whether a Seller's images are made on the platform's keys: their plan includes it and the platform has keys for
+    // the provider.
+    private async Task<bool> UsesSystemKeysAsync(Guid userId, string provider, CancellationToken cancellationToken) =>
+        systemKeys?.HasKeys(provider) == true
+        && (await entitlements.GetAsync(userId, cancellationToken)).IsEnabled(PlanFeatures.SystemImageKeys);
+
+    /// <summary>
+    /// BR51: what a run of <paramref name="images"/> images needs to start. On the platform's keys, room under the plan's
+    /// daily design image cap; otherwise a connected key of the Seller's own for the provider.
+    /// </summary>
+    private async Task<Error?> CheckImageKeyAsync(Guid userId, string provider, int images, DateTime now, CancellationToken cancellationToken)
+    {
+        if (await UsesSystemKeysAsync(userId, provider, cancellationToken))
+        {
+            var cap = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyDesignImageCap, images, cancellationToken);
+            return cap.IsFailure ? cap.Error : null;
+        }
+
+        var ownedKeys = await apiKeys.ListOwnedAsync(userId, cancellationToken);
+        return ownedKeys.Any(key => IsUsableKey(key, provider, now)) ? null : DesignGenerationErrors.MissingApiKey(provider);
+    }
+
+    /// <summary>
+    /// Makes one image on the Seller's key, or on the platform's keys in turn
+    /// (<see cref="SystemApiKeyPoolExtensions.GenerateImageAsync"/>): once those are used up the Seller's own key, when
+    /// they have one, takes over; without one the job stops asking.
+    /// </summary>
+    private async Task<ImageGenerationResult> GenerateImageAsync(JobRun run, string prompt, bool transparent, bool enrich,
+        CancellationToken cancellationToken)
+    {
+        var provider = run.ImageProvider;
+        if (!run.UseSystemKeys || systemKeys is null)
+            return await provider.GenerateAsync(run.ApiKey!, prompt, run.AspectRatio, transparent, enrich, cancellationToken);
+
+        return await systemKeys.GenerateImageAsync(provider.Provider, run.ApiKey,
+            key => provider.GenerateAsync(key, prompt, run.AspectRatio, transparent, enrich, cancellationToken), cancellationToken);
+    }
+
     // What the Seller is told when the server running the job cannot decrypt their key, and what to do about it.
     private static string UnreadableKeyMessage(string provider) =>
         $"The {ImageGenerationProviders.Label(provider)} API key could not be read on this server: it was saved through another "
@@ -1476,23 +1633,65 @@ public sealed class DesignGenerationService(
             .Where(image => image.BatchJobId == job.Id && image.DeletedAt == null)
             .ToListAsync(cancellationToken);
 
+        var approving = status == ApprovalStatuses.Approved;
         List<DesignImage> targets;
         if (requestedIds is null)
         {
-            targets = images.Where(image => image.ApprovalStatus == ApprovalStatuses.Pending).ToList();
+            var pending = images.Where(image => image.ApprovalStatus == ApprovalStatuses.Pending);
+            // A product keeps one approved design: "every remaining one" approves the first design of each product
+            // that has none approved yet.
+            targets = approving
+                ? pending
+                    .Where(image => !images.Any(other => other.ProductId == image.ProductId && other.ApprovalStatus == ApprovalStatuses.Approved))
+                    .GroupBy(image => image.ProductId)
+                    .Select(group => group.OrderBy(image => image.VariationIndex).ThenBy(image => image.CreatedAt).First())
+                    .ToList()
+                : pending.ToList();
         }
         else
         {
             targets = images.Where(image => requestedIds.Contains(image.Id)).ToList();
             if (targets.Count != requestedIds.Count)
                 return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.ImageNotFound());
+            if (approving && targets.GroupBy(image => image.ProductId).Any(group => group.Count() > 1))
+                return Result.Failure<ImageApprovalResultDto>(DesignGenerationErrors.OneDesignPerProduct());
         }
 
         var changed = targets.Where(image => image.ApprovalStatus != status).ToList();
+        if (approving && moderation is not null)
+        {
+            // A design kept while its content check was unavailable is checked again before it can be approved.
+            foreach (var image in changed)
+            {
+                var storageKey = image.StorageKey;
+                if (await moderation.EnsureApprovableAsync(
+                        new ModerationContext(userId, ModerationFeatures.DesignGeneration, ModerationDirection.Output,
+                            ModerationSubjects.DesignImage, image.Id),
+                        mediaStorage is null || string.IsNullOrEmpty(storageKey)
+                            ? null
+                            : token => mediaStorage.ReadPublicImageAsync(storageKey, token),
+                        cancellationToken) is { } notApprovable)
+                    return Result.Failure<ImageApprovalResultDto>(notApprovable);
+            }
+        }
         foreach (var image in changed)
         {
             image.ApprovalStatus = status;
             await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+        }
+
+        // Approving a design chooses it for its product: the product's other designs are rejected.
+        if (approving)
+        {
+            var chosenProducts = targets.Select(image => image.ProductId).ToHashSet();
+            var chosenIds = targets.Select(image => image.Id).ToHashSet();
+            foreach (var image in images.Where(image => chosenProducts.Contains(image.ProductId) && !chosenIds.Contains(image.Id)
+                         && image.ApprovalStatus != ApprovalStatuses.Rejected))
+            {
+                image.ApprovalStatus = ApprovalStatuses.Rejected;
+                await designImages.UpdateAsync(image, cancellationToken: cancellationToken);
+                changed.Add(image);
+            }
         }
 
         await RefreshReviewStatusAsync(images, changed, cancellationToken);
@@ -1505,7 +1704,7 @@ public sealed class DesignGenerationService(
             images.Count(image => image.ApprovalStatus == ApprovalStatuses.Rejected)));
     }
 
-    // A product counts as approved while at least one of its images is, and goes back to waiting for review when
+    // A product counts as approved while one of its images is, and goes back to waiting for review when
     // the last approved one is taken back. Products that failed or are still being generated are left alone.
     private async Task RefreshReviewStatusAsync(IReadOnlyList<DesignImage> images, IReadOnlyList<DesignImage> changed, CancellationToken cancellationToken)
     {

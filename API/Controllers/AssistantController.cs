@@ -13,7 +13,7 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Authorize(Roles = $"{AuthConstants.UserRole},{AuthConstants.AdminRole}")]
 [Route("api/assistant")]
-public sealed class AssistantController(IAssistantService assistant) : ControllerBase
+public sealed class AssistantController(IAssistantService assistant, IAssistantRunProgressReader runProgress) : ControllerBase
 {
     [HttpPost("chat")]
     [EnableRateLimiting(ApiRateLimiting.AssistantChatPolicy)]
@@ -21,6 +21,7 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Chat(SendAssistantMessageRequestDto request, CancellationToken cancellationToken)
     {
@@ -29,6 +30,31 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
         return session.IsSuccess
             ? new ServerSentEventsResult(assistant.StreamAsync(session.Value, cancellationToken))
             : session.ToActionResult(this);
+    }
+
+    [HttpGet("messages/{messageId:guid}/stream")]
+    [Produces("text/event-stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> StreamMessage(
+        Guid messageId,
+        [FromQuery] string? after,
+        [FromHeader(Name = "Last-Event-ID")] string? lastEventId,
+        CancellationToken cancellationToken)
+    {
+        var stream = await assistant.AttachToTurnAsync(messageId, string.IsNullOrWhiteSpace(lastEventId) ? after : lastEventId, cancellationToken);
+        return stream.IsSuccess ? new ServerSentEventsResult(stream.Value) : stream.ToActionResult(this);
+    }
+
+    [HttpPost("messages/{messageId:guid}/stop")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> StopMessage(Guid messageId, CancellationToken cancellationToken)
+    {
+        var result = await assistant.StopTurnAsync(messageId, cancellationToken);
+        return result.IsSuccess ? Accepted() : result.ToActionResult(this);
     }
 
     [HttpGet("conversations")]
@@ -71,6 +97,13 @@ public sealed class AssistantController(IAssistantService assistant) : Controlle
         SetClientActionStateRequestDto request,
         CancellationToken cancellationToken) =>
         (await assistant.SetClientActionStateAsync(messageId, actionId, request, cancellationToken)).ToActionResult(this);
+
+    [HttpGet("workflows/{workflowId:guid}/run-progress")]
+    [Authorize(Roles = AuthConstants.UserRole)]
+    [ProducesResponseType(typeof(AssistantRunProgressResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRunProgress(Guid workflowId, CancellationToken cancellationToken) =>
+        (await runProgress.ReadAsync(workflowId, cancellationToken)).ToActionResult(this);
 
     [HttpPost("actions/{id:guid}/confirm")]
     [ProducesResponseType(typeof(AssistantActionResultResponseDto), StatusCodes.Status200OK)]
