@@ -73,7 +73,8 @@ Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 SystemApiKeys__Ideogram__Keys=${IDEOGRAM_API_KEYS}
 SystemApiKeys__Ideogram__DailyLimitPerKey=500
 SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
-SystemApiKeys__Ideogram__Strategy=fill
+SystemApiKeys__Ideogram__Strategy=rotate
+SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
 SystemApiKeys__MiniMax__DailyLimitPerKey=100
 
 DesignTextCheck__Enabled=false
