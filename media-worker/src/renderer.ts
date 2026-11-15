@@ -6,13 +6,14 @@ import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { cpus } from "node:os";
+import { availableParallelism } from "node:os";
 import { processOutput } from "./process";
 import { inspectVideo } from "./qa";
 import type { MediaQa, RenderProps, SceneRenderProps } from "./contracts";
 
-// Remotion refuses a concurrency above the machine's core count, so a one-core host cannot render with 2.
-const renderConcurrency = Math.max(1, Math.min(2, cpus().length));
+// Remotion refuses a concurrency above os.availableParallelism(), which honors the container's CPU limit (cpus: 1.5 reads as 1),
+// so a container with one usable core cannot render with 2. os.cpus() would still report the host's cores.
+const renderConcurrency = Math.max(1, Math.min(2, availableParallelism()));
 
 export interface IVideoRenderer { render(props: RenderProps, directory: string, signal: AbortSignal, progress: (percent: number) => void): Promise<{ video: string; thumbnail: string; qa: MediaQa }> }
 export class RemotionVideoRenderer implements IVideoRenderer {
