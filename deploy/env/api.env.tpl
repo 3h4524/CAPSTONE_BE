@@ -76,6 +76,7 @@ SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
 SystemApiKeys__Ideogram__Strategy=rotate
 SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
 SystemApiKeys__MiniMax__DailyLimitPerKey=100
+SystemApiKeys__MiniMax__Strategy=rotate
 
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
