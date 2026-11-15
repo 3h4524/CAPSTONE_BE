@@ -21,6 +21,12 @@ public interface ISystemApiKeyPool
     Task<ISystemApiKeyLease?> AcquireAsync(string provider, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// As <see cref="AcquireAsync(string, CancellationToken)"/>, passing over the keys whose
+    /// <see cref="ISystemApiKeyLease.KeyId"/> is in <paramref name="skipKeyIds"/>: keys this request already found busy.
+    /// </summary>
+    Task<ISystemApiKeyLease?> AcquireAsync(string provider, IReadOnlySet<string> skipKeyIds, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The key a lease handed out, found again by <see cref="ISystemApiKeyLease.KeyId"/>: a task a key started (a video
     /// being made) is asked about with that same key. Null when the key is no longer configured.
     /// </summary>

@@ -137,6 +137,42 @@ public sealed class SystemApiKeyRotationTests
     }
 
     [TestMethod]
+    public async Task KeyOneStillHasTooManyAtOnceAfterWaiting_TheImageIsMadeOnKeyTwo_AndKeyOneIsNotLeftOut()
+    {
+        var pool = Pool(dailyLimit: 10);
+        // Something besides this server keeps key one full: every answer to it is "too many at once".
+        refusals[KeyOne] = () => Json(HttpStatusCode.TooManyRequests, """{"error":"Too many requests.","reject_reason":"inflight_limit"}""");
+
+        var image = await MakeImage(pool);
+        var keyOneAsked = requestsPerKey[KeyOne];
+        refusals.Remove(KeyOne);
+        var next = await KeyUsedFor(pool);
+
+        image.IsSuccess.Should().BeTrue("the image was asked of key two once key one stayed busy");
+        keyOneAsked.Should().Be(3, "key one is asked once and twice more after waiting, then passed over for this image");
+        requestsPerKey[KeyTwo].Should().Be(1);
+        Used(KeyOne).Should().Be(1, "the busy request was given back; only the next image counts");
+        next.Should().Be(KeyOne, "a busy key is not taken out of use: once free it makes images again");
+    }
+
+    [TestMethod]
+    public async Task EveryKeyStillHasTooManyAtOnce_TheImageFailsAsBusy_AndNoKeyIsLeftOut()
+    {
+        var pool = Pool(dailyLimit: 10);
+        var busy = () => Json(HttpStatusCode.TooManyRequests, """{"error":"Too many requests.","reject_reason":"inflight_limit"}""");
+        refusals[KeyOne] = busy;
+        refusals[KeyTwo] = busy;
+
+        var image = await MakeImage(pool);
+
+        image.IsSuccess.Should().BeFalse();
+        image.KeyBusy.Should().BeTrue();
+        image.StopsJob.Should().BeFalse("the job goes on: the keys are only busy");
+        (requestsPerKey[KeyOne], requestsPerKey[KeyTwo]).Should().Be((3, 3));
+        (Used(KeyOne), Used(KeyTwo)).Should().Be((0, 0), "nothing was made, so nothing is counted");
+    }
+
+    [TestMethod]
     public async Task KeyOneHasEveryPlaceTaken_NewImagesGoToKeyTwo()
     {
         var pool = Pool(dailyLimit: 10, maxConcurrent: 1);

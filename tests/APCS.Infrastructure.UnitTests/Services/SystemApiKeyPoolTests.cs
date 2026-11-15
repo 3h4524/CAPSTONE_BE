@@ -57,6 +57,22 @@ public sealed class SystemApiKeyPoolTests
     }
 
     [TestMethod]
+    public async Task AcquireAsync_PassesOverTheKeysAskedToSkip_AndGivesNothingWhenOnlyThoseAreLeft()
+    {
+        var pool = Pool(Ideogram(["key-a", "key-b"]));
+        await using var probe = await pool.AcquireAsync("ideogram");
+        var keyA = probe!.KeyId;
+        await probe.RefundAsync();
+        await probe.DisposeAsync();
+
+        await using var other = await pool.AcquireAsync("ideogram", new HashSet<string> { keyA });
+        var none = await pool.AcquireAsync("ideogram", new HashSet<string> { keyA, other!.KeyId });
+
+        other.ApiKey.Should().Be("key-b");
+        none.Should().BeNull("every key was asked to be skipped");
+    }
+
+    [TestMethod]
     public async Task AcquireAsync_Rotating_TakesTheKeysInTurn()
     {
         var pool = Pool(Ideogram(["key-a", "key-b"], strategy: "Rotate"));
