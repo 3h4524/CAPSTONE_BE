@@ -8,8 +8,11 @@ set +a
 
 GITHUB_REPOS="${GITHUB_REPOS:-3h4524/CAPSTONE_BE 3h4524/CAPSTONE_FE}"
 BACKEND_REPO="${BACKEND_REPO:-3h4524/CAPSTONE_BE}"
-MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-2}"
+MACHINE_TYPE="${MACHINE_TYPE:-e2-standard-4}"
 IP_NAME="${IP_NAME:-ip-apcs-prod}"
+DB_MACHINE_TYPE="${DB_MACHINE_TYPE:-e2-small}"
+DB_IP_NAME="${DB_IP_NAME:-ip-apcs-db}"
+DB_INTERNAL_IP_NAME="${DB_INTERNAL_IP_NAME:-ip-apcs-db-internal}"
 AR_REPO="${AR_REPO:-apcs}"
 OPEN_DEV_DB="${OPEN_DEV_DB:-true}"
 EXTRA_OWNER="${EXTRA_OWNER:-}"
@@ -48,29 +51,37 @@ if [ -n "$EXTRA_OWNER" ]; then
   bind_project "user:$EXTRA_OWNER" roles/owner
 fi
 
-exists gcloud compute addresses describe "$IP_NAME" --region "$GCP_REGION" "${p[@]}" \
-  || gcloud compute addresses create "$IP_NAME" --region "$GCP_REGION" --network-tier PREMIUM "${p[@]}"
+for name in "$IP_NAME" "$DB_IP_NAME"; do
+  exists gcloud compute addresses describe "$name" --region "$GCP_REGION" "${p[@]}" \
+    || gcloud compute addresses create "$name" --region "$GCP_REGION" --network-tier PREMIUM "${p[@]}"
+done
+exists gcloud compute addresses describe "$DB_INTERNAL_IP_NAME" --region "$GCP_REGION" "${p[@]}" \
+  || gcloud compute addresses create "$DB_INTERNAL_IP_NAME" --region "$GCP_REGION" --subnet default \
+       --addresses "$DEV_DB_INTERNAL_HOST" "${p[@]}"
 
 for rule in default-allow-ssh default-allow-rdp; do
   exists gcloud compute firewall-rules describe "$rule" "${p[@]}" && gcloud compute firewall-rules delete "$rule" "${p[@]}"
 done
 
 firewall() {
-  local name="$1" ports="$2" source="$3"
+  local name="$1" ports="$2" source="$3" tag="${4:-apcs}"
   if exists gcloud compute firewall-rules describe "$name" "${p[@]}"; then
-    gcloud compute firewall-rules update "$name" --allow "$ports" --source-ranges "$source" "${p[@]}"
+    gcloud compute firewall-rules update "$name" --allow "$ports" --source-ranges "$source" --target-tags "$tag" "${p[@]}"
   else
     gcloud compute firewall-rules create "$name" --network default --direction INGRESS \
-      --allow "$ports" --source-ranges "$source" --target-tags apcs "${p[@]}"
+      --allow "$ports" --source-ranges "$source" --target-tags "$tag" "${p[@]}"
   fi
 }
 firewall apcs-allow-web tcp:80,tcp:443,udp:443 0.0.0.0/0
-firewall apcs-allow-iap tcp:22,tcp:5432 "$IAP_RANGE"
+firewall apcs-allow-iap tcp:22 "$IAP_RANGE"
+firewall apcs-db-allow-iap tcp:22,tcp:5432 "$IAP_RANGE" apcs-db
+exists gcloud compute firewall-rules describe apcs-allow-dev-postgres "${p[@]}" \
+  && gcloud compute firewall-rules delete apcs-allow-dev-postgres "${p[@]}"
 if [ "$OPEN_DEV_DB" = true ]; then
-  firewall apcs-allow-dev-postgres tcp:5432 0.0.0.0/0
+  firewall apcs-db-allow-dev-postgres tcp:5432 0.0.0.0/0 apcs-db
 else
-  exists gcloud compute firewall-rules describe apcs-allow-dev-postgres "${p[@]}" \
-    && gcloud compute firewall-rules delete apcs-allow-dev-postgres "${p[@]}"
+  exists gcloud compute firewall-rules describe apcs-db-allow-dev-postgres "${p[@]}" \
+    && gcloud compute firewall-rules delete apcs-db-allow-dev-postgres "${p[@]}"
 fi
 
 exists gcloud artifacts repositories describe "$AR_REPO" --location "$GCP_REGION" "${p[@]}" \
@@ -144,12 +155,24 @@ fi
 gcloud compute instances add-iam-policy-binding "$VM_NAME" --zone "$GCP_ZONE" \
   --member "serviceAccount:$DEPLOYER_SA" --role roles/compute.osAdminLogin "${p[@]}" > /dev/null
 
+if ! exists gcloud compute instances describe "$DB_VM_NAME" --zone "$GCP_ZONE" "${p[@]}"; then
+  gcloud compute instances create "$DB_VM_NAME" --zone "$GCP_ZONE" --machine-type "$DB_MACHINE_TYPE" \
+    --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud \
+    --boot-disk-size 20GB --boot-disk-type pd-balanced \
+    --address "$DB_IP_NAME" --private-network-ip "$DEV_DB_INTERNAL_HOST" --tags apcs-db \
+    --service-account "$VM_SA" --scopes cloud-platform \
+    --metadata enable-oslogin=TRUE \
+    --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring "${p[@]}"
+fi
+
 ip="$(gcloud compute addresses describe "$IP_NAME" --region "$GCP_REGION" --format 'value(address)' "${p[@]}")"
+db_ip="$(gcloud compute addresses describe "$DB_IP_NAME" --region "$GCP_REGION" --format 'value(address)' "${p[@]}")"
 cat <<INFO
 
 Done.
   VM public IP          : $ip   (set APP_DOMAIN=$ip.sslip.io in deploy/env/common.env until a domain exists)
   SSH                   : gcloud compute ssh $VM_NAME --zone $GCP_ZONE --tunnel-through-iap --project $GCP_PROJECT
+  Dev DB VM             : $DB_VM_NAME, public $db_ip, internal $DEV_DB_INTERNAL_HOST (bootstrap with INSTALL_RESTORE_TEST=false)
   Registry              : $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO
   WIF provider          : $POOL/providers/github-actions
   Deployer / migrator   : $DEPLOYER_SA / $MIGRATOR_SA

@@ -24,10 +24,6 @@ services:
       - ../postgres/init:/docker-entrypoint-initdb.d:ro
       - ${ENV_DIR:-/opt/apcs/env}/tls:/tls-src:ro
       - ../postgres/dev-pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-    networks:
-      apcs:
-        aliases:
-          - postgres-dev
     mem_limit: 1g
     shm_size: 128mb
     logging:
@@ -42,11 +38,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-
-networks:
-  apcs:
-    external: true
-    name: apcs_apcs
 
 volumes:
   pg_dev:
