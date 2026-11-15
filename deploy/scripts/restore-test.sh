@@ -6,7 +6,7 @@ volume="${BACKUPS_VOLUME:-apcs_backups}"
 name="apcs-restore-test-$$"
 
 if [ "$source" = latest ]; then
-  dump="$(docker run --rm -v "$volume":/backups:ro alpine:3 sh -c 'ls -1d /backups/daily/*/ | sort | tail -n 1')prod.dump"
+  dump="$(docker run --rm -v "$volume":/backups:ro alpine:3 sh -c 'ls -1d /backups/daily/*/ | sort | tail -n 1')dev.dump"
 else
   dump="/backups/$source"
 fi
