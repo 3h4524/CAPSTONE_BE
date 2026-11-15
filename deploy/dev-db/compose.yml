@@ -39,6 +39,34 @@ services:
       timeout: 5s
       retries: 12
 
+  dozzle-agent:
+    image: amir20/dozzle:v11
+    command: agent
+    restart: unless-stopped
+    labels:
+      dev.dozzle.group: ops
+    environment:
+      DOZZLE_HOSTNAME: apcs-db
+      DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_FILTER: label=dev.dozzle.group
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "7007:7007"
+    mem_limit: 128m
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
 volumes:
   pg_dev:
     external: true
