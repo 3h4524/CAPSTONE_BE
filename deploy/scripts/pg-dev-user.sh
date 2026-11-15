@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 action="${1:-}"
 
 psql_dev() {
-  docker compose exec -T postgres-dev psql -v ON_ERROR_STOP=1 -U postgres -d apcs "$@"
+  docker exec -i apcs-dev-postgres-dev-1 psql -v ON_ERROR_STOP=1 -U postgres -d apcs "$@"
 }
 
 case "$action" in
