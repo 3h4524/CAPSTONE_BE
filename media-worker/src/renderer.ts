@@ -6,9 +6,13 @@ import { createServer } from "node:http";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { cpus } from "node:os";
 import { processOutput } from "./process";
 import { inspectVideo } from "./qa";
 import type { MediaQa, RenderProps, SceneRenderProps } from "./contracts";
+
+// Remotion refuses a concurrency above the machine's core count, so a one-core host cannot render with 2.
+const renderConcurrency = Math.max(1, Math.min(2, cpus().length));
 
 export interface IVideoRenderer { render(props: RenderProps, directory: string, signal: AbortSignal, progress: (percent: number) => void): Promise<{ video: string; thumbnail: string; qa: MediaQa }> }
 export class RemotionVideoRenderer implements IVideoRenderer {
@@ -32,7 +36,7 @@ export class RemotionVideoRenderer implements IVideoRenderer {
       const composition = await selectComposition({ serveUrl, id: "APCS-Export-Scene", inputProps, browserExecutable: process.env.CHROME_EXECUTABLE });
       const hasAudio = Boolean(props.storyboard.videoEdit?.music && !props.storyboard.videoEdit.music.muted);
       await renderMedia({ composition, serveUrl, inputProps, outputLocation: raw, codec: "h264", pixelFormat: "yuv420p", crf: 20,
-        muted: !hasAudio, concurrency: 2, browserExecutable: process.env.CHROME_EXECUTABLE, cancelSignal });
+        muted: !hasAudio, concurrency: renderConcurrency, browserExecutable: process.env.CHROME_EXECUTABLE, cancelSignal });
       await processOutput(process.env.FFMPEG_PATH ?? "ffmpeg", ["-y", "-i", raw, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-map_metadata", "-1", output], signal);
       const qa = await inspectVideo(output, scene.durationFrames / 30, signal, props.storyboard.width, props.storyboard.height, hasAudio);
       return { video: output, qa };
@@ -53,7 +57,7 @@ export class RemotionVideoRenderer implements IVideoRenderer {
       const composition = await selectComposition({ serveUrl, id: "APCS-Standard", inputProps, browserExecutable });
       signal.throwIfAborted();
       const includesMusic = Boolean(props.storyboard.videoEdit?.music && !props.storyboard.videoEdit.music.muted);
-      await renderMedia({ composition, serveUrl, inputProps, outputLocation: raw, codec: "h264", pixelFormat: "yuv420p", crf: 20, muted: !includesMusic, concurrency: 2, browserExecutable, cancelSignal, onProgress: p => progress(Math.round(p.progress * 70) + 10) });
+      await renderMedia({ composition, serveUrl, inputProps, outputLocation: raw, codec: "h264", pixelFormat: "yuv420p", crf: 20, muted: !includesMusic, concurrency: renderConcurrency, browserExecutable, cancelSignal, onProgress: p => progress(Math.round(p.progress * 70) + 10) });
       await processOutput(process.env.FFMPEG_PATH ?? "ffmpeg", ["-y", "-i", raw, "-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-map_metadata", "-1", video], signal);
       await renderStill({ composition, serveUrl, inputProps, output: thumbnail, imageFormat: "png", frame: 10, browserExecutable });
       progress(85);
