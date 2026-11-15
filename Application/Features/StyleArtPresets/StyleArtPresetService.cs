@@ -1,4 +1,6 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Common.Validation;
@@ -21,33 +23,31 @@ public sealed class StyleArtPresetService(
     IValidator<CreateStyleArtPresetRequestDto> createValidator,
     IValidator<UpdateStyleArtPresetRequestDto> updateValidator,
     IValidator<string> quickCreateValidator,
+    ICultureAccessor cultureAccessor,
+    ICacheService cache,
     TimeProvider timeProvider) : IStyleArtPresetService
 {
+    private static readonly TimeSpan SystemRowsTimeToLive = TimeSpan.FromHours(24);
+
     public async Task<Result<IReadOnlyList<StyleArtPresetResponseDto>>> ListMineAsync(CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<IReadOnlyList<StyleArtPresetResponseDto>>(StyleArtPresetErrors.Unauthenticated("view"));
 
-        var rows = await presets.Query()
-            .Where(preset => preset.IsActive && (preset.UserId == null || preset.UserId == userId))
+        var culture = cultureAccessor.CurrentCulture;
+
+        var mine = await presets.Query()
+            .Where(preset => preset.IsActive && preset.UserId == userId)
             .OrderByDescending(preset => preset.UsageCount)
             .ThenBy(preset => preset.Name)
-            .Select(preset => new
-            {
-                preset.Id,
-                preset.Name,
-                preset.Description,
-                preset.StyleModifiers,
-                preset.PreviewImageUrl,
-                preset.Recommendations,
-                preset.IsSystemTemplate,
-                preset.UsageCount,
-                preset.UserId
-            })
             .ToListAsync(cancellationToken);
 
-        IReadOnlyList<StyleArtPresetResponseDto> items = rows
-            .Select(row => Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId, row.UsageCount))
+        var system = await SystemRowsAsync(cancellationToken);
+
+        IReadOnlyList<StyleArtPresetResponseDto> items = mine.Select(preset => Map(preset, isMine: true, culture))
+            .Concat(system.Select(row => MapCached(row, isMine: false, culture)))
+            .OrderByDescending(item => item.UsageCount)
+            .ThenBy(item => item.Name, StringComparer.Ordinal)
             .ToList();
 
         return Result.Success(items);
@@ -58,26 +58,19 @@ public sealed class StyleArtPresetService(
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.Unauthenticated("view"));
 
-        var row = await presets.Query()
-            .Where(item => item.Id == id && item.IsActive && (item.UserId == null || item.UserId == userId))
-            .Select(item => new
-            {
-                item.Id,
-                item.Name,
-                item.Description,
-                item.StyleModifiers,
-                item.PreviewImageUrl,
-                item.Recommendations,
-                item.IsSystemTemplate,
-                item.UsageCount,
-                item.UserId
-            })
-            .SingleOrDefaultAsync(cancellationToken);
+        var culture = cultureAccessor.CurrentCulture;
 
-        if (row is null)
+        var own = await presets.Query()
+            .SingleOrDefaultAsync(preset => preset.Id == id && preset.IsActive && preset.UserId == userId, cancellationToken);
+
+        if (own is not null)
+            return Result.Success(Map(own, isMine: true, culture));
+
+        var systemRow = (await SystemRowsAsync(cancellationToken)).FirstOrDefault(row => row.Id == id);
+        if (systemRow is null)
             return Result.Failure<StyleArtPresetResponseDto>(StyleArtPresetErrors.NotFound());
 
-        return Result.Success(Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, row.IsSystemTemplate, row.UserId == userId, row.UsageCount));
+        return Result.Success(MapCached(systemRow, isMine: false, culture));
     }
 
     public async Task<Result<StyleArtPresetResponseDto>> CreateAsync(CreateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default)
@@ -143,7 +136,7 @@ public sealed class StyleArtPresetService(
             throw;
         }
 
-        return Result.Success(Map(preset, isMine: true));
+        return Result.Success(Map(preset, isMine: true, cultureAccessor.CurrentCulture));
     }
 
     public async Task<Result<StyleArtPresetResponseDto>> QuickCreateAsync(string name, CancellationToken cancellationToken = default)
@@ -180,7 +173,7 @@ public sealed class StyleArtPresetService(
         };
 
         await presets.AddAsync(preset, saveChange: true, cancellationToken);
-        return Result.Success(Map(preset, isMine: true));
+        return Result.Success(Map(preset, isMine: true, cultureAccessor.CurrentCulture));
     }
 
     public async Task<Result<StyleArtPresetResponseDto>> UpdateAsync(Guid id, UpdateStyleArtPresetRequestDto request, CancellationToken cancellationToken = default)
@@ -239,7 +232,7 @@ public sealed class StyleArtPresetService(
             throw;
         }
 
-        return Result.Success(Map(preset, isMine: true));
+        return Result.Success(Map(preset, isMine: true, cultureAccessor.CurrentCulture));
     }
 
     public async Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -261,6 +254,29 @@ public sealed class StyleArtPresetService(
         }
 
         return Result.Success();
+    }
+
+    private async Task<IReadOnlyList<StyleArtPresetCacheRow>> SystemRowsAsync(CancellationToken cancellationToken)
+    {
+        var cached = await cache.GetAsync<IReadOnlyList<StyleArtPresetCacheRow>>(StyleArtPresetCacheKeys.SystemRows, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var rows = await presets.Query()
+            .Where(preset => preset.IsActive && preset.UserId == null)
+            .Select(preset => new StyleArtPresetCacheRow(
+                preset.Id,
+                preset.Name,
+                preset.Description,
+                preset.StyleModifiers,
+                preset.PreviewImageUrl,
+                preset.Recommendations,
+                preset.UsageCount,
+                preset.Translations))
+            .ToListAsync(cancellationToken);
+
+        await cache.SetAsync(StyleArtPresetCacheKeys.SystemRows, rows, SystemRowsTimeToLive, cancellationToken);
+        return rows;
     }
 
     private async Task<bool> IsNameTakenAsync(string name, Guid? excludeId, CancellationToken cancellationToken)
@@ -287,8 +303,11 @@ public sealed class StyleArtPresetService(
 
     private static string StorageKey(Guid presetId) => $"style-art-presets/{presetId:N}";
 
-    private static StyleArtPresetResponseDto Map(StyleArtPreset preset, bool isMine) =>
-        Map(preset.Id, preset.Name, preset.Description, preset.StyleModifiers, preset.PreviewImageUrl, preset.Recommendations, preset.IsSystemTemplate, isMine, preset.UsageCount);
+    private static StyleArtPresetResponseDto Map(StyleArtPreset preset, bool isMine, string culture) =>
+        Map(preset.Id, preset.Name, preset.Description, preset.StyleModifiers, preset.PreviewImageUrl, preset.Recommendations, preset.IsSystemTemplate, isMine, preset.UsageCount, preset.Translations, culture);
+
+    private static StyleArtPresetResponseDto MapCached(StyleArtPresetCacheRow row, bool isMine, string culture) =>
+        Map(row.Id, row.Name, row.Description, row.StyleModifiers, row.PreviewImageUrl, row.Recommendations, true, isMine, row.UsageCount, row.Translations, culture);
 
     private static StyleArtPresetResponseDto Map(
         Guid id,
@@ -299,8 +318,25 @@ public sealed class StyleArtPresetService(
         string recommendations,
         bool isSystemTemplate,
         bool isMine,
-        int usageCount) =>
-        new(id, name, description, styleModifiers, previewImageUrl, ToRecommendations(recommendations), isSystemTemplate, isMine, usageCount);
+        int usageCount,
+        string? translations,
+        string culture)
+    {
+        var localized = isSystemTemplate
+            ? StyleArtPresetTranslations.Localize(name, description, recommendations, translations, culture)
+            : new StyleArtPresetTranslations.LocalizedText(name, description, recommendations);
+
+        return new StyleArtPresetResponseDto(
+            id,
+            localized.Name,
+            localized.Description,
+            styleModifiers,
+            previewImageUrl,
+            ToRecommendations(localized.Recommendations),
+            isSystemTemplate,
+            isMine,
+            usageCount);
+    }
 
     private static IReadOnlyList<string> ToRecommendations(string source) =>
         StyleArtPresetRules.TryParseRecommendations(source, out var recommendations) ? recommendations : [];

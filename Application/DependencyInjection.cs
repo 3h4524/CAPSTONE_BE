@@ -79,6 +79,7 @@ public static class DependencyInjection
         services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<Features.Admin.MockupTemplates.IAdminMockupTemplateService, Features.Admin.MockupTemplates.AdminMockupTemplateService>();
+        services.AddScoped<Features.Admin.StyleArtPresets.IAdminStyleArtPresetService, Features.Admin.StyleArtPresets.AdminStyleArtPresetService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
