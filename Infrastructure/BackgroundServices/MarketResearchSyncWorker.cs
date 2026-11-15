@@ -77,6 +77,7 @@ public sealed class MarketResearchSyncWorker(
             if (pending.Count == 0)
             {
                 completed = (today, queries);
+                await RefreshRankingsAsync(scope.ServiceProvider, cancellationToken);
                 return DoneForToday(schedule, now);
             }
 
@@ -95,6 +96,24 @@ public sealed class MarketResearchSyncWorker(
         {
             logger.LogError(exception, "Scheduled market research sync failed.");
             return now + MarketScheduleSignal.RetryAfter;
+        }
+    }
+
+    /// <summary>
+    /// Once the day's collection is complete, every seller's radar is ranked again, so it shows today's concepts,
+    /// confidence and stale opportunities without the seller refreshing it. A failure is logged and does not stop the
+    /// collection schedule.
+    /// </summary>
+    private async Task RefreshRankingsAsync(IServiceProvider services, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var count = await services.GetRequiredService<IOpportunityService>().RefreshAllRankingsAsync(cancellationToken);
+            logger.LogInformation("Re-ranked the market radar of {SellerCount} seller(s) after today's collection.", count);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception, "Re-ranking the market radar after today's collection failed.");
         }
     }
 
