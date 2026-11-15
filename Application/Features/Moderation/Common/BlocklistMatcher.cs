@@ -120,7 +120,7 @@ public sealed class BlocklistMatcher
     // "child porn" becomes c+h+i+l+d+[^\p{L}\p{N}]+p+o+r+n+: any letter may repeat, any non-letters split the words.
     private static string WordsPattern(string text)
     {
-        var words = Regex.Split(text, @"[^\p{L}\p{N}]+").Where(word => word.Length > 0).ToArray();
+        var words = Regex.Split(text, @"[^\p{L}\p{N}]+", RegexOptions.None, MatchTimeout).Where(word => word.Length > 0).ToArray();
         var builder = new StringBuilder();
         for (var index = 0; index < words.Length; index++)
         {
