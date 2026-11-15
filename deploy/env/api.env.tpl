@@ -46,7 +46,7 @@ Smtp__FromName=APCS
 Cloudinary__CloudName=${CLOUDINARY_CLOUD_NAME}
 Cloudinary__ApiKey=${CLOUDINARY_API_KEY}
 Cloudinary__ApiSecret=${CLOUDINARY_API_SECRET}
-Cloudinary__Folder=apcs-prod
+Cloudinary__Folder=apcs
 Cloudinary__SignedUrlTtlMinutes=10
 
 PayOS__ClientId=${PAYOS_CLIENT_ID}
