@@ -200,6 +200,8 @@ public sealed class WorkflowCanvasPatchSimulator
         return null;
     }
 
+    private const string Printify = "publish-printify";
+
     private static string? ConnectionIssue(
         string source,
         string target,
@@ -208,11 +210,23 @@ public sealed class WorkflowCanvasPatchSimulator
     {
         var from = nodes[source];
         var to = nodes[target];
+        // Push to Printify branches off Apply mock-up or Mockup Approval and ends its branch (WorkflowGraphValidator).
+        if (from.Type == Printify)
+            return "Push to Printify ends its branch: connect the next steps to the step before it.";
+        if (to.Type == Printify)
+        {
+            if (from.Type is not ("apply-mockup" or "approval-gate"))
+                return "Connect Push to Printify after Apply mock-up or Mockup Approval: it publishes the design and its mock-ups, not the video.";
+            if (edges.Any(edge => edge.Target == target))
+                return "Push to Printify already has the step before it.";
+            return ReachesSource(target, source, edges) ? "That connection would create a loop. Workflows run in one direction." : null;
+        }
         var fromOrder = WorkflowNodeCatalog.OrderOf(from.Type);
         var toOrder = WorkflowNodeCatalog.OrderOf(to.Type);
         if (fromOrder >= 0 && toOrder >= 0)
         {
             var next = nodes.Values
+                .Where(node => node.Type != Printify)
                 .Select(node => WorkflowNodeCatalog.OrderOf(node.Type))
                 .Where(order => order > fromOrder)
                 .OrderBy(order => order)

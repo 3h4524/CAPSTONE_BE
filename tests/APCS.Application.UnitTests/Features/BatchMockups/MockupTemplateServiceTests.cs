@@ -2999,6 +2999,132 @@ public sealed class MockupTemplateServiceTests
         return (row, product, image);
     }
 
+    // ---- Shared templates, as an admin manages them ----
+
+    [TestMethod]
+    public async Task CreateAsync_System_SavesASharedTemplateWithoutAPlanCheck()
+    {
+        var templates = TemplateRepository();
+        var added = CaptureAdded(templates);
+
+        var seller = await CreateService(Guid.NewGuid(), templates: templates, entitlements: TestEntitlements.Free())
+            .CreateAsync(new CreateMockupTemplateRequestDto("Shared Tee", "tshirt", 100, 100, 500, 500, SampleFile()));
+        var admin = await CreateService(Guid.NewGuid(), templates: templates, entitlements: TestEntitlements.Free())
+            .CreateAsync(new CreateMockupTemplateRequestDto("Shared Tee", "tshirt", 100, 100, 500, 500, SampleFile()), system: true);
+
+        seller.IsFailure.Should().BeTrue();
+        admin.IsSuccess.Should().BeTrue();
+        added.Should().ContainSingle().Which.Should().Match<MockupTemplate>(template => template.UserId == null && template.IsSystemTemplate == true);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_SharedTemplate_ChangedByAnAdminButNotBySellers()
+    {
+        var id = Guid.NewGuid();
+        var templates = TemplateRepository(RecolorableTemplate(id));
+        SetupGetById(templates, id);
+        var request = new UpdateMockupTemplateRequestDto("Renamed", "tshirt", 0, 0, 100, 100, null);
+
+        var seller = await CreateService(Guid.NewGuid(), templates: templates).UpdateAsync(id, request);
+        var admin = await CreateService(Guid.NewGuid(), templates: templates, entitlements: TestEntitlements.Free()).UpdateAsync(id, request, system: true);
+
+        seller.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
+        admin.IsSuccess.Should().BeTrue();
+        admin.Value.Name.Should().Be("Renamed");
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_AdminCannotChangeASellersTemplate()
+    {
+        var id = Guid.NewGuid();
+        var template = RecolorableTemplate(id);
+        template.UserId = Guid.NewGuid();
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, id);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates)
+            .UpdateAsync(id, new UpdateMockupTemplateRequestDto("Renamed", "tshirt", 0, 0, 100, 100, null), system: true);
+
+        result.Error.Type.Should().Be(APCS.Common.Models.ErrorType.Forbidden);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_PrintifyTemplate_IsRenamedButKeepsItsPhotoAndPrintArea()
+    {
+        var id = Guid.NewGuid();
+        var templates = TemplateRepository(PrintifyTemplate(id));
+        SetupGetById(templates, id);
+        var images = MockImages();
+        MockupTemplateService Service() => CreateService(Guid.NewGuid(), templates: templates, images: images);
+
+        var renamed = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 500, 500, 400, 400, null), system: true);
+        var moved = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 450, 500, 400, 400, null), system: true);
+        var photo = await Service().UpdateAsync(id, new UpdateMockupTemplateRequestDto("Bella Tee", "tshirt", 500, 500, 400, 400, SampleFile()), system: true);
+
+        renamed.IsSuccess.Should().BeTrue();
+        renamed.Value.Name.Should().Be("Bella Tee");
+        moved.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
+        photo.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
+        images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task SetViewAsync_PrintifyTemplate_TakesNoUploadedSide()
+    {
+        var id = Guid.NewGuid();
+        var sideId = Guid.NewGuid();
+        var templates = TemplateRepository(PrintifyTemplate(id), MakeTemplate(sideId, "tshirt"));
+        SetupGetById(templates, id);
+        SetupGetById(templates, sideId);
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates).SetViewAsync(id, "back", sideId, system: true);
+
+        result.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_UploadedSideOfAPrintifyTemplate_IsRefused()
+    {
+        var id = Guid.NewGuid();
+        var templates = TemplateRepository(PrintifyTemplate(id));
+        SetupGetById(templates, id);
+        var images = MockImages();
+
+        var result = await CreateService(Guid.NewGuid(), templates: templates, images: images)
+            .CreateAsync(new CreateMockupTemplateRequestDto("Back", "tshirt", 10, 10, 100, 100, SampleFile(), View: "back", MainTemplateId: id), system: true);
+
+        result.Error.Code.Should().Be("BatchMockups.PrintifyPhotoLocked");
+        images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task DeleteAsync_System_TurnsASharedTemplateOff()
+    {
+        var id = Guid.NewGuid();
+        var template = MakeTemplate(id, "tshirt");
+        var templates = TemplateRepository(template);
+        SetupGetById(templates, id, template);
+
+        var seller = await CreateService(Guid.NewGuid(), templates: templates).DeleteAsync(id);
+        var admin = await CreateService(Guid.NewGuid(), templates: templates).DeleteAsync(id, system: true);
+
+        seller.IsFailure.Should().BeTrue();
+        admin.IsSuccess.Should().BeTrue();
+        template.IsActive.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ListSystemAsync_ListsOnlySharedTemplates()
+    {
+        var shared = Guid.NewGuid();
+        var own = MakeTemplate(Guid.NewGuid(), "tshirt");
+        own.UserId = Guid.NewGuid();
+
+        var result = await CreateService(Guid.NewGuid(), templates: TemplateRepository(MakeTemplate(shared, "tshirt"), own)).ListSystemAsync();
+
+        result.Value.Should().ContainSingle().Which.Id.Should().Be(shared);
+    }
+
     private static MockupTemplate MakeTemplate(Guid id, string productType) => new()
     {
         Id = id, Name = $"Template-{id:N}", ProductType = productType, BaseImageUrl = "https://cdn/base.jpg",
@@ -3025,7 +3151,8 @@ public sealed class MockupTemplateServiceTests
         Mock<IMockupCompositor>? compositor = null,
         Mock<IUnitOfWork>? unitOfWork = null,
         Mock<IMockupMapService>? mapService = null,
-        Mock<IRepository<PrintifyColorMap>>? printifyColors = null)
+        Mock<IRepository<PrintifyColorMap>>? printifyColors = null,
+        APCS.Application.Features.Entitlements.IPlanEntitlementService? entitlements = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(user => user.IsAuthenticated).Returns(userId.HasValue);
@@ -3051,7 +3178,7 @@ public sealed class MockupTemplateServiceTests
             new SaveMockupOverridesValidator(),
             TimeProvider.System,
             NullLogger<MockupTemplateService>.Instance,
-            TestEntitlements.AllowAll(),
+            entitlements ?? TestEntitlements.AllowAll(),
             printifyColors?.Object);
     }
 

@@ -21,11 +21,12 @@ namespace APCS.Api.UnitTests.Controllers;
 public sealed class AssistantControllerTests
 {
     private readonly Mock<IAssistantService> service = new(MockBehavior.Strict);
+    private readonly Mock<IAssistantRunProgressReader> runProgress = new(MockBehavior.Strict);
 
     private AssistantController Controller(params string[] roles)
     {
         var identity = new ClaimsIdentity(roles.Select(role => new Claim(ClaimTypes.Role, role)), "test");
-        return new AssistantController(service.Object)
+        return new AssistantController(service.Object, runProgress.Object)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) } }
         };
@@ -39,6 +40,36 @@ public sealed class AssistantControllerTests
 
     private static AssistantChatSession Session() =>
         new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new AssistantCaller(true, false), "hi", null, []);
+
+    [TestMethod]
+    public async Task GetRunProgress_ReturnsTheProgressOfTheWorkflow()
+    {
+        var workflowId = Guid.NewGuid();
+        var progress = new AssistantRunProgressResponseDto(workflowId, "Flow", AssistantRunStages.MockupApproval, AssistantRunStates.WaitingForUser, "Approve the mock-ups.");
+        runProgress.Setup(reader => reader.ReadAsync(workflowId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(progress));
+
+        var result = await Controller(AuthConstants.UserRole).GetRunProgress(workflowId, default);
+
+        result.Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(progress);
+    }
+
+    [TestMethod]
+    public async Task GetRunProgress_WhenTheWorkflowIsMissing_ReturnsNotFound()
+    {
+        var workflowId = Guid.NewGuid();
+        runProgress.Setup(reader => reader.ReadAsync(workflowId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<AssistantRunProgressResponseDto>(Error.NotFound("WorkflowNotFound", "Workflow not found.")));
+
+        var result = await Controller(AuthConstants.UserRole).GetRunProgress(workflowId, default);
+
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    [TestMethod]
+    public void GetRunProgress_IsSellerOnly() =>
+        typeof(AssistantController).GetMethod(nameof(AssistantController.GetRunProgress))!
+            .GetCustomAttributes(typeof(AuthorizeAttribute), false).Cast<AuthorizeAttribute>()
+            .Single().Roles.Should().Be(AuthConstants.UserRole);
 
     [TestMethod]
     public async Task Chat_WhenStartFails_ReturnsProblemDetails()

@@ -43,15 +43,23 @@ public sealed class ListingPaceTests
             etsyRows.Add(new EtsyUploadLog { Id = Guid.NewGuid(), EtsyIntegration = integration, EtsyListingId = "l", AttemptedAt = clock.GetUtcNow().UtcDateTime.AddMinutes(-ago) });
     }
 
-    private void MadeOnPrintify(params int[] minutesAgo)
+    private void PublishedThroughPrintify(params int[] minutesAgo) => AddPrintify(true, minutesAgo);
+
+    private void MadeOnPrintifyOnly(params int[] minutesAgo) => AddPrintify(false, minutesAgo);
+
+    private void AddPrintify(bool published, int[] minutesAgo)
     {
         var integration = new PrintifyIntegration { Id = Guid.NewGuid(), UserId = userId };
         foreach (var ago in minutesAgo)
+        {
+            var at = clock.GetUtcNow().UtcDateTime.AddMinutes(-ago);
             printifyRows.Add(new PrintifyUploadLog
             {
-                Id = Guid.NewGuid(), PrintifyIntegration = integration, SyncType = "create", UploadStatus = "success",
-                CompletedAt = clock.GetUtcNow().UtcDateTime.AddMinutes(-ago),
+                Id = Guid.NewGuid(), PrintifyIntegration = integration, SyncType = "create", UploadStatus = "success", CompletedAt = at,
+                ApiResponse = new PrintifyService.LogState(published ? PrintifyStages.Publishing : PrintifyStages.Created, null,
+                    published ? at : null, 0, false).Write(),
             });
+        }
     }
 
     [TestMethod]
@@ -69,13 +77,22 @@ public sealed class ListingPaceTests
     {
         var pace = Create(clock.GetUtcNow().AddDays(-3));
         ListedDirectly(10, 40);
-        MadeOnPrintify(50);
+        PublishedThroughPrintify(50);
 
         var decision = await pace.CheckAsync(userId, default);
 
         decision.Allowed.Should().BeFalse();
         decision.RetryAtUtc.Should().Be(clock.GetUtcNow().UtcDateTime.AddMinutes(10));
         decision.Reason.Should().Contain("3 listings an hour");
+    }
+
+    [TestMethod]
+    public async Task CheckAsync_ProductsOnlyMadeOnPrintify_AddNoListingAndDoNotCount()
+    {
+        var pace = Create(clock.GetUtcNow().AddDays(-3));
+        MadeOnPrintifyOnly(10, 20, 29);
+
+        (await pace.CheckAsync(userId, default)).Allowed.Should().BeTrue();
     }
 
     [TestMethod]

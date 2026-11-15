@@ -195,6 +195,21 @@ public sealed class AssistantAgentLoopTests
     }
 
     [TestMethod]
+    public async Task RunAsync_WhenTheCompletionCheckFails_KeepsTheAnswerAndEndsDone()
+    {
+        var edit = ActionTool("edit_workflow_canvas", "I added the step.");
+        var model = new FakeChatModel(
+            [AssistantTestSupport.Done("", AssistantTestSupport.Call("edit_workflow_canvas", """{"moreRequests":false}""", "c1"))],
+            [AssistantModelUpdate.Failed("model_unavailable")]);
+
+        var events = await Collect(Loop(model, edit).RunAsync(AssistantTestSupport.Session()));
+
+        events.Should().NotContain(e => e.Type == "error");
+        events[^1].Type.Should().Be("done");
+        saved.Single().Content.Should().Be("I added the step.");
+    }
+
+    [TestMethod]
     public async Task RunAsync_CompletionCheck_DropsASummaryOfWhatWasAlreadySaid()
     {
         var edit = ActionTool("edit_workflow_canvas", "I connected the steps in run order.");

@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Common.Constants;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -26,12 +27,13 @@ public interface IRunCostEstimateService
 }
 
 /// <summary>
-/// Estimates a Run before it starts, from the saved workflow and the batch in Product Input. The designs do not exist
-/// yet, so the counts are upper bounds: every product of the batch without a design gets every variant, and every
-/// design gets a video. The exact AI cost is quoted again once the designs are known (<see cref="AiShotQuoteService"/>).
+/// Estimates a Run before it starts, from the saved workflow and the products of the batch in Product Input the Run
+/// goes through (its pending ones when it makes designs). The designs do not exist yet, so the counts are upper
+/// bounds: every product without a design gets every variant, and every design gets a video.
 /// </summary>
 public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workflow> workflows, IRepository<Product> products,
-    IRepository<DesignImage> designs, IEnumerable<IImageGenerationProvider> imageProviders) : IRunCostEstimateService
+    IRepository<DesignImage> designs, IEnumerable<IImageGenerationProvider> imageProviders,
+    IRepository<MockupImage>? mockups = null) : IRunCostEstimateService
 {
     private sealed record DesignImageConfig(string ImageProvider = ImageGenerationProviders.Default, int Variants = 2);
 
@@ -42,9 +44,15 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
             return Result.Failure<RunCostEstimateResponse>(Error.NotFound("WorkflowNotFound", "Workflow not found."));
         var definition = WorkflowJson.Read<WorkflowDefinition>(workflow.Definition);
         var batchId = WorkflowGraphValidator.BatchIdOf(definition);
-        var batch = batchId == Guid.Empty ? Array.Empty<Product>()
+        var all = batchId == Guid.Empty ? Array.Empty<Product>()
             : (await products.FindAsync(x => x.BatchId == batchId && x.UserId == workflow.UserId && x.DeletedAt == null, ct))
                 .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase).ThenBy(x => x.Id).ToArray();
+        // Only what this Run makes is priced. A workflow with design steps makes its designs as a job of the batch's pending
+        // products (BatchService.ApproveAsync), and its videos and listings are for that job's products only; a product
+        // finished by an earlier Run is not made again. With nothing pending, or without design steps, the Run goes on
+        // with every product of the batch.
+        var pending = all.Where(x => x.ProcessingStatus == BatchJobProductStatuses.Pending).ToArray();
+        var batch = definition.Nodes.Any(x => WorkflowCapabilityRegistry.BatchSteps.Contains(x.Type)) && pending.Length > 0 ? pending : all;
         var ids = batch.Select(x => x.Id).ToArray();
         IReadOnlyList<DesignImage> existing = ids.Length == 0 ? Array.Empty<DesignImage>()
             : await designs.FindAsync(x => ids.Contains(x.ProductId) && x.DeletedAt == null && x.ApprovalStatus != "rejected", ct);
@@ -69,6 +77,13 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
         {
             var shared = WorkflowJson.Config<GenerateVideoConfig>(videoNode);
             var withPerson = 0;
+            // A design made before this Run that already has its model photo gets no second one, so it is not billed again.
+            var photographed = mockups is null || ids.Length == 0 ? new HashSet<string>()
+                : (await mockups.FindAsync(x => ids.Contains(x.ProductId) && x.Role == ModelPhotoMockupService.Role, ct))
+                    .GroupBy(x => x.ArtworkGroupKey ?? x.ProductId.ToString())
+                    .Where(group => PersonModelPhotos.Has(group))
+                    .Select(group => group.Key)
+                    .ToHashSet(StringComparer.Ordinal);
             foreach (var product in batch)
             {
                 // A product given settings of its own before the run renders every design with them.
@@ -82,7 +97,10 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
                 if (clips > 0)
                     items.Add(new("ai_video", product.Name, $"{videos} video{Plural(videos)} × {clips} AI clip{Plural(clips)} ({seconds:0.#} s)",
                         videos * clips, videos * perVideo));
-                if (PersonModelPhotos.Needs(config)) withPerson += videos;
+                if (PersonModelPhotos.Needs(config))
+                    withPerson += own is null ? videos
+                        : (own.Any(x => x.ApprovalStatus == "approved") ? own.Where(x => x.ApprovalStatus == "approved") : own)
+                            .Count(design => !photographed.Contains(design.Id.ToString()));
             }
             var ideogram = imageProviders.FirstOrDefault(x => x.Provider == ImageGenerationProviders.Ideogram);
             if (withPerson > 0 && ideogram is not null)

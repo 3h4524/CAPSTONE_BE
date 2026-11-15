@@ -68,6 +68,45 @@ public sealed class MockupTemplateService(
             .ToList());
     }
 
+    public async Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListSystemAsync(CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<IReadOnlyList<MockupTemplateResponseDto>>(MockupErrors.Unauthenticated("view"));
+
+        var items = await templates.Query()
+            .Include(template => template.MockupTemplatePrintifyLink)
+            .Where(template => template.IsActive == true && template.Kind != MockupRules.ModelKind && template.UserId == null)
+            .OrderBy(template => template.ProductType)
+            .ThenBy(template => template.Name)
+            .ToListAsync(cancellationToken);
+
+        var byId = items.ToDictionary(template => template.Id);
+        var colors = await PrintifyColorsAsync(items.Select(template => template.MockupTemplatePrintifyLink?.BlueprintId), cancellationToken);
+        return Result.Success<IReadOnlyList<MockupTemplateResponseDto>>(items
+            .Where(template => !MockupRules.IsOtherView(template))
+            .Select(template => Map(template, userId, SidesOf(template, byId), PrintifyOf(template.MockupTemplatePrintifyLink, colors)))
+            .ToList());
+    }
+
+    // An admin changes the shared templates (no owner); a seller only their own.
+    private static bool CanChange(MockupTemplate template, bool system, Guid userId) =>
+        system ? template.UserId is null : template.UserId == userId;
+
+    // A template showing a Printify product, or a side of one: its photos and print areas are Printify's own.
+    private async Task<bool> IsPrintifyLinkedAsync(MockupTemplate template, CancellationToken cancellationToken)
+    {
+        var mainId = MockupRules.MainTemplateId(template.PrintAreaConfig) ?? template.Id;
+        return await templates.Query()
+            .AnyAsync(item => item.Id == mainId && item.MockupTemplatePrintifyLink != null, cancellationToken);
+    }
+
+    private static bool SameAreas(IReadOnlyList<MockupAreaDto> requested, IReadOnlyList<MockupAreaDto>? current) =>
+        current is not null && requested.Count == current.Count
+        && requested.Zip(current).All(pair => pair.First.Key == pair.Second.Key
+            && pair.First.X == pair.Second.X && pair.First.Y == pair.Second.Y
+            && pair.First.Width == pair.Second.Width && pair.First.Height == pair.Second.Height
+            && Math.Abs(pair.First.Rotation - pair.Second.Rotation) < 0.001);
+
     /// <summary>
     /// The garment colors of each blueprint, keyed by blueprint id. A blueprint's own row names a color; a shared row
     /// (no blueprint) fills in a color the blueprint has no row of its own for. White and black lead, then the order
@@ -110,7 +149,7 @@ public sealed class MockupTemplateService(
         link is null
             ? null
             : new MockupTemplatePrintifyDto(link.BlueprintId, link.BlueprintTitle, link.PrintProviderId, link.PrintProviderTitle,
-                link.DefaultSizes ?? [], colors.TryGetValue(link.BlueprintId, out var own) ? own : []);
+                link.DefaultSizes ?? [], colors.TryGetValue(link.BlueprintId, out var own) ? own : [], link.BlueprintImageUrl);
 
     /// <summary>The Printify colors of a template linked to Printify, or null for one that is not.</summary>
     private async Task<(MockupTemplatePrintifyLink Link, IReadOnlyList<PrintifyGarmentColorDto> Colors)?> PrintifyLinkAsync(
@@ -215,13 +254,16 @@ public sealed class MockupTemplateService(
         return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate, backgrounds, areaSources));
     }
 
-    public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, CancellationToken cancellationToken = default)
+    public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, bool system = false, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("create"));
 
-        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
-        if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        if (!system)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+            if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        }
 
         var validation = await createValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -232,9 +274,12 @@ public sealed class MockupTemplateService(
         MockupTemplate? main = null;
         if (request.MainTemplateId is Guid mainId)
         {
-            var found = await FindMainForSideAsync(mainId, userId, cancellationToken);
+            var found = await FindMainForSideAsync(mainId, system, userId, cancellationToken);
             if (found.IsFailure) return Result.Failure<MockupTemplateResponseDto>(found.Error);
             main = found.Value;
+            // The sides of a Printify template are Printify's photos, added by measuring them there.
+            if (!request.FromPrintify && await IsPrintifyLinkedAsync(main, cancellationToken))
+                return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PrintifyPhotoLocked());
             if (!string.Equals(request.ProductType, main.ProductType, StringComparison.OrdinalIgnoreCase))
                 return Result.Failure<MockupTemplateResponseDto>(MockupErrors.TemplateNotForProduct(request.Name));
         }
@@ -273,14 +318,14 @@ public sealed class MockupTemplateService(
         var template = new MockupTemplate
         {
             Id = templateId,
-            UserId = userId,
+            UserId = system ? null : userId,
             Name = main is null ? request.Name.Trim() : await SideNameAsync(request.Name, templateId, cancellationToken),
             ProductType = request.ProductType,
             BaseImageUrl = uploaded.Url,
             PrintAreaConfig = MockupRules.SerializePrintLayout(request.View, areas),
             OutputWidthPx = uploaded.WidthPx,
             OutputHeightPx = uploaded.HeightPx,
-            IsSystemTemplate = false,
+            IsSystemTemplate = system,
             IsActive = true,
             UsageCount = 0,
             Kind = MockupRules.GarmentKind,
@@ -326,13 +371,16 @@ public sealed class MockupTemplateService(
         return Result.Success(Map(template, userId));
     }
 
-    public async Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, CancellationToken cancellationToken = default)
+    public async Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, UpdateMockupTemplateRequestDto request, bool system = false, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("update"));
 
-        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
-        if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        if (!system)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+            if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        }
 
         var validation = await updateValidator.ValidateAsync(request, cancellationToken);
         if (!validation.IsValid)
@@ -344,8 +392,14 @@ public sealed class MockupTemplateService(
         // A model photo is changed through its own endpoints: its garment is a selection, not what the model finds.
         if (template is null || template.IsActive != true || MockupRules.IsModelPhoto(template))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.TemplateNotFoundSingle());
-        if (template.UserId is null || template.UserId != userId)
+        if (!CanChange(template, system, userId))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.UpdateNotOwner());
+
+        // Only the name, product type and colors of a Printify template change here: its photo and print area are
+        // Printify's, so the mock-ups match what Printify prints.
+        var printifyLinked = await IsPrintifyLinkedAsync(template, cancellationToken);
+        if (printifyLinked && request.BaseImage is not null)
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PrintifyPhotoLocked());
 
         if (!MockupRules.IsOtherView(template) && await IsNameTakenAsync(request.Name, id, cancellationToken))
         {
@@ -377,6 +431,8 @@ public sealed class MockupTemplateService(
         var current = MockupRules.ParsePrintLayout(template.PrintAreaConfig);
         var areas = RequestedAreas(request.Areas, new MockupPosition(request.X, request.Y, request.Width, request.Height), current);
         var view = request.View ?? current?.View;
+        if (printifyLinked && (!SameAreas(areas, current?.Areas) || view != current?.View))
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PrintifyPhotoLocked());
         PreparedBasePhoto? prepared = null;
         if (photo is not null)
         {
@@ -444,7 +500,7 @@ public sealed class MockupTemplateService(
         return Result.Success(Map(template, userId));
     }
 
-    public async Task<Result> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<Result> DeleteAsync(Guid id, bool system = false, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure(MockupErrors.Unauthenticated("delete"));
@@ -452,7 +508,7 @@ public sealed class MockupTemplateService(
         var template = await templates.GetByIdAsync(id, cancellationToken);
         if (template is null || template.IsActive != true || MockupRules.IsModelPhoto(template))
             return Result.Failure(MockupErrors.TemplateNotFoundSingle());
-        if (template.UserId is null || template.UserId != userId)
+        if (!CanChange(template, system, userId))
             return Result.Failure(MockupErrors.DeleteNotOwner());
 
         // No deleted_at column on mockup_templates, and product_mockup_templates/mockup_images both
@@ -460,7 +516,7 @@ public sealed class MockupTemplateService(
         // is the safe option instead of a hard delete.
         var now = timeProvider.GetUtcNow().UtcDateTime;
         // Its other sides can't be used without it.
-        foreach (var side in await SidesAsync([template], userId, cancellationToken))
+        foreach (var side in await SidesAsync([template], system ? null : userId, cancellationToken))
         {
             side.IsActive = false;
             side.UpdatedAt = now;
@@ -473,19 +529,25 @@ public sealed class MockupTemplateService(
         return Result.Success();
     }
 
-    public async Task<Result<MockupTemplateResponseDto>> SetViewAsync(Guid id, string view, Guid? viewTemplateId, CancellationToken cancellationToken = default)
+    public async Task<Result<MockupTemplateResponseDto>> SetViewAsync(Guid id, string view, Guid? viewTemplateId, bool system = false, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("update"));
 
-        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
-        if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        if (!system)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+            if (planCheck.IsFailure) return Result.Failure<MockupTemplateResponseDto>(planCheck.Error);
+        }
         if (!MockupRules.OtherViews.Contains(view))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.UnknownView());
 
-        var found = await FindMainForSideAsync(id, userId, cancellationToken);
+        var found = await FindMainForSideAsync(id, system, userId, cancellationToken);
         if (found.IsFailure) return Result.Failure<MockupTemplateResponseDto>(found.Error);
         var main = found.Value;
+        // A Printify template's side can be taken off, but a new one only comes from Printify.
+        if (viewTemplateId is not null && await IsPrintifyLinkedAsync(main, cancellationToken))
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PrintifyPhotoLocked());
 
         var views = MockupRules.ViewTemplateIds(main.PrintAreaConfig);
         var now = timeProvider.GetUtcNow().UtcDateTime;
@@ -493,7 +555,7 @@ public sealed class MockupTemplateService(
         if (viewTemplateId is Guid sideId)
         {
             side = await templates.GetByIdAsync(sideId, cancellationToken);
-            if (side is null || side.IsActive != true || MockupRules.IsModelPhoto(side) || side.Id == main.Id || side.UserId != userId)
+            if (side is null || side.IsActive != true || MockupRules.IsModelPhoto(side) || side.Id == main.Id || !CanChange(side, system, userId))
                 return Result.Failure<MockupTemplateResponseDto>(MockupErrors.TemplateNotFoundSingle());
             // A side is a photo of the same garment, and belongs to one template only.
             if (MockupRules.ViewTemplateIds(side.PrintAreaConfig).Count > 0
@@ -509,17 +571,18 @@ public sealed class MockupTemplateService(
             await templates.UpdateAsync(side, cancellationToken: cancellationToken);
         await templates.UpdateAsync(main, saveChange: true, cancellationToken);
 
-        var sides = await SidesAsync([main], userId, cancellationToken);
+        var sides = await SidesAsync([main], system ? null : userId, cancellationToken);
         return Result.Success(Map(main, userId, sides));
     }
 
-    // The user's template that another side can be added to: an active garment photo of its own front.
-    private async Task<Result<MockupTemplate>> FindMainForSideAsync(Guid id, Guid userId, CancellationToken cancellationToken)
+    // The template another side can be added to (the user's own, or a shared one for an admin): an active garment
+    // photo of its own front.
+    private async Task<Result<MockupTemplate>> FindMainForSideAsync(Guid id, bool system, Guid userId, CancellationToken cancellationToken)
     {
         var main = await templates.GetByIdAsync(id, cancellationToken);
         if (main is null || main.IsActive != true || MockupRules.IsModelPhoto(main) || MockupRules.IsOtherView(main))
             return Result.Failure<MockupTemplate>(MockupErrors.TemplateNotFoundSingle());
-        if (main.UserId is null || main.UserId != userId)
+        if (!CanChange(main, system, userId))
             return Result.Failure<MockupTemplate>(MockupErrors.UpdateNotOwner());
         return Result.Success(main);
     }
@@ -1486,13 +1549,16 @@ public sealed class MockupTemplateService(
         return null;
     }
 
-    public async Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, CancellationToken cancellationToken = default)
+    public async Task<Result<GarmentMaskPreviewResponseDto>> PreviewGarmentMaskAsync(UploadFileDto? photo, bool system = false, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.Unauthenticated("preview"));
 
-        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
-        if (planCheck.IsFailure) return Result.Failure<GarmentMaskPreviewResponseDto>(planCheck.Error);
+        if (!system)
+        {
+            var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.CustomMockupTemplates, cancellationToken);
+            if (planCheck.IsFailure) return Result.Failure<GarmentMaskPreviewResponseDto>(planCheck.Error);
+        }
         if (!MockupImageValidators.IsSupportedImage(photo) || !MockupImageValidators.IsWithinSizeLimit(photo))
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.InvalidPreviewPhoto());
         if (!mapService.IsAvailable)

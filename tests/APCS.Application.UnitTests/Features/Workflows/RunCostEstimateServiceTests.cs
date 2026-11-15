@@ -1,3 +1,4 @@
+using APCS.Common.Constants;
 using System.Text.Json;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
@@ -118,6 +119,42 @@ public sealed class RunCostEstimateServiceTests
         estimate.Items.Where(x => x.Kind == "ai_video").Should().ContainSingle()
             .Which.Should().BeEquivalentTo(new { Label = "Tee B", Quantity = 1, EstimatedCostUsd = 0.40m });
         estimate.Items.Single(x => x.Kind == "model_photos").Quantity.Should().Be(1);
+    }
+
+    // A Run with design steps makes a job of the batch's pending products only (BatchService.ApproveAsync): a product an
+    // earlier Run finished is not designed or filmed again, so it is not priced, whatever its own settings are.
+    [TestMethod]
+    public async Task EstimateAsync_ProductsFinishedByAnEarlierRun_AreNotPricedAgain()
+    {
+        var davies = AddProduct("DAVIES T-Shirt");
+        var ontop = AddProduct("ONTOP");
+        var added = AddProduct("New tee");
+        davies.ProcessingStatus = "completed";
+        ontop.ProcessingStatus = "completed";
+        added.ProcessingStatus = BatchJobProductStatuses.Pending;
+        _designs.Add(new DesignImage { Id = Guid.NewGuid(), ProductId = davies.Id, ApprovalStatus = "approved" });
+        _designs.Add(new DesignImage { Id = Guid.NewGuid(), ProductId = ontop.Id, ApprovalStatus = "approved" });
+        var shared = new GenerateVideoConfig(Mode: "standard", AiScenes: [Scene("standard")]);
+        var own = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [Scene("ai", seconds: 4)]);
+        var workflow = AddWorkflow(1, shared with { ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [ontop.Id] = own } });
+
+        var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
+
+        estimate.Items.Single(x => x.Kind == "design_images").Quantity.Should().Be(1);
+        estimate.Items.Should().NotContain(x => x.Label == "ONTOP" || x.Label == "DAVIES T-Shirt");
+    }
+
+    [TestMethod]
+    public async Task EstimateAsync_NothingPending_PricesEveryProductTheRunGoesOnWith()
+    {
+        var ontop = AddProduct("ONTOP");
+        ontop.ProcessingStatus = "completed";
+        _designs.Add(new DesignImage { Id = Guid.NewGuid(), ProductId = ontop.Id, ApprovalStatus = "approved" });
+        var workflow = AddWorkflow(1, Scene("ai", seconds: 4));
+
+        var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
+
+        estimate.Items.Should().ContainSingle(x => x.Kind == "ai_video" && x.Label == "ONTOP");
     }
 
     [TestMethod]

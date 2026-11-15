@@ -43,6 +43,13 @@ public sealed class StartWorkflowRunTool(
         if (workflow.IsFailure)
             return Result.Failure<AssistantPendingActionDraft>(workflow.Error);
 
+        if (workflow.Value.Definition.Nodes.Any(node => WorkflowCapabilityRegistry.BatchSteps.Contains(node.Type)))
+        {
+            return Result.Failure<AssistantPendingActionDraft>(Error.Conflict(
+                "needs_workflow_screen",
+                "This workflow makes designs first, which runs from the workflow screen. Open the workflow to run it."));
+        }
+
         var canvas = context.Client?.Canvas;
         if (canvas is not null && canvas.WorkflowId == workflowId && canvas.IsDirty)
         {

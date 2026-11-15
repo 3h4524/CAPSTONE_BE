@@ -14,7 +14,7 @@ public sealed record ApprovalGateConfig(string Mode = "manual");
 /// <remarks>
 /// Only what the seller has not decided is approved: a rejected mock-up stays rejected, an AI keyframe is reviewed on
 /// its own, and a composite replaced by a newer one of the same template and color (<see cref="MockupSources.Superseded"/>)
-/// is left as it is. A paid AI scene still waits for its cost to be confirmed; that is not a review the mode replaces.
+/// is left as it is. AI scenes go on too: their cost was shown when the seller pressed Run.
 /// </remarks>
 public static class MockupAutoApproval
 {
@@ -40,8 +40,4 @@ public static class MockupAutoApproval
         }
         return waiting.Length;
     }
-
-    /// <summary>Whether a video can start without the seller: AI scenes are billed per clip and confirmed first.</summary>
-    public static bool NeedsNoConsent(GenerateVideoConfig config) =>
-        config.Mode != "ai_shot" && (config.AiScenes is null || config.AiScenes.All(scene => scene.Mode == "standard"));
 }

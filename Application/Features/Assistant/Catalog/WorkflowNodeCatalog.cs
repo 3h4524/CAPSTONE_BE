@@ -30,11 +30,11 @@ public static class WorkflowNodeCatalog
     public static readonly IReadOnlyList<string> RunOrder =
     [
         "product-input", "prompt-synthesis", "design-image", "design-approval", "apply-mockup",
-        "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy"
+        "approval-gate", "publish-printify", "generate-video", "review-video", "export-zip", "publish-etsy"
     ];
 
     public const string PublishRule =
-        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product: each may appear once and nothing connects after publish-etsy. With the video steps they come after export-zip; without a video they follow approval-gate directly, and review-video and export-zip are left out.";
+        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product; each may appear once. publish-printify takes the design and its approved mock-ups, never the video: it branches off apply-mockup or approval-gate with exactly one incoming connection, nothing connects after it, and it starts right after Mockup Approval beside the video (a failure of one does not stop the other). publish-etsy is last and nothing connects after it: with the video steps it comes after review-video, or after export-zip when it is there (export-zip is optional); without a video it follows approval-gate directly, and review-video and export-zip are left out.";
 
     public static readonly IReadOnlyList<string> ConnectionRules =
     [
