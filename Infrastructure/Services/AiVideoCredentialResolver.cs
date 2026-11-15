@@ -11,12 +11,13 @@ namespace APCS.Infrastructure.Services;
 public sealed class AiVideoCredentialResolver(
     IOptions<MiniMaxOptions> miniMax,
     IApiKeyRepository keys,
-    IApiKeyCredentials credentials) : IAiVideoCredentialResolver
+    IApiKeyCredentials credentials,
+    ISystemApiKeyPool? systemKeys = null) : IAiVideoCredentialResolver
 {
     public async Task<string?> ResolveAsync(Guid ownerId, string providerKey, CancellationToken cancellationToken)
     {
         if (string.Equals(providerKey, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase))
-            return Normalize(miniMax.Value.ApiKey);
+            return Normalize(miniMax.Value.ApiKey) ?? Normalize(systemKeys?.AnyKey(AiVideoModel.ProviderKey));
 
         var key = (await keys.ListOwnedAsync(ownerId, cancellationToken)).FirstOrDefault(candidate =>
             string.Equals(candidate.ServiceProvider.Trim(), providerKey, StringComparison.OrdinalIgnoreCase) &&

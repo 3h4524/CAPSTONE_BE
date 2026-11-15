@@ -16,6 +16,8 @@ public static class PlanFeatures
     public const string DesignImages = "design_images";
     public const string DesignVariations = "design_variations";
     public const string AutoApproval = "auto_approval";
+    public const string SystemImageKeys = "system_image_keys";
+    public const string DailyDesignImageCap = "daily_design_image_cap";
     public const string TemplateMockups = "template_mockups";
     public const string CustomMockupTemplates = "custom_mockup_templates";
     public const string LifestyleMockup = "lifestyle_mockup";
@@ -41,6 +43,10 @@ public static class PlanFeatures
             "How many design variations a Seller can generate for one product."),
         new(AutoApproval, "Automatic design approval", PlanFeatureKinds.Flag, "Design images",
             "Approve generated designs automatically instead of reviewing each one."),
+        new(SystemImageKeys, "Ideogram images on the platform's keys", PlanFeatureKinds.Flag, "Design images",
+            "Make Ideogram design images, lifestyle mockups and model photos with the platform's own keys, so the Seller needs no Ideogram key of their own."),
+        new(DailyDesignImageCap, "Daily AI image safety cap", PlanFeatureKinds.Limit, "Safety caps",
+            "Most AI images (designs, lifestyle mockups, model photos) made with the platform's keys per day. Leave empty for no cap."),
         new(TemplateMockups, "Mockups from templates", PlanFeatureKinds.Flag, "Mockups",
             "Render mockups with the built-in templates."),
         new(CustomMockupTemplates, "Custom mockup templates", PlanFeatureKinds.Flag, "Mockups",
@@ -75,9 +81,9 @@ public static class PlanFeatures
 
     /// <summary>
     /// What the free trial leaves out when the catalog has no row for it: the AI video tools,
-    /// billed per second of video.
+    /// billed per second of video, and design images paid for by the platform.
     /// </summary>
-    public static readonly IReadOnlySet<string> TrialExcluded = new HashSet<string>(StringComparer.Ordinal) { AiVideo, StudioKeyframe };
+    public static readonly IReadOnlySet<string> TrialExcluded = new HashSet<string>(StringComparer.Ordinal) { AiVideo, StudioKeyframe, SystemImageKeys };
 
     private static readonly HashSet<string> Codes = All.Select(feature => feature.Code).ToHashSet(StringComparer.Ordinal);
 

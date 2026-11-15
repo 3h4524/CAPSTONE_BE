@@ -9,6 +9,8 @@ namespace APCS.Infrastructure.Services;
 public sealed class VideoQualityEvidenceRunner(IOptions<VideoQualityOptions> options, IHttpClientFactory clients,
     ProcessVideoQualityEvidenceRunner legacy) : IVideoQualityEvidenceRunner
 {
+    public bool IsEnabled => options.Value.Enabled;
+
     public async Task<VideoQualityEvidenceResult> EvaluateAsync(VideoQualityEvidenceRequest request, CancellationToken cancellationToken = default) =>
         (await EvaluateBatchAsync([request], cancellationToken))[request.SceneOrder];
 

@@ -11,7 +11,8 @@ public sealed record MockupTemplatePrintifyDto(
     long? PrintProviderId,
     string? PrintProviderTitle,
     IReadOnlyList<string> DefaultSizes,
-    IReadOnlyList<PrintifyGarmentColorDto> Colors);
+    IReadOnlyList<PrintifyGarmentColorDto> Colors,
+    string? BlueprintImageUrl = null);
 
 /// <summary>A Printify garment color: its name on Printify and the upper-case <c>#RRGGBB</c> a mock-up is recolored with.</summary>
 public sealed record PrintifyGarmentColorDto(string Name, string Hex);

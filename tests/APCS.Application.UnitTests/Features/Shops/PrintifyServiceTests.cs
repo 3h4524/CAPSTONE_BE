@@ -443,6 +443,51 @@ public sealed class PrintifyServiceTests
     }
 
     [TestMethod]
+    public async Task CreateProductAsync_AMockupNobodyMoved_PrintsTheDesignWhereTheTemplatePutsItInPrintifysArea()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        // Printify's print area is the 400 × 500 frame; the template puts the design in the top half of it, centered.
+        mockup.MockupTemplate!.PrintAreaConfig =
+            """{"x":200,"y":125,"width":200,"height":250,"unit":"px","printifyFrame":{"x":100,"y":100,"width":400,"height":500}}""";
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.X == 0.5 && product.Y == 0.3 && Math.Abs(product.Scale - 0.4722) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_AMockupWhoseAreasWereSet_PrintsTheDesignWhereItsMainAreaIs()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        var slot = $"{design.Id:N}.{mockup.MockupTemplateId:N}.FFFFFF";
+        mockup.BatchJobProduct!.BatchJob.Config = "{\"mockupOverrides\":{\"" + slot + "\":{\"mockupTemplateId\":\"" + mockup.MockupTemplateId
+            + "\",\"garmentColor\":\"#FFFFFF\",\"areas\":[{\"key\":\"main\",\"x\":200,\"y\":125,\"width\":200,\"height\":250,\"rotation\":0,\"source\":\"same\"}]}}}";
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.X == 0.5 && product.Y == 0.3 && Math.Abs(product.Scale - 0.4722) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_ATurnedDesign_IsTurnedOnPrintifyToo()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        var slot = $"{design.Id:N}.{mockup.MockupTemplateId:N}.FFFFFF";
+        mockup.BatchJobProduct!.BatchJob.Config = "{\"mockupOverrides\":{\"" + slot + "\":{\"mockupTemplateId\":\"" + mockup.MockupTemplateId
+            + "\",\"garmentColor\":\"#FFFFFF\",\"areas\":[{\"key\":\"main\",\"x\":200,\"y\":200,\"width\":200,\"height\":250,\"rotation\":-20.4,\"source\":\"same\"}]}}}";
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.Angle == -20 && product.X == 0.5 && product.Y == 0.45 && Math.Abs(product.Scale - 0.4722) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
     public async Task CreateProductAsync_AMockupBoxPastThePrintArea_IsKeptInsideIt_AndSaysSo()
     {
         var service = Create();

@@ -177,6 +177,51 @@ public static class MockupRules
         return views.Count == 0 && mainId is null ? newJson : WithViewLinks(newJson, views, mainId);
     }
 
+    // ---- A Printify template: Printify's print area, and where the design goes inside it ----
+    // A template linked to Printify keeps the print area Printify prints, measured on its photo, under "printifyFrame".
+    // Its main print area is where the design goes by default, inside that frame, as Printify's editor places it. A
+    // template whose design was never moved has no frame stored: its main print area is Printify's whole print area.
+
+    private const string PrintifyFrameKey = "printifyFrame";
+
+    /// <summary>The print area Printify prints on this photo of a template linked to Printify.</summary>
+    public static MockupPosition? PrintifyFrameOf(string? json)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(json) && JsonNode.Parse(json)?[PrintifyFrameKey] is JsonObject frame
+                && ReadInt(frame, "x") is int x && ReadInt(frame, "y") is int y
+                && ReadInt(frame, "width") is > 0 and var width && ReadInt(frame, "height") is > 0 and var height)
+                return new MockupPosition(x, y, width, height);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+        }
+        return ParsePrintArea(json);
+    }
+
+    /// <summary>The config with Printify's print area on this photo set.</summary>
+    public static string WithPrintifyFrame(string json, MockupPosition frame)
+    {
+        JsonObject root;
+        try
+        {
+            root = JsonNode.Parse(json) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+        root[PrintifyFrameKey] = new JsonObject
+        {
+            ["x"] = frame.X,
+            ["y"] = frame.Y,
+            ["width"] = frame.Width,
+            ["height"] = frame.Height,
+        };
+        return root.ToJsonString();
+    }
+
     /// <summary>Which side of the garment a template photo shows, and its print areas, the main one first.</summary>
     public sealed record MockupPrintLayout(string View, IReadOnlyList<MockupAreaDto> Areas)
     {

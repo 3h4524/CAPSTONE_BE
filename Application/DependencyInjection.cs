@@ -76,6 +76,14 @@ public static class DependencyInjection
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        // Shared templates of Printify products, made by admins with the server's own Printify token.
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyAdminCatalog>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyColorMapService>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyTemplateBuilder, APCS.Application.Features.BatchMockups.Printify.PrintifyTemplateBuilder>();
         services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<Features.Admin.MockupTemplates.IAdminMockupTemplateService, Features.Admin.MockupTemplates.AdminMockupTemplateService>();

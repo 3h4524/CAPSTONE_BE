@@ -247,7 +247,9 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     return Result.Failure<RunResponse>(Error.Conflict("StoryboardChanged", "Storyboard changed. Preview again before rendering."));
             }
             var selectedConfig = request.Config ?? WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-            var failedExportOnly = request.Action == "retry" && checkpoints.Single(x => x.NodeType == "export-zip").Status == "failed";
+            // Export ZIP is optional: a run without it has only the video to make again.
+            var export = checkpoints.SingleOrDefault(x => x.NodeType == "export-zip");
+            var failedExportOnly = request.Action == "retry" && export is { Status: "failed" };
             if (!failedExportOnly)
             {
                 if (request.Action == "regenerate_ai_shot" && selectedConfig.Mode != "ai_shot")
@@ -259,8 +261,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 var consent = await quotes.VerifyAsync(run, selectedConfig, request.AiShotQuoteToken, request.Action == "regenerate_ai_shot", request.SceneOrder, ct);
                 if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             }
-            var failedExport = checkpoints.Single(x => x.NodeType == "export-zip");
-            if (failedExportOnly) failedExport.Status = "pending";
+            if (failedExportOnly) export!.Status = "pending";
             else
             {
                 // A retry sends the settings on the canvas too. Only settings that differ from the run's make a new
@@ -290,7 +291,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                     }
                     else if (previousJob is not null) previousJob.Payload = "{}";
                 }
-                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending"; failedExport.Status = "pending";
+                checkpoints.Single(x => x.NodeType == "review-video").Status = "pending";
+                if (export is not null) export.Status = "pending";
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";
             run.Status = "running"; run.ErrorMessage = null; if (reopenCancelledScene) run.CompletedAt = null;

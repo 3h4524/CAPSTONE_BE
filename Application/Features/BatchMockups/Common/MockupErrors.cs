@@ -110,6 +110,10 @@ public static class MockupErrors
     public static Error OutsidePrintifyArea(string name) =>
         Error.Validation($"Keep the design inside the Printify print area of {name}: Printify prints nothing outside it.");
 
+    public static Error PrintifyPhotoLocked() =>
+        Error.Conflict("BatchMockups.PrintifyPhotoLocked",
+            "The photos and print area of a Printify template come from Printify. Use its Printify settings to change them.");
+
     public static Error PrintifyColorNotOffered(string name, string color) =>
         Error.Validation($"{color} is not a Printify color of {name}. Choose one of its Printify colors.");
 }

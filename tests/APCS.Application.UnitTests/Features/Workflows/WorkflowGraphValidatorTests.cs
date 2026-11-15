@@ -89,6 +89,29 @@ public sealed class WorkflowGraphValidatorTests
     }
 
     [TestMethod]
+    public void Validate_VideoWithoutExportZip_PushesToPrintifyAfterReviewVideo()
+    {
+        var full = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()), ("publish-printify", new { targetProfit = 10 }));
+        var export = full.Nodes.Single(x => x.Type == "export-zip");
+        var review = full.Nodes.Single(x => x.Type == "review-video");
+        var definition = full with
+        {
+            Nodes = full.Nodes.Where(x => x != export).ToArray(),
+            Edges = [.. full.Edges.Where(x => x.Source != export.Id && x.Target != export.Id), new("to-printify", review.Id, "publish-0")],
+        };
+        _validator.Validate(definition).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_TwoExportZips_AreRejected()
+    {
+        var full = WorkflowTestData.Definition(new WorkflowTestData().AddProduct());
+        var second = new WorkflowNode("export-2", "export-zip", "Export ZIP", new(), JsonSerializer.SerializeToElement(new { }));
+        var definition = full with { Nodes = [.. full.Nodes, second], Edges = [.. full.Edges, new("to-export-2", "node-5", second.Id)] };
+        _validator.Validate(definition)!.Message.Should().Contain("Export ZIP may appear once");
+    }
+
+    [TestMethod]
     public void Validate_PublishRightAfterMockupApprovalWithoutAVideo_IsAccepted()
     {
         var definition = WorkflowTestData.PublishWithoutVideoDefinition(new WorkflowTestData().AddProduct());
