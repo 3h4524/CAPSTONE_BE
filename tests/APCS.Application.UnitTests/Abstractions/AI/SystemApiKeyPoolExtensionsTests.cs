@@ -29,6 +29,47 @@ public sealed class SystemApiKeyPoolExtensionsTests
     }
 
     [TestMethod]
+    public async Task GenerateImageAsync_KeyStillBusyAfterWaiting_TheImageIsAskedOfTheNext_AndTheBusyKeyStaysInUse()
+    {
+        var pool = new FakeSystemApiKeyPool("ideogram", ("busy", 5), ("free", 5));
+        var asked = new List<string>();
+
+        var result = await pool.GenerateImageAsync("ideogram", ownKey: null, key =>
+        {
+            asked.Add(key);
+            return Task.FromResult(key == "busy"
+                ? ImageGenerationResult.Busy("Ideogram returned 429: Too many requests.", "ideogram-4")
+                : ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        });
+        var next = await pool.AcquireAsync("ideogram");
+
+        result.IsSuccess.Should().BeTrue();
+        asked.Should().Equal("busy", "free");
+        pool.Disabled.Should().BeEmpty("a busy key is not taken out of use for the day");
+        next!.KeyId.Should().Be("busy", "the next image may use it again");
+        pool.UsesLeft("busy").Should().Be(4, "the busy request was given back; only the next one counts");
+    }
+
+    [TestMethod]
+    public async Task GenerateImageAsync_EveryKeyBusy_FailsAsBusy_WithoutChargingTheSellersOwnKey()
+    {
+        var pool = new FakeSystemApiKeyPool("ideogram", ("first", 5), ("second", 5));
+        var asked = new List<string>();
+
+        var result = await pool.GenerateImageAsync("ideogram", ownKey: "own", key =>
+        {
+            asked.Add(key);
+            return Task.FromResult(ImageGenerationResult.Busy("Ideogram returned 429: Too many requests.", "ideogram-4"));
+        });
+
+        result.IsSuccess.Should().BeFalse();
+        result.KeyBusy.Should().BeTrue();
+        asked.Should().Equal("first", "second");
+        pool.UsesLeft("first").Should().Be(5);
+        pool.UsesLeft("second").Should().Be(5);
+    }
+
+    [TestMethod]
     public async Task GenerateImageAsync_PlatformKeysUsedUp_GoesOnWithTheSellersOwnKey()
     {
         var pool = new FakeSystemApiKeyPool("ideogram", ("platform", 0));

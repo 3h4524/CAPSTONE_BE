@@ -88,6 +88,12 @@ public sealed record ImageGenerationResult(
     /// </summary>
     public bool StopsJob { get; init; }
 
+    /// <summary>
+    /// <see langword="true"/> when the key had too many images being made at once, still after waiting: the account is
+    /// fine and a few seconds later the key takes images again, so another key may make this one now.
+    /// </summary>
+    public bool KeyBusy { get; init; }
+
     /// <summary>How long the provider took to make the image, when it reports it apart from <see cref="DownloadTime"/>.</summary>
     public TimeSpan? GenerateTime { get; init; }
 
@@ -112,4 +118,8 @@ public sealed record ImageGenerationResult(
     /// <summary>A failure that every further request of the job would meet too (see <see cref="StopsJob"/>).</summary>
     public static ImageGenerationResult AccountRefused(string reason, string model) =>
         new(null, null, false, reason, model, 0) { StopsJob = true };
+
+    /// <summary>A key with too many images being made at once (see <see cref="KeyBusy"/>).</summary>
+    public static ImageGenerationResult Busy(string reason, string model) =>
+        new(null, null, false, reason, model, 0) { KeyBusy = true };
 }

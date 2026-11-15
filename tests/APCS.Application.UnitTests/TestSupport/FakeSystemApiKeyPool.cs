@@ -13,12 +13,18 @@ internal sealed class FakeSystemApiKeyPool(string provider, params (string Key, 
     /// <summary>The keys taken out of use for today, with the reason given.</summary>
     public List<(string Key, string Reason)> Disabled { get; } = [];
 
+    /// <summary>How many uses the key has left today.</summary>
+    public int UsesLeft(string key) => left[key];
+
     public bool HasKeys(string name) => string.Equals(name, provider, StringComparison.OrdinalIgnoreCase) && left.Count > 0;
 
-    public Task<ISystemApiKeyLease?> AcquireAsync(string name, CancellationToken cancellationToken = default)
+    public Task<ISystemApiKeyLease?> AcquireAsync(string name, CancellationToken cancellationToken = default) =>
+        AcquireAsync(name, new HashSet<string>(), cancellationToken);
+
+    public Task<ISystemApiKeyLease?> AcquireAsync(string name, IReadOnlySet<string> skipKeyIds, CancellationToken cancellationToken = default)
     {
         if (!HasKeys(name)) return Task.FromResult<ISystemApiKeyLease?>(null);
-        var key = left.FirstOrDefault(pair => pair.Value > 0 && Disabled.All(off => off.Key != pair.Key)).Key;
+        var key = left.FirstOrDefault(pair => pair.Value > 0 && !skipKeyIds.Contains(pair.Key) && Disabled.All(off => off.Key != pair.Key)).Key;
         if (key is null) return Task.FromResult<ISystemApiKeyLease?>(null);
         left[key]--;
         return Task.FromResult<ISystemApiKeyLease?>(new Lease(this, name, key));

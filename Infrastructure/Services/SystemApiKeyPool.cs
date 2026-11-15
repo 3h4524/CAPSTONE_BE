@@ -46,7 +46,13 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
 
     public string? AnyKey(string provider) => providers.TryGetValue(provider, out var keys) ? keys.Keys[0].Value : null;
 
-    public async Task<ISystemApiKeyLease?> AcquireAsync(string provider, CancellationToken cancellationToken = default)
+    private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>();
+
+    public Task<ISystemApiKeyLease?> AcquireAsync(string provider, CancellationToken cancellationToken = default) =>
+        AcquireAsync(provider, NoKeys, cancellationToken);
+
+    public async Task<ISystemApiKeyLease?> AcquireAsync(string provider, IReadOnlySet<string> skipKeyIds,
+        CancellationToken cancellationToken = default)
     {
         if (!providers.TryGetValue(provider, out var pool)) return null;
 
@@ -58,6 +64,7 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
             for (var i = 0; i < pool.Keys.Length; i++)
             {
                 var key = pool.Keys[(start + i) % pool.Keys.Length];
+                if (skipKeyIds.Contains(key.Id)) continue;
                 // A key with every place taken is tried again below, once one frees up.
                 if (key.Slots is { } slots && !slots.Wait(0))
                 {
