@@ -75,6 +75,8 @@ public partial class User
 
     public virtual ICollection<PaymentMethod> PaymentMethods { get; set; } = new List<PaymentMethod>();
 
+    public virtual ICollection<PinterestIntegration> PinterestIntegrations { get; set; } = new List<PinterestIntegration>();
+
     public virtual ICollection<PlanAiReview> PlanAiReviews { get; set; } = new List<PlanAiReview>();
 
     public virtual ICollection<PlanSetting> PlanSettings { get; set; } = new List<PlanSetting>();

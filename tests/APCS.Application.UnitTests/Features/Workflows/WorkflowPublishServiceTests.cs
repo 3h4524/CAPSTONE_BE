@@ -69,7 +69,7 @@ public sealed class WorkflowPublishServiceTests
             .ReturnsAsync(Result.Success(Product("publishing")));
 
         return new WorkflowPublishService(fixture.Nodes.Object, fixture.Runs.Object, fixture.State.Object, fixture.Unit.Object, runtime,
-            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance, pace.Object, matcher.Object, socialKits.Object);
+            printify.Object, etsy.Object, fixture.Time, NullLogger<WorkflowPublishService>.Instance, pace.Object, matcher.Object, socialKits.Object, pins.Object);
     }
 
     private PrintifyProductDto Product(string state, string? listingId = null) => new(run.ProductId, "p-1", "Cat Tee", state, listingId,
@@ -80,6 +80,76 @@ public sealed class WorkflowPublishServiceTests
     private WorkflowNodeRun Step(string type) => fixture.NodeRows.Single(x => x.NodeType == type);
 
     private readonly Mock<APCS.Application.Features.Social.ISocialShareKitService> socialKits = new();
+    private readonly Mock<APCS.Application.Features.Social.IPinterestService> pins = new();
+
+    /// <summary>A kit with an image pin per mock-up, a video pin and a TikTok post.</summary>
+    private void PinKit(params Guid[] mockups) => socialKits.Setup(x => x.BuildAsync(run.ProductId, run.UserId, It.IsAny<CancellationToken>()))
+        .ReturnsAsync(Result.Success(new APCS.Application.Features.Social.SocialShareKitDto(run.ProductId, "Cat tee", "https://www.etsy.com/listing/1",
+            [
+                .. mockups.Select(id => new APCS.Application.Features.Social.SocialPostDto("pinterest", "image",
+                    [new APCS.Application.Features.Social.SocialMediaDto("image", $"https://cdn.test/{id}.jpg", "https://cdn.test/dl.jpg", 1000, 1500, "pin.jpg", id)],
+                    "Cat Tee", "A soft tee.", [], "https://www.etsy.com/listing/1", "A cat tee")),
+                new APCS.Application.Features.Social.SocialPostDto("pinterest", "video", [], "Cat Tee", "A soft tee.", [], "https://www.etsy.com/listing/1", null),
+                new APCS.Application.Features.Social.SocialPostDto("tiktok", "video", [], null, "caption", [], null, null),
+            ], [])));
+
+    [TestMethod]
+    public async Task ProcessAsync_PushToMediaWithABoard_PostsTheImagePinsToIt()
+    {
+        var service = Create(("publish-social", new { pinterest = true, tiktok = true, boardId = "b-1", boardName = "Cat tees" }));
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        PinKit(first, second);
+        IReadOnlyList<APCS.Application.Features.Social.Common.PinToPost>? sent = null;
+        pins.Setup(x => x.PostPinsAsync(run.UserId, run.ProductId, "b-1", It.IsAny<IReadOnlyList<APCS.Application.Features.Social.Common.PinToPost>>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid, string, IReadOnlyList<APCS.Application.Features.Social.Common.PinToPost>, CancellationToken>((_, _, _, list, _) => sent = list)
+            .ReturnsAsync(Result.Success(new APCS.Application.Features.Social.Common.PostPinsResult(
+                [new(first, "1", "https://www.pinterest.com/pin/1/", false), new(second, "2", "https://www.pinterest.com/pin/2/", true)], [])));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        Step("publish-social").Status.Should().Be("succeeded");
+        sent!.Select(pin => pin.MockupImageId).Should().Equal(first, second);
+        sent![0].ImageUrl.Should().Be($"https://cdn.test/{first}.jpg");
+        sent![0].Link.Should().Be("https://www.etsy.com/listing/1");
+        var state = WorkflowJson.Read<PublishNodeState>(Step("publish-social").OutputSnapshot);
+        state.PinsPosted.Should().Be(2);
+        state.PinUrls.Should().Equal("https://www.pinterest.com/pin/1/", "https://www.pinterest.com/pin/2/");
+        state.BoardName.Should().Be("Cat tees");
+        state.Warnings.Should().Contain(item => item.Contains("video pin"));
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_PushToMediaWithoutABoard_LeavesThePinsToPostByHand()
+    {
+        var service = Create(("publish-social", new { pinterest = true, tiktok = false }));
+        PinKit(Guid.NewGuid());
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        Step("publish-social").Status.Should().Be("succeeded");
+        var state = WorkflowJson.Read<PublishNodeState>(Step("publish-social").OutputSnapshot);
+        state.PinsPosted.Should().Be(0);
+        state.Warnings.Should().Contain(item => item.Contains("Choose a Pinterest board"));
+        pins.Verify(x => x.PostPinsAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<APCS.Application.Features.Social.Common.PinToPost>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_PushToMediaWithALostPinterestGrant_FailsAskingToConnectAgain()
+    {
+        var service = Create(("publish-social", new { pinterest = true, tiktok = false, boardId = "b-1" }));
+        PinKit(Guid.NewGuid());
+        pins.Setup(x => x.PostPinsAsync(run.UserId, run.ProductId, "b-1", It.IsAny<IReadOnlyList<APCS.Application.Features.Social.Common.PinToPost>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<APCS.Application.Features.Social.Common.PostPinsResult>(APCS.Application.Features.Social.Common.SocialErrors.PinterestReconnectRequired()));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-social").Id, default);
+
+        Step("publish-social").Status.Should().Be("failed");
+        Step("publish-social").ErrorMessage.Should().Contain("Connect your Pinterest account again");
+    }
 
     private void Kit(params string[] platforms) => socialKits.Setup(x => x.BuildAsync(run.ProductId, run.UserId, It.IsAny<CancellationToken>()))
         .ReturnsAsync(Result.Success(new APCS.Application.Features.Social.SocialShareKitDto(run.ProductId, "Cat tee", "https://www.etsy.com/listing/1",

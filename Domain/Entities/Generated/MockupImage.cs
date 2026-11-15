@@ -76,4 +76,6 @@ public partial class MockupImage
     public virtual Product Product { get; set; } = null!;
 
     public virtual ICollection<PromoVideoScene> PromoVideoScenes { get; set; } = new List<PromoVideoScene>();
+
+    public virtual ICollection<SocialMediaShare> SocialMediaShares { get; set; } = new List<SocialMediaShare>();
 }

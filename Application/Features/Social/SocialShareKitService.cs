@@ -10,8 +10,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace APCS.Application.Features.Social;
 
-/// <summary>A file of a post, sized for its platform: a link to show it and a link that downloads it.</summary>
-public sealed record SocialMediaDto(string Type, string PreviewUrl, string DownloadUrl, int Width, int Height, string FileName);
+/// <summary>
+/// A file of a post, sized for its platform: a link to show it and a link that downloads it. <c>SourceId</c> is the
+/// mock-up an image is made from.
+/// </summary>
+public sealed record SocialMediaDto(string Type, string PreviewUrl, string DownloadUrl, int Width, int Height, string FileName, Guid? SourceId = null);
 
 /// <summary>
 /// One post ready to publish by hand on a platform. <c>Kind</c> is <c>image</c>, <c>video</c> or <c>carousel</c>;
@@ -137,7 +140,7 @@ public sealed class SocialShareKitService(
 
     private SocialMediaDto Fitted(MockupImage mockup, int width, int height, string fileName) =>
         new("image", storage.SignReadFitted(mockup.StorageKey, mockup.StorageVersion, width, height),
-            storage.SignReadFitted(mockup.StorageKey, mockup.StorageVersion, width, height, attachment: true), width, height, fileName);
+            storage.SignReadFitted(mockup.StorageKey, mockup.StorageVersion, width, height, attachment: true), width, height, fileName, mockup.Id);
 
     private SocialMediaDto Video(PromoVideo video, string fileName)
     {

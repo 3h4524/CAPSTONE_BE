@@ -21,7 +21,7 @@ public sealed class DatabaseFirstModelTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        mappedTables.Should().HaveCount(81);
+        mappedTables.Should().HaveCount(82);
         mappedTables.Should().BeEquivalentTo(new[]
         {
             "ai_character_models", "ai_prompts", "api_keys", "api_usage_records", "assistant_conversations",
@@ -33,7 +33,7 @@ public sealed class DatabaseFirstModelTests
             "listing_tag_items", "listing_titles", "market_listing_snapshots", "market_opportunities",
             "market_opportunity_evidence", "media_jobs", "mockup_images", "mockup_templates",
             "mockup_template_printify_links", "music_tracks", "notification_alerts", "notification_deliveries", "payment_methods", "permissions",
-            "plan_features", "printify_color_map", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
+            "pinterest_integrations", "plan_features", "printify_color_map", "printify_integrations", "printify_upload_logs", "products", "product_mockup_templates",
             "promo_videos", "promo_video_scenes", "roles", "role_permissions", "seo_scores", "share_hashtags",
             "social_media_shares", "style_art_presets", "subscriptions", "subscription_plans", "support_tickets",
             "ticket_attachments", "ticket_replies", "usage_statistics", "users", "user_profiles", "user_roles",

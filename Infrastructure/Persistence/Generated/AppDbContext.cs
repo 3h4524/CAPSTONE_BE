@@ -96,6 +96,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Permission> Permissions { get; set; }
 
+    public virtual DbSet<PinterestIntegration> PinterestIntegrations { get; set; }
+
     public virtual DbSet<PlanAiReview> PlanAiReviews { get; set; }
 
     public virtual DbSet<PlanFeature> PlanFeatures { get; set; }
@@ -2443,6 +2445,40 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("payment_methods_user_id_fkey");
         });
 
+        modelBuilder.Entity<PinterestIntegration>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("pinterest_integrations_pkey");
+
+            entity.ToTable("pinterest_integrations");
+
+            entity.HasIndex(e => e.UserId, "uq_pinterest_integrations_user")
+                .IsUnique()
+                .HasFilter("(deleted_at IS NULL)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.AccessExpiresAt).HasColumnName("access_expires_at");
+            entity.Property(e => e.AccessTokenEncrypted).HasColumnName("access_token_encrypted");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.PinterestUsername)
+                .HasMaxLength(255)
+                .HasColumnName("pinterest_username");
+            entity.Property(e => e.RefreshExpiresAt).HasColumnName("refresh_expires_at");
+            entity.Property(e => e.RefreshTokenEncrypted).HasColumnName("refresh_token_encrypted");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.PinterestIntegrations)
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("pinterest_integrations_user_id_fkey");
+        });
+
         modelBuilder.Entity<Permission>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("permissions_pkey");
@@ -3376,6 +3412,8 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("social_media_shares");
 
+            entity.HasIndex(e => e.MockupImageId, "idx_social_media_shares_mockup_image_id").HasFilter("(mockup_image_id IS NOT NULL)");
+
             entity.HasIndex(e => e.Platform, "idx_social_media_shares_platform");
 
             entity.HasIndex(e => e.ProductId, "idx_social_media_shares_product_id");
@@ -3392,11 +3430,15 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DestinationId)
+                .HasMaxLength(255)
+                .HasColumnName("destination_id");
             entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
             entity.Property(e => e.ExternalPlatformUrl).HasColumnName("external_platform_url");
             entity.Property(e => e.ExternalPostId)
                 .HasMaxLength(255)
                 .HasColumnName("external_post_id");
+            entity.Property(e => e.MockupImageId).HasColumnName("mockup_image_id");
             entity.Property(e => e.Platform)
                 .HasMaxLength(50)
                 .HasColumnName("platform");
@@ -3412,6 +3454,11 @@ public partial class AppDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("share_status");
+
+            entity.HasOne(d => d.MockupImage).WithMany(p => p.SocialMediaShares)
+                .HasForeignKey(d => d.MockupImageId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("social_media_shares_mockup_image_id_fkey");
 
             entity.HasOne(d => d.Product).WithMany(p => p.SocialMediaShares)
                 .HasForeignKey(d => d.ProductId)

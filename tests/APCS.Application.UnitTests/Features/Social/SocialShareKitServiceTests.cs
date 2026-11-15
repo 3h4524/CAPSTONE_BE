@@ -80,7 +80,7 @@ public sealed class SocialShareKitServiceTests
         kit.Warnings.Should().BeEmpty();
         var pins = kit.Posts.Where(post => post.Platform == "pinterest").ToArray();
         pins.Select(post => post.Kind).Should().Equal("image", "image", "video");
-        pins[0].Media.Single().Should().BeEquivalentTo(new SocialMediaDto("image", "https://cdn.test/m1/1000x1500", "https://cdn.test/m1/1000x1500?dl", 1000, 1500, "math-teacher-tee-pin-1.jpg"));
+        pins[0].Media.Single().Should().BeEquivalentTo(new SocialMediaDto("image", "https://cdn.test/m1/1000x1500", "https://cdn.test/m1/1000x1500?dl", 1000, 1500, "math-teacher-tee-pin-1.jpg", mockupRows.Single(row => row.StorageKey == "m1").Id));
         pins.Should().OnlyContain(post => post.Link == "https://www.etsy.com/listing/123" && post.Title == "Funny Math Teacher Shirt, Pi Day Shirt");
         var tiktok = kit.Posts.Where(post => post.Platform == "tiktok").ToArray();
         tiktok.Select(post => post.Kind).Should().Equal("video", "carousel");

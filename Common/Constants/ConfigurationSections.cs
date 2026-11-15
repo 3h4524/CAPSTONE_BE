@@ -56,6 +56,9 @@ public static class ConfigurationSections
     /// <summary>The Google Gemini image generation options section.</summary>
     public const string Gemini = "Gemini";
 
+    /// <summary>The Pinterest app a seller connects their account through.</summary>
+    public const string Pinterest = "Pinterest";
+
     /// <summary>The system-owned MiniMax video generation options section.</summary>
     public const string MiniMax = "MiniMax";
 

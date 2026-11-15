@@ -107,15 +107,26 @@ public sealed record PublishNodeState(
     bool MockupsAfterPrintify = false,
     string? MadeAs = null,
     int SocialPosts = 0,
-    IReadOnlyList<string>? Platforms = null);
+    IReadOnlyList<string>? Platforms = null,
+    int PinsPosted = 0,
+    IReadOnlyList<string>? PinUrls = null,
+    string? BoardName = null);
 
 /// <summary>
 /// Push to media: the platforms to prepare posts for (<c>pinterest</c>, <c>tiktok</c>); none set means both. The
-/// posts are made from the approved mock-ups, video and listing, for the seller to publish by hand.
+/// posts are made from the approved mock-ups, video and listing. With a board chosen, the image pins are posted to it
+/// on the seller's connected Pinterest account; the rest are published by hand.
 /// </summary>
 /// <param name="Pinterest">The canvas's Pinterest switch; unset counts as on.</param>
 /// <param name="TikTok">The canvas's TikTok switch; unset counts as on.</param>
-public sealed record PublishSocialConfig(IReadOnlyList<string>? Platforms = null, bool? Pinterest = null, bool? TikTok = null)
+/// <param name="BoardId">The Pinterest board the image pins are posted to; unset leaves them to post by hand.</param>
+/// <param name="BoardName">The board's name when it was chosen, shown on the canvas and the run.</param>
+public sealed record PublishSocialConfig(
+    IReadOnlyList<string>? Platforms = null,
+    bool? Pinterest = null,
+    bool? TikTok = null,
+    string? BoardId = null,
+    string? BoardName = null)
 {
     public static readonly IReadOnlyList<string> AllPlatforms = ["pinterest", "tiktok"];
 

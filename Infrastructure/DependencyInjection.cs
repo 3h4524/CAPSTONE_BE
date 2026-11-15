@@ -239,6 +239,17 @@ public static class DependencyInjection
             client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
         });
         services.AddScoped<IPrintifyClient, PrintifyClient>();
+        // Pinterest with the seller's own OAuth token; the app id and secret only reach the token endpoint.
+        services.AddOptions<PinterestOptions>()
+            .Bind(configuration.GetSection(PinterestOptions.SectionName));
+        services.AddHttpClient(PinterestClient.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<PinterestOptions>>().Value;
+            client.BaseAddress = new Uri(options.ApiBaseUrl.EndsWith('/') ? options.ApiBaseUrl : $"{options.ApiBaseUrl}/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 5, 120));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("APCS-Social/1.0");
+        }).RedactLoggedHeaders(new[] { "Authorization" });
+        services.AddScoped<APCS.Application.Abstractions.Social.IPinterestClient, PinterestClient>();
         services.AddHttpClient(EtsyShopClient.MediaDownloadClientName, client => client.Timeout = TimeSpan.FromMinutes(2));
         services.AddHttpClient(EtsyShopClient.UploadClientName, (provider, client) =>
         {

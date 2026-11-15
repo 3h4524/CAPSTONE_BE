@@ -42,7 +42,8 @@ public sealed class WorkflowPublishService(
     ILogger<WorkflowPublishService> logger,
     IListingPace? pace = null,
     IPrintifyMockupMatcher? matcher = null,
-    Social.ISocialShareKitService? social = null) : IWorkflowPublishService
+    Social.ISocialShareKitService? social = null,
+    Social.IPinterestService? pinterest = null) : IWorkflowPublishService
 {
     /// <summary>How often a product Printify is publishing is checked.</summary>
     internal static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(20);
@@ -138,22 +139,68 @@ public sealed class WorkflowPublishService(
     }
 
     /// <summary>
-    /// Push to media prepares the product's posts for the chosen platforms from what the run approved; the seller
-    /// publishes them by hand from the run. It fails when nothing can be posted, saying what to approve first.
+    /// Push to media prepares the product's posts for the chosen platforms from what the run approved. With a Pinterest
+    /// board chosen, the image pins are posted to it; the other posts are published by hand from the run. It fails when
+    /// nothing can be posted, saying what to approve first, or when no pin reaches the board.
     /// </summary>
     private async Task<Outcome> SocialAsync(Guid productId, Guid userId, string input, CancellationToken cancellationToken)
     {
         if (social is null)
             return Outcome.Fail("Push to media is not available on this server.");
-        var platforms = WorkflowJson.Read<PublishSocialConfig>(input).Chosen();
+        var config = WorkflowJson.Read<PublishSocialConfig>(input);
+        var platforms = config.Chosen();
         var kit = await social.BuildAsync(productId, userId, cancellationToken);
         if (kit.IsFailure)
             return Outcome.Fail(kit.Error.Message);
         var posts = kit.Value.Posts.Count(post => platforms.Contains(post.Platform));
         if (posts == 0)
             return Outcome.Fail("Push to media: nothing to post yet. " + string.Join(" ", kit.Value.Warnings));
-        return Outcome.Done(new PublishNodeState("done", EtsyUrl: kit.Value.ListingUrl, Warnings: kit.Value.Warnings,
-            SocialPosts: posts, Platforms: platforms));
+
+        var warnings = kit.Value.Warnings.ToList();
+        IReadOnlyList<string> pinUrls = [];
+        if (platforms.Contains(Social.SocialShareKitService.Pinterest))
+        {
+            var pinned = await PinAsync(productId, userId, config, kit.Value, warnings, cancellationToken);
+            if (pinned.Failure is { } failure)
+                return Outcome.Fail(failure);
+            pinUrls = pinned.Urls;
+        }
+        return Outcome.Done(new PublishNodeState("done", EtsyUrl: kit.Value.ListingUrl, Warnings: warnings,
+            SocialPosts: posts, Platforms: platforms, PinsPosted: pinUrls.Count, PinUrls: pinUrls,
+            BoardName: pinUrls.Count > 0 ? config.BoardName : null));
+    }
+
+    /// <summary>
+    /// Posts the kit's image pins to the chosen board. No board leaves them to post by hand, with a warning; a pin
+    /// Pinterest refused is a warning while others got there. The video pin stays a post to publish by hand.
+    /// </summary>
+    private async Task<(IReadOnlyList<string> Urls, string? Failure)> PinAsync(Guid productId, Guid userId, PublishSocialConfig config,
+        Social.SocialShareKitDto kit, List<string> warnings, CancellationToken cancellationToken)
+    {
+        var pinterestPosts = kit.Posts.Where(post => post.Platform == Social.SocialShareKitService.Pinterest).ToArray();
+        var imagePins = pinterestPosts
+            .Where(post => post.Kind == "image" && post.Media is [{ SourceId: { } }, ..])
+            .Select(post => new Social.Common.PinToPost(post.Media[0].SourceId!.Value, post.Media[0].PreviewUrl, post.Title, post.Caption, post.Link, post.AltText))
+            .ToArray();
+        if (string.IsNullOrWhiteSpace(config.BoardId))
+        {
+            warnings.Add("Choose a Pinterest board on Push to media to post the pins automatically; until then they are ready to post by hand.");
+            return ([], null);
+        }
+        if (imagePins.Length == 0)
+            return ([], null);
+        if (pinterest is null)
+            return ([], "Posting to Pinterest is not available on this server.");
+
+        var result = await pinterest.PostPinsAsync(userId, productId, config.BoardId, imagePins, cancellationToken);
+        if (result.IsFailure)
+            return ([], $"Push to media: {result.Error.Message}");
+        if (result.Value.Posted.Count == 0)
+            return ([], "Push to media: no pin reached Pinterest. " + string.Join(" ", result.Value.Failures));
+        warnings.AddRange(result.Value.Failures);
+        if (pinterestPosts.Any(post => post.Kind == "video"))
+            warnings.Add("The video pin is not posted automatically yet; post it by hand from the posts.");
+        return (result.Value.Posted.Select(pin => pin.Url).Where(url => url.Length > 0).ToArray(), null);
     }
 
     /// <summary>The Printify products set on Apply mock-up, or null when the definition cannot be read.</summary>

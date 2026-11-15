@@ -121,8 +121,8 @@ public static class WorkflowNodeCatalog
             new("listingType", "select", "Listing type", [new("download", "Digital download"), new("physical", "Physical item")]),
             new("includeVideo", "switch", "Attach the approved video")
         ], "Price, Etsy category and shipping profile are set in the UI."),
-        new("publish-social", "Push to media", "Prepares Pinterest and TikTok posts from the approved mock-ups, video and listing, to publish by hand.", Order("publish-social"),
-            [], "The platforms are chosen in the UI; both by default.")
+        new("publish-social", "Push to media", "Prepares Pinterest and TikTok posts from the approved mock-ups, video and listing; with a Pinterest board chosen, posts the image pins to it, the rest are published by hand.", Order("publish-social"),
+            [], "The platforms and the Pinterest board are chosen in the UI; both platforms by default, no board until the seller connects Pinterest.")
     ];
 
     public static readonly Lazy<string> CompactJson = new(() => JsonSerializer.Serialize(

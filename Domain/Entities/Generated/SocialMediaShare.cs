@@ -9,7 +9,7 @@ public partial class SocialMediaShare
 
     public Guid ProductId { get; set; }
 
-    public Guid PromoVideoId { get; set; }
+    public Guid? PromoVideoId { get; set; }
 
     public string Platform { get; set; } = null!;
 
@@ -35,9 +35,15 @@ public partial class SocialMediaShare
 
     public DateTime? DeletedAt { get; set; }
 
+    public Guid? MockupImageId { get; set; }
+
+    public string? DestinationId { get; set; }
+
+    public virtual MockupImage? MockupImage { get; set; }
+
     public virtual Product Product { get; set; } = null!;
 
-    public virtual PromoVideo PromoVideo { get; set; } = null!;
+    public virtual PromoVideo? PromoVideo { get; set; }
 
     public virtual ICollection<ShareHashtag> ShareHashtags { get; set; } = new List<ShareHashtag>();
 }
