@@ -16,8 +16,40 @@ public sealed class OpportunityService(
     IRepository<SellerOpportunity> sellerOpportunities,
     IRepository<MarketQueryObservation> queryObservations,
     IMarketListingQueries listingQueries,
-    IUnitOfWork unitOfWork) : IOpportunityService
+    IUnitOfWork unitOfWork,
+    IMarketRadarAccess? access = null) : IOpportunityService
 {
+    public async Task<MarketRadarAccessResponse> GetAccessAsync(CancellationToken cancellationToken = default)
+    {
+        var userId = RequireUserId();
+        var plan = access is null ? new MarketRadarPlan(true, null, 0) : await access.GetPlanAsync(userId, cancellationToken);
+        var total = await Ranked(userId).CountAsync(cancellationToken);
+        return new(plan.Full, plan.Full ? null : MarketRadarAccess.FreeOpportunities, total, plan.AnalysesPerDay, plan.AnalysesUsedToday);
+    }
+
+    /// <summary>Whether the Seller's plan opens the whole radar; without the access check (tests) it does.</summary>
+    private async Task<bool> IsFullAsync(Guid userId, CancellationToken cancellationToken) =>
+        access is null || (await access.GetPlanAsync(userId, cancellationToken)).Full;
+
+    /// <summary>The opportunities a Seller without the whole radar sees: the best ranked of their radar.</summary>
+    private async Task<List<Guid>> VisibleIdsAsync(Guid userId, CancellationToken cancellationToken) =>
+        await Ranked(userId)
+            .OrderBy(x => x.Rank ?? int.MaxValue)
+            .ThenByDescending(x => x.FinalScore)
+            .Select(x => x.Id)
+            .Take(MarketRadarAccess.FreeOpportunities)
+            .ToListAsync(cancellationToken);
+
+    /// <summary>The opportunities ranked for the Seller that the radar shows.</summary>
+    private IQueryable<SellerOpportunity> Ranked(Guid userId) =>
+        sellerOpportunities.Query()
+            // Rows ranked before demo data was excluded stay hidden until the next refresh replaces them.
+            .Where(x => x.UserId == userId && !x.Opportunity.IsSynthetic)
+            // An archived opportunity is a niche the marketplace moved on from: it leaves the radar unless the seller kept it.
+            .Where(x => x.Opportunity.Status != MarketOpportunityLifecycle.Archived || x.State == "saved" || x.State == "acted")
+            .Where(x => x.SellerFitScore >= (decimal)SellerOpportunityThresholds.MinimumSellerFitScore
+                && x.FinalScore >= (decimal)SellerOpportunityThresholds.MinimumFinalScore);
+
     /// <summary>
     /// History read for the radar's market signals: long enough for the 28-day seasonality
     /// check and several weekly trend comparisons, without loading every snapshot ever taken.
@@ -142,7 +174,8 @@ public sealed class OpportunityService(
             .ToArray();
 
         var nicheSupply = MarketSupplyCalculator.Combine(matchedQueries.Select(SupplyFor));
-        return [SellerNicheInsightCalculator.Calculate(niche, matchedQueries, matchedRows, relevanceScore, keywordInsights, nicheSupply)];
+        var nicheInsight = SellerNicheInsightCalculator.Calculate(niche, matchedQueries, matchedRows, relevanceScore, keywordInsights, nicheSupply);
+        return [await IsFullAsync(userId, cancellationToken) ? nicheInsight : MarketRadarAccess.Limited(nicheInsight)];
     }
 
     public async Task<IReadOnlyList<SellerOpportunityResponse>> RefreshRankingAsync(CancellationToken cancellationToken = default)
@@ -274,13 +307,14 @@ public sealed class OpportunityService(
     {
         var userId = RequireUserId();
         limit = Math.Clamp(limit, 1, 100);
-        // Rows ranked before demo data was excluded stay hidden until the next refresh replaces them.
-        var query = sellerOpportunities.Query().Where(x => x.UserId == userId && !x.Opportunity.IsSynthetic);
-        // An archived opportunity is a niche the marketplace moved on from: it leaves the radar unless the seller kept it.
-        query = query.Where(x => x.Opportunity.Status != MarketOpportunityLifecycle.Archived || x.State == "saved" || x.State == "acted");
-        query = query.Where(x =>
-            x.SellerFitScore >= (decimal)SellerOpportunityThresholds.MinimumSellerFitScore
-            && x.FinalScore >= (decimal)SellerOpportunityThresholds.MinimumFinalScore);
+        var query = Ranked(userId);
+        var full = await IsFullAsync(userId, cancellationToken);
+        if (!full)
+        {
+            // Without the whole radar only its best ranked opportunities are shown, whatever the filter.
+            var visible = await VisibleIdsAsync(userId, cancellationToken);
+            query = query.Where(x => visible.Contains(x.Id));
+        }
         if (!string.IsNullOrWhiteSpace(state))
             query = query.Where(x => x.State == state.Trim().ToLowerInvariant());
 
@@ -334,12 +368,13 @@ public sealed class OpportunityService(
                         item.IsSynthetic)).ToArray()));
 
         var nicheMarkets = await LoadNicheMarketsAsync(rows.Select(row => row.Opportunity.Niche), cancellationToken);
-        return rows.Select(row => MapOpportunity(
+        var mapped = rows.Select(row => MapOpportunity(
             row,
             insightsByOpportunity.GetValueOrDefault(
                 row.OpportunityId,
                 MarketOpportunityInsightCalculator.Calculate(row.Opportunity, [])),
-            nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche)))).ToArray();
+            nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche))));
+        return (full ? mapped : mapped.Select(MarketRadarAccess.Limited)).ToArray();
     }
 
     public async Task<SellerOpportunityResponse?> GetAsync(Guid id, CancellationToken cancellationToken = default)
@@ -351,6 +386,9 @@ public sealed class OpportunityService(
             .SingleOrDefaultAsync(cancellationToken);
         if (row is null) return null;
         if ((await listingQueries.GetDigitalOpportunityIdsAsync([row.OpportunityId], cancellationToken)).Count > 0) return null;
+        // Without the whole radar only its best ranked opportunities can be opened.
+        var full = await IsFullAsync(userId, cancellationToken);
+        if (!full && !(await VisibleIdsAsync(userId, cancellationToken)).Contains(row.Id)) return null;
 
         var evidenceRows = await evidence.Query()
             .Where(item => item.OpportunityId == row.OpportunityId)
@@ -382,7 +420,8 @@ public sealed class OpportunityService(
                 item.ObservedAt,
                 item.IsSynthetic)).ToArray());
         var nicheMarkets = await LoadNicheMarketsAsync([row.Opportunity.Niche], cancellationToken);
-        return MapOpportunity(row, insight, nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche)));
+        var opportunity = MapOpportunity(row, insight, nicheMarkets.GetValueOrDefault(MarketQueryKey.Normalize(row.Opportunity.Niche)));
+        return full ? opportunity : MarketRadarAccess.Limited(opportunity);
     }
 
     public async Task<SellerOpportunityResponse?> UpdateStateAsync(

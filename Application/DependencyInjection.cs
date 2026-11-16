@@ -182,6 +182,7 @@ public static class DependencyInjection
         services.AddScoped<IMarketInsightsService, MarketInsightsService>();
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
+        services.AddScoped<IMarketRadarAccess, MarketRadarAccess>();
         services.AddScoped<ITranslationService, TranslationService>();
         services.AddScoped<IRagBenchmarkService, RagBenchmarkService>();
 

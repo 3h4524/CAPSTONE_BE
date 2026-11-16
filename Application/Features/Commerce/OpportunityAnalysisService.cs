@@ -2,6 +2,7 @@ using System.Text.Json;
 using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,7 +23,12 @@ public sealed record OpportunityAnalysisResponse(
 
 public interface IOpportunityAnalysisService
 {
-    Task<OpportunityAnalysisResponse?> AnalyzeAsync(Guid sellerOpportunityId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Analyses an opportunity with AI. The latest analysis is answered again while its evidence has not changed, so
+    /// asking twice costs nothing; a new one needs the whole radar and today's cap. Fails with NotFound when the
+    /// opportunity is not the Seller's.
+    /// </summary>
+    Task<Result<OpportunityAnalysisResponse>> AnalyzeAsync(Guid sellerOpportunityId, CancellationToken cancellationToken = default);
     Task<OpportunityAnalysisResponse?> GetLatestAsync(Guid sellerOpportunityId, CancellationToken cancellationToken = default);
 }
 
@@ -32,22 +38,26 @@ public sealed class OpportunityAnalysisService(
     IRepository<MarketOpportunityEvidence> evidence,
     IRepository<OpportunityAnalysisRun> runs,
     IUnitOfWork unitOfWork,
-    IGeminiTextGenerationProvider textGeneration) : IOpportunityAnalysisService
+    IGeminiTextGenerationProvider textGeneration,
+    IMarketRadarAccess? access = null) : IOpportunityAnalysisService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string PromptVersion = "opportunity-action-navigator-v2";
     private const string SchemaVersion = "opportunity-analysis-v2";
 
-    public async Task<OpportunityAnalysisResponse?> AnalyzeAsync(
+    public async Task<Result<OpportunityAnalysisResponse>> AnalyzeAsync(
         Guid sellerOpportunityId,
         CancellationToken cancellationToken = default)
     {
+        if (access is not null && await access.RequireFullAsync(cancellationToken) is { IsFailure: true } locked)
+            return Result.Failure<OpportunityAnalysisResponse>(locked.Error);
         var userId = currentUser.UserId ?? throw new UnauthorizedAccessException("Authentication is required.");
         var sellerOpportunity = await sellerOpportunities.Query()
             .Where(x => x.Id == sellerOpportunityId && x.UserId == userId)
             .Include(x => x.Opportunity)
             .SingleOrDefaultAsync(cancellationToken);
-        if (sellerOpportunity is null) return null;
+        if (sellerOpportunity is null)
+            return Result.Failure<OpportunityAnalysisResponse>(Error.NotFound("MarketRadar.OpportunityNotFound", "The opportunity was not found."));
 
         var evidenceRows = await evidence.Query()
             .Where(x => x.OpportunityId == sellerOpportunity.OpportunityId)
@@ -107,6 +117,22 @@ public sealed class OpportunityAnalysisService(
             evidence = evidenceRows
         };
         var inputSnapshot = JsonSerializer.Serialize(input, JsonOptions);
+        // The same evidence gives the same analysis: the latest one is answered again, without asking the model.
+        var reused = await runs.Query()
+            .Where(x => x.SellerOpportunityId == sellerOpportunityId && x.Status == "succeeded" && x.OutputSnapshot != null
+                && x.PromptVersion == PromptVersion && x.InputSnapshot == inputSnapshot)
+            .OrderByDescending(x => x.CompletedAt ?? x.RequestedAt)
+            .Select(x => new { x.Id, x.Status, x.Provider, x.Model, x.OutputSnapshot })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (reused is not null)
+        {
+            var earlier = Parse(reused.OutputSnapshot!);
+            return Result.Success(new OpportunityAnalysisResponse(reused.Id, sellerOpportunityId, reused.Status, reused.Provider ?? "unknown",
+                reused.Model ?? "unknown", earlier.Summary, earlier.Recommendation, earlier.SupportingPoints, earlier.Risks, earlier.ActionPlan, earlier.ConfidenceNote));
+        }
+        if (access is not null && await access.RequireAnalysisAsync(cancellationToken) is { IsFailure: true } capped)
+            return Result.Failure<OpportunityAnalysisResponse>(capped.Error);
+
         var run = new OpportunityAnalysisRun
         {
             Id = Guid.NewGuid(),
@@ -148,8 +174,8 @@ public sealed class OpportunityAnalysisService(
             run.CompletedAt = DbNow();
             await runs.UpdateAsync(run, cancellationToken: cancellationToken);
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            return new(run.Id, sellerOpportunityId, run.Status, run.Provider!, run.Model, parsed.Summary,
-                parsed.Recommendation, parsed.SupportingPoints, parsed.Risks, parsed.ActionPlan, parsed.ConfidenceNote);
+            return Result.Success(new OpportunityAnalysisResponse(run.Id, sellerOpportunityId, run.Status, run.Provider!, run.Model, parsed.Summary,
+                parsed.Recommendation, parsed.SupportingPoints, parsed.Risks, parsed.ActionPlan, parsed.ConfidenceNote));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
