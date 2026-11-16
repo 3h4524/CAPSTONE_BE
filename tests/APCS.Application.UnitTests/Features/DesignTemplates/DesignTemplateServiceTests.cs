@@ -1,11 +1,13 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.DesignTemplates;
 using APCS.Application.Features.DesignTemplates.Common;
 using APCS.Application.Features.DesignTemplates.Dtos.Request;
 using APCS.Application.Features.DesignTemplates.Validators;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,6 +48,26 @@ public sealed class DesignTemplateServiceTests
     }
 
     [TestMethod]
+    public async Task ListAsync_WhenCultureIsVietnamese_ReturnsTranslatedSystemTemplatesAndSearchesBothNames()
+    {
+        var fixture = CreateFixture("vi");
+        var system = Template("Moonlit Botanicals", true, null, Now.AddMinutes(-1));
+        system.Translations = SystemTranslationDocument.Succeeded(
+            new Dictionary<string, string> { ["name"] = "Moonlit Botanicals" },
+            new Dictionary<string, string> { ["name"] = "Thực vật dưới ánh trăng" });
+        fixture.Repository.Setup(repository => repository.ListSystemAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([system]);
+
+        var byVietnamese = await fixture.Service.ListAsync(
+            new ListDesignTemplatesRequestDto(1, 12, Search: "ánh trăng", Scope: DesignTemplateScopes.System));
+        var byEnglish = await fixture.Service.ListAsync(
+            new ListDesignTemplatesRequestDto(1, 12, Search: "Moonlit", Scope: DesignTemplateScopes.System));
+
+        byVietnamese.Value.Items.Should().ContainSingle().Which.Name.Should().Be("Thực vật dưới ánh trăng");
+        byEnglish.Value.Items.Should().ContainSingle().Which.Name.Should().Be("Thực vật dưới ánh trăng");
+    }
+
+    [TestMethod]
     public async Task ListAsync_WhenPersonalScopeCacheMiss_LoadsOnlySellerCatalog()
     {
         using var cancellation = new CancellationTokenSource();
@@ -76,7 +98,7 @@ public sealed class DesignTemplateServiceTests
         var fixture = CreateFixture();
         var system = Template("System", true, null, Now);
         fixture.Cache.Setup(cache => cache.GetAsync<DesignTemplateCacheItem[]>(
-                "design-templates:v1:system:all", It.IsAny<CancellationToken>()))
+                "design-templates:v2:system:all", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new JsonException("Corrupt cache payload"));
         fixture.Repository.Setup(repository => repository.ListSystemAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([system]);
@@ -89,7 +111,7 @@ public sealed class DesignTemplateServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Items.Should().ContainSingle().Which.Name.Should().Be("System");
         fixture.Cache.Verify(cache => cache.RemoveAsync(
-            "design-templates:v1:system:all",
+            "design-templates:v2:system:all",
             It.Is<CancellationToken>(token => token.CanBeCanceled)), Times.Once);
         fixture.Repository.Verify(repository => repository.ListSystemAsync(
             It.IsAny<CancellationToken>()), Times.Once);
@@ -101,7 +123,7 @@ public sealed class DesignTemplateServiceTests
         var fixture = CreateFixture();
         var system = Template("System", true, null, Now);
         fixture.Cache.Setup(cache => cache.GetAsync<DesignTemplateCacheItem[]>(
-                "design-templates:v1:system:all", It.IsAny<CancellationToken>()))
+                "design-templates:v2:system:all", It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException("Redis connection unavailable"));
         fixture.Repository.Setup(repository => repository.ListSystemAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([system]);
@@ -114,7 +136,7 @@ public sealed class DesignTemplateServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Items.Should().ContainSingle().Which.Name.Should().Be("System");
         fixture.Cache.Verify(cache => cache.RemoveAsync(
-            "design-templates:v1:system:all",
+            "design-templates:v2:system:all",
             It.IsAny<CancellationToken>()), Times.Never);
         fixture.Repository.Verify(repository => repository.ListSystemAsync(
             It.IsAny<CancellationToken>()), Times.Once);
@@ -160,7 +182,7 @@ public sealed class DesignTemplateServiceTests
         using var cancellation = new CancellationTokenSource();
         var fixture = CreateFixture();
         fixture.Cache.Setup(cache => cache.GetAsync<DesignTemplateCacheItem[]>(
-                "design-templates:v1:system:all", It.IsAny<CancellationToken>()))
+                "design-templates:v2:system:all", It.IsAny<CancellationToken>()))
             .Returns(() =>
             {
                 cancellation.Cancel();
@@ -481,7 +503,7 @@ public sealed class DesignTemplateServiceTests
         fixture.Repository.Verify(repository => repository.IncrementUsageCountAsync(
             source.Id, cancellation.Token), Times.Once);
         fixture.Cache.Verify(cache => cache.RemoveAsync(
-            "design-templates:v1:system:all",
+            "design-templates:v2:system:all",
             It.Is<CancellationToken>(token => token.CanBeCanceled)), Times.Once);
     }
 
@@ -533,8 +555,10 @@ public sealed class DesignTemplateServiceTests
         result.Value.NegativePrompt.Should().BeNull();
     }
 
-    private static Fixture CreateFixture()
+    private static Fixture CreateFixture(string culture = "en")
     {
+        var cultureAccessor = new Mock<ICultureAccessor>();
+        cultureAccessor.SetupGet(accessor => accessor.CurrentCulture).Returns(culture);
         var repository = new Mock<IDesignTemplateRepository>();
         var cache = new Mock<ICacheService>();
         var currentUser = new Mock<ICurrentUser>();
@@ -559,7 +583,8 @@ public sealed class DesignTemplateServiceTests
             new ListDesignTemplatesValidator(),
             new CreateDesignTemplateValidator(),
             new UpdateDesignTemplateValidator(),
-            NullLogger<DesignTemplateService>.Instance);
+            NullLogger<DesignTemplateService>.Instance,
+            cultureAccessor: cultureAccessor.Object);
 
         return new Fixture(service, repository, cache);
     }

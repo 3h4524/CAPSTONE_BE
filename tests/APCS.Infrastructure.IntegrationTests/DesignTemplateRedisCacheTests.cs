@@ -23,7 +23,7 @@ public sealed class DesignTemplateRedisCacheTests
         var instanceName = $"APCS:test:{Guid.NewGuid():N}:";
         var sellerA = Guid.NewGuid();
         var sellerB = Guid.NewGuid();
-        const string systemKey = "design-templates:v1:system:all";
+        const string systemKey = "design-templates:v2:system:all";
         var sellerAKey = $"design-templates:v1:user:{sellerA:N}:all";
         var sellerBKey = $"design-templates:v1:user:{sellerB:N}:all";
         var logicalKeys = new[] { systemKey, sellerAKey, sellerBKey };

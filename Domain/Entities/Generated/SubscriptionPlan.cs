@@ -43,6 +43,8 @@ public partial class SubscriptionPlan
 
     public DateTime? UpdatedAt { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual ICollection<PlanFeature> PlanFeatures { get; set; } = new List<PlanFeature>();
 
     public virtual ICollection<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; } = new List<SubscriptionFeatureGrant>();

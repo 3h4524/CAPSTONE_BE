@@ -33,5 +33,7 @@ public partial class MusicTrack
 
     public DateTime? DeletedAt { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
 }

@@ -35,5 +35,7 @@ public partial class VideoTemplate
 
     public int TemplateVersion { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual ICollection<PromoVideo> PromoVideos { get; set; } = new List<PromoVideo>();
 }

@@ -42,4 +42,6 @@ public partial class AiCharacterModel
     public DateTime UpdatedAt { get; set; }
 
     public DateTime? DeletedAt { get; set; }
+
+    public string? Translations { get; set; }
 }

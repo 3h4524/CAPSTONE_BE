@@ -1,6 +1,8 @@
 using System.Globalization;
 using APCS.Api.Extensions;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Application.Features.Workflows;
 using APCS.Common.Constants;
 using APCS.Domain.Entities;
@@ -13,7 +15,8 @@ namespace APCS.Api.Controllers;
 [Authorize(Roles = AuthConstants.UserRole)]
 [Route("api")]
 public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArtifactService media, IVideoPlanningService planning,
-    ILifestyleMockupService lifestyle, IAiStudioFrameService studioFrames, IRepository<MusicTrack>? musicTracks = null) : ControllerBase
+    ILifestyleMockupService lifestyle, IAiStudioFrameService studioFrames, IRepository<MusicTrack>? musicTracks = null,
+    ICultureAccessor? cultureAccessor = null) : ControllerBase
 {
     [HttpGet("workflows/video-templates")]
     public async Task<IActionResult> Templates(CancellationToken ct) => (await planning.ListTemplatesAsync(ct)).ToActionResult(this);
@@ -29,8 +32,15 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
         if (musicTracks is null) return Ok(Array.Empty<object>());
         var tracks = await musicTracks.FindAsync(track => track.DeletedAt == null && track.IsAvailable == true && track.RoyaltyFree &&
             track.LicenseType != null && track.LicenseType != "" && track.AudioUrl != null && track.AudioUrl != "", ct);
-        return Ok(tracks.OrderBy(track => track.Name).Select(track => new { track.Id, track.Name, track.ArtistName, track.DurationSeconds, track.Genre, track.Mood,
-            License = track.LicenseType, PreviewUrl = track.PreviewUrl ?? track.AudioUrl }));
+        var culture = cultureAccessor?.CurrentCulture ?? "en";
+        return Ok(tracks.OrderBy(track => track.Name).Select(track =>
+        {
+            var localizer = SystemTextLocalizer.For(track.Translations, culture);
+            return new { track.Id, track.Name, track.ArtistName, track.DurationSeconds,
+                Genre = localizer.Text(SystemTranslationFields.Genre, track.Genre),
+                Mood = localizer.Text(SystemTranslationFields.Mood, track.Mood),
+                License = track.LicenseType, PreviewUrl = track.PreviewUrl ?? track.AudioUrl };
+        }));
     }
 
     [HttpPost("products/{productId:guid}/video-storyboard")]
