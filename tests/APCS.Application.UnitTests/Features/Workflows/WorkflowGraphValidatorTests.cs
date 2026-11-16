@@ -62,6 +62,24 @@ public sealed class WorkflowGraphValidatorTests
         _validator.Validate(definition).Should().BeNull();
     }
 
+    // Push to media is the last step: after Publish to Etsy, so its pins can link to the listing just made, or in its place.
+    [TestMethod]
+    public void Validate_PushToMediaAfterEtsy_OrInItsPlace_IsAccepted()
+    {
+        var product = new WorkflowTestData().AddProduct();
+        _validator.Validate(WithPublish(WorkflowTestData.Definition(product),
+            ("publish-printify", PrintifySettings), ("publish-etsy", EtsySettings), ("publish-social", new { pinterest = true, tiktok = true }))).Should().BeNull();
+        _validator.Validate(WithPublish(WorkflowTestData.Definition(product), ("publish-social", new { pinterest = true }))).Should().BeNull();
+    }
+
+    [TestMethod]
+    public void Validate_PushToMediaBeforeEtsy_IsRejected()
+    {
+        var definition = WithPublish(WorkflowTestData.Definition(new WorkflowTestData().AddProduct()),
+            ("publish-social", new { pinterest = true }), ("publish-etsy", EtsySettings));
+        _validator.Validate(definition)!.Message.Should().Contain("approval gates");
+    }
+
     [TestMethod]
     public void Validate_PrintifyOffApplyMockup_IsAccepted()
     {
