@@ -181,7 +181,12 @@ reload.
 
 ## Databases and roles
 
-Each Postgres container runs `deploy/postgres/init/01-roles.sh` on first start:
+Each Postgres container runs `deploy/postgres/init/01-roles.sh` on first start; the dev database
+also runs `02-dev-ddl-guard.sh`, which adds the `apcs_guard_dev_ddl` event trigger (function in
+schema `apcs_ops`, kept out of `public` so Flyway still sees an empty schema) refusing DDL from
+`dev_<name>` sessions that do not come from `scripts/Migrate-DevDb.ps1`. A plain `pg_dump` of the
+dev database carries the schema and the trigger along; on production it never fires because no
+`dev_<name>` login exists there, and `DROP EVENT TRIGGER apcs_guard_dev_ddl` removes it.
 
 | Role | Rights | Used by |
 |---|---|---|

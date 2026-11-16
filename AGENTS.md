@@ -61,8 +61,8 @@ when the API runs next to the frontend.
 
 ## Changing the database schema
 
-The shared dev database refuses DDL from a `dev_<name>` session, so a schema change made any other
-way fails. Follow this sequence for every table, column, index, constraint, view, function, or
+The shared dev database refuses DDL from a `dev_<name>` session unless it comes from
+`scripts/Migrate-DevDb.ps1`, so a schema change made any other way fails. Follow this sequence for every table, column, index, constraint, view, function, or
 catalog-data change:
 
 1. `./scripts/New-Migration.ps1 -Name <what_it_does>` creates an empty
@@ -85,7 +85,7 @@ Reading the errors:
 
 | Error | Meaning | Fix |
 |---|---|---|
-| `must be owner of table ...` or `permission denied for schema public` | DDL ran outside Flyway | Move the SQL into a migration and run step 2 |
+| `Schema changes on the shared dev database must go through Flyway migrations`, `must be owner of table ...`, or `permission denied for schema public` | DDL ran outside `Migrate-DevDb.ps1` | Move the SQL into a migration and run step 2 |
 | `role "apcs_migrator" does not exist` | `ConnectionStrings__DefaultConnection` in `.env` is not the shared dev database (for example the old Neon URL) | Use the personal `dev_<name>` connection string |
 | `relation ... does not exist` / `column ... does not exist` while running the API | The dev database lacks a migration from the current branch | `./scripts/Migrate-DevDb.ps1 -Command info`, then run it without `-Command` |
 | `Migration checksum mismatch for migration version ...` | An applied migration file was edited | Restore the file or, if the edit is intended, `./scripts/Migrate-DevDb.ps1 -Command repair` |

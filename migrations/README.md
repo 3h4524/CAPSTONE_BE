@@ -4,7 +4,11 @@ Every schema or catalog-data change is a SQL file in this folder. Nobody changes
 database or production by hand: only the `apcs_migrator` role can create, alter, or drop objects.
 The `dev_<name>` logins hold `apcs_migrator` with `SET` but not `INHERIT`, so a plain session has
 data rights only and a hand-written `ALTER TABLE` is refused, while Flyway started by
-`scripts/Migrate-DevDb.ps1` switches to `apcs_migrator` and can apply migrations.
+`scripts/Migrate-DevDb.ps1` switches to `apcs_migrator` and can apply migrations. On the dev
+database an event trigger (`deploy/postgres/init/02-dev-ddl-guard.sh`) also refuses any DDL from a
+`dev_<name>` session whose `application_name` does not start with `Flyway`, so a manual
+`SET ROLE apcs_migrator` in a SQL client fails with a message pointing here. The script sets
+`ApplicationName=Flyway-Migrate-DevDb`; the check guards against mistakes, not against intent.
 
 ## Writing a migration
 
