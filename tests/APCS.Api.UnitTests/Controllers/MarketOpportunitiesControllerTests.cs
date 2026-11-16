@@ -89,6 +89,8 @@ public sealed class MarketOpportunitiesControllerTests
         var access = new Mock<IMarketRadarAccess>();
         access.Setup(x => x.RequireFullAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure(PlanErrors.FeatureLocked(PlanFeatures.MarketRadarFull)));
+        access.Setup(x => x.RequireRefreshAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(PlanErrors.FeatureLocked(PlanFeatures.MarketRadarFull)));
         var controller = new MarketOpportunitiesController(service.Object, analysisService.Object, access.Object);
 
         (await controller.Refresh(default)).Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
@@ -114,6 +116,7 @@ public sealed class MarketOpportunitiesControllerTests
         var access = new Mock<IMarketRadarAccess>();
         access.Setup(x => x.RequireFullAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
         access.Setup(x => x.RequireAnalysisAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        access.Setup(x => x.RequireRefreshAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
         return access.Object;
     }
 

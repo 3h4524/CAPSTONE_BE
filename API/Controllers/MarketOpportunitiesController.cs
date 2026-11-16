@@ -28,11 +28,11 @@ public sealed class MarketOpportunitiesController(
     public Task<MarketRadarAccessResponse> GetAccess(CancellationToken cancellationToken) =>
         service.GetAccessAsync(cancellationToken);
 
-    /// <summary>Ranks the radar again now; without the whole radar it is ranked once a day on its own.</summary>
+    /// <summary>Ranks the radar again now; without the whole radar at most once a day.</summary>
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
     {
-        var allowed = await access.RequireFullAsync(cancellationToken);
+        var allowed = await access.RequireRefreshAsync(cancellationToken);
         if (allowed.IsFailure) return allowed.ToActionResult(this);
         return Ok(await service.RefreshRankingAsync(cancellationToken));
     }

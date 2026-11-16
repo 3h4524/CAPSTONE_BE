@@ -86,6 +86,21 @@ public sealed class MarketRadarAccessTests
     }
 
     [TestMethod]
+    public async Task RequireRefreshAsync_OnFree_IsOpenOncePerDayAndForAFirstRanking()
+    {
+        var rankings = new List<SellerOpportunity>();
+        MarketRadarAccess Free() => new(User().Object, TestEntitlements.Free(), Rows(runRows).Object, clock, Rows(rankings).Object);
+
+        (await Free().RequireRefreshAsync()).IsSuccess.Should().BeTrue("a radar never ranked is ranked at once");
+
+        rankings.Add(new SellerOpportunity { UserId = Owner, LastEvaluatedAt = clock.GetUtcNow().UtcDateTime.AddHours(-2), FitBreakdown = "{}" });
+        (await Free().RequireRefreshAsync()).Error.Code.Should().Be("Plan.FeatureLocked");
+
+        rankings[0].LastEvaluatedAt = clock.GetUtcNow().UtcDateTime.AddHours(-25);
+        (await Free().RequireRefreshAsync()).IsSuccess.Should().BeTrue("a day has passed");
+    }
+
+    [TestMethod]
     public async Task RequireFullAsync_OnFree_IsPlanLocked()
     {
         var result = await Access(TestEntitlements.Free()).RequireFullAsync();

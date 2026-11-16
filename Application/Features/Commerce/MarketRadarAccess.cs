@@ -26,16 +26,38 @@ public interface IMarketRadarAccess
 
     /// <summary>Fails unless the current Seller may ask for one more AI analysis today.</summary>
     Task<Result> RequireAnalysisAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fails unless the current Seller may rank their radar now: always with the whole radar; without it when the radar
+    /// was never ranked or not in the last <see cref="MarketRadarAccess.FreeRefreshInterval"/>, so a new profile gets
+    /// its radar at once and the radar stays as fresh as the daily ranking.
+    /// </summary>
+    Task<Result> RequireRefreshAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class MarketRadarAccess(
     ICurrentUser currentUser,
     IPlanEntitlementService entitlements,
     IRepository<OpportunityAnalysisRun> runs,
-    TimeProvider timeProvider) : IMarketRadarAccess
+    TimeProvider timeProvider,
+    IRepository<SellerOpportunity>? rankings = null) : IMarketRadarAccess
 {
     /// <summary>Opportunities a Seller without the whole radar sees: the best ranked ones.</summary>
     public const int FreeOpportunities = 3;
+
+    /// <summary>How often a Seller without the whole radar may rank it by hand.</summary>
+    public static readonly TimeSpan FreeRefreshInterval = TimeSpan.FromHours(24);
+
+    public async Task<Result> RequireRefreshAsync(CancellationToken cancellationToken = default)
+    {
+        var full = await RequireFullAsync(cancellationToken);
+        if (full.IsSuccess || rankings is null) return full;
+        var userId = currentUser.UserId!.Value;
+        var ranked = await rankings.Query().Where(row => row.UserId == userId)
+            .Select(row => (DateTime?)row.LastEvaluatedAt).MaxAsync(cancellationToken);
+        var due = DateTime.SpecifyKind(timeProvider.GetUtcNow().UtcDateTime - FreeRefreshInterval, DateTimeKind.Unspecified);
+        return ranked is null || ranked <= due ? Result.Success() : full;
+    }
 
     public async Task<MarketRadarPlan> GetPlanAsync(Guid userId, CancellationToken cancellationToken = default)
     {
