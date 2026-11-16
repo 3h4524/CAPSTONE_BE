@@ -249,6 +249,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SortOrder)
                 .HasDefaultValue(0)
                 .HasColumnName("sort_order");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
@@ -1022,6 +1025,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("niche_category");
             entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
             entity.Property(e => e.StyleDescription).HasColumnName("style_description");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.Type)
                 .HasMaxLength(50)
                 .HasColumnName("type");
@@ -1310,6 +1316,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SortOrder)
                 .HasDefaultValue(0)
                 .HasColumnName("sort_order");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.TrialAvailable)
                 .HasDefaultValue(true)
                 .HasColumnName("trial_available");
@@ -2386,6 +2395,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.RoyaltyFree)
                 .HasDefaultValue(false)
                 .HasColumnName("royalty_free");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
         });
 
         modelBuilder.Entity<NotificationAlert>(entity =>
@@ -3773,6 +3785,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Tier)
                 .HasMaxLength(50)
                 .HasColumnName("tier");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -4293,6 +4308,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.TemplateVersion)
                 .HasDefaultValue(1)
                 .HasColumnName("template_version");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.Type)
                 .HasMaxLength(100)
                 .HasColumnName("type");

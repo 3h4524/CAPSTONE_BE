@@ -1,5 +1,7 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -24,7 +26,8 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
     GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
     VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
     IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null,
-    Abstractions.Moderation.IContentModerationService? moderation = null) : IVideoPlanningService
+    Abstractions.Moderation.IContentModerationService? moderation = null,
+    ICultureAccessor? cultureAccessor = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -100,8 +103,12 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         var result = rows.OrderBy(x => Array.IndexOf(order, x.Code)).Select(x =>
         {
             var effects = SafeReadEffects(x.EffectsConfig);
-            return new VideoTemplateCatalogItem(x.Code!, x.TemplateVersion, x.Name,
-                effects.Description ?? x.Name,
+            var localizer = Localizer(x.Translations);
+            return new VideoTemplateCatalogItem(x.Code!, x.TemplateVersion,
+                localizer.Text(SystemTranslationFields.Name, x.Name),
+                effects.Description is null
+                    ? localizer.Text(SystemTranslationFields.Name, x.Name)
+                    : localizer.Text(SystemTranslationFields.Description, effects.Description),
                 x.PreviewVideoUrl, x.DurationSeconds,
                 effects.DefaultTransition is null or "fade" or "cut" ? "none" : effects.DefaultTransition,
                 effects.DefaultMotionPreset ?? "varied",
@@ -117,25 +124,72 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         var result = rows.OrderBy(template => template.Name, StringComparer.Ordinal).Select(template =>
         {
             var pack = SafeReadPackEffects(template.EffectsConfig).VideoPack;
-            return pack is null ? null : new VideoPackDefinition(template.Code!, template.TemplateVersion, template.Name,
-                pack.Description ?? template.Name, template.PreviewVideoUrl, template.DurationSeconds,
+            var localizer = Localizer(template.Translations);
+            var name = localizer.Text(SystemTranslationFields.Name, template.Name);
+            return pack is null ? null : new VideoPackDefinition(template.Code!, template.TemplateVersion, name,
+                pack.Description is null ? name : localizer.Text(SystemTranslationFields.Description, pack.Description),
+                template.PreviewVideoUrl, template.DurationSeconds,
                 pack.RequiresCharacter, pack.RequiresSharedMockup, pack.Scenes ?? []);
         }).Where(pack => pack is not null).Cast<VideoPackDefinition>().ToArray();
         return Result.Success<IReadOnlyList<VideoPackDefinition>>(result);
     }
 
-    public async Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct) =>
-        Result.Success(AiVideoPromptCompiler.Catalog(await LoadAiTemplatesAsync(ct)));
+    public async Task<Result<IReadOnlyList<AiVideoTemplateDefinition>>> ListAiTemplatesAsync(CancellationToken ct)
+    {
+        var rows = await LoadAiTemplatesAsync(ct);
+        var catalog = AiVideoPromptCompiler.Catalog(rows);
+        if (cultureAccessor is null)
+            return Result.Success(catalog);
+
+        var translationsByCode = rows
+            .GroupBy(row => row.Code!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(row => row.TemplateVersion).First().Translations,
+                StringComparer.Ordinal);
+        IReadOnlyList<AiVideoTemplateDefinition> localized = catalog
+            .Select(definition => LocalizeAiTemplate(definition, Localizer(translationsByCode.GetValueOrDefault(definition.Code))))
+            .ToArray();
+        return Result.Success(localized);
+    }
 
     public async Task<Result<IReadOnlyList<AiCharacterCatalogItem>>> ListAiCharactersAsync(CancellationToken ct)
     {
         var rows = await characterModels.FindAsync(model => model.IsActive && model.DeletedAt == null, ct);
         var result = rows.OrderBy(model => model.SortOrder).ThenBy(model => model.Name)
-            .Select(model => new AiCharacterCatalogItem(model.Id, model.Code, model.Name, model.Continent,
-                model.Gender, model.AgeMin, model.AgeMax, model.BodyType, model.SkinTone, model.Description,
-                model.ImageUrl, model.PreviewUrl, model.IsDefault))
+            .Select(model =>
+            {
+                var localizer = Localizer(model.Translations);
+                return new AiCharacterCatalogItem(model.Id, model.Code, model.Name,
+                    localizer.Text(SystemTranslationFields.Continent, model.Continent),
+                    localizer.Text(SystemTranslationFields.Gender, model.Gender), model.AgeMin, model.AgeMax,
+                    localizer.Text(SystemTranslationFields.BodyType, model.BodyType),
+                    localizer.Text(SystemTranslationFields.SkinTone, model.SkinTone),
+                    localizer.Text(SystemTranslationFields.Description, model.Description),
+                    model.ImageUrl, model.PreviewUrl, model.IsDefault);
+            })
             .ToArray();
         return Result.Success<IReadOnlyList<AiCharacterCatalogItem>>(result);
+    }
+
+    private SystemTextLocalizer Localizer(string? translations) =>
+        cultureAccessor is null
+            ? SystemTextLocalizer.English
+            : SystemTextLocalizer.For(translations, cultureAccessor.CurrentCulture);
+
+    private static AiVideoTemplateDefinition LocalizeAiTemplate(AiVideoTemplateDefinition definition, SystemTextLocalizer localizer)
+    {
+        var name = localizer.Text(SystemTranslationFields.AiName, definition.Name);
+        return definition with
+        {
+            Name = name == definition.Name ? localizer.Text(SystemTranslationFields.Name, definition.Name) : name,
+            Description = localizer.Text(SystemTranslationFields.Description, definition.Description),
+            Subtemplates = definition.Subtemplates?
+                .Select(subtemplate => subtemplate with
+                {
+                    Name = localizer.Text(SystemTranslationFields.SubtemplateName(subtemplate.Code), subtemplate.Name),
+                    Description = localizer.Text(SystemTranslationFields.SubtemplateDescription(subtemplate.Code), subtemplate.Description)
+                })
+                .ToArray()
+        };
     }
 
     private async Task<IReadOnlyList<VideoTemplate>> LoadAiTemplatesAsync(CancellationToken ct)

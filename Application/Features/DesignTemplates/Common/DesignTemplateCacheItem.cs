@@ -13,4 +13,5 @@ internal sealed record DesignTemplateCacheItem(
     bool IsSystemTemplate,
     int UsageCount,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? Translations = null);

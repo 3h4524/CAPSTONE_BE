@@ -1,5 +1,7 @@
 using System.Linq.Expressions;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Localization;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Domain.Entities;
@@ -51,6 +53,25 @@ public sealed class VideoPlanningServiceTests
             model.IsDefault && model.Name == "Mai" && model.ImageUrl == "https://example.test/mai.png");
         fixture.CharacterModels.Verify(repository => repository.FindAsync(
             It.IsAny<Expression<Func<AiCharacterModel, bool>>>(), cancellation.Token), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ListAiCharactersAsync_VietnameseCulture_ReturnsTranslatedTextOnlyWhereTheEnglishIsUnchanged()
+    {
+        var fixture = new WorkflowTestData();
+        var mai = Character("mai", "Mai", sortOrder: 10);
+        mai.Translations = SystemTranslationDocument.Succeeded(
+            new Dictionary<string, string> { ["continent"] = "Asia", ["gender"] = "Female", ["description"] = "Old text" },
+            new Dictionary<string, string> { ["continent"] = "Châu Á", ["gender"] = "Nữ", ["description"] = "Văn bản cũ" });
+        fixture.CharacterModelRows.Add(mai);
+        var culture = new Mock<ICultureAccessor>();
+        culture.SetupGet(accessor => accessor.CurrentCulture).Returns("vi");
+
+        var result = await Service(fixture, culture.Object).ListAiCharactersAsync(default);
+
+        result.Value.Should().ContainSingle().Which.Should().Match<AiCharacterCatalogItem>(model =>
+            model.Name == "Mai" && model.Continent == "Châu Á" && model.Gender == "Nữ" &&
+            model.Description == "Model" && model.BodyType == "Slim");
     }
 
     [TestMethod]
@@ -364,11 +385,11 @@ public sealed class VideoPlanningServiceTests
         (forDesign.IsFailure ? forDesign.Error.Message : null).Should().NotBe("Invalid video configuration or mockup selection.");
     }
 
-    private static VideoPlanningService Service(WorkflowTestData fixture)
+    private static VideoPlanningService Service(WorkflowTestData fixture, ICultureAccessor? culture = null)
     {
         var user = new Mock<ICurrentUser>(); user.SetupGet(x => x.UserId).Returns(WorkflowTestData.Owner);
         return new(user.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Templates.Object,
-            fixture.CharacterModels.Object, new(), new(), new());
+            fixture.CharacterModels.Object, new(), new(), new(), cultureAccessor: culture);
     }
 
     private static AiCharacterModel Character(string code, string name, int sortOrder, bool isDefault = false,
