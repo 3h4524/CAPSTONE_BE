@@ -47,7 +47,8 @@ when the API runs next to the frontend.
   that file or run the API with another environment (the E2E stack uses `E2E`).
 - The local `.env` points at the **shared dev database** on the deployment VM (a personal
   `dev_<name>` login over SSL with data rights only), not at a local Postgres: the rows of every
-  run and every account land there, and schema changes go through `migrations/`.
+  run and every account land there, and schema changes go through `migrations/`, applied with
+  `scripts/Migrate-DevDb.ps1` (Flyway switches to `apcs_migrator`; hand-written DDL is refused).
   `scripts/e2e/` starts a database of its own with Docker. Deployment, environments, and backups
   are described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - **The app-wide rate limiter is off in `Development`** (`appsettings.Development.json`), so local
