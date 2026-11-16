@@ -128,15 +128,18 @@ public static class DependencyInjection
         services.AddHttpClient("MiniMax", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "Authorization" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-        // The default AI-video model is platform-funded. Keep the API key in environment-backed
-        // configuration rather than asking each Seller to connect a MiniMax account.
-        services.AddOptions<MiniMaxOptions>()
-            .Bind(configuration.GetSection(MiniMaxOptions.SectionName));
-        // The platform's own Ideogram and MiniMax keys, used in turn up to a daily limit each; counted in Redis.
-        services.AddOptions<SystemApiKeysOptions>()
-            .Configure(options => SystemApiKeysOptions.Read(configuration, options));
+        // The platform's own Ideogram and MiniMax keys, kept by an Admin on the admin page (encrypted with a key ring of
+        // their own in the database), used in turn up to a daily limit each; counted in Redis.
+        services.AddSingleton<SystemApiKeyRingRepository>();
+        services.AddSingleton<ISystemApiKeySecrets>(provider => new SystemApiKeySecrets(
+            provider.GetRequiredService<SystemApiKeyRingRepository>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILoggerFactory>()));
+        services.AddSingleton<ISystemApiKeySource, SystemApiKeyStore>();
         services.AddSingleton<ISystemApiKeyUsageStore, RedisSystemApiKeyUsageStore>();
-        services.AddSingleton<ISystemApiKeyPool, SystemApiKeyPool>();
+        services.AddSingleton<SystemApiKeyPool>();
+        services.AddSingleton<ISystemApiKeyPool>(provider => provider.GetRequiredService<SystemApiKeyPool>());
+        services.AddHostedService<SystemApiKeyPoolRefresher>();
         services.AddScoped<IAiVideoCredentialResolver, AiVideoCredentialResolver>();
         services.AddScoped<IVeoVideoProvider, VeoVideoProvider>();
         services.AddScoped<IAiVideoGenerationStrategy>(provider => provider.GetRequiredService<IVeoVideoProvider>() as IAiVideoGenerationStrategy

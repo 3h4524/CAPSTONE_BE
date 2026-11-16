@@ -6,8 +6,9 @@ namespace APCS.Application.Abstractions.AI;
 /// next one is taken.
 /// </summary>
 /// <remarks>
-/// A provider is named the way its keys are stored: <c>"ideogram"</c>, <c>"minimax"</c>. The keys are read from the
-/// configuration, never from a Seller's own connections.
+/// A provider is named the way its keys are stored: <c>"ideogram"</c>, <c>"minimax"</c>. The keys are the ones an Admin
+/// keeps on the admin page (the <c>system_api_keys</c> table), never a Seller's own connections. They are read again a
+/// minute after the last read, or at once after <see cref="Invalidate"/>.
 /// </remarks>
 public interface ISystemApiKeyPool
 {
@@ -34,6 +35,16 @@ public interface ISystemApiKeyPool
 
     /// <summary>Any one of the provider's keys, to check that the platform can serve it; null when it has none.</summary>
     string? AnyKey(string provider);
+
+    /// <summary>Reads the keys and limits again soon: an Admin changed them on this server.</summary>
+    void Invalidate();
+
+    /// <summary>How far each of the keys has been used today, by <see cref="ISystemApiKeyLease.KeyId"/>.</summary>
+    Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetUsageTodayAsync(string provider, IReadOnlyCollection<string> keyIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Puts a key the provider refused today back in use: an Admin fixed the account (added credits, say).</summary>
+    Task ClearRefusedTodayAsync(string provider, string keyId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

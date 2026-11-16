@@ -34,6 +34,29 @@ internal sealed class FakeSystemApiKeyPool(string provider, params (string Key, 
 
     public string? AnyKey(string name) => HasKeys(name) ? left.Keys.First() : null;
 
+    /// <summary>How many times an Admin's change asked for the keys to be read again.</summary>
+    public int Invalidations { get; private set; }
+
+    /// <summary>Today's use of each key, as <see cref="GetUsageTodayAsync"/> answers it.</summary>
+    public Dictionary<string, SystemApiKeyUsageToday> Usage { get; } = [];
+
+    /// <summary>The keys an Admin put back in use.</summary>
+    public List<string> Cleared { get; } = [];
+
+    public void Invalidate() => Invalidations++;
+
+    public Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetUsageTodayAsync(string name, IReadOnlyCollection<string> keyIds,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<string, SystemApiKeyUsageToday>>(keyIds
+            .Where(Usage.ContainsKey)
+            .ToDictionary(id => id, id => Usage[id]));
+
+    public Task ClearRefusedTodayAsync(string name, string keyId, CancellationToken cancellationToken = default)
+    {
+        Cleared.Add(keyId);
+        return Task.CompletedTask;
+    }
+
     private sealed class Lease(FakeSystemApiKeyPool pool, string provider, string key) : ISystemApiKeyLease
     {
         public string Provider => provider;

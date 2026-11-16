@@ -1,52 +1,88 @@
-using System.Security.Cryptography;
-using System.Text;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using APCS.Application.Abstractions.AI;
-using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure.Services;
 
 /// <summary>
-/// Hands out the platform's keys, by the provider's <see cref="SystemApiKeyProviderOptions.Strategy"/>: every request
-/// starts at the first key (<see cref="SystemApiKeyStrategies.Fill"/>, the default), or at the key after the one the last
-/// request started at (<see cref="SystemApiKeyStrategies.Rotate"/>). From there a key used up or refused for the day, or
-/// with every place taken, is passed over for the next one. The daily counts live in
-/// <see cref="ISystemApiKeyUsageStore"/> (shared by every server), the requests at a time on this server only.
+/// Hands out the platform's keys, by the provider's strategy: every request starts at the first key
+/// (<see cref="SystemApiKeyStrategies.Fill"/>, the default), or at the key after the one the last request started at
+/// (<see cref="SystemApiKeyStrategies.Rotate"/>). From there a key used up or refused for the day, or with every place
+/// taken, is passed over for the next one. The daily counts live in <see cref="ISystemApiKeyUsageStore"/> (shared by every
+/// server), the requests at a time on this server only.
 /// </summary>
+/// <remarks>
+/// The keys and limits come from <see cref="ISystemApiKeySource"/>, read again by <see cref="SystemApiKeyPoolRefresher"/>
+/// every minute and straight after <see cref="Invalidate"/>. Each read replaces the whole set at once; the places of a key
+/// outlive the reads (while its limit of requests at a time stays the same), so requests already running still count.
+/// </remarks>
 public sealed class SystemApiKeyPool : ISystemApiKeyPool
 {
-    private readonly Dictionary<string, ProviderKeys> providers = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>();
+
+    private readonly ISystemApiKeySource source;
     private readonly ISystemApiKeyUsageStore usage;
     private readonly TimeProvider time;
     private readonly ILogger<SystemApiKeyPool> logger;
+    // The places of each key ("provider:keyId"), kept across reads.
+    private readonly ConcurrentDictionary<string, Slots> slots = new(StringComparer.Ordinal);
+    // Where rotation is at for each provider, kept across reads.
+    private readonly ConcurrentDictionary<string, StrongBox<int>> turns = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim loading = new(1, 1);
+    private readonly SemaphoreSlim changed = new(0, 1);
+    private volatile Snapshot? current;
 
-    public SystemApiKeyPool(IOptions<SystemApiKeysOptions> options, ISystemApiKeyUsageStore usage, TimeProvider time,
-        ILogger<SystemApiKeyPool> logger)
+    public SystemApiKeyPool(ISystemApiKeySource source, ISystemApiKeyUsageStore usage, TimeProvider time, ILogger<SystemApiKeyPool> logger)
     {
+        this.source = source;
         this.usage = usage;
         this.time = time;
         this.logger = logger;
-        foreach (var (provider, settings) in options.Value.Providers)
+    }
+
+    /// <summary>Whether the keys were read at least once.</summary>
+    public bool IsLoaded => current is not null;
+
+    /// <summary>
+    /// Reads the keys and limits again. A read that fails keeps the keys of the last one, and is reported to the caller.
+    /// </summary>
+    public async Task RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        await loading.WaitAsync(cancellationToken);
+        try
         {
-            var keys = settings.Keys
-                .Where(key => !string.IsNullOrWhiteSpace(key))
-                .Select(key => new PoolKey(KeyIdOf(key), key.Trim(),
-                    settings.MaxConcurrentPerKey is int slots and > 0 ? new SemaphoreSlim(slots, slots) : null))
-                .ToArray();
-            if (keys.Length > 0)
-                providers[provider] = new ProviderKeys(provider.ToLowerInvariant(), keys, settings.DailyLimitPerKey, Rotates(provider, settings.Strategy));
+            var configs = await source.LoadAsync(cancellationToken);
+            current = Build(configs);
+        }
+        finally
+        {
+            loading.Release();
         }
     }
 
-    public bool HasKeys(string provider) => providers.ContainsKey(provider);
+    public void Invalidate()
+    {
+        try
+        {
+            changed.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // A read is already asked for.
+        }
+    }
+
+    /// <summary>Waits until <see cref="Invalidate"/> is called, or the time is up. True when it was called.</summary>
+    internal Task<bool> WaitForChangeAsync(TimeSpan timeout, CancellationToken cancellationToken) =>
+        changed.WaitAsync(timeout, cancellationToken);
+
+    public bool HasKeys(string provider) => Find(provider) is { Active.Length: > 0 };
 
     public string? FindKey(string provider, string keyId) =>
-        providers.TryGetValue(provider, out var keys) ? keys.Keys.FirstOrDefault(key => key.Id == keyId)?.Value : null;
+        Find(provider)?.All.FirstOrDefault(key => key.Id == keyId)?.Value;
 
-    public string? AnyKey(string provider) => providers.TryGetValue(provider, out var keys) ? keys.Keys[0].Value : null;
-
-    private static readonly IReadOnlySet<string> NoKeys = new HashSet<string>();
+    public string? AnyKey(string provider) => Find(provider) is { Active.Length: > 0 } keys ? keys.Active[0].Value : null;
 
     public Task<ISystemApiKeyLease?> AcquireAsync(string provider, CancellationToken cancellationToken = default) =>
         AcquireAsync(provider, NoKeys, cancellationToken);
@@ -54,19 +90,22 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
     public async Task<ISystemApiKeyLease?> AcquireAsync(string provider, IReadOnlySet<string> skipKeyIds,
         CancellationToken cancellationToken = default)
     {
-        if (!providers.TryGetValue(provider, out var pool)) return null;
+        if (current is null) await RefreshOnceAsync(cancellationToken);
 
         while (true)
         {
+            // Each try reads the keys as they are now: an Admin may have switched one off since the last.
+            if (Find(provider) is not { Active.Length: > 0 } pool) return null;
+            var keys = pool.Active;
             var day = Today();
-            var start = pool.Rotate ? (int)((uint)Interlocked.Increment(ref pool.Next) % (uint)pool.Keys.Length) : 0;
+            var start = pool.Rotate ? (int)((uint)Interlocked.Increment(ref pool.Turn.Value) % (uint)keys.Length) : 0;
             PoolKey? busy = null;
-            for (var i = 0; i < pool.Keys.Length; i++)
+            for (var i = 0; i < keys.Length; i++)
             {
-                var key = pool.Keys[(start + i) % pool.Keys.Length];
+                var key = keys[(start + i) % keys.Length];
                 if (skipKeyIds.Contains(key.Id)) continue;
                 // A key with every place taken is tried again below, once one frees up.
-                if (key.Slots is { } slots && !slots.Wait(0))
+                if (key.Slots is { } places && !places.Semaphore.Wait(0))
                 {
                     busy ??= key;
                     continue;
@@ -79,9 +118,68 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
                 logger.LogWarning("Every system {Provider} key is used up or taken out of use for {Day}.", pool.Name, day);
                 return null;
             }
-            await busy.Slots!.WaitAsync(cancellationToken);
+            await busy.Slots!.Semaphore.WaitAsync(cancellationToken);
             if (await TryTakeAsync(pool, busy, day, cancellationToken) is { } waited) return waited;
         }
+    }
+
+    public Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetUsageTodayAsync(string provider,
+        IReadOnlyCollection<string> keyIds, CancellationToken cancellationToken = default) =>
+        usage.GetAsync(provider.ToLowerInvariant(), keyIds, Today(), cancellationToken);
+
+    public Task ClearRefusedTodayAsync(string provider, string keyId, CancellationToken cancellationToken = default) =>
+        usage.ClearDisabledAsync(provider.ToLowerInvariant(), keyId, Today(), cancellationToken);
+
+    // Reads the keys the first time they are needed, when the refresher has not read them yet (a server just starting).
+    private async Task RefreshOnceAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (current is null) await RefreshAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "The system API keys could not be read");
+        }
+    }
+
+    private ProviderKeys? Find(string provider) =>
+        current is { } snapshot && snapshot.Providers.TryGetValue(provider, out var keys) ? keys : null;
+
+    private Snapshot Build(IReadOnlyList<SystemApiKeyProviderConfig> configs)
+    {
+        var providers = new Dictionary<string, ProviderKeys>(StringComparer.OrdinalIgnoreCase);
+        foreach (var config in configs)
+        {
+            var name = config.Provider.ToLowerInvariant();
+            var all = config.Keys
+                .Where(key => !string.IsNullOrWhiteSpace(key.Value))
+                .DistinctBy(key => key.Value.Trim(), StringComparer.Ordinal)
+                .Select(key =>
+                {
+                    var id = KeyIdOf(key.Value);
+                    return new PoolKey(id, key.Value.Trim(), key.IsActive, SlotsFor(name, id, config.MaxConcurrentPerKey));
+                })
+                .ToArray();
+            providers[name] = new ProviderKeys(name, all, all.Where(key => key.IsActive).ToArray(), config.DailyLimitPerKey,
+                Rotates(name, config.Strategy), turns.GetOrAdd(name, _ => new StrongBox<int>(-1)));
+        }
+        return new Snapshot(providers);
+    }
+
+    // The key's places: the same ones as before the read, unless how many there are has changed. Requests holding a place
+    // of the old ones give it back to those.
+    private Slots? SlotsFor(string provider, string keyId, int? maxConcurrent)
+    {
+        var name = $"{provider}:{keyId}";
+        if (maxConcurrent is not (int capacity and > 0))
+        {
+            slots.TryRemove(name, out _);
+            return null;
+        }
+        return slots.AddOrUpdate(name,
+            _ => new Slots(capacity, new SemaphoreSlim(capacity, capacity)),
+            (_, existing) => existing.Capacity == capacity ? existing : new Slots(capacity, new SemaphoreSlim(capacity, capacity)));
     }
 
     // Counts the use, holding the key's place already taken; the place is freed again when the key cannot be used.
@@ -94,18 +192,19 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
         }
         catch
         {
-            key.Slots?.Release();
+            key.Slots?.Semaphore.Release();
             throw;
         }
         if (taken) return new Lease(this, pool.Name, key, day);
-        key.Slots?.Release();
+        key.Slots?.Semaphore.Release();
         return null;
     }
 
     // Whether the keys are taken in turn; an unknown strategy is named in the log and the keys are filled in order.
     private bool Rotates(string provider, string? strategy)
     {
-        if (strategy is null || strategy.Equals(SystemApiKeyStrategies.Fill, StringComparison.OrdinalIgnoreCase)) return false;
+        if (string.IsNullOrWhiteSpace(strategy) || strategy.Equals(SystemApiKeyStrategies.Fill, StringComparison.OrdinalIgnoreCase))
+            return false;
         if (strategy.Equals(SystemApiKeyStrategies.Rotate, StringComparison.OrdinalIgnoreCase)) return true;
         logger.LogWarning("Unknown system {Provider} key strategy '{Strategy}': the keys are used in order. Use 'fill' or 'rotate'.",
             provider, strategy);
@@ -114,20 +213,16 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
 
     private DateOnly Today() => DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime);
 
-    // The first 12 hex digits of the key's SHA-256: enough to tell a handful of keys apart, never enough to find the key.
-    internal static string KeyIdOf(string key) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.Trim()))).ToLowerInvariant()[..12];
+    /// <summary>The short id of the key: see <see cref="SystemApiKeyIds.Of"/>.</summary>
+    public static string KeyIdOf(string key) => SystemApiKeyIds.Of(key);
 
-    private sealed record PoolKey(string Id, string Value, SemaphoreSlim? Slots);
+    private sealed record Snapshot(IReadOnlyDictionary<string, ProviderKeys> Providers);
 
-    private sealed class ProviderKeys(string name, PoolKey[] keys, int? dailyLimit, bool rotate)
-    {
-        public bool Rotate { get; } = rotate;
-        public string Name { get; } = name;
-        public PoolKey[] Keys { get; } = keys;
-        public int? DailyLimit { get; } = dailyLimit;
-        public int Next = -1;
-    }
+    private sealed record Slots(int Capacity, SemaphoreSlim Semaphore);
+
+    private sealed record PoolKey(string Id, string Value, bool IsActive, Slots? Slots);
+
+    private sealed record ProviderKeys(string Name, PoolKey[] All, PoolKey[] Active, int? DailyLimit, bool Rotate, StrongBox<int> Turn);
 
     private sealed class Lease(SystemApiKeyPool pool, string provider, PoolKey key, DateOnly day) : ISystemApiKeyLease
     {
@@ -153,8 +248,53 @@ public sealed class SystemApiKeyPool : ISystemApiKeyPool
 
         public ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref released, 1) == 0) key.Slots?.Release();
+            if (Interlocked.Exchange(ref released, 1) == 0) key.Slots?.Semaphore.Release();
             return ValueTask.CompletedTask;
+        }
+    }
+}
+
+/// <summary>
+/// Reads the platform keys before the server takes requests, then every <see cref="Interval"/> (an edit made through
+/// another server) and straight after an Admin's edit through this one.
+/// </summary>
+public sealed class SystemApiKeyPoolRefresher(SystemApiKeyPool pool, ILogger<SystemApiKeyPoolRefresher> logger)
+    : Microsoft.Extensions.Hosting.BackgroundService
+{
+    /// <summary>How long an edit made through another server takes to reach this one.</summary>
+    public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await RefreshAsync(cancellationToken);
+        await base.StartAsync(cancellationToken);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await pool.WaitForChangeAsync(Interval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            await RefreshAsync(stoppingToken);
+        }
+    }
+
+    private async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await pool.RefreshAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "The system API keys could not be read; the keys read last stay in use");
         }
     }
 }

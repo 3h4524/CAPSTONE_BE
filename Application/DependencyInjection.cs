@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanChangeLog, Features.Admin.SubscriptionPlans.PlanChangeLog>();
         services.AddScoped<Features.Entitlements.IFeatureCatalog, Features.Entitlements.FeatureCatalog>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IFeatureCatalogAdminService, Features.Admin.SubscriptionPlans.FeatureCatalogAdminService>();
+        services.AddScoped<Features.Admin.SystemApiKeys.ISystemApiKeyAdminService, Features.Admin.SystemApiKeys.SystemApiKeyAdminService>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanFeatureAssignmentService, Features.Admin.SubscriptionPlans.PlanFeatureAssignmentService>();
         services.AddScoped<Features.Entitlements.IPlanEntitlementService, Features.Entitlements.PlanEntitlementService>();
         services.AddScoped<Features.Entitlements.IUsageAllowanceService, Features.Entitlements.UsageAllowanceService>();

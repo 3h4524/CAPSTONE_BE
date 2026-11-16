@@ -3,8 +3,8 @@ using System.Text;
 using APCS.Application.Abstractions.AI;
 using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
+using APCS.Infrastructure.UnitTests.TestSupport;
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
@@ -187,7 +187,7 @@ public sealed class SystemApiKeyRotationTests
         requestsPerKey[KeyTwo].Should().Be(3);
     }
 
-    // The limits as they are set in .env: SystemApiKeys__Ideogram__DailyLimitPerKey=500, MaxConcurrentPerKey=8.
+    // Ideogram's limits as the migration seeds them on the admin page: 500 a day and 8 at a time per key.
     private const int RealDailyLimit = 500;
     private const int RealConcurrency = 8;
 
@@ -251,20 +251,11 @@ public sealed class SystemApiKeyRotationTests
 
     private int Used(string key) => usage.Used(ImageGenerationProviders.Ideogram, SystemApiKeyPool.KeyIdOf(key), Today);
 
-    private SystemApiKeyPool Pool(int dailyLimit, int? maxConcurrent = null, string? strategy = null)
-    {
-        var settings = new Dictionary<string, string?>
-        {
-            ["SystemApiKeys:Ideogram:Keys"] = $"{KeyOne};{KeyTwo}",
-            ["SystemApiKeys:Ideogram:DailyLimitPerKey"] = dailyLimit.ToString(),
-        };
-        if (maxConcurrent is not null) settings["SystemApiKeys:Ideogram:MaxConcurrentPerKey"] = maxConcurrent.ToString();
-        if (strategy is not null) settings["SystemApiKeys:Ideogram:Strategy"] = strategy;
-        var options = new SystemApiKeysOptions();
-        SystemApiKeysOptions.Read(new ConfigurationBuilder().AddInMemoryCollection(settings).Build(), options);
-        return new SystemApiKeyPool(Microsoft.Extensions.Options.Options.Create(options), usage, new FakeTimeProvider(Noon),
-            NullLogger<SystemApiKeyPool>.Instance);
-    }
+    // Ideogram takes 10 images at a time per account; the platform leaves two of them free, as the admin page does.
+    private SystemApiKeyPool Pool(int dailyLimit, int? maxConcurrent = null, string? strategy = null) =>
+        SystemApiKeyTestPools.Create(
+            [SystemApiKeyTestPools.Provider("ideogram", [KeyOne, KeyTwo], dailyLimit, maxConcurrent ?? 8, strategy)],
+            usage, new FakeTimeProvider(Noon));
 
     // The real Ideogram client, talking to a fake API: a new image is answered per key, then made at once.
     private IdeogramImageProvider Ideogram()

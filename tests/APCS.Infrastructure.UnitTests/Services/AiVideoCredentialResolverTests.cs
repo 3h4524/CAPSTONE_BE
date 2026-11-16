@@ -1,11 +1,10 @@
+using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
 using APCS.Domain.Entities;
-using APCS.Infrastructure.Options;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
-using Microsoft.Extensions.Options;
 using Moq;
 
 namespace APCS.Infrastructure.UnitTests.Services;
@@ -57,6 +56,11 @@ public sealed class AiVideoCredentialResolverTests
         result.Should().Be("seller-gemini-key");
     }
 
-    private AiVideoCredentialResolver Create(string systemKey) =>
-        new(Microsoft.Extensions.Options.Options.Create(new MiniMaxOptions { ApiKey = systemKey }), keys.Object, credentials.Object);
+    // The platform MiniMax key, as an Admin saved it on the admin page.
+    private AiVideoCredentialResolver Create(string systemKey)
+    {
+        var pool = new Mock<ISystemApiKeyPool>();
+        pool.Setup(x => x.AnyKey(AiVideoModel.ProviderKey)).Returns(systemKey);
+        return new(keys.Object, credentials.Object, pool.Object);
+    }
 }
