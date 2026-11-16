@@ -1,10 +1,12 @@
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.Subscriptions.Common;
 using APCS.Application.Features.Subscriptions.Dtos.Request;
 using APCS.Application.Features.Subscriptions.Dtos.Response;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
@@ -46,7 +48,8 @@ public sealed class SubscriptionService(
     IPlanEntitlementService entitlements,
     IFeatureCatalog featureCatalog,
     IPlanSettings planSettings,
-    ILogger<SubscriptionService> logger)
+    ILogger<SubscriptionService> logger,
+    ICultureAccessor? cultureAccessor = null)
     : ISubscriptionService
 {
     private const decimal FreeTierMaxPrice = 0m;
@@ -83,6 +86,7 @@ public sealed class SubscriptionService(
         var availablePlans = comparisonPlans
             .Select(plan => MapToAvailablePlanDto(plan, activeSubscription?.PlanId, gatewaySettings.Value) with
             {
+                Description = Localizer(plan.Translations).Text(SystemTranslationFields.Description, plan.Description),
                 IsRecommended = recommendedTier != null && plan.Tier == recommendedTier
             })
             .ToList();
@@ -93,7 +97,11 @@ public sealed class SubscriptionService(
         var trialTier = await planSettings.GetTrialPlanTierAsync(cancellationToken);
         var trialAllowances = (await planSettings.GetAllowancesAsync(cancellationToken)).Trial;
         var response = new SubscriptionOverviewResponseDto(
-            activeSubscription is null ? null : MapToCurrentSubscriptionDto(activeSubscription, today, gatewaySettings.Value),
+            activeSubscription is null ? null : MapToCurrentSubscriptionDto(activeSubscription, today, gatewaySettings.Value) with
+            {
+                ShortDescription = Localizer(activeSubscription.Plan.Translations)
+                    .Text(SystemTranslationFields.Description, activeSubscription.Plan.Description)
+            },
             usageQuotas,
             availablePlans,
             recentInvoiceDtos,
@@ -190,13 +198,17 @@ public sealed class SubscriptionService(
                 ? null
                 : current.Limit(code);
         var features = (await featureCatalog.GetAllAsync(cancellationToken))
-            .Select(feature => new EntitlementFeatureDto(
-                feature.Code,
-                feature.Label,
-                feature.Kind,
-                feature.Group,
-                feature.Kind == PlanFeatureKinds.Flag ? current.IsEnabled(feature.Code) : LimitOf(feature.Code) != 0,
-                feature.Kind == PlanFeatureKinds.Limit ? LimitOf(feature.Code) : null))
+            .Select(feature =>
+            {
+                var localizer = Localizer(feature.Translations);
+                return new EntitlementFeatureDto(
+                    feature.Code,
+                    localizer.Text(SystemTranslationFields.Label, feature.Label),
+                    feature.Kind,
+                    localizer.Text(SystemTranslationFields.Group, feature.Group),
+                    feature.Kind == PlanFeatureKinds.Flag ? current.IsEnabled(feature.Code) : LimitOf(feature.Code) != 0,
+                    feature.Kind == PlanFeatureKinds.Limit ? LimitOf(feature.Code) : null);
+            })
             .ToList();
 
         return Result.Success(new EntitlementsResponseDto(
@@ -1135,6 +1147,11 @@ public sealed class SubscriptionService(
         return CheckoutStatusValues.Pending;
     }
 
+    private SystemTextLocalizer Localizer(string? translations) =>
+        cultureAccessor is null
+            ? SystemTextLocalizer.English
+            : SystemTextLocalizer.For(translations, cultureAccessor.CurrentCulture);
+
     private static CheckoutStatusResponseDto MapToStatusDto(Invoice invoice)
     {
         var status = ToCheckoutStatusValue(invoice);
@@ -1186,14 +1203,18 @@ public sealed class SubscriptionService(
     {
         var catalog = await featureCatalog.GetAllAsync(cancellationToken);
         return Result.Success<IReadOnlyList<FeatureCatalogItemDto>>(catalog
-            .Select(feature => new FeatureCatalogItemDto(
-                feature.Code,
-                feature.Label,
-                feature.Description,
-                feature.Group,
-                feature.Kind,
-                feature.Unit,
-                feature.SortOrder))
+            .Select(feature =>
+            {
+                var localizer = Localizer(feature.Translations);
+                return new FeatureCatalogItemDto(
+                    feature.Code,
+                    localizer.Text(SystemTranslationFields.Label, feature.Label),
+                    localizer.Text(SystemTranslationFields.Description, feature.Description),
+                    localizer.Text(SystemTranslationFields.Group, feature.Group),
+                    feature.Kind,
+                    feature.Unit,
+                    feature.SortOrder);
+            })
             .ToList());
     }
 
