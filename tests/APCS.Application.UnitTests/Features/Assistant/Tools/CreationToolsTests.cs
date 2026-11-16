@@ -103,6 +103,27 @@ public sealed class CreationToolsTests
     }
 
     [TestMethod]
+    public async Task CreateBatch_WithoutAProductType_IsRejected()
+    {
+        var outcome = await BatchTool().ExecuteAsync(Context(), AssistantTestSupport.Json("""{"name":"Cats","reply":"ok"}"""), default);
+
+        outcome.Succeeded.Should().BeFalse();
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task AddBatchProducts_OfAnotherProductLine_IsRejected()
+    {
+        var outcome = await ProductsTool().ExecuteAsync(Context(), AssistantTestSupport.Json($$"""
+            {"batchId":"{{BatchId}}","products":[{"name":"Cat mug","productType":"mug","niche":"cats","keywords":["cat"]}],"reply":"ok"}
+            """), default);
+
+        outcome.Succeeded.Should().BeFalse();
+        outcome.ModelResultJson.Should().Contain("Cat mug").And.Contain("Apparel");
+        added.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task CreateBatch_OnConfirm_CreatesTheBatch()
     {
         batches.Setup(service => service.CreateAsync(It.Is<SaveBatchDto>(request => request.Name == "Cats" && request.DefaultProductType == "mug"), It.IsAny<CancellationToken>()))
@@ -119,7 +140,7 @@ public sealed class CreationToolsTests
     public async Task AddBatchProducts_FillsTheBatchDefaultsAndReportsMissingFields()
     {
         var outcome = await ProductsTool().ExecuteAsync(Context(), AssistantTestSupport.Json($$"""
-            {"batchId":"{{BatchId}}","products":[{"name":"Grumpy cat tee","keywords":["cat","funny"]},{"name":"Bare","productType":"mug","niche":"cats","keywords":[]}],"reply":"ok"}
+            {"batchId":"{{BatchId}}","products":[{"name":"Grumpy cat tee","keywords":["cat","funny"]},{"name":"Bare","productType":"hoodie","niche":"cats","keywords":[]}],"reply":"ok"}
             """), default);
 
         outcome.Succeeded.Should().BeFalse();

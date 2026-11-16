@@ -25,8 +25,8 @@ public sealed class CreateBatchTool(
     protected override string ParametersSchemaJson => Schema;
 
     private static readonly string Schema = """
-        {"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"niche":{"type":"string","description":"Default niche of its products, for example cat lovers."},"productType":{"type":"string","enum":__PRODUCT_TYPES__,"description":"Default product type of its products."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the batch is ready to create and they must press Confirm."}},"required":["name","reply"]}
-        """.Replace("__PRODUCT_TYPES__", AssistantJson.Serialize(ProductRules.Types));
+        {"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"niche":{"type":"string","description":"Default niche of its products, for example cat lovers."},"productType":{"type":"string","enum":__PRODUCT_TYPES__,"description":"Product type of the batch. It sets the batch's product line, and every product added later must be of that line: __PRODUCT_LINES__. Ask the user when it is not clear."},"reply":{"type":"string","description":"One short sentence for the user, in the user's language, saying the batch is ready to create and they must press Confirm."}},"required":["name","productType","reply"]}
+        """.Replace("__PRODUCT_TYPES__", AssistantJson.Serialize(ProductRules.Types)).Replace("__PRODUCT_LINES__", ProductLines.Summary);
 
     public override bool IsAvailable(AssistantToolContext context) => context.Caller.IsSeller;
 
@@ -40,8 +40,8 @@ public sealed class CreateBatchTool(
         var name = arguments.Name?.Trim();
         if (string.IsNullOrEmpty(name) || name.Length > MaxNameLength)
             return Task.FromResult(Result.Failure<AssistantPendingActionDraft>(Error.Validation($"name is required and at most {MaxNameLength} characters.")));
-        var type = string.IsNullOrWhiteSpace(arguments.ProductType) ? null : arguments.ProductType.Trim();
-        if (type is not null && !ProductRules.Types.Contains(type))
+        var type = arguments.ProductType?.Trim();
+        if (type is null || !ProductRules.Types.Contains(type))
             return Task.FromResult(Result.Failure<AssistantPendingActionDraft>(Error.Validation($"productType must be one of {string.Join(", ", ProductRules.Types)}.")));
 
         var request = new SaveBatchDto(name, Blank(arguments.Description), Blank(arguments.Niche), type);
