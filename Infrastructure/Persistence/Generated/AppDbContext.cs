@@ -1936,9 +1936,11 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.Status, e.AvailableAt, e.LeaseExpiresAt }, "idx_media_jobs_claim");
 
+            entity.HasIndex(e => e.AvailableAt, "idx_media_jobs_generating_clips").HasFilter("((status)::text = 'generating_clips'::text)");
+
             entity.HasIndex(e => new { e.WorkflowNodeRunId, e.Kind }, "uq_media_job_node_active")
                 .IsUnique()
-                .HasFilter("((status)::text = ANY ((ARRAY['queued'::character varying, 'leased'::character varying])::text[]))");
+                .HasFilter("((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('generating_clips'::character varying)::text, ('leased'::character varying)::text]))");
 
             entity.Property(e => e.Id)
                 .ValueGeneratedNever()

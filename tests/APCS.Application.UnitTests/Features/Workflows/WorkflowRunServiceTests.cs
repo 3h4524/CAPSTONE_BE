@@ -817,6 +817,40 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_RegenerateAiScene_WithTheClipPhaseOn_HoldsTheJobWhileTheApiMakesTheScene()
+    {
+        var fixture = new WorkflowTestData(new AiClipPhaseSettings { Enabled = true });
+        var (run, config, job) = await PrepareCancelledAiVideoAsync(fixture);
+
+        var result = await fixture.RunService.ActionAsync(run.Id,
+            new(7, "regenerate_ai_shot", Config: config, AiShotQuoteToken: "confirmed", SceneOrder: 0), default);
+
+        result.IsSuccess.Should().BeTrue();
+        // Not queued: the media worker only gets it once the scene is stored, and the other scene already is.
+        job.Status.Should().Be(AiClipPhase.JobStatus);
+        job.Stage.Should().Be(AiClipPhase.Stage);
+        job.Progress.Should().Be(AiClipPhase.StartProgress);
+        var node = fixture.NodeRows.Single(item => item.Id == job.WorkflowNodeRunId);
+        node.Stage.Should().Be(AiClipPhase.Stage);
+        node.Progress.Should().Be(AiClipPhase.StartProgress);
+        WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates.Single(item => item.SceneOrder == 0).Status.Should().Be("pending");
+    }
+
+    [TestMethod]
+    public async Task ActionAsync_CancelRun_AlsoCancelsAJobWhoseScenesTheApiIsMaking()
+    {
+        var fixture = new WorkflowTestData(new AiClipPhaseSettings { Enabled = true });
+        var run = fixture.AddRun(fixture.AddProduct());
+        var job = fixture.AddJob(run);
+        job.Status = AiClipPhase.JobStatus; job.LeaseToken = null; job.LeaseExpiresAt = null;
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "cancel"), default);
+
+        result.IsSuccess.Should().BeTrue();
+        job.Status.Should().Be("cancelled");
+    }
+
+    [TestMethod]
     [DataRow("missing_target", "SceneNotStored")]
     [DataRow("other_incomplete", "OtherScenesIncomplete")]
     [DataRow("other_mismatch", "OtherScenesIncomplete")]

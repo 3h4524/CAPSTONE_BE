@@ -157,7 +157,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (run.Status is "completed" or "cancelled") return Result.Failure<RunResponse>(Error.Conflict("RunFinished", "Run is already finished."));
             run.Status = "cancelled"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
             foreach (var n in checkpoints.Where(x => x.Status != "succeeded")) n.Status = "cancelled";
-            foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && (x.Status == "queued" || x.Status == "leased"), ct)) { job.Status = "cancelled"; job.LeaseToken = null; }
+            foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus), ct)) { job.Status = "cancelled"; job.LeaseToken = null; }
             await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct);
         }
         else if (request.Action == "resume")

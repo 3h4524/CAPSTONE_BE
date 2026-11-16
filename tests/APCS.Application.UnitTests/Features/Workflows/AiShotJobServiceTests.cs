@@ -514,6 +514,173 @@ public sealed class AiShotJobServiceTests
         lease.Verify(x => x.RefundAsync(It.IsAny<CancellationToken>()), keyRefused ? Times.Never() : Times.Once());
     }
 
+    // The API makes the clips of a job in generating_clips itself: no worker holds a lease on it.
+    private AiShotJobService ClipPhaseService(AiShotJobState? state = null, ISceneVideoNotifier? notifier = null)
+    {
+        var service = Service(state, notifier: notifier);
+        job.Status = AiClipPhase.JobStatus;
+        job.LeaseToken = null;
+        job.LeaseExpiresAt = null;
+        return service;
+    }
+
+    [TestMethod]
+    public async Task StartClipAsync_JobMakingItsClips_SubmitsWithoutALeaseAndRemembersWhenItWasSubmitted()
+    {
+        var service = ClipPhaseService();
+        provider.Setup(x => x.StartAsync("plain-key", "https://signed.example/source", "Move gently.", "9:16", 8, true, It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Operation);
+
+        var result = await service.StartClipAsync(job.Id, 0, default);
+
+        result.Value.Status.Should().Be("polling");
+        State().OperationName.Should().Be(Operation);
+        State().SubmittedAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime);
+        State().NextAttemptAt.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task StartClipAsync_JobLeasedToAWorker_IsRefusedAndNothingIsSubmitted()
+    {
+        var service = ClipPhaseService();
+        job.Status = "leased";
+
+        (await service.StartClipAsync(job.Id, 0, default)).Error.Code.Should().Be("LeaseLost");
+        provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartClipAsync_RunNoLongerRunning_IsRefusedAndNothingIsSubmitted()
+    {
+        var service = ClipPhaseService();
+        fixture.RunRows.Single().Status = "cancelled";
+
+        (await service.StartClipAsync(job.Id, 0, default)).Error.Code.Should().Be("LeaseLost");
+        provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_JobInTheClipPhase_IsNotSubmittedByAWorkerLease()
+    {
+        var service = ClipPhaseService();
+        job.LeaseToken = Guid.NewGuid();
+
+        (await service.StartAsync(job.Id, 0, new(job.LeaseToken.Value), default)).Error.Code.Should().Be("LeaseLost");
+        provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartClipAsync_ProviderBusy_PutsTheSceneBackWithATimeToTryAgain()
+    {
+        var service = ClipPhaseService();
+        Refuse(429);
+
+        (await service.StartClipAsync(job.Id, 0, default)).Error.Code.Should().Be("VeoBusy");
+
+        State().Status.Should().Be("pending");
+        State().BusyAttempts.Should().Be(1);
+        State().NextAttemptAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime.AddSeconds(70));
+        // The next refusal waits longer.
+        (await service.StartClipAsync(job.Id, 0, default)).Error.Code.Should().Be("VeoBusy");
+        State().BusyAttempts.Should().Be(2);
+        State().NextAttemptAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime.AddSeconds(140));
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ProviderBusyForAWorker_KeepsNoBackoffOfItsOwn()
+    {
+        var service = Service();
+        Refuse(429);
+
+        await service.StartAsync(job.Id, 0, Lease(), default);
+
+        State().Status.Should().Be("pending");
+        State().BusyAttempts.Should().Be(0);
+        State().NextAttemptAt.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task PollClipAsync_ClipFinished_RemembersWhereToDownloadIt()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
+        provider.Setup(x => x.PollAsync("plain-key", Operation, It.IsAny<CancellationToken>())).ReturnsAsync(new VeoOperationResult(true, ClipUrl, null));
+
+        (await service.PollClipAsync(job.Id, 0, default)).Value.Status.Should().Be("ready");
+        State().DownloadUri.Should().Be(ClipUrl);
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_ReadyClip_DownloadsItStoresItAndForgetsTheProviderUrl()
+    {
+        var notifier = new Mock<ISceneVideoNotifier>();
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"), notifier.Object);
+        provider.Setup(x => x.DownloadAsync("plain-key", ClipUrl, It.IsAny<CancellationToken>())).ReturnsAsync([1, 2, 3]);
+        string? storedKey = null;
+        fixture.Storage.Setup(x => x.UploadVideoAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Stream, string, CancellationToken>((_, key, _) => storedKey = key).ReturnsAsync("42");
+        fixture.Storage.Setup(x => x.VerifyAsync(It.IsAny<string>(), "video", "42", null, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+        (await service.StoreClipAsync(job.Id, 0, default)).IsSuccess.Should().BeTrue();
+
+        State().Status.Should().Be("stored");
+        State().StorageKey.Should().Be(storedKey).And.StartWith($"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/").And.EndWith("/ai-shot-0");
+        State().StorageVersion.Should().Be("42");
+        State().DownloadUri.Should().BeNull();
+        notifier.Verify(x => x.ChangedAsync(job.WorkflowRunId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_AlreadyStored_DoesNothingMore()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Status: "stored"));
+
+        (await service.StoreClipAsync(job.Id, 0, default)).IsSuccess.Should().BeTrue();
+        provider.VerifyNoOtherCalls();
+        fixture.Storage.Verify(x => x.UploadVideoAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_ClipNotReady_Fails()
+    {
+        var service = ClipPhaseService();
+
+        (await service.StoreClipAsync(job.Id, 0, default)).Error.Code.Should().Be("NotReady");
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_StorageCannotVerifyTheUpload_LeavesTheSceneReadyToTryAgain()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"));
+        provider.Setup(x => x.DownloadAsync("plain-key", ClipUrl, It.IsAny<CancellationToken>())).ReturnsAsync([1, 2, 3]);
+        fixture.Storage.Setup(x => x.UploadVideoAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync("42");
+        fixture.Storage.Setup(x => x.VerifyAsync(It.IsAny<string>(), "video", "42", null, It.IsAny<CancellationToken>())).ReturnsAsync(false);
+
+        (await service.StoreClipAsync(job.Id, 0, default)).Error.Code.Should().Be("AiVideoStoreFailed");
+
+        State().Status.Should().Be("ready");
+        State().DownloadUri.Should().Be(ClipUrl);
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_ProviderDownloadFails_LeavesTheSceneReadyToTryAgain()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"));
+        provider.Setup(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>())).ThrowsAsync(new HttpRequestException());
+
+        (await service.StoreClipAsync(job.Id, 0, default)).Error.Code.Should().Be("AiVideoDownloadFailed");
+        State().Status.Should().Be("ready");
+    }
+
+    [TestMethod]
+    public async Task StoreClipAsync_EmptyClip_IsNotStored()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, ClipUrl, Status: "ready"));
+        provider.Setup(x => x.DownloadAsync("plain-key", ClipUrl, It.IsAny<CancellationToken>())).ReturnsAsync([]);
+
+        (await service.StoreClipAsync(job.Id, 0, default)).Error.Code.Should().Be("AiVideoDownloadFailed");
+        fixture.Storage.Verify(x => x.UploadVideoAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private AiShotLeaseRequest Lease() => new(job.LeaseToken!.Value);
 
     private AiShotJobState State() => WorkflowJson.Read<AiRenderJobPayload>(job.Payload).AiShotStates.Single();

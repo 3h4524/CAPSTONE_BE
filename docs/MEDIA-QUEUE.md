@@ -1,6 +1,6 @@
 # Media job queue
 
-Render and ZIP export jobs can use Redis Streams. PostgreSQL remains authoritative for job state and leases; `video_quality` continues using its own existing worker.
+Render and ZIP export jobs can use Redis Streams. PostgreSQL remains authoritative for job state and leases; `video_quality` continues using its own existing worker. An AI render job may first wait in `generating_clips` while the API makes its AI scenes (see *AI scenes made by the API* in `VIDEO_WORKFLOWS.md`); it reaches this queue as `queued` only once every scene is stored.
 
 ## Local setup
 

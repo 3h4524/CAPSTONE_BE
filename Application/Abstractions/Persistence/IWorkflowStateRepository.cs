@@ -30,6 +30,12 @@ public interface IWorkflowStateRepository
     /// <summary>Leased render and export jobs whose lease expired before <paramref name="now"/>, oldest first, read without locking.</summary>
     Task<IReadOnlyList<ExpiredMediaLease>> FindExpiredMediaLeasesAsync(DateTime now, int limit, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Render jobs whose AI scenes the API is still making (<c>generating_clips</c>), oldest first, read without locking
+    /// or tracking anything, with the state of the run each belongs to.
+    /// </summary>
+    Task<IReadOnlyList<ClipPhaseJob>> FindClipPhaseJobsAsync(int limit, CancellationToken cancellationToken);
+
     Task<WorkflowRunGroup?> LockRunGroupAsync(Guid groupId, CancellationToken cancellationToken);
 
     /// <summary>
@@ -55,3 +61,7 @@ public sealed record FailedMediaJob(Guid RunId, Guid NodeRunId, string? ErrorMes
 
 /// <summary>A render or export job whose worker stopped renewing its lease.</summary>
 public sealed record ExpiredMediaLease(Guid JobId, Guid RunId);
+
+/// <param name="Payload">The job's payload as stored: the storyboard and the state of each AI scene.</param>
+/// <param name="RunStatus">Null when the run no longer exists.</param>
+public sealed record ClipPhaseJob(Guid JobId, Guid RunId, Guid UserId, string Payload, string? RunStatus);
