@@ -20,11 +20,11 @@ public sealed class BatchApprovalTests
     public async Task ApproveAsync_WithPendingProducts_CreatesDraftDesignJobAndItems()
     {
         var userId = Guid.NewGuid();
-        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
         var pending = new List<Product>
         {
-            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Mug", ProcessingStatus = "pending" },
-            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "T-shirt", ProcessingStatus = "pending" }
+            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Hoodie", ProductType = "hoodie", ProcessingStatus = "pending" },
+            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "T-shirt", ProductType = "tshirt", ProcessingStatus = "pending" }
         };
         var batchRepo = MockRepository(new[] { batch });
         var productsRepo = MockRepository(pending);
@@ -184,7 +184,7 @@ public sealed class BatchApprovalTests
     public async Task AddProductAsync_WithDesignText_StoresItTrimmedAndReturnsIt()
     {
         var userId = Guid.NewGuid();
-        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
         var productRepo = MockRepository(Array.Empty<Product>());
         Product? added = null;
         productRepo.Setup(x => x.AddAsync(It.IsAny<Product>(), false, It.IsAny<CancellationToken>()))
@@ -203,7 +203,7 @@ public sealed class BatchApprovalTests
     public async Task AddProductAsync_WithACustomPrompt_StoresItTrimmedAndReturnsIt()
     {
         var userId = Guid.NewGuid();
-        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft" };
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
         var productRepo = MockRepository(Array.Empty<Product>());
         Product? added = null;
         productRepo.Setup(x => x.AddAsync(It.IsAny<Product>(), false, It.IsAny<CancellationToken>()))
@@ -216,6 +216,152 @@ public sealed class BatchApprovalTests
         result.IsSuccess.Should().BeTrue();
         added!.CustomPrompt.Should().Be("A mountain badge.");
         result.Value.CustomPrompt.Should().Be("A mountain badge.");
+    }
+
+    [TestMethod]
+    public async Task ApproveAsync_WithPendingProductsOfAnotherLine_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
+        var productsRepo = MockRepository(new List<Product>
+        {
+            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Tee", ProductType = "tshirt", ProcessingStatus = "pending" },
+            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Old mug", ProductType = "mug", ProcessingStatus = "pending" }
+        });
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var service = CreateService(userId, MockRepository(new[] { batch }), productsRepo, unitOfWork: unitOfWork);
+
+        var result = await service.ApproveAsync(batch.Id);
+
+        result.Error.Code.Should().Be("Batches.MixedProductLines");
+        result.Error.Message.Should().Contain("Old mug");
+        unitOfWork.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ApproveAsync_ForABatchWithoutAProductType_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Old", Status = "draft" };
+        var productsRepo = MockRepository(new List<Product>
+        {
+            new() { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Tee", ProductType = "tshirt", ProcessingStatus = "pending" }
+        });
+        var service = CreateService(userId, MockRepository(new[] { batch }), productsRepo);
+
+        var result = await service.ApproveAsync(batch.Id);
+
+        result.Error.Code.Should().Be("Batches.NoProductLine");
+    }
+
+    [TestMethod]
+    [DataRow("hoodie", true, DisplayName = "A hoodie joins a T-shirt batch")]
+    [DataRow("tshirt", true, DisplayName = "A T-shirt joins a T-shirt batch")]
+    [DataRow("tote_bag", false, DisplayName = "A tote bag is its own line")]
+    [DataRow("mug", false, DisplayName = "A mug is its own line")]
+    public async Task AddProductAsync_KeepsTheBatchToOneProductLine(string productType, bool allowed)
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
+        var productRepo = MockRepository(Array.Empty<Product>());
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.AddProductAsync(batch.Id, new SaveProductDto("Mountain", productType, "Hikers", ["mountain"], null, null));
+
+        result.IsSuccess.Should().Be(allowed);
+        productRepo.Verify(x => x.AddAsync(It.IsAny<Product>(), false, It.IsAny<CancellationToken>()), allowed ? Times.Once() : Times.Never());
+    }
+
+    [TestMethod]
+    public async Task AddProductAsync_ToABatchWithoutAProductType_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Old", Status = "draft" };
+        var service = CreateService(userId, MockRepository(new[] { batch }), MockRepository(Array.Empty<Product>()));
+
+        var result = await service.AddProductAsync(batch.Id, new SaveProductDto("Mountain", "tshirt", "Hikers", ["mountain"], null, null));
+
+        result.Error.Code.Should().Be("Batches.NoProductLine");
+    }
+
+    [TestMethod]
+    public async Task UpdateProductAsync_ToATypeOfAnotherLine_IsRejected()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "poster" };
+        var product = new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Sunrise", ProductType = "poster", ProcessingStatus = "pending" };
+        var productRepo = MockRepository(new[] { product });
+        productRepo.Setup(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<Product, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { product });
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.UpdateProductAsync(batch.Id, product.Id, new SaveProductDto("Sunrise", "phone_case", "Hikers", ["sun"], null, null));
+
+        result.IsFailure.Should().BeTrue();
+        product.ProductType.Should().Be("poster");
+    }
+
+    [TestMethod]
+    public async Task ImportProductsAsync_ReportsRowsOfAnotherLineAndImportsTheRest()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Mugs", Status = "draft", DefaultProductType = "mug" };
+        var productRepo = MockRepository(Array.Empty<Product>());
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo, unitOfWork: unitOfWork);
+
+        var result = await service.ImportProductsAsync(batch.Id, new ImportBatchProductsDto([
+            new(2, new SaveProductDto("Coffee cat", "mug", "cats", ["cat"], null, null)),
+            new(3, new SaveProductDto("Cat tee", "tshirt", "cats", ["cat"], null, null))
+        ]));
+
+        result.Value.ImportedCount.Should().Be(1);
+        var error = result.Value.Errors.Should().ContainSingle().Subject;
+        error.Row.Should().Be(3);
+        // Worded as the Seller reads the types, not with their codes.
+        error.Message.Should().Be("This is a mugs batch: use Mug, or put this T-shirt in a batch of its own line.");
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_ToAnotherLineWithPendingProductsOfTheOldOne_ReturnsConflict()
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
+        var productRepo = MockRepository(new[]
+        {
+            new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Tee", ProductType = "tshirt", ProcessingStatus = "pending" }
+        });
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.UpdateAsync(batch.Id, new("Spring", null, null, "mug"));
+
+        result.Error.Code.Should().Be("Batches.ProductLineInUse");
+        batch.DefaultProductType.Should().Be("tshirt");
+    }
+
+    [TestMethod]
+    [DataRow("hoodie", "pending", DisplayName = "Another type of the same line")]
+    [DataRow("mug", "approved", DisplayName = "Another line once the old products have run")]
+    public async Task UpdateAsync_ChangesTheProductType(string newType, string productStatus)
+    {
+        var userId = Guid.NewGuid();
+        var batch = new Batch { Id = Guid.NewGuid(), UserId = userId, Name = "Spring", Status = "draft", DefaultProductType = "tshirt" };
+        var productRepo = MockRepository(new[]
+        {
+            new Product { Id = Guid.NewGuid(), UserId = userId, BatchId = batch.Id, Name = "Tee", ProductType = "tshirt", ProcessingStatus = productStatus }
+        });
+        var service = CreateService(userId, MockRepository(new[] { batch }), productRepo);
+
+        var result = await service.UpdateAsync(batch.Id, new("Spring", null, null, newType));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.ProductLine.Should().Be(ProductLines.Of(newType));
+    }
+
+    [TestMethod]
+    public void SaveBatchValidator_WithoutAProductType_IsRejected()
+    {
+        new SaveBatchValidator().Validate(new SaveBatchDto("Spring", null, null, null)).IsValid.Should().BeFalse();
     }
 
     [TestMethod]
