@@ -14,7 +14,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
-    IRepository<MockupTemplate>? mockupTemplates = null)
+    IRepository<MockupTemplate>? mockupTemplates = null,
+    Abstractions.Moderation.IContentModerationService? moderation = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -49,8 +50,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             ? null
             : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
         var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap);
-        if (planned.IsFailure || promptPreparation is null) return planned;
-        return Result.Success(await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct));
+        if (planned.IsFailure) return planned;
+        var prepared = promptPreparation is null
+            ? planned.Value
+            : await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct);
+        return await moderation.CheckAiShotPromptsAsync(prepared, run.UserId, ct);
     }
 
     public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)
@@ -66,12 +70,18 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         }
         // A listing that could not be written stays failed on its own step and can be retried there:
         // the video is made from the mock-ups and does not wait for it. Without a video, Mockup Approval leads
-        // straight to the publish steps below.
+        // straight to the publish steps below, and a video without Export ZIP goes there from Review Video.
         var hasVideo = checkpoints.Any(x => x.NodeType == "generate-video");
         foreach (var type in hasVideo ? WorkflowCapabilityRegistry.Pipeline : WorkflowCapabilityRegistry.PublishPipeline)
         {
-            var node = checkpoints.Single(x => x.NodeType == type);
-            if (node.Status == "succeeded") continue;
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null && WorkflowCapabilityRegistry.OptionalVideoSteps.Contains(type)) continue;
+            node ??= checkpoints.Single(x => x.NodeType == type);
+            if (node.Status == "succeeded")
+            {
+                if (type == "approval-gate") StartPrintify(checkpoints);
+                continue;
+            }
             if (node.Status is "running" or "failed" or "cancelled") return;
             node.UpdatedAt = time.GetUtcNow().UtcDateTime;
             switch (type)
@@ -80,7 +90,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                 case "apply-mockup": node.Status = "succeeded"; break;
                 case "approval-gate":
                     // Auto mode approves the mock-ups itself and goes on, unless the video still needs the seller.
-                    if (MockupAutoApproval.IsAuto(definition) && await AutoApproveAsync(run, definition, checkpoints, node, ct)) break;
+                    if (MockupAutoApproval.IsAuto(definition) && await AutoApproveAsync(run, definition, checkpoints, node, ct))
+                    {
+                        StartPrintify(checkpoints);
+                        break;
+                    }
                     node.Status = "waiting_for_input"; run.Status = "waiting_for_input"; return;
                 case "generate-video":
                     var config = WorkflowJson.Read<GenerateVideoConfig>(node.InputSnapshot);
@@ -153,125 +167,116 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         break;
                     }
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;
+                case "export-zip":
+                    var pointer = WorkflowJson.Read<VideoPointer>(checkpoints.Single(x => x.NodeType == "review-video").OutputSnapshot);
+                    var approvedVideo = (await videos.GetByIdAsync(pointer.VideoId, ct))!;
+                    if (approvedVideo.ApprovalStatus != "approved") { node.Status = "failed"; run.Status = "failed"; run.ErrorMessage = "Export requires the exact approved video."; return; }
+                    var videoScenes = (await scenes.FindAsync(x => x.PromoVideoId == approvedVideo.Id, ct)).OrderBy(x => x.SceneOrder).ToArray();
+                    var exportProduct = await products.GetByIdAsync(run.ProductId, ct);
+                    var approvedRows = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null &&
+                        x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
+                    var templateIds = approvedRows.Select(x => x.MockupTemplateId).OfType<Guid>().Distinct().ToArray();
+                    var aiTemplates = mockupTemplates is null || templateIds.Length == 0 ? new HashSet<Guid>()
+                        : (await mockupTemplates.FindAsync(x => templateIds.Contains(x.Id) && x.AiGenerated, ct)).Select(x => x.Id).ToHashSet();
+                    // In the order to upload them to Etsy: a photo not made with AI first, then by when they were made.
+                    var approvedMockups = approvedRows
+                        .Select(x => (Row: x, AiMade: Shops.Common.ListingPhotos.IsAiMade(x) || x.MockupTemplateId is { } id && aiTemplates.Contains(id)))
+                        .OrderBy(x => x.AiMade).ThenBy(x => x.Row.CreatedAt).ThenBy(x => x.Row.Id)
+                        .Select(x => new ExportAssetSnapshot(x.Row.Id, x.Row.StorageKey, x.Row.StorageVersion, x.Row.ContentHash, x.Row.MetadataRevision, AiMade: x.AiMade))
+                        .ToArray();
+                    var approvedDesigns = designImages is null ? [] : (await designImages.FindAsync(x => x.ProductId == run.ProductId &&
+                        x.DeletedAt == null && x.ApprovalStatus == "approved", ct))
+                        .OrderBy(x => x.VariationIndex).ThenBy(x => x.Id)
+                        .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex, x.FileFormat)).ToArray();
+                    ExportListingSnapshot? exportListing = null;
+                    var listingNode = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing" && x.Status == "succeeded");
+                    if (listingNode is not null)
+                    {
+                        try
+                        {
+                            var generatedListing = WorkflowJson.Read<ListingContentResponseDto>(listingNode.OutputSnapshot);
+                            // The text as APCS would send it to Etsy: within Etsy's rules, and saying AI made the design.
+                            var (exportTitle, _) = Shops.Common.EtsyListingText.Title(generatedListing.Title);
+                            var (exportTags, _) = Shops.Common.EtsyListingText.Tags(generatedListing.Tags.OrderBy(tag => tag.Position).Select(tag => tag.Value));
+                            exportListing = new(exportTitle, Shops.Common.EtsyListingText.WithAiDisclosure(generatedListing.Description),
+                                exportTags, generatedListing.VersionNumber);
+                        }
+                        catch (JsonException) { }
+                    }
+                    VideoExportSourceSnapshot? sceneSnapshot = null;
+                    Storyboard? exportStoryboard = null;
+                    try
+                    {
+                        using var snapshotDocument = JsonDocument.Parse(approvedVideo.ConfigSnapshot ?? "{}");
+                        exportStoryboard = snapshotDocument.RootElement.GetProperty("storyboard").Deserialize<Storyboard>(WorkflowJson.Options);
+                        if (snapshotDocument.RootElement.TryGetProperty("exportSources", out var sourceElement))
+                            sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);
+                    }
+                    catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentNullException) { }
+                    var manifest = new { schemaVersion = 1, productId = run.ProductId, videoId = approvedVideo.Id, version = approvedVideo.VersionNumber,
+                        mode = approvedVideo.Mode, fingerprint = approvedVideo.Fingerprint, approvedRevision = approvedVideo.ReviewRevision,
+                        video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
+                            sourceRevision = s.SourceRevision, sourceHash = s.SourceHash, generationStrategy = s.GenerationStrategy, source = $"mockups/{s.MockupImageId}.png" }) };
+                    var package = new ExportPackage { Id = Guid.NewGuid(), UserId = run.UserId, WorkflowRunId = run.Id, Type = "zip_package",
+                        Name = "Approved video package", Status = "preparing", Manifest = await WithModelPhotosAsync(WorkflowJson.Write(manifest), run.ProductId, videoScenes, ct),
+                        CreatedAt = time.GetUtcNow().UtcDateTime, ExpiresAt = time.GetUtcNow().AddDays(7).UtcDateTime };
+                    await exports.AddAsync(package, cancellationToken: ct);
+                    await exportItems.AddAsync(new() { Id = Guid.NewGuid(), ExportPackageId = package.Id, ProductId = run.ProductId, PromoVideoId = approvedVideo.Id,
+                        IncludePromoVideo = true, IncludeMockupImages = approvedMockups.Length > 0, IncludeDesignImages = approvedDesigns.Length > 0,
+                        IncludeListingContent = exportListing is not null, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
+                    var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, approvedVideo, exportListing is not null);
+                    node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
+                    await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
+                        approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
+                        exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot, guide), ct); return;
             }
         }
-        // The outputs are peers: each one still to do starts now, side by side. Export ZIP is a media job; publishing calls
-        // Printify, Etsy or the share kit for up to minutes, so it runs in the background after this transaction commits.
-        // Each output finishes on its own and advances the run again, and one that fails does not stop the others.
-        foreach (var node in checkpoints.Where(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType) && x.Status == "pending"))
+        // Publishing calls Printify and Etsy for up to minutes, so it runs in the background after this transaction
+        // commits; WorkflowPublishService finishes the step and advances the run again.
+        foreach (var type in WorkflowCapabilityRegistry.PublishSteps.Where(type => type != WorkflowCapabilityRegistry.PrintifyStep))
         {
-            node.UpdatedAt = time.GetUtcNow().UtcDateTime;
-            node.ErrorMessage = null;
-            if (node.NodeType == "export-zip")
-            {
-                await StartExportAsync(run, checkpoints, node, ct);
-                continue;
-            }
-            node.Status = "running"; node.Stage = "Queued"; node.Progress = 5;
-            node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
-            publishQueue?.Enqueue(node.Id);
+            var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
+            if (node is null || node.Status == "succeeded") continue;
+            if (node.Status is "running" or "failed" or "cancelled") return;
+            StartPublish(node);
+            return;
         }
-        SettleOutputs(run, checkpoints);
+        // Push to Printify goes its own way beside the video: the run is finished once it is too, and a Printify that
+        // failed leaves the run failed with its reason, for the seller to retry that step alone.
+        switch (checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep))
+        {
+            case { Status: "pending" }:
+                StartPrintify(checkpoints);
+                return;
+            case { Status: "running" or "cancelled" }:
+                return;
+            case { Status: "failed" } failed:
+                run.Status = "failed"; run.ErrorMessage = failed.ErrorMessage;
+                return;
+        }
+        run.Status = "completed"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
     }
 
     /// <summary>
-    /// Once no output is still at work, the run is done: completed when every output succeeded, failed when one did
-    /// not (the others keep what they made, and a retry runs only the failed ones).
+    /// Push to Printify publishes the design and the approved mock-ups, never the video, so it starts as soon as Mockup
+    /// Approval has passed and runs beside the video: neither waits for the other, and one failing does not stop the
+    /// other. WorkflowPublishService finishes it in the background.
     /// </summary>
-    private void SettleOutputs(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints)
+    private void StartPrintify(IReadOnlyList<WorkflowNodeRun> checkpoints)
     {
-        var outputs = checkpoints.Where(x => WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType)).ToArray();
-        if (outputs.Any(x => x.Status is "pending" or "running" or "cancelled")) return;
-        if (outputs.FirstOrDefault(x => x.Status == "failed") is { } failed)
-        {
-            run.Status = "failed"; run.ErrorMessage = failed.ErrorMessage; run.Revision++;
-            return;
-        }
-        run.Status = "completed"; run.ErrorMessage = null; run.CompletedAt = time.GetUtcNow().UtcDateTime;
+        if (checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep) is { Status: "pending" } printify
+            && checkpoints.SingleOrDefault(x => x.NodeType == "approval-gate") is { Status: "succeeded" })
+            StartPublish(printify);
     }
 
-    /// <summary>
-    /// An output failed: only that step fails, and the run waits for the other outputs before it is settled. Any other
-    /// step failing still fails the run at once.
-    /// </summary>
-    public async Task FailOutputAsync(WorkflowRun run, Guid nodeId, string message, CancellationToken ct)
+    /// <summary>Queues a publish step for the background worker, which finishes it and advances the run again.</summary>
+    private void StartPublish(WorkflowNodeRun node)
     {
-        var node = (await nodes.GetByIdAsync(nodeId, ct))!;
-        if (!WorkflowCapabilityRegistry.OutputSteps.Contains(node.NodeType))
-        {
-            await FailAsync(run, nodeId, message, ct);
-            return;
-        }
-        node.Status = "failed"; node.ErrorMessage = message; run.Revision++;
-        SettleOutputs(run, await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct));
+        node.Status = "running"; node.Stage = "Queued"; node.Progress = 5; node.ErrorMessage = null;
+        node.OutputSnapshot = WorkflowJson.Write(new PublishNodeState("queued"));
+        node.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        publishQueue?.Enqueue(node.Id);
     }
-
-    /// <summary>Packages the approved video, mock-ups, designs and listing as a ZIP: a media job finishes this output.</summary>
-    private async Task StartExportAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun node, CancellationToken ct)
-    {
-            var pointer = WorkflowJson.Read<VideoPointer>(checkpoints.Single(x => x.NodeType == "review-video").OutputSnapshot);
-            var approvedVideo = (await videos.GetByIdAsync(pointer.VideoId, ct))!;
-            if (approvedVideo.ApprovalStatus != "approved") { node.Status = "failed"; node.ErrorMessage = "Export requires the exact approved video."; return; }
-            var videoScenes = (await scenes.FindAsync(x => x.PromoVideoId == approvedVideo.Id, ct)).OrderBy(x => x.SceneOrder).ToArray();
-            var exportProduct = await products.GetByIdAsync(run.ProductId, ct);
-            var approvedRows = await assets.FindAsync(x => x.ProductId == run.ProductId && x.DeletedAt == null &&
-                x.ApprovalStatus == "approved" && x.ApprovedRevision == x.MetadataRevision, ct);
-            var templateIds = approvedRows.Select(x => x.MockupTemplateId).OfType<Guid>().Distinct().ToArray();
-            var aiTemplates = mockupTemplates is null || templateIds.Length == 0 ? new HashSet<Guid>()
-                : (await mockupTemplates.FindAsync(x => templateIds.Contains(x.Id) && x.AiGenerated, ct)).Select(x => x.Id).ToHashSet();
-            // In the order to upload them to Etsy: a photo not made with AI first, then by when they were made.
-            var approvedMockups = approvedRows
-                .Select(x => (Row: x, AiMade: Shops.Common.ListingPhotos.IsAiMade(x) || x.MockupTemplateId is { } id && aiTemplates.Contains(id)))
-                .OrderBy(x => x.AiMade).ThenBy(x => x.Row.CreatedAt).ThenBy(x => x.Row.Id)
-                .Select(x => new ExportAssetSnapshot(x.Row.Id, x.Row.StorageKey, x.Row.StorageVersion, x.Row.ContentHash, x.Row.MetadataRevision, AiMade: x.AiMade))
-                .ToArray();
-            var approvedDesigns = designImages is null ? [] : (await designImages.FindAsync(x => x.ProductId == run.ProductId &&
-                x.DeletedAt == null && x.ApprovalStatus == "approved", ct))
-                .OrderBy(x => x.VariationIndex).ThenBy(x => x.Id)
-                .Select(x => new ExportAssetSnapshot(x.Id, x.StorageKey, null, null, x.VariationIndex, x.FileFormat)).ToArray();
-            ExportListingSnapshot? exportListing = null;
-            var listingNode = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing" && x.Status == "succeeded");
-            if (listingNode is not null)
-            {
-                try
-                {
-                    var generatedListing = WorkflowJson.Read<ListingContentResponseDto>(listingNode.OutputSnapshot);
-                    // The text as APCS would send it to Etsy: within Etsy's rules, and saying AI made the design.
-                    var (exportTitle, _) = Shops.Common.EtsyListingText.Title(generatedListing.Title);
-                    var (exportTags, _) = Shops.Common.EtsyListingText.Tags(generatedListing.Tags.OrderBy(tag => tag.Position).Select(tag => tag.Value));
-                    exportListing = new(exportTitle, Shops.Common.EtsyListingText.WithAiDisclosure(generatedListing.Description),
-                        exportTags, generatedListing.VersionNumber);
-                }
-                catch (JsonException) { }
-            }
-            VideoExportSourceSnapshot? sceneSnapshot = null;
-            Storyboard? exportStoryboard = null;
-            try
-            {
-                using var snapshotDocument = JsonDocument.Parse(approvedVideo.ConfigSnapshot ?? "{}");
-                exportStoryboard = snapshotDocument.RootElement.GetProperty("storyboard").Deserialize<Storyboard>(WorkflowJson.Options);
-                if (snapshotDocument.RootElement.TryGetProperty("exportSources", out var sourceElement))
-                    sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);
-            }
-            catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentNullException) { }
-            var manifest = new { schemaVersion = 1, productId = run.ProductId, videoId = approvedVideo.Id, version = approvedVideo.VersionNumber,
-                mode = approvedVideo.Mode, fingerprint = approvedVideo.Fingerprint, approvedRevision = approvedVideo.ReviewRevision,
-                video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
-                    sourceRevision = s.SourceRevision, sourceHash = s.SourceHash, generationStrategy = s.GenerationStrategy, source = $"mockups/{s.MockupImageId}.png" }) };
-            var package = new ExportPackage { Id = Guid.NewGuid(), UserId = run.UserId, WorkflowRunId = run.Id, Type = "zip_package",
-                Name = "Approved video package", Status = "preparing", Manifest = await WithModelPhotosAsync(WorkflowJson.Write(manifest), run.ProductId, videoScenes, ct),
-                CreatedAt = time.GetUtcNow().UtcDateTime, ExpiresAt = time.GetUtcNow().AddDays(7).UtcDateTime };
-            await exports.AddAsync(package, cancellationToken: ct);
-            await exportItems.AddAsync(new() { Id = Guid.NewGuid(), ExportPackageId = package.Id, ProductId = run.ProductId, PromoVideoId = approvedVideo.Id,
-                IncludePromoVideo = true, IncludeMockupImages = approvedMockups.Length > 0, IncludeDesignImages = approvedDesigns.Length > 0,
-                IncludeListingContent = exportListing is not null, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
-            var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, approvedVideo, exportListing is not null);
-            node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
-            await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
-                approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
-                exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot, guide), ct);
-    }
-
     /// <summary>Writes the listing again after it failed, without touching the video steps.</summary>
     public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
     {
@@ -283,7 +288,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
 
     /// <summary>A run that only writes a listing: no video and nothing to publish.</summary>
     private static bool IsListingOnly(IReadOnlyList<WorkflowNodeRun> checkpoints) =>
-        checkpoints.All(x => x.NodeType != "generate-video" && !WorkflowCapabilityRegistry.OutputSteps.Contains(x.NodeType));
+        checkpoints.All(x => x.NodeType != "generate-video" && !WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
 
     private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing, CancellationToken ct)
     {
@@ -329,7 +334,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
 
     /// <summary>
     /// Mockup Approval in auto mode: approves this run's mock-ups waiting for review (of its design, when it has one)
-    /// and passes the step when the video has an image and needs no paid confirmation. False keeps the run waiting.
+    /// and passes the step when the video has an image to start from. AI scenes go on too: their cost was shown when
+    /// the seller pressed Run. False keeps the run waiting.
     /// </summary>
     private async Task<bool> AutoApproveAsync(WorkflowRun run, WorkflowDefinition definition, IReadOnlyList<WorkflowNodeRun> checkpoints,
         WorkflowNodeRun gate, CancellationToken ct)
@@ -340,10 +346,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         MockupAutoApproval.Approve(design is null ? stored : stored.Where(x => x.ArtworkGroupKey == design).ToArray(),
             run.UserId, time.GetUtcNow().UtcDateTime);
 
-        // Without a video nothing is paid for after this step, so the approved mock-ups are enough to go on.
         var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
         var videoConfig = generate is null ? null : WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
-        if (videoConfig is not null && !MockupAutoApproval.NeedsNoConsent(videoConfig)) return false;
         var approved = await ApprovedAssetsAsync(run, mockupConfig, videoConfig, ct);
         if (approved.Count == 0) return false;
         gate.Status = "succeeded";

@@ -185,7 +185,8 @@ public sealed class SubscriptionService(
         var current = await entitlements.GetAsync(userId, cancellationToken);
         // Free and the Pro trial have allowances instead of daily caps, so no cap applies to them.
         int? LimitOf(string code) =>
-            (current.IsFree || current.IsTrial) && code is PlanFeatures.DailyMockupCap or PlanFeatures.DailyListingCap or PlanFeatures.DailyVideoCap
+            (current.IsFree || current.IsTrial)
+                && code is PlanFeatures.DailyMockupCap or PlanFeatures.DailyListingCap or PlanFeatures.DailyVideoCap or PlanFeatures.DailyDesignImageCap
                 ? null
                 : current.Limit(code);
         var features = (await featureCatalog.GetAllAsync(cancellationToken))

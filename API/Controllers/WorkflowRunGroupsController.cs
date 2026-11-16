@@ -65,7 +65,7 @@ public sealed class WorkflowRunGroupsController(IWorkflowRunGroupService groups,
     public async Task<IActionResult> DesignConfig(Guid id, UpdateTargetConfigRequest request, CancellationToken ct) =>
         (await groups.UpdateConfigAsync(id, request, ct)).ToActionResult(this);
 
-    /// <summary>What the AI clips of every design cost together, confirmed before the videos start.</summary>
+    /// <summary>What the AI clips of every design cost together, to show before the videos start.</summary>
     [HttpPost("api/run-groups/{id:guid}/ai-quote")]
     public async Task<IActionResult> AiQuote(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
         (await groups.QuoteAiAsync(id, request, ct)).ToActionResult(this);
@@ -77,4 +77,9 @@ public sealed class WorkflowRunGroupsController(IWorkflowRunGroupService groups,
     [HttpPost("api/run-groups/{id:guid}/cancel")]
     public async Task<IActionResult> Cancel(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
         (await groups.CancelAsync(id, request, ct)).ToActionResult(this);
+
+    /// <summary>Goes on with a stopped run from where each design stopped, keeping what was already made.</summary>
+    [HttpPost("api/run-groups/{id:guid}/resume")]
+    public async Task<IActionResult> Resume(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
+        (await groups.ResumeAsync(id, request, ct)).ToActionResult(this);
 }

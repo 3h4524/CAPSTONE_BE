@@ -46,14 +46,14 @@ Smtp__FromName=APCS
 Cloudinary__CloudName=${CLOUDINARY_CLOUD_NAME}
 Cloudinary__ApiKey=${CLOUDINARY_API_KEY}
 Cloudinary__ApiSecret=${CLOUDINARY_API_SECRET}
-Cloudinary__Folder=apcs-prod
+Cloudinary__Folder=apcs
 Cloudinary__SignedUrlTtlMinutes=10
 
 PayOS__ClientId=${PAYOS_CLIENT_ID}
 PayOS__ApiKey=${PAYOS_API_KEY}
 PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
 PayOS__UsdToVndRate=25000
-PayOS__TestAmountVnd=0
+PayOS__TestAmountVnd=2000
 
 Gemini__Embeddings__ApiKey=${GEMINI_API_KEY}
 Gemini__TextGeneration__ApiKey=${GEMINI_API_KEY}
@@ -68,6 +68,15 @@ Etsy__ApiKey=${ETSY_API_KEY}
 Etsy__SharedSecret=${ETSY_SHARED_SECRET}
 Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
+Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
+
+SystemApiKeys__Ideogram__Keys=${IDEOGRAM_API_KEYS}
+SystemApiKeys__Ideogram__DailyLimitPerKey=500
+SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
+SystemApiKeys__Ideogram__Strategy=rotate
+SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
+SystemApiKeys__MiniMax__DailyLimitPerKey=100
+SystemApiKeys__MiniMax__Strategy=rotate
 
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false

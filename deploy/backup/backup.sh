@@ -56,7 +56,7 @@ if [ "$only" = all ] || [ "$only" = prod ]; then
 fi
 
 if [ "$only" = all ] || [ "$only" = dev ]; then
-  dump_database dev postgres-dev "$PGPASSWORD_DEV"
+  dump_database dev "$PG_DEV_HOST" "$PGPASSWORD_DEV"
 fi
 
 if [ "$only" = all ] || [ "$only" = prod ]; then

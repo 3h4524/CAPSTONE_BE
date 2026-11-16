@@ -2,32 +2,36 @@ namespace APCS.Application.Features.Workflows;
 
 public sealed class WorkflowCapabilityRegistry
 {
-    // The video steps of a run, in order. What the run makes then goes to its outputs (OutputSteps).
-    public static readonly string[] Pipeline = ["product-input", "apply-mockup", "approval-gate", "generate-video", "review-video"];
+    public static readonly string[] Pipeline = ["product-input", "apply-mockup", "approval-gate", "generate-video", "review-video", "export-zip"];
+    // Steps of the video pipeline a workflow may leave out: a run then goes on from Review Video to the publish steps.
+    public static readonly string[] OptionalVideoSteps = ["export-zip"];
     // A run that publishes without a video: the seller still approves the mock-ups, and the publish steps follow.
     public static readonly string[] PublishPipeline = ["product-input", "apply-mockup", "approval-gate"];
     // The canvas makes the designs as a batch job before the run starts, so these steps have no executor here:
     // a workflow may place them between Product Input and Apply Mockup, and a run leaves them untouched.
     public static readonly string[] BatchSteps = ["prompt-synthesis", "design-image", "design-approval"];
     public static readonly string[] ListingSteps = ["generate-listing"];
-    // A run's outputs: peers that each take what the run made (the approved mock-ups, and the approved video of a video
-    // run), in no order and independent of one another. A workflow has at least one and each at most once; they hang
-    // off the last step (Review Video, or Mockup Approval without a video), side by side or one after another, and run
-    // together: one failing does not stop the others.
-    public static readonly string[] OutputSteps = ["export-zip", "publish-printify", "publish-etsy", "publish-social"];
-    // The outputs that run in the background through WorkflowPublishService; Export ZIP is a media job.
-    public static readonly string[] PublishSteps = ["publish-printify", "publish-etsy", "publish-social"];
-    // The steps before the outputs that must be connected in this order. Listing Content is not one of them: it needs no approval.
-    public static readonly string[] CoreOrder = ["product-input", .. BatchSteps, .. Pipeline.Skip(1)];
-    // Every step in the order a run shows them.
-    public static readonly string[] RunOrder = [.. CoreOrder, .. OutputSteps];
+    // Push to Printify makes the product from the design and its approved mock-ups (no video) and publishes it to Etsy:
+    // it branches off Apply Mockup or Mockup Approval and starts right after Mockup Approval, beside the video: neither
+    // waits for the other and one failing does not stop the other. Publish to
+    // Etsy (a direct listing, meant for a digital download) is last in a run: after Review Video (and Export ZIP, when
+    // there is one), or right after Mockup Approval without a video. Push to media comes after Publish to Etsy (or in its
+    // place), so its pins can link to the listing just made. Each runs in the background through WorkflowPublishService.
+    public const string PrintifyStep = "publish-printify";
+    public const string SocialStep = "publish-social";
+    public static readonly string[] PublishSteps = [PrintifyStep, "publish-etsy", SocialStep];
+    // The order a run goes through its steps. The steps of the line must be connected in this order; Listing Content is
+    // not one of them (it needs no approval), and neither is Push to Printify, which branches off the line and starts
+    // right after Mockup Approval, beside the video.
+    public static readonly string[] RunOrder =
+        ["product-input", .. BatchSteps, "apply-mockup", "approval-gate", PrintifyStep, .. Pipeline.Skip(3), "publish-etsy", SocialStep];
     public WorkflowCapabilities Get() => new(2,
-        Pipeline.Append("export-zip").Select(type => new NodeCapability(type, true, "Standard MVP executor"))
+        Pipeline.Select(type => new NodeCapability(type, true, "Standard MVP executor"))
             .Concat(BatchSteps.Select(type => new NodeCapability(type, true, "Runs as a batch job from the canvas.")))
             .Concat(new[] { new NodeCapability("generate-listing", true, "Generates listing content with Gemini."),
                 new NodeCapability("publish-printify", true, "Creates the product on Printify, which publishes it to Etsy and fulfils its orders."),
                 new NodeCapability("publish-etsy", true, "Creates an Etsy draft listing (a digital download, or a physical item without a print partner)."),
-                new NodeCapability("publish-social", true, "Prepares Pinterest and TikTok posts from the approved mock-ups, video and listing.") }).ToArray(),
+                new NodeCapability(SocialStep, true, "Prepares Pinterest and TikTok posts and posts the image pins to the chosen Pinterest board.") }).ToArray(),
         [new("standard", true, "available", "Showcase from approved mockups. No AI model cost.", true),
          new("ai_shot", true, "available", "Build a video from individually configured AI scenes.", false,
              new CostRange("USD", VideoDurationPolicy.MinimumAiSceneSeconds * AiVideoModel.LitePricePerSecondUsd, VideoDurationPolicy.MaximumVideoSeconds * AiVideoModel.PricePerSecondUsd,

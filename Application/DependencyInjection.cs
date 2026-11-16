@@ -78,14 +78,27 @@ public static class DependencyInjection
         services.AddScoped<IBatchProductPromptService, BatchProductPromptService>();
         services.AddScoped<IMockupTemplateService, MockupTemplateService>();
         services.AddScoped<IModelPhotoService, ModelPhotoService>();
+        // Shared templates of Printify products, made by admins with the server's own Printify token.
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyAdminCatalog>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyAdminCatalog>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>();
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyColorMapService>(provider =>
+            provider.GetRequiredService<APCS.Application.Features.BatchMockups.Printify.PrintifyColorMapService>());
+        services.AddScoped<APCS.Application.Features.BatchMockups.Printify.IPrintifyTemplateBuilder, APCS.Application.Features.BatchMockups.Printify.PrintifyTemplateBuilder>();
         services.AddScoped<IModelPhotoGenerationService, ModelPhotoGenerationService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
         services.AddScoped<Features.Admin.MockupTemplates.IAdminMockupTemplateService, Features.Admin.MockupTemplates.AdminMockupTemplateService>();
+        services.AddScoped<Features.Admin.StyleArtPresets.IAdminStyleArtPresetService, Features.Admin.StyleArtPresets.AdminStyleArtPresetService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IRevenueService, RevenueService>();
         services.AddScoped<ISystemStatisticsService, SystemStatisticsService>();
         services.AddScoped<Features.ImageQuality.IImageQualityService, Features.ImageQuality.ImageQualityService>();
         services.AddScoped<IDesignGenerationService, DesignGenerationService>();
+        services.AddSingleton<Features.Moderation.ModerationBlocklistCache>();
+        services.AddSingleton<Features.Moderation.ModerationRuntimeSettings>();
+        services.AddScoped<Features.Admin.Moderation.IAdminModerationService, Features.Admin.Moderation.AdminModerationService>();
+        services.AddScoped<Abstractions.Moderation.IContentModerationService, Features.Moderation.ContentModerationService>();
         services.AddSingleton<Features.Workflows.WorkflowCapabilityRegistry>();
         services.AddScoped<Features.Workflows.WorkflowGraphValidator>();
         services.AddScoped<Features.Workflows.WorkflowPublishConnections>();
@@ -144,6 +157,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.ListVideoTemplatesTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.EstimateRunCostTool>();
         services.AddScoped<Features.Assistant.IAssistantRunProgressReader, Features.Assistant.AssistantRunProgressReader>();
+        services.AddSingleton<Features.Assistant.Guardrails.AssistantInputGuard>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Query.GetRunProgressTool>();
         services.AddSingleton<Features.Assistant.Tools.ClientActions.WorkflowCanvasPatchSimulator>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.ClientActions.EditWorkflowCanvasTool>();

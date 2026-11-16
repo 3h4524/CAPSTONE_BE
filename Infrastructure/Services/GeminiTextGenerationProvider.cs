@@ -101,7 +101,11 @@ public sealed class GeminiTextGenerationProvider(
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
         if (string.IsNullOrWhiteSpace(text))
+        {
+            // Gemini's own safety filter answers with no text: say so, rather than report an empty answer.
+            if (BlockReason(payload) is { } blockReason) throw new GeminiContentBlockedException(blockReason);
             throw new InvalidOperationException("Gemini returned an empty generation.");
+        }
 
         var usage = payload?.UsageMetadata;
         return new GeminiTextGenerationResult(
@@ -112,14 +116,32 @@ public sealed class GeminiTextGenerationProvider(
             payload?.ResponseId);
     }
 
+    private static readonly HashSet<string> SafetyFinishReasons = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT"
+    };
+
+    private static string? BlockReason(GenerateContentResponse? payload)
+    {
+        if (payload?.PromptFeedback?.BlockReason is { Length: > 0 } promptReason) return promptReason;
+        return payload?.Candidates?
+            .Select(candidate => candidate.FinishReason)
+            .FirstOrDefault(reason => reason is not null && SafetyFinishReasons.Contains(reason));
+    }
+
     private sealed record GenerateContentResponse(
         [property: JsonPropertyName("candidates")] Candidate[]? Candidates,
+        [property: JsonPropertyName("promptFeedback")] PromptFeedback? PromptFeedback,
         [property: JsonPropertyName("usageMetadata")] UsageMetadata? UsageMetadata,
         [property: JsonPropertyName("responseId")] string? ResponseId,
         [property: JsonPropertyName("error")] GeminiError? Error);
 
     private sealed record Candidate(
-        [property: JsonPropertyName("content")] CandidateContent? Content);
+        [property: JsonPropertyName("content")] CandidateContent? Content,
+        [property: JsonPropertyName("finishReason")] string? FinishReason = null);
+
+    private sealed record PromptFeedback(
+        [property: JsonPropertyName("blockReason")] string? BlockReason);
 
     private sealed record CandidateContent(
         [property: JsonPropertyName("parts")] CandidatePart[]? Parts);

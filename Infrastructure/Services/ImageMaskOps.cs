@@ -692,6 +692,93 @@ internal static class ImageMaskOps
         return result;
     }
 
+    /// <summary>
+    /// Puts back into <paramref name="matte"/> the holes it left inside the garment: patches, solid or half see-through,
+    /// cut off from the photo's background on every side. On a white garment against a white backdrop the model
+    /// sometimes takes a plain stretch of fabric for backdrop, and a recolor then leaves it white. A hole whose color
+    /// is closer to the backdrop's than to the garment's is backdrop seen through the product (a tote's handle) and is kept.
+    /// </summary>
+    /// <returns>The matte, changed in place.</returns>
+    internal static byte[] FillGarmentHoles(Rgba32[] pixels, byte[] matte, int w, int h)
+    {
+        var weak = new bool[matte.Length];
+        for (var i = 0; i < matte.Length; i++) weak[i] = matte[i] < SolidGarmentAlpha;
+        // The garment's own soft outline reaches the backdrop, so only what does not is a hole.
+        var outside = FloodFillFromBorder(weak, w, h);
+
+        var holes = new List<int[]>();
+        var seen = new bool[matte.Length];
+        var stack = new Stack<int>();
+        for (var start = 0; start < matte.Length; start++)
+        {
+            if (!weak[start] || outside[start] || seen[start]) continue;
+            var members = new List<int>();
+            seen[start] = true;
+            stack.Push(start);
+            while (stack.Count > 0)
+            {
+                var i = stack.Pop();
+                members.Add(i);
+                int x = i % w, y = i / w;
+                foreach (var j in new[] { x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1 })
+                {
+                    if (j < 0 || !weak[j] || seen[j]) continue;
+                    seen[j] = true;
+                    stack.Push(j);
+                }
+            }
+
+            holes.Add(members.ToArray());
+        }
+
+        if (holes.Count == 0)
+            return matte;
+
+        // Every few pixels is plenty for an average color.
+        var stride = Math.Max(1, matte.Length / 250_000);
+        var garment = MeanLab(pixels, Strided(i => matte[i] >= SolidGarmentAlpha));
+        var backdrop = MeanLab(pixels, Strided(i => outside[i] && matte[i] < 128));
+        if (garment is null || backdrop is null)
+            return matte;
+
+        foreach (var hole in holes)
+        {
+            var color = MeanLab(pixels, hole)!.Value;
+            if (LabDistance(color, garment.Value) < LabDistance(color, backdrop.Value))
+                foreach (var i in hole) matte[i] = byte.MaxValue;
+        }
+
+        return matte;
+
+        IEnumerable<int> Strided(Func<int, bool> keep)
+        {
+            for (var i = 0; i < matte.Length; i += stride)
+                if (keep(i)) yield return i;
+        }
+    }
+
+    // Matte alpha below which a pixel is not surely garment: the model's soft edge, or a patch it was unsure of.
+    private const byte SolidGarmentAlpha = 250;
+
+    private static (float L, float A, float B)? MeanLab(Rgba32[] pixels, IEnumerable<int> indices)
+    {
+        double l = 0, a = 0, b = 0;
+        var count = 0;
+        foreach (var i in indices)
+        {
+            var lab = Lab(pixels[i]);
+            l += lab.L;
+            a += lab.A;
+            b += lab.B;
+            count++;
+        }
+
+        return count == 0 ? null : ((float)(l / count), (float)(a / count), (float)(b / count));
+    }
+
+    private static double LabDistance((float L, float A, float B) p, (float L, float A, float B) q) =>
+        Math.Sqrt((p.L - q.L) * (p.L - q.L) + (p.A - q.A) * (p.A - q.A) + (p.B - q.B) * (p.B - q.B));
+
     internal static float[] Dilate(float[] mask, int w, int h, int radius) =>
         Threshold(BoxBlur(mask, w, h, radius), 0.001f);
 

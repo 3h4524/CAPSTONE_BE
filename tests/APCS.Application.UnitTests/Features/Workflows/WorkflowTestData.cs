@@ -156,7 +156,7 @@ internal sealed class WorkflowTestData
     public void PrintifyIs(string status) => Printify.Setup(x => x.GetConnectionAsync(It.IsAny<bool>(), It.IsAny<CancellationToken>()))
         .ReturnsAsync(Result.Success(new PrintifyConnectionDto(status, null, null, null, null, null, 0)));
 
-    /// <summary>A video workflow with Push to Printify then Publish to Etsy after Export ZIP.</summary>
+    /// <summary>A video workflow with Push to Printify off Mockup Approval and Publish to Etsy after Export ZIP.</summary>
     public Workflow AddPublishWorkflow(Product product)
     {
         var workflow = AddWorkflow(product);
@@ -168,7 +168,8 @@ internal sealed class WorkflowTestData
         workflow.Definition = WorkflowJson.Write(definition with
         {
             Nodes = [.. definition.Nodes, printify, etsy],
-            Edges = [.. definition.Edges, new("edge-printify", definition.Nodes[^1].Id, printify.Id), new("edge-etsy", printify.Id, etsy.Id)],
+            Edges = [.. definition.Edges, new("edge-printify", definition.Nodes.Single(x => x.Type == "approval-gate").Id, printify.Id),
+                new("edge-etsy", definition.Nodes[^1].Id, etsy.Id)],
         });
         return workflow;
     }
@@ -265,8 +266,7 @@ internal sealed class WorkflowTestData
 
     public static WorkflowDefinition Definition(Product product, GenerateVideoConfig? config = null, string gateMode = "manual")
     {
-        // The video steps, then Export ZIP as the run's output.
-        var nodes = WorkflowCapabilityRegistry.Pipeline.Append("export-zip").Select((type, i) => new WorkflowNode("node-" + i, type, type,
+        var nodes = WorkflowCapabilityRegistry.Pipeline.Select((type, i) => new WorkflowNode("node-" + i, type, type,
             new(i * 200, 0), JsonSerializer.SerializeToElement<object>(type switch
             {
                 "product-input" => new ProductInputConfig(product.BatchId, product.Id),

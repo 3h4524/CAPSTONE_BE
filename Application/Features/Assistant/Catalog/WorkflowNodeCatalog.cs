@@ -30,14 +30,11 @@ public static class WorkflowNodeCatalog
     public static readonly IReadOnlyList<string> RunOrder =
     [
         "product-input", "prompt-synthesis", "design-image", "design-approval", "apply-mockup",
-        "approval-gate", "generate-video", "review-video", "export-zip", "publish-printify", "publish-etsy", "publish-social"
+        "approval-gate", "publish-printify", "generate-video", "review-video", "export-zip", "publish-etsy", "publish-social"
     ];
 
-    /// <summary>The outputs: peers that end a workflow, in any order.</summary>
-    public static readonly IReadOnlyList<string> Outputs = ["export-zip", "publish-printify", "publish-etsy", "publish-social"];
-
     public const string PublishRule =
-        "export-zip (Export ZIP), publish-printify (Push to Printify), publish-etsy (Publish to Etsy) and publish-social (Push to media) are the outputs: a workflow needs at least one, each at most once, in any order. Each output connects after the last step (review-video, or approval-gate without a video) or after another output, so they may sit side by side or one after another; only another output may follow an output. export-zip packages the approved video, so it needs generate-video and review-video.";
+        "publish-printify (Push to Printify) and publish-etsy (Publish to Etsy) publish the approved product; each may appear once. publish-printify takes the design and its approved mock-ups, never the video: it branches off apply-mockup or approval-gate with exactly one incoming connection, nothing connects after it, and it starts right after Mockup Approval beside the video (a failure of one does not stop the other). publish-etsy comes last, and only publish-social may follow it: with the video steps it comes after review-video, or after export-zip when it is there (export-zip is optional); without a video it follows approval-gate directly, and review-video and export-zip are left out. publish-social (Push to media) may appear once and is the very last step: it follows publish-etsy when there is one, otherwise it takes the place publish-etsy would have.";
 
     public static readonly IReadOnlyList<string> ConnectionRules =
     [

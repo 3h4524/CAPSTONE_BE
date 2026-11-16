@@ -14,7 +14,7 @@ services:
         install -d -o postgres -g postgres -m 700 /run/pgtls
         && install -o postgres -g postgres -m 600 /tls-src/server.key /run/pgtls/server.key
         && install -o postgres -g postgres -m 644 /tls-src/server.crt /run/pgtls/server.crt
-        && exec docker-entrypoint.sh postgres -c shared_buffers=128MB -c max_connections=80
+        && exec docker-entrypoint.sh postgres -c shared_buffers=256MB -c max_connections=80
         -c ssl=on -c ssl_cert_file=/run/pgtls/server.crt -c ssl_key_file=/run/pgtls/server.key
         -c hba_file=/etc/postgresql/pg_hba.conf -c timezone=UTC
     ports:
@@ -24,11 +24,7 @@ services:
       - ../postgres/init:/docker-entrypoint-initdb.d:ro
       - ${ENV_DIR:-/opt/apcs/env}/tls:/tls-src:ro
       - ../postgres/dev-pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-    networks:
-      apcs:
-        aliases:
-          - postgres-dev
-    mem_limit: 768m
+    mem_limit: 1g
     shm_size: 128mb
     logging:
       driver: local
@@ -43,10 +39,33 @@ services:
       timeout: 5s
       retries: 12
 
-networks:
-  apcs:
-    external: true
-    name: apcs_apcs
+  dozzle-agent:
+    image: amir20/dozzle:v11
+    command: agent
+    restart: unless-stopped
+    labels:
+      dev.dozzle.group: ops
+    environment:
+      DOZZLE_HOSTNAME: apcs-db
+      DOZZLE_NO_ANALYTICS: "true"
+      DOZZLE_FILTER: label=dev.dozzle.group
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "7007:7007"
+    mem_limit: 128m
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pg_dev:

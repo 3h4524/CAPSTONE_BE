@@ -6,6 +6,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.Assistant;
 using APCS.Application.Features.Assistant.Common;
+using APCS.Application.Features.Assistant.Guardrails;
 using APCS.Application.Features.Rag.Dtos;
 using APCS.Domain.Entities;
 using FluentAssertions;
@@ -44,6 +45,7 @@ public sealed class AssistantTurnRunnerTests
             model,
             new AssistantPromptBuilder(time),
             new AssistantToolRegistry([]),
+            new AssistantInputGuard(),
             new AssistantKnowledgeBase(rag.Object, cache.Object, NullLogger<AssistantKnowledgeBase>.Instance),
             conversations.Object,
             messages.Object,

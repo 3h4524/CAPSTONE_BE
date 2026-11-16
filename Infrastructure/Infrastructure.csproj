@@ -43,4 +43,10 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The sheets printed on throwaway Printify products to find their print areas (PrintifyMockupCalibrator). -->
+    <EmbeddedResource Include="Resources\Printify\printify-calibration.png" LogicalName="APCS.Printify.Calibration.png" />
+    <EmbeddedResource Include="Resources\Printify\printify-blank.png" LogicalName="APCS.Printify.Blank.png" />
+  </ItemGroup>
+
 </Project>

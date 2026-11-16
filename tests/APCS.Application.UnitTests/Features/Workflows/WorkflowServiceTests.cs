@@ -9,6 +9,21 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 public sealed class WorkflowServiceTests
 {
     [TestMethod]
+    public void VideoTexts_ReadsEverySceneDirectionSharedAndPerProduct()
+    {
+        var own = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new AiVideoSceneOptions(ExtraInstructions: "product scene note")]);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiGlobalInstructions: "warm light",
+            AiScenes: [new AiVideoSceneOptions(ExtraInstructions: "slow push", StudioPrompt: "sunny cafe"), new AiVideoSceneOptions()],
+            ProductConfigs: new Dictionary<Guid, GenerateVideoConfig> { [Guid.NewGuid()] = own });
+        var definition = new WorkflowDefinition(2,
+            [new WorkflowNode("video", "generate-video", "Generate video", new(0, 0), System.Text.Json.JsonSerializer.SerializeToElement(config))],
+            []);
+
+        WorkflowService.VideoTexts(definition).Select(text => text.Value)
+            .Should().BeEquivalentTo("warm light", "slow push", "sunny cafe", "product scene note");
+    }
+
+    [TestMethod]
     public async Task SaveAsync_InvalidRequest_InvokesValidatorBeforePersistence()
     {
         var fixture = new WorkflowTestData();
@@ -85,7 +100,7 @@ public sealed class WorkflowServiceTests
         stored.SchemaVersion.Should().Be(2);
         stored.Revision.Should().Be(1);
         stored.CreatedAt.Should().Be(WorkflowTestData.Now.UtcDateTime);
-        WorkflowJson.Read<WorkflowDefinition>(stored.Definition).Nodes.Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline.Append("export-zip"));
+        WorkflowJson.Read<WorkflowDefinition>(stored.Definition).Nodes.Select(x => x.Type).Should().Equal(WorkflowCapabilityRegistry.Pipeline);
         fixture.State.Verify(x => x.LockOwnerAsync(WorkflowTestData.Owner, cancellation.Token), Times.Once);
         fixture.Unit.Verify(x => x.SaveChangesAsync(cancellation.Token), Times.Once);
         fixture.Transaction.Verify(x => x.CommitAsync(cancellation.Token), Times.Once);

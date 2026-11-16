@@ -1,11 +1,13 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
 using APCS.Application.Features.DesignTemplates.Common;
 using APCS.Application.Features.DesignTemplates.Dtos.Request;
 using APCS.Application.Features.DesignTemplates.Dtos.Response;
+using APCS.Application.Features.Moderation;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
@@ -22,9 +24,30 @@ public sealed class DesignTemplateService(
     IValidator<ListDesignTemplatesRequestDto> listValidator,
     IValidator<CreateDesignTemplateRequestDto> createValidator,
     IValidator<UpdateDesignTemplateRequestDto> updateValidator,
-    ILogger<DesignTemplateService> logger) : IDesignTemplateService
+    ILogger<DesignTemplateService> logger,
+    IContentModerationService? moderation = null) : IDesignTemplateService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    // A personal template's prompt text becomes part of every design made from it. Its negative prompt is left out: it
+    // names what the image must not show.
+    private async Task<Error?> ModerateAsync(Guid userId, Guid? templateId, IDesignTemplateUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (moderation is null) return null;
+        var texts = new List<ModerationText>
+        {
+            new("the template name", request.Name),
+            new("the art style", request.ArtStyle),
+            new("the base prompt", request.BasePrompt)
+        };
+        texts.AddRange((request.Examples ?? []).Select(example => new ModerationText("an example prompt", $"{example.Subject}: {example.Prompt}")));
+        var verdict = await moderation.CheckTextAsync(texts,
+            new ModerationContext(userId, ModerationFeatures.DesignGeneration, ModerationDirection.Input,
+                ModerationSubjects.DesignTemplate, templateId),
+            cancellationToken);
+        return verdict.IsBlocked ? ModerationErrors.Blocked(verdict) : null;
+    }
 
     public async Task<Result<PagedResult<DesignTemplateSummaryResponseDto>>> ListAsync(
         ListDesignTemplatesRequestDto request,
@@ -141,6 +164,9 @@ public sealed class DesignTemplateService(
             return Result.Failure<DesignTemplateDetailResponseDto>(DesignTemplateErrors.Unauthenticated());
         }
 
+        if (await ModerateAsync(userId.Value, null, request, cancellationToken) is { } blocked)
+            return Result.Failure<DesignTemplateDetailResponseDto>(blocked);
+
         var name = NormalizeText(request.Name);
         if (await repository.PersonalNameExistsAsync(
                 userId.Value,
@@ -212,6 +238,9 @@ public sealed class DesignTemplateService(
         {
             return Result.Failure<DesignTemplateDetailResponseDto>(DesignTemplateErrors.NotFound());
         }
+
+        if (await ModerateAsync(userId.Value, template.Id, request, cancellationToken) is { } blocked)
+            return Result.Failure<DesignTemplateDetailResponseDto>(blocked);
 
         var name = NormalizeText(request.Name);
         if (await repository.PersonalNameExistsAsync(
