@@ -103,8 +103,8 @@ public sealed class TranslationService(
                     TargetLocale = targetLocale,
                     TranslatedText = translatedText,
                     Provider = providerName,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
+                    CreatedAt = DbNow(),
+                    UpdatedAt = DbNow()
                 };
 
                 await entries.AddAsync(entry, cancellationToken: cancellationToken);
@@ -128,6 +128,8 @@ public sealed class TranslationService(
 
         return Result.Success(new TranslateTextsResponseDto(result));
     }
+
+    private static DateTime DbNow() => DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
 
     private static string Hash(string text, string sourceLocale)
     {

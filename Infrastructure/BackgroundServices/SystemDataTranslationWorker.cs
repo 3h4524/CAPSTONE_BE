@@ -49,12 +49,11 @@ public sealed class SystemDataTranslationWorker(
                 return;
 
             var db = services.GetRequiredService<AppDbContext>();
-            var translator = services.GetRequiredService<ITranslationService>();
 
             if (await TranslateAsync(db, "design_templates",
                     db.DesignTemplates.Where(template => template.IsSystemTemplate == true && template.DeletedAt == null),
                     SystemTranslationFields.For, template => template.Translations,
-                    (template, value) => template.Translations = value, translator, cancellationToken) > 0)
+                    (template, value) => template.Translations = value, cancellationToken) > 0)
             {
                 await services.GetRequiredService<ICacheService>()
                     .RemoveAsync(DesignTemplateCacheKeys.SystemCatalog, cancellationToken);
@@ -63,27 +62,27 @@ public sealed class SystemDataTranslationWorker(
             await TranslateAsync(db, "video_templates",
                 db.VideoTemplates.Where(template => template.IsSystemTemplate == true),
                 SystemTranslationFields.For, template => template.Translations,
-                (template, value) => template.Translations = value, translator, cancellationToken);
+                (template, value) => template.Translations = value, cancellationToken);
 
             await TranslateAsync(db, "ai_character_models",
                 db.AiCharacterModels.Where(model => model.DeletedAt == null),
                 SystemTranslationFields.For, model => model.Translations,
-                (model, value) => model.Translations = value, translator, cancellationToken);
+                (model, value) => model.Translations = value, cancellationToken);
 
             await TranslateAsync(db, "music_tracks",
                 db.MusicTracks.Where(track => track.DeletedAt == null),
                 SystemTranslationFields.For, track => track.Translations,
-                (track, value) => track.Translations = value, translator, cancellationToken);
+                (track, value) => track.Translations = value, cancellationToken);
 
             await TranslateAsync(db, "subscription_plans",
                 db.SubscriptionPlans,
                 SystemTranslationFields.For, plan => plan.Translations,
-                (plan, value) => plan.Translations = value, translator, cancellationToken);
+                (plan, value) => plan.Translations = value, cancellationToken);
 
             if (await TranslateAsync(db, "features",
                     db.Features,
                     SystemTranslationFields.For, feature => feature.Translations,
-                    (feature, value) => feature.Translations = value, translator, cancellationToken) > 0)
+                    (feature, value) => feature.Translations = value, cancellationToken) > 0)
             {
                 services.GetRequiredService<IFeatureCatalog>().Invalidate();
             }
@@ -101,7 +100,6 @@ public sealed class SystemDataTranslationWorker(
         Func<TEntity, IReadOnlyDictionary<string, string>> fieldsOf,
         Func<TEntity, string?> translationsOf,
         Action<TEntity, string> saveTranslations,
-        ITranslationService translator,
         CancellationToken cancellationToken)
         where TEntity : class
     {
@@ -116,7 +114,11 @@ public sealed class SystemDataTranslationWorker(
             IReadOnlyDictionary<string, string>? vi = null;
             try
             {
-                vi = await SystemTextTranslator.TranslateToVietnameseAsync(fields, translator, cancellationToken);
+                using var translationScope = serviceProvider.CreateScope();
+                vi = await SystemTextTranslator.TranslateToVietnameseAsync(
+                    fields,
+                    translationScope.ServiceProvider.GetRequiredService<ITranslationService>(),
+                    cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {

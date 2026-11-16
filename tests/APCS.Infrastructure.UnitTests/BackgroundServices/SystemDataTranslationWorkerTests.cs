@@ -125,6 +125,26 @@ public sealed class SystemDataTranslationWorkerTests
         featureCatalog.Verify(candidate => candidate.Invalidate(), Times.Never);
     }
 
+    [TestMethod]
+    public async Task SweepAsync_WhenTheTranslatorThrows_QueuesTheRowAndKeepsSweepingOtherTables()
+    {
+        translator
+            .Setup(candidate => candidate.TranslateAsync(
+                It.Is<TranslateTextsRequestDto>(request => request.Items.Any(item => item.Text == "Blue Garden")),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("provider down"));
+        await SeedAsync(Feature("Daily video safety cap"), Template("Blue Garden"));
+
+        await Worker().SweepAsync(CancellationToken.None);
+
+        await using var db = Context();
+        SystemTranslationDocument.Parse((await db.DesignTemplates.SingleAsync()).Translations)!.Status
+            .Should().Be(SystemTranslationDocument.Pending);
+        var feature = await db.Features.SingleAsync();
+        SystemTextLocalizer.For(feature.Translations, "vi").Text(SystemTranslationFields.Label, feature.Label)
+            .Should().Be("vi:Daily video safety cap");
+    }
+
     private SystemDataTranslationWorker Worker()
     {
         var services = new ServiceCollection()
