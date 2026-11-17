@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using APCS.Application.Features.Workflows;
 using APCS.Domain.Entities;
 using APCS.Infrastructure.BackgroundServices;
 using Microsoft.EntityFrameworkCore;
@@ -50,19 +51,30 @@ public sealed class MediaJobQueuedInterceptor(WorkflowActivitySignal activity, A
         return Task.CompletedTask;
     }
 
+    // What the save in progress queues, kept as the object the weak table holds.
+    private const int QueuesMedia = 1, MakesClips = 2;
+
     private void Inspect(DbContext? context)
     {
         if (context is null) return;
-        var queues = context.ChangeTracker.Entries<MediaJob>().Any(entry =>
-            entry.State is EntityState.Added or EntityState.Modified
-            && entry.Entity.Status == "queued" && entry.Entity.Kind is "render" or "export_zip");
-        if (queues) saving.AddOrUpdate(context, true);
+        var queues = 0;
+        foreach (var entry in context.ChangeTracker.Entries<MediaJob>())
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
+            if (entry.Entity.Status == "queued" && entry.Entity.Kind is "render" or "export_zip") queues |= QueuesMedia;
+            // The API has AI scenes to make for it: wakes the background pass that makes them.
+            if (entry.Entity.Status == AiClipPhase.JobStatus && entry.Entity.Kind == "render") queues |= MakesClips;
+        }
+        if (queues != 0) saving.AddOrUpdate(context, queues);
     }
 
     private void Saved(DbContext? context)
     {
-        if (context is not null && saving.Remove(context))
-            afterCommit.Defer(context, activity.Media.Notify);
+        if (context is null || !saving.TryGetValue(context, out var queued)) return;
+        saving.Remove(context);
+        var queues = (int)queued;
+        if ((queues & QueuesMedia) != 0) afterCommit.Defer(context, activity.Media.Notify);
+        if ((queues & MakesClips) != 0) afterCommit.Defer(context, activity.ClipPhase.Notify);
     }
 
     private void Forget(DbContext? context)

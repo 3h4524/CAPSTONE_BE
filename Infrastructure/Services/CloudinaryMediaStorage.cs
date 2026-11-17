@@ -73,6 +73,18 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
         fields["api_key"] = options.Value.ApiKey;
         return new($"https://api.cloudinary.com/v1_1/{options.Value.CloudName}/{type}/upload", fields, key, type);
     }
+    // The same settings as the signed grant a worker uploads with: private ("authenticated"), never overwritten.
+    public async Task<string> UploadVideoAsync(Stream content, string key, CancellationToken ct)
+    {
+        using var description = new FileDescription("clip.mp4", content);
+        var result = await Client.UploadAsync(new VideoUploadParams
+        {
+            File = description, PublicId = PublicId(key), Type = "authenticated", Overwrite = false
+        }, cancellationToken: ct);
+        if (result.Error != null || string.IsNullOrWhiteSpace(result.Version))
+            throw new InvalidOperationException($"Video upload failed: {result.Error?.Message ?? "no version returned"}");
+        return result.Version;
+    }
     public async Task<bool> VerifyAsync(string key, string type, string version, long? bytes, CancellationToken ct)
     {
         var result = await Client.GetResourceAsync(new GetResourceParams(PublicId(key))

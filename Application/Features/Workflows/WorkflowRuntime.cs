@@ -15,7 +15,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
     IRepository<MockupTemplate>? mockupTemplates = null,
-    Abstractions.Moderation.IContentModerationService? moderation = null)
+    Abstractions.Moderation.IContentModerationService? moderation = null,
+    Microsoft.Extensions.Options.IOptions<AiClipPhaseSettings>? clipPhase = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
@@ -148,11 +149,20 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                                 ? retained.FirstOrDefault(item => item.SceneOrder == shot.SceneOrder && item.Status == "stored" &&
                                     item.StorageKey is not null && item.StorageVersion is not null)
                                 : retained.FirstOrDefault(item => item.Fingerprint == shot.Fingerprint && item.Status != "failed");
+                            // A scene the provider may still be making gets a fresh time limit and no memory of earlier refusals:
+                            // this is a new attempt, and the API gives a scene up a set time after it was submitted.
                             return existing is not null
-                                ? existing with { SceneOrder = shot.SceneOrder, Fingerprint = shot.Fingerprint }
+                                ? existing with { SceneOrder = shot.SceneOrder, Fingerprint = shot.Fingerprint,
+                                    SubmittedAt = existing.Status is "polling" or "ready" ? time.GetUtcNow().UtcDateTime : existing.SubmittedAt,
+                                    BusyAttempts = 0, NextAttemptAt = null }
                                 : new AiShotJobState(shot.SceneOrder, shot.Fingerprint);
                         }).ToArray();
-                        await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct);
+                        // With the clip phase on, the API makes the scenes that are not stored yet and the media worker gets the job
+                        // once they all are, so it only renders. Without it the worker makes them itself.
+                        var makeClipsHere = clipPhase?.Value.Enabled == true && states.Any(state => state.Status != "stored");
+                        await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct,
+                            makeClipsHere ? AiClipPhase.JobStatus : "queued");
+                        if (makeClipsHere) { node.Stage = AiClipPhase.Stage; node.Progress = AiClipPhase.StartProgress; }
                     }
                     else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct);
                     return;
@@ -497,7 +507,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         return node.ToJsonString(WorkflowJson.Options);
     }
 
-    private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct)
+    private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct, string status = "queued")
     {
         var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == kind, ct)).SingleOrDefault();
         if (job == null)
@@ -505,8 +515,9 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             job = new() { Id = Guid.NewGuid(), WorkflowRunId = run.Id, WorkflowNodeRunId = node.Id, UserId = run.UserId, MaximumAttempts = 3, CreatedAt = time.GetUtcNow().UtcDateTime };
             await jobs.AddAsync(job, cancellationToken: ct);
         }
-        job.Kind = kind; job.Payload = WorkflowJson.Write(payload); job.Status = "queued"; job.Attempt = 0; job.Progress = 0; job.LeaseToken = null;
+        job.Kind = kind; job.Payload = WorkflowJson.Write(payload); job.Status = status; job.Attempt = 0; job.Progress = 0; job.LeaseToken = null;
         job.LeaseExpiresAt = null; job.ErrorMessage = null; job.AvailableAt = time.GetUtcNow().UtcDateTime; job.UpdatedAt = job.AvailableAt;
+        if (status == AiClipPhase.JobStatus) { job.Stage = AiClipPhase.Stage; job.Progress = AiClipPhase.StartProgress; }
     }
     public async Task FailAsync(WorkflowRun run, Guid nodeId, string message, CancellationToken ct)
     {

@@ -30,6 +30,9 @@ if (-not [string]::IsNullOrWhiteSpace($queueStream)) { $env:MEDIA_QUEUE_STREAM =
 if (-not [string]::IsNullOrWhiteSpace($aiSceneConcurrency)) {
     $env:AI_SCENE_CONCURRENCY = $aiSceneConcurrency
 }
+foreach ($name in "AI_SHOT_FIRST_POLL_SECONDS", "AI_SHOT_POLL_SECONDS", "AI_SHOT_TIMEOUT_MINUTES") {
+    if (-not [string]::IsNullOrWhiteSpace($settings[$name])) { Set-Item -Path "Env:$name" -Value $settings[$name] }
+}
 $env:CHROME_EXECUTABLE = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $env:FFMPEG_PATH = (
     Resolve-Path -LiteralPath (

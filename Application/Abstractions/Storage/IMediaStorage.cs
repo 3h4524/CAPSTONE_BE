@@ -17,5 +17,7 @@ public interface IMediaStorage
     Task<byte[]> ReadCompositeAsync(string url, CancellationToken cancellationToken);
     string SignRead(string storageKey, string resourceType, string? version = null, bool attachment = false);
     UploadGrant CreateUploadGrant(string storageKey, string resourceType);
+    /// <summary>Stores a video privately under <paramref name="storageKey"/> and returns the version storage gave it.</summary>
+    Task<string> UploadVideoAsync(Stream content, string storageKey, CancellationToken cancellationToken);
     Task<bool> VerifyAsync(string storageKey, string resourceType, string version, long? bytes, CancellationToken cancellationToken);
 }
