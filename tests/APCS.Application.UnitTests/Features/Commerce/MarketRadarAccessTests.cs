@@ -1,4 +1,4 @@
-using APCS.Application.Abstractions.Ai;
+﻿using APCS.Application.Abstractions.Ai;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Commerce;
@@ -126,6 +126,31 @@ public sealed class MarketRadarAccessTests
         limited.Keywords.Should().BeEmpty();
         limited.ActionPlan.Should().BeEmpty();
         limited.Risks.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Limited_KeepsTheTopsAggregateNumbers_ButNotItsListings()
+    {
+        var signals = MarketListingSignals.Empty with
+        {
+            SampleListingCount = 48, SellerCount = 30, StrongSellerCount = 6, RisingNewListingCount = 3, MedianFavoritesPer30Days = 4.5,
+            PriceP25 = 18m, MedianPrice = 22m, PriceP75 = 27m,
+            Points = [new("Cat tee", 22m, 4.5, 20, true, "https://etsy.test/1")],
+            RisingListings = [new("Cat tee", "https://etsy.test/1", 20, 9, 22m, "USD")],
+        };
+        var niche = new SellerNicheMarketInsightResponse("cat tees", ["cat tee"], "promising", "Room to enter.", 12, "medium", "stable", null,
+            "rising", 5, "rising", "good", 4, 0.8, [], [], "high", MarketSupplySignal.Unknown, signals, "Test a design.", [], [], []);
+
+        var limited = MarketRadarAccess.Limited(niche).Signals;
+
+        limited.SampleListingCount.Should().Be(48);
+        limited.StrongSellerCount.Should().Be(6);
+        limited.RisingNewListingCount.Should().Be(3);
+        limited.MedianFavoritesPer30Days.Should().Be(4.5);
+        limited.Points.Should().BeEmpty();
+        limited.RisingListings.Should().BeEmpty();
+        limited.PriceP25.Should().BeNull();
+        limited.PriceP75.Should().BeNull();
     }
 
     private OpportunityAnalysisService Analysis(IMarketRadarAccess access, List<SellerOpportunity> opportunities)

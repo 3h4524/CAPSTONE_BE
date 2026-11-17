@@ -1,4 +1,4 @@
-using APCS.Application.Abstractions.Authentication;
+﻿using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
@@ -92,13 +92,13 @@ public sealed class MarketRadarAccess(
     public static SellerOpportunityResponse Limited(SellerOpportunityResponse opportunity) =>
         opportunity with { Insights = opportunity.Insights is null ? null! : opportunity.Insights with { Evidence = [] } };
 
-    /// <summary>A niche as a Seller without the whole radar sees it: the verdict and trends, not who and what to copy.</summary>
+    /// <summary>A niche as a Seller without the whole radar sees it: the verdict, trends and the top's aggregate numbers, not who and what to copy (no competitors, keywords, listings or price range).</summary>
     public static SellerNicheMarketInsightResponse Limited(SellerNicheMarketInsightResponse niche) =>
         niche with
         {
             Competitors = [],
             Keywords = [],
-            Signals = MarketListingSignals.Empty,
+            Signals = niche.Signals is null ? null! : niche.Signals with { RisingListings = [], Points = [], PriceP25 = null, PriceP75 = null },
             ActionPlan = [],
             Risks = [],
         };
