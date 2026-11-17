@@ -21,6 +21,9 @@ public sealed class WorkflowActivitySignal
     /// <summary>A render or export job was committed as queued (raised by <c>MediaJobQueuedInterceptor</c>).</summary>
     public ActivitySignal Media { get; } = new();
 
+    /// <summary>A render job was committed as <c>generating_clips</c>: the API has AI scenes to make (raised by <c>MediaJobQueuedInterceptor</c>).</summary>
+    public ActivitySignal ClipPhase { get; } = new();
+
     /// <summary>A publish step was put on the in-process publish queue.</summary>
     public ActivitySignal Publish { get; } = new();
 }

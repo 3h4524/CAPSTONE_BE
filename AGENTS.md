@@ -23,7 +23,7 @@ The list above resolves conflicts. This table decides reading order, so a task r
 | Add or change tests only | [`docs/TESTING.md`](docs/TESTING.md) |
 | Change a layer boundary, a project reference, or add a dependency | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Rename or move types, or apply naming and language conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Change an entity or the schema | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *Database-first schema workflow* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`migrations/README.md`](migrations/README.md) |
+| Change an entity or the schema | *Changing the database schema* below, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for Domain and persistence rules, then *Database-first schema workflow* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`migrations/README.md`](migrations/README.md) |
 | Change Docker images, the VM stack, CI/CD, or backups | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | Change the assistant chatbot or RAG caching | [`docs/ASSISTANT.md`](docs/ASSISTANT.md) and [`docs/adr/0001-rag-query-caching.md`](docs/adr/0001-rag-query-caching.md) |
 | Prepare a pull request | *Definition of done* in [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`.github/pull_request_template.md`](.github/pull_request_template.md) |
@@ -47,7 +47,8 @@ when the API runs next to the frontend.
   that file or run the API with another environment (the E2E stack uses `E2E`).
 - The local `.env` points at the **shared dev database** on the deployment VM (a personal
   `dev_<name>` login over SSL with data rights only), not at a local Postgres: the rows of every
-  run and every account land there, and schema changes go through `migrations/`.
+  run and every account land there, and schema changes go through `migrations/`, applied with
+  `scripts/Migrate-DevDb.ps1` (Flyway switches to `apcs_migrator`; hand-written DDL is refused).
   `scripts/e2e/` starts a database of its own with Docker. Deployment, environments, and backups
   are described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 - **The app-wide rate limiter is off in `Development`** (`appsettings.Development.json`), so local
@@ -57,6 +58,39 @@ when the API runs next to the frontend.
   machine that made it. Integration fixtures build the schema with `EnsureCreated`, so the table
   exists wherever tests run; against a pre-provisioned database, `APCS_TEST_CONNECTION_STRING`
   points at a database prepared by the fixture or `scripts/e2e/bootstrap-test-db.sh`.
+
+## Changing the database schema
+
+The shared dev database refuses DDL from a `dev_<name>` session unless it comes from
+`scripts/Migrate-DevDb.ps1`, so a schema change made any other way fails. Follow this sequence for every table, column, index, constraint, view, function, or
+catalog-data change:
+
+1. `./scripts/New-Migration.ps1 -Name <what_it_does>` creates an empty
+   `migrations/V<yyyyMMddHHmm>__<what_it_does>.sql`; write the SQL there.
+2. `./scripts/Migrate-DevDb.ps1 -Scaffold` applies it to the dev database through Flyway (Docker
+   required) and regenerates `Domain/Entities/Generated` and `Infrastructure/Persistence/Generated`.
+3. Commit the migration and the regenerated files in the same change as the code that uses them.
+
+Never:
+
+- run DDL directly with `psql`, DBeaver, a database MCP tool, or a one-off script, and never put
+  schema changes in `scripts/sql/` instead of `migrations/`;
+- run `SET ROLE apcs_migrator` by hand: it bypasses `flyway_schema_history`, so the change never
+  reaches production;
+- edit a migration that has already been applied to the dev database (write a new one), or use EF
+  migrations or `dotnet ef database update`;
+- hand-edit files under the two `Generated` folders.
+
+Reading the errors:
+
+| Error | Meaning | Fix |
+|---|---|---|
+| `Schema changes on the shared dev database must go through Flyway migrations`, `must be owner of table ...`, or `permission denied for schema public` | DDL ran outside `Migrate-DevDb.ps1` | Move the SQL into a migration and run step 2 |
+| `role "apcs_migrator" does not exist` | `ConnectionStrings__DefaultConnection` in `.env` is not the shared dev database (for example the old Neon URL) | Use the personal `dev_<name>` connection string |
+| `relation ... does not exist` / `column ... does not exist` while running the API | The dev database lacks a migration from the current branch | `./scripts/Migrate-DevDb.ps1 -Command info`, then run it without `-Command` |
+| `Migration checksum mismatch for migration version ...` | An applied migration file was edited | Restore the file or, if the edit is intended, `./scripts/Migrate-DevDb.ps1 -Command repair` |
+
+Details and the reasoning live in [`migrations/README.md`](migrations/README.md).
 
 ## Before changing files
 

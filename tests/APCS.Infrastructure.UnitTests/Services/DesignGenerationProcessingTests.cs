@@ -1679,15 +1679,10 @@ public sealed class DesignGenerationProcessingTests
 
     // ---- The platform's own Ideogram keys ----
 
-    private static SystemApiKeyPool SystemIdeogramKeys(string keys, int? dailyLimit = null)
-    {
-        var settings = new Dictionary<string, string?> { ["SystemApiKeys:Ideogram:Keys"] = keys };
-        if (dailyLimit is not null) settings["SystemApiKeys:Ideogram:DailyLimitPerKey"] = dailyLimit.ToString();
-        var options = new SystemApiKeysOptions();
-        SystemApiKeysOptions.Read(new ConfigurationBuilder().AddInMemoryCollection(settings).Build(), options);
-        return new SystemApiKeyPool(Microsoft.Extensions.Options.Options.Create(options), new InMemorySystemApiKeyUsageStore(),
-            new FakeTimeProvider(UtcNow), Microsoft.Extensions.Logging.Abstractions.NullLogger<SystemApiKeyPool>.Instance);
-    }
+    private static SystemApiKeyPool SystemIdeogramKeys(string keys, int? dailyLimit = null) =>
+        APCS.Infrastructure.UnitTests.TestSupport.SystemApiKeyTestPools.Create(
+            [APCS.Infrastructure.UnitTests.TestSupport.SystemApiKeyTestPools.Provider("ideogram", keys.Split(";"), dailyLimit, concurrency: 8)],
+            new InMemorySystemApiKeyUsageStore(), new FakeTimeProvider(UtcNow));
 
     private static Mock<IImageGenerationProvider> IdeogramAnswering(Func<string, ImageGenerationResult> answer)
     {

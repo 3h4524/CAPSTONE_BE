@@ -39,6 +39,8 @@ public partial class DesignTemplate
 
     public string? NegativePrompt { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual ICollection<AiPrompt> AiPrompts { get; set; } = new List<AiPrompt>();
 
     public virtual ICollection<Product> Products { get; set; } = new List<Product>();

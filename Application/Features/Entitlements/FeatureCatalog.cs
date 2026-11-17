@@ -39,7 +39,8 @@ public sealed record FeatureCatalogEntry(
     bool IsActive,
     int SortOrder,
     DateTime? UpdatedAt,
-    Guid? UpdatedBy)
+    Guid? UpdatedBy,
+    string? Translations = null)
 {
     /// <summary>The entry for a code defined in code only, with no <c>features</c> row.</summary>
     public static FeatureCatalogEntry FromDefinition(PlanFeatureDefinition definition) =>
@@ -128,7 +129,8 @@ public sealed class FeatureCatalog(
                     row.IsActive,
                     row.SortOrder,
                     row.UpdatedAt,
-                    row.UpdatedBy)
+                    row.UpdatedBy,
+                    row.Translations)
                 : FeatureCatalogEntry.FromDefinition(definition))
             .OrderBy(entry => entry.SortOrder)
             .ThenBy(entry => entry.Code, StringComparer.Ordinal)

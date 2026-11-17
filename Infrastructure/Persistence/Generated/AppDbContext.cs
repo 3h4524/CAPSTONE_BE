@@ -156,6 +156,12 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<SupportTicket> SupportTickets { get; set; }
 
+    public virtual DbSet<SystemApiKey> SystemApiKeys { get; set; }
+
+    public virtual DbSet<SystemApiKeyProvider> SystemApiKeyProviders { get; set; }
+
+    public virtual DbSet<SystemApiKeyRing> SystemApiKeyRings { get; set; }
+
     public virtual DbSet<TestReportRun> TestReportRuns { get; set; }
 
     public virtual DbSet<TicketAttachment> TicketAttachments { get; set; }
@@ -251,6 +257,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SortOrder)
                 .HasDefaultValue(0)
                 .HasColumnName("sort_order");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
@@ -1024,6 +1033,9 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("niche_category");
             entity.Property(e => e.PreviewImageUrl).HasColumnName("preview_image_url");
             entity.Property(e => e.StyleDescription).HasColumnName("style_description");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.Type)
                 .HasMaxLength(50)
                 .HasColumnName("type");
@@ -1312,6 +1324,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SortOrder)
                 .HasDefaultValue(0)
                 .HasColumnName("sort_order");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.TrialAvailable)
                 .HasDefaultValue(true)
                 .HasColumnName("trial_available");
@@ -1929,9 +1944,11 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => new { e.Status, e.AvailableAt, e.LeaseExpiresAt }, "idx_media_jobs_claim");
 
+            entity.HasIndex(e => e.AvailableAt, "idx_media_jobs_generating_clips").HasFilter("((status)::text = 'generating_clips'::text)");
+
             entity.HasIndex(e => new { e.WorkflowNodeRunId, e.Kind }, "uq_media_job_node_active")
                 .IsUnique()
-                .HasFilter("((status)::text = ANY ((ARRAY['queued'::character varying, 'leased'::character varying])::text[]))");
+                .HasFilter("((status)::text = ANY (ARRAY[('queued'::character varying)::text, ('generating_clips'::character varying)::text, ('leased'::character varying)::text]))");
 
             entity.Property(e => e.Id)
                 .ValueGeneratedNever()
@@ -2388,6 +2405,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.RoyaltyFree)
                 .HasDefaultValue(false)
                 .HasColumnName("royalty_free");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
         });
 
         modelBuilder.Entity<NotificationAlert>(entity =>
@@ -3820,6 +3840,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Tier)
                 .HasMaxLength(50)
                 .HasColumnName("tier");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -3886,6 +3909,98 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.SupportTicketUsers)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("support_tickets_user_id_fkey");
+        });
+
+        modelBuilder.Entity<SystemApiKey>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("system_api_keys_pkey");
+
+            entity.ToTable("system_api_keys");
+
+            entity.HasIndex(e => new { e.Provider, e.KeyId }, "ux_system_api_keys_provider_key_id")
+                .IsUnique()
+                .HasFilter("(deleted_at IS NULL)");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.KeyId)
+                .HasMaxLength(12)
+                .HasColumnName("key_id");
+            entity.Property(e => e.KeyLast4)
+                .HasMaxLength(4)
+                .HasColumnName("key_last4");
+            entity.Property(e => e.KeyValueEncrypted).HasColumnName("key_value_encrypted");
+            entity.Property(e => e.Label)
+                .HasMaxLength(100)
+                .HasColumnName("label");
+            entity.Property(e => e.LastCheckSucceeded).HasColumnName("last_check_succeeded");
+            entity.Property(e => e.LastCheckedAt).HasColumnName("last_checked_at");
+            entity.Property(e => e.Provider).HasColumnName("provider");
+            entity.Property(e => e.SortOrder)
+                .HasDefaultValue(0)
+                .HasColumnName("sort_order");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.ProviderNavigation).WithMany(p => p.SystemApiKeys)
+                .HasForeignKey(d => d.Provider)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("system_api_keys_provider_fkey");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.SystemApiKeys)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("system_api_keys_updated_by_fkey");
+        });
+
+        modelBuilder.Entity<SystemApiKeyProvider>(entity =>
+        {
+            entity.HasKey(e => e.Provider).HasName("system_api_key_providers_pkey");
+
+            entity.ToTable("system_api_key_providers");
+
+            entity.Property(e => e.Provider).HasColumnName("provider");
+            entity.Property(e => e.DailyLimitPerKey).HasColumnName("daily_limit_per_key");
+            entity.Property(e => e.MaxConcurrentPerKey).HasColumnName("max_concurrent_per_key");
+            entity.Property(e => e.Strategy)
+                .HasMaxLength(10)
+                .HasDefaultValueSql("'fill'::character varying")
+                .HasColumnName("strategy");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+
+            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.SystemApiKeyProviders)
+                .HasForeignKey(d => d.UpdatedBy)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("system_api_key_providers_updated_by_fkey");
+        });
+
+        modelBuilder.Entity<SystemApiKeyRing>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("system_api_key_ring_pkey");
+
+            entity.ToTable("system_api_key_ring");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.FriendlyName).HasColumnName("friendly_name");
+            entity.Property(e => e.Xml).HasColumnName("xml");
         });
 
         modelBuilder.Entity<TestReportRun>(entity =>
@@ -4340,6 +4455,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.TemplateVersion)
                 .HasDefaultValue(1)
                 .HasColumnName("template_version");
+            entity.Property(e => e.Translations)
+                .HasColumnType("jsonb")
+                .HasColumnName("translations");
             entity.Property(e => e.Type)
                 .HasMaxLength(100)
                 .HasColumnName("type");

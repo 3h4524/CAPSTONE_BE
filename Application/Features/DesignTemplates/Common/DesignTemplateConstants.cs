@@ -123,9 +123,9 @@ public static class ActiveDesignTemplateBatchStatuses
 }
 
 /// <summary>Provides versioned Redis cache keys for the template library.</summary>
-internal static class DesignTemplateCacheKeys
+public static class DesignTemplateCacheKeys
 {
-    public const string SystemCatalog = "design-templates:v1:system:all";
+    public const string SystemCatalog = "design-templates:v2:system:all";
 
     public static string PersonalCatalog(Guid userId) => $"design-templates:v1:user:{userId:N}:all";
 }

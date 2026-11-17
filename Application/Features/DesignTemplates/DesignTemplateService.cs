@@ -1,6 +1,7 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Caching;
+using APCS.Application.Abstractions.Localization;
 using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Common.Validation;
@@ -8,6 +9,7 @@ using APCS.Application.Features.DesignTemplates.Common;
 using APCS.Application.Features.DesignTemplates.Dtos.Request;
 using APCS.Application.Features.DesignTemplates.Dtos.Response;
 using APCS.Application.Features.Moderation;
+using APCS.Application.Features.SystemTranslations;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentValidation;
@@ -25,7 +27,8 @@ public sealed class DesignTemplateService(
     IValidator<CreateDesignTemplateRequestDto> createValidator,
     IValidator<UpdateDesignTemplateRequestDto> updateValidator,
     ILogger<DesignTemplateService> logger,
-    IContentModerationService? moderation = null) : IDesignTemplateService
+    IContentModerationService? moderation = null,
+    ICultureAccessor? cultureAccessor = null) : IDesignTemplateService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -79,7 +82,9 @@ public sealed class DesignTemplateService(
         if (!string.IsNullOrWhiteSpace(search))
         {
             query = query.Where(template =>
-                template.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+                template.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || Localizer(template).Text(SystemTranslationFields.Name, template.Name)
+                    .Contains(search, StringComparison.OrdinalIgnoreCase));
         }
 
         if (!string.IsNullOrWhiteSpace(request.NicheCategory))
@@ -583,7 +588,8 @@ public sealed class DesignTemplateService(
             template.IsSystemTemplate == true,
             template.UsageCount,
             ToUtcOffset(template.CreatedAt),
-            ToUtcOffset(template.UpdatedAt));
+            ToUtcOffset(template.UpdatedAt),
+            template.IsSystemTemplate == true ? template.Translations : null);
 
     private IReadOnlyList<DesignTemplateExampleDto> DeserializeExamples(string json)
     {
@@ -601,13 +607,20 @@ public sealed class DesignTemplateService(
     private static string SerializeExamples(IReadOnlyList<DesignTemplateExampleDto> examples) =>
         JsonSerializer.Serialize(examples, JsonOptions);
 
-    private static DesignTemplateSummaryResponseDto MapSummary(DesignTemplateCacheItem template) =>
-        new(
+    private SystemTextLocalizer Localizer(DesignTemplateCacheItem template) =>
+        cultureAccessor is null
+            ? SystemTextLocalizer.English
+            : SystemTextLocalizer.For(template.Translations, cultureAccessor.CurrentCulture);
+
+    private DesignTemplateSummaryResponseDto MapSummary(DesignTemplateCacheItem template)
+    {
+        var localizer = Localizer(template);
+        return new(
             template.Id,
-            template.Name,
+            localizer.Text(SystemTranslationFields.Name, template.Name),
             template.NicheCategory,
             template.ArtStyle,
-            template.StyleDescription,
+            localizer.Text(SystemTranslationFields.StyleDescription, template.StyleDescription),
             template.PreviewImageUrl,
             template.IsSystemTemplate,
             template.UsageCount,
@@ -616,17 +629,20 @@ public sealed class DesignTemplateService(
             !template.IsSystemTemplate,
             !template.IsSystemTemplate,
             template.IsSystemTemplate);
+    }
 
-    private static DesignTemplateDetailResponseDto MapDetail(DesignTemplateCacheItem template) =>
-        new(
+    private DesignTemplateDetailResponseDto MapDetail(DesignTemplateCacheItem template)
+    {
+        var localizer = Localizer(template);
+        return new(
             template.Id,
-            template.Name,
+            localizer.Text(SystemTranslationFields.Name, template.Name),
             template.NicheCategory,
             template.ArtStyle,
             template.BasePrompt,
             template.NegativePrompt,
             template.Examples,
-            template.StyleDescription,
+            localizer.Text(SystemTranslationFields.StyleDescription, template.StyleDescription),
             template.PreviewImageUrl,
             template.IsSystemTemplate,
             template.UsageCount,
@@ -635,6 +651,7 @@ public sealed class DesignTemplateService(
             !template.IsSystemTemplate,
             !template.IsSystemTemplate,
             template.IsSystemTemplate);
+    }
 
     private Guid? GetAuthenticatedUserId() =>
         currentUser.IsAuthenticated ? currentUser.UserId : null;

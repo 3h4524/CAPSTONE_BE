@@ -101,6 +101,10 @@ public partial class User
 
     public virtual ICollection<SupportTicket> SupportTicketUsers { get; set; } = new List<SupportTicket>();
 
+    public virtual ICollection<SystemApiKeyProvider> SystemApiKeyProviders { get; set; } = new List<SystemApiKeyProvider>();
+
+    public virtual ICollection<SystemApiKey> SystemApiKeys { get; set; } = new List<SystemApiKey>();
+
     public virtual ICollection<TicketAttachment> TicketAttachments { get; set; } = new List<TicketAttachment>();
 
     public virtual ICollection<TicketReply> TicketReplies { get; set; } = new List<TicketReply>();

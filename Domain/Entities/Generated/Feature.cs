@@ -31,6 +31,8 @@ public partial class Feature
 
     public Guid? UpdatedBy { get; set; }
 
+    public string? Translations { get; set; }
+
     public virtual ICollection<SubscriptionFeatureGrant> SubscriptionFeatureGrants { get; set; } = new List<SubscriptionFeatureGrant>();
 
     public virtual User? UpdatedByNavigation { get; set; }

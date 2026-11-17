@@ -25,5 +25,7 @@ public interface IMediaStorage
     string SignReadFitted(string storageKey, string? version, int width, int height, bool attachment = false) =>
         SignRead(storageKey, "image", version, attachment);
     UploadGrant CreateUploadGrant(string storageKey, string resourceType);
+    /// <summary>Stores a video privately under <paramref name="storageKey"/> and returns the version storage gave it.</summary>
+    Task<string> UploadVideoAsync(Stream content, string storageKey, CancellationToken cancellationToken);
     Task<bool> VerifyAsync(string storageKey, string resourceType, string version, long? bytes, CancellationToken cancellationToken);
 }
