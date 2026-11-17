@@ -52,7 +52,7 @@ Không đọc/sửa `.env`, không đổi database, không gọi API Gemini/Mini
 ### Luồng đã triển khai
 
 1. Planner kiểm tra cấu hình và chọn đúng source thực tế của shot, bao gồm studio frame hoặc source crop.
-2. `MiniMaxFirstFramePreparer` chuẩn bị PNG theo cùng logic mà MiniMax adapter dùng: source crop → center crop theo aspect → giới hạn kích thước. Không phân tích mockup gốc nếu shot dùng studio frame. Test gradient ảnh xác nhận pixel đầu, kích thước và bytes phân tích khớp bytes gửi provider cho cả 9:16/16:9.
+2. `MiniMaxFirstFramePreparer` chuẩn bị PNG theo cùng logic mà MiniMax adapter dùng: source crop → center crop theo aspect → giới hạn kích thước. Không phân tích mockup gốc nếu shot dùng studio frame. Test gradient ảnh xác nhận pixel đầu, kích thước và bytes phân tích khớp bytes gửi provider cho cả 9:16, 16:9, 1:1, 4:3 và 3:4.
 3. Gemini nhận ảnh inline và chỉ mô tả những gì nhìn thấy: style, bố cục, chủ thể, tư thế, sản phẩm, bối cảnh, ánh sáng. JSON có `openingDescription` và `uncertainties`. Không suy diễn chuyển động/âm thanh từ ảnh; không yêu cầu đoán hay sửa chữ/logo.
 4. Lượt Gemini thứ hai nhận quan sát và các phần draft đã compile, gồm P1/RAG nếu có; biên tập continuation thành văn xuôi theo diễn tiến cảnh. System instruction yêu cầu giữ thứ tự/số lượng/hướng hành động, camera, trạng thái kết thúc và ưu tiên P1. Bỏ nhãn điều phối khỏi phần mô tả được gửi đi.
 5. Ghép lại header I2VA, `[Shot 1]`, quan sát mở đầu, continuation, các guardrail bảo toàn sản phẩm/source/template giữ nguyên, soundscape/music theo chính sách cũ. Chưa có bước biên tập âm thanh dựa trên ngữ cảnh.

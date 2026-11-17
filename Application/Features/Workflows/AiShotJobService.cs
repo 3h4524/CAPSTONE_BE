@@ -133,7 +133,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         {
             var source = (await assets.GetByIdAsync(shot.MockupId, ct))!;
             operation = await ProviderFor(shot).StartAsync(key, storage.SignRead(source.StorageKey, "image", source.StorageVersion),
-                shot.Prompt, ReadAspect(job.Payload), shot.DurationSeconds,
+                shot.Prompt, ReadAspect(job.Payload, shot), shot.DurationSeconds,
                 shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment",
                 shot.SourceCrop, ct);
         }
@@ -389,10 +389,10 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         if (key == null) throw new InvalidOperationException($"Configured {providerKey} API key is missing.");
         return key;
     }
-    private static string ReadAspect(string payload)
+    private static string ReadAspect(string payload, AiShotPlan shot)
     {
         var board = WorkflowJson.Read<AiRenderJobPayload>(payload).Storyboard;
-        return VideoOutputFormats.AiSourceAspect(board.OutputFormat);
+        return VideoOutputFormats.AiSourceAspect(board.OutputFormat, shot.ProviderKey);
     }
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";

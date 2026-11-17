@@ -116,10 +116,19 @@ public static class AiVideoPromptCompiler
     public static bool RequiresPerson(string? templateCode) =>
         BuiltIns.GetValueOrDefault(AiStudioFrameIdentity.NormalizeTemplateCode(templateCode))?.RequiresLifestyle ?? false;
 
+    /// <summary>
+    /// Templates no longer offered: each asks the video model to invent what the approved images do not show (a
+    /// product held toward the camera, a new everyday setting, a dark-to-light reveal on a white mock-up). They stay
+    /// defined so the prompts of videos already made still read, but they are left out of the catalog, so no new
+    /// scene can use them and planning a saved scene that does says its template is unavailable.
+    /// </summary>
+    public static readonly IReadOnlySet<string> RetiredTemplateCodes =
+        new HashSet<string>(["creator_pov_ugc", "everyday_story_moment", "signature_product_reveal"], StringComparer.Ordinal);
+
     public static IReadOnlyList<AiVideoTemplateDefinition> Catalog(IEnumerable<VideoTemplate>? persisted = null)
     {
         var stored = ReadPersisted(persisted);
-        return BuiltIns.Values.Select(item => stored.TryGetValue(item.Code, out var overrideValue)
+        return BuiltIns.Values.Where(item => !RetiredTemplateCodes.Contains(item.Code)).Select(item => stored.TryGetValue(item.Code, out var overrideValue)
                 ? PreferCurrentDefinition(item, overrideValue)
                 : item)
             .Select(WithRequiredGuardrail)

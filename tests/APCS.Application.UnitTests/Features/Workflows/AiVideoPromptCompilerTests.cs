@@ -119,20 +119,23 @@ public sealed class AiVideoPromptCompilerTests
     }
 
     [TestMethod]
-    public void Catalog_PersonTemplates_AllowNaturalOcclusionWhileKeepingProductIdentity()
+    public void Catalog_PersonTemplate_AllowsNaturalOcclusionWhileKeepingProductIdentity()
     {
-        var templates = AiVideoPromptCompiler.Catalog();
-        var lifestyle = templates.Single(item => item.Code == "lifestyle_in_use");
-        var ugc = templates.Single(item => item.Code == "creator_pov_ugc");
-        var story = templates.Single(item => item.Code == "everyday_story_moment");
+        var lifestyle = AiVideoPromptCompiler.Catalog().Single(item => item.Code == "lifestyle_in_use");
 
         lifestyle.PromptVersion.Should().Be(12);
         lifestyle.CommonPrompt.Should().Contain("brief occlusion");
         lifestyle.BasePrompt.Should().NotContain("remain unobstructed and clearly readable");
-        ugc.PromptVersion.Should().Be(3);
-        ugc.BasePrompt.Should().Contain("natural hand overlap");
-        story.PromptVersion.Should().Be(3);
-        story.BasePrompt.Should().Contain("naturally visible");
+    }
+
+    // They ask the video model to invent what the approved images do not show, so no new scene may use them.
+    [TestMethod]
+    public void Catalog_LeavesOutTheRetiredTemplates()
+    {
+        var codes = AiVideoPromptCompiler.Catalog().Select(item => item.Code).ToArray();
+
+        codes.Should().BeEquivalentTo("cinematic_product_showcase", "macro_detail_reveal", "lifestyle_in_use");
+        codes.Should().NotContain(AiVideoPromptCompiler.RetiredTemplateCodes);
     }
 
     [TestMethod]
