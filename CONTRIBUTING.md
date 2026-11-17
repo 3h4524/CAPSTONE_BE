@@ -47,15 +47,15 @@ This guide defines the development workflow and coding conventions. Architecture
 
 ## Database-first schema workflow
 
-The schema changes only through Flyway migrations in [`migrations/`](migrations/README.md). Write the change as a new `V<yyyyMMddHHmm>__<what_it_does>.sql` file, open a pull request, and let CI apply it: every pull request replays all migrations on an empty database, and a push to the integration branch named in the repository variable `DEV_MIGRATION_BRANCH` applies it to the shared dev database. The dev logins cannot run DDL, so a schema change made by hand is refused.
-
-Once the migration is on the dev database, point `ConnectionStrings__DefaultConnection` in the ignored local `.env` at it and run from the solution root:
+The schema changes only through Flyway migrations in [`migrations/`](migrations/README.md). Write the change as a new `V<yyyyMMddHHmm>__<what_it_does>.sql` file and apply it to the shared dev database from the solution root, with `ConnectionStrings__DefaultConnection` in the ignored local `.env` pointing at your `dev_<name>` login:
 
 ```powershell
-./scripts/Scaffold-Database.ps1
+./scripts/Migrate-DevDb.ps1 -Scaffold
 ```
 
-The script reads the named connection from configuration and replaces only:
+It runs Flyway as `apcs_migrator` through `SET ROLE` and then `Scaffold-Database.ps1`. A plain `dev_<name>` session still cannot run DDL, so a schema change made by hand is refused. Every pull request also replays all migrations on an empty database, and a push to the integration branch named in the repository variable `DEV_MIGRATION_BRANCH` applies any migration nobody applied by hand.
+
+`Scaffold-Database.ps1` reads the named connection from configuration and replaces only:
 
 - `Domain/Entities/Generated`
 - `Infrastructure/Persistence/Generated`
