@@ -143,7 +143,7 @@ public sealed class BatchEndpointTests
 
         using var response = await account.Client.PostAsJsonAsync(
             Route,
-            new { name, description = "Duplicate" });
+            new { name, description = "Duplicate", defaultProductType = "tshirt" });
 
         await response.ShouldFailWithCodeAsync(HttpStatusCode.Conflict, "Batches.Duplicate");
     }
@@ -156,7 +156,7 @@ public sealed class BatchEndpointTests
 
         using var response = await account.Client.PutAsJsonAsync(
             $"{Route}/{Guid.NewGuid()}",
-            new { name = TestAccount.Unique("Missing") });
+            new { name = TestAccount.Unique("Missing"), defaultProductType = "tshirt" });
 
         await response.ShouldFailWithCodeAsync(HttpStatusCode.NotFound, "Batches.NotFound");
     }
