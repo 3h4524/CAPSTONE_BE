@@ -25,7 +25,9 @@ public sealed class AddBatchProductsTool(
     public override string Name => "add_batch_products";
 
     protected override string Description =>
-        "Prepare to add products to one of the user's batches. Each product needs a name, a product type, a niche and 1 to 13 keywords; write sensible ones from what the user asked when they are not given. The user must confirm.";
+        "Prepare to add products to one of the user's batches. Each product needs a name, a product type, a niche and 1 to 13 keywords; write sensible ones from what the user asked when they are not given. "
+        + "A batch makes one product line only (its productLine from list_batches): " + ProductLines.Summary
+        + ". Products of another line go into another batch. The user must confirm.";
 
     protected override string ParametersSchemaJson => Schema;
 
@@ -53,6 +55,9 @@ public sealed class AddBatchProductsTool(
         var batch = owned.Value.FirstOrDefault(item => item.Id == batchId);
         if (batch is null)
             return Result.Failure<AssistantPendingActionDraft>(Error.NotFound("BatchNotFound", "Batch not found. Use list_batches."));
+        if (batch.ProductLine is not { } line)
+            return Result.Failure<AssistantPendingActionDraft>(Error.Validation(
+                "This batch has no product type yet; the user must edit the batch and choose one before products are added."));
 
         var problems = new List<string>();
         var products = new List<SaveProductDto>();
@@ -66,6 +71,8 @@ public sealed class AddBatchProductsTool(
                 problems.Add($"product {index} has no name");
             else if (type is null || !ProductRules.Types.Contains(type))
                 problems.Add($"{name}: productType must be one of {string.Join(", ", ProductRules.Types)}");
+            else if (ProductLines.Of(type) != line)
+                problems.Add($"{name}: \"{batch.Name}\" is a {ProductLines.Label(line)} batch, so productType must be {string.Join(" or ", ProductLines.TypesOf(line))}");
             else if (string.IsNullOrWhiteSpace(niche))
                 problems.Add($"{name}: niche is required");
             else if (keywords.Length == 0)

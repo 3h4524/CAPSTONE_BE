@@ -63,20 +63,13 @@ Gemini__TextGeneration__Model=gemini-3.5-flash-lite
 Gemini__TextGeneration__FallbackModel=gemini-3.5-flash-lite
 PlanAiReview__Model=gemini-3.5-flash-lite
 PlanAiReview__FallbackModel=gemini-3.5-flash-lite
-MiniMax__ApiKey=${MINIMAX_API_KEY}
 Etsy__ApiKey=${ETSY_API_KEY}
 Etsy__SharedSecret=${ETSY_SHARED_SECRET}
 Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
 Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 
-SystemApiKeys__Ideogram__Keys=${IDEOGRAM_API_KEYS}
-SystemApiKeys__Ideogram__DailyLimitPerKey=500
-SystemApiKeys__Ideogram__MaxConcurrentPerKey=8
-SystemApiKeys__Ideogram__Strategy=rotate
-SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
-SystemApiKeys__MiniMax__DailyLimitPerKey=100
-SystemApiKeys__MiniMax__Strategy=rotate
+# The platform Ideogram and MiniMax keys are kept by an Admin at /admin/system-api-keys (in the database), not here.
 
 # The API makes the AI scenes of a render job before the media worker gets it (docs/VIDEO_WORKFLOWS.md, "AI scenes made by the API").
 # Keep MaxInFlight within what the MiniMax account allows at once; the media worker then only renders.

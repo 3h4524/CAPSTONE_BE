@@ -238,7 +238,7 @@ public sealed class AssistantStreamEndpointTests
         var client = _assistantHost!.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = TestAccount.SecureOrigin, AllowAutoRedirect = false });
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer", TestAuth.MintToken([TestAuth.SellerRole], account.UserId, account.Email));
-        using var batch = await client.PostAsJsonAsync("/api/batches", new { name = batchName, description = "Fixture batch" });
+        using var batch = await client.PostAsJsonAsync("/api/batches", new { name = batchName, description = "Fixture batch", defaultProductType = "tshirt" });
         batch.StatusCode.Should().Be(HttpStatusCode.OK, await batch.Content.ReadAsStringAsync());
         return client;
     }
