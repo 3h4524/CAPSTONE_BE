@@ -309,7 +309,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             input.Status = "succeeded";
             input.Progress = 100;
         }
-        var result = await listingContent.GenerateAsync(run.ProductId, ct);
+        var result = await listingContent.GetOrGenerateAsync(run.ProductId, ct);
         listing.UpdatedAt = time.GetUtcNow().UtcDateTime;
         if (result.IsFailure)
         {

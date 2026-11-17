@@ -126,6 +126,83 @@ public sealed class ListingContentServiceTests
         result.Error.Code.Should().Be("Plan.AllowanceReached");
     }
 
+    private const string Answered = """{"title":"Road trip tee","description":"A soft tee.","tags":[{"value":"tag 1","type":"primary"},{"value":"tag 2","type":"primary"},{"value":"tag 3","type":"primary"},{"value":"tag 4","type":"primary"},{"value":"tag 5","type":"primary"},{"value":"tag 6","type":"primary"},{"value":"tag 7","type":"primary"},{"value":"tag 8","type":"primary"},{"value":"tag 9","type":"primary"},{"value":"tag 10","type":"primary"},{"value":"tag 11","type":"primary"},{"value":"tag 12","type":"primary"},{"value":"tag 13","type":"primary"}]}""";
+
+    private readonly List<ListingContentEntity> listingRows = [];
+    private readonly List<ListingTitle> titleRows = [];
+    private readonly List<ListingDescription> descriptionRows = [];
+    private readonly List<ListingTag> tagRows = [];
+    private readonly List<ListingGenerationHistory> historyRows = [];
+    private readonly List<DesignImage> designRows = [];
+
+    /// <summary>A listing already written, from <paramref name="promptUsed"/>.</summary>
+    private void Listed(string promptUsed, bool userEdited = false)
+    {
+        var listing = new ListingContentEntity { Id = Guid.NewGuid(), ProductId = product.Id, AiModelUsed = "gemini", ModelVersion = "text-model", ApprovalStatus = "pending" };
+        product.ListingContent = listing;
+        listingRows.Add(listing);
+        titleRows.Add(new() { Id = Guid.NewGuid(), ListingContentId = listing.Id, AiGeneratedTitle = "Old title", CurrentTitle = userEdited ? "My title" : "Old title", IsUserEdited = userEdited, VersionNumber = 1 });
+        descriptionRows.Add(new() { Id = Guid.NewGuid(), ListingContentId = listing.Id, AiGeneratedDescription = "Old.", CurrentDescription = "Old.", StructureFollowed = "default", VersionNumber = 1 });
+        tagRows.Add(new() { Id = Guid.NewGuid(), ListingContentId = listing.Id, VersionNumber = 1 });
+        historyRows.Add(new() { Id = Guid.NewGuid(), ListingContentId = listing.Id, GenerationNumber = 1, PromptUsed = promptUsed, RawAiResponse = "{}", UserAction = "generated" });
+    }
+
+    private string PromptFor(Product row) => APCS.Application.Features.ListingContent.ListingPromptBuilder.Build(new(
+        row.Id, row.Name, row.ProductType, row.NicheCategory, row.TargetAudience, row.InputDescription, [], row.Notes, row.DesiredDesignText, null), [], []);
+
+    [TestMethod]
+    public async Task GenerateAsync_PutsTheDesignTextAndTheApprovedDesignsPromptInThePrompt()
+    {
+        product.DesiredDesignText = "Not all who wander are lost";
+        designRows.Add(new() { Id = Guid.NewGuid(), ProductId = product.Id, ApprovalStatus = "approved", IsFinal = true,
+            AiPrompt = new() { GeneratedPrompt = "retro sunset over pine mountains", OriginalDescription = "", SystemPrompt = "" },
+            ImageGeneratorModel = "m", StorageProvider = "s", StorageKey = "k", ImageUrl = "u", FileFormat = "png" });
+        Answer(Answered);
+
+        await Service().GenerateAsync(product.Id);
+
+        generator.Verify(x => x.GenerateAsync(It.Is<GeminiTextGenerationRequest>(request =>
+            request.Prompt.Contains("Text printed on the design: Not all who wander are lost")
+            && request.Prompt.Contains("Artwork: retro sunset over pine mountains")), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GetOrGenerateAsync_AListingWrittenFromTheProductAsItIs_IsReusedWithoutGeminiOrAllowance()
+    {
+        Listed(PromptFor(product));
+        var free = TestEntitlements.Free();
+        free.AllowancesUsedUp.Add(UsageAllowances.Listings);
+
+        var result = await Service(free).GetOrGenerateAsync(product.Id);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        result.Value.Title.Should().Be("Old title");
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GetOrGenerateAsync_AListingTheSellerEdited_IsKept()
+    {
+        Listed("a prompt for other details", userEdited: true);
+
+        var result = await Service().GetOrGenerateAsync(product.Id);
+
+        result.Value.Title.Should().Be("My title");
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GetOrGenerateAsync_AProductWhoseDesignTextChanged_IsWrittenAgain()
+    {
+        Listed(PromptFor(product));
+        product.DesiredDesignText = "Explore more";
+        Answer(Answered);
+
+        await Service().GetOrGenerateAsync(product.Id);
+
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private ListingContentService Service(TestEntitlements? entitlements = null)
     {
         var user = new Mock<ICurrentUser>();
@@ -137,13 +214,17 @@ public sealed class ListingContentServiceTests
         policy.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>())).ReturnsAsync([]);
         var listing = new Mock<IListingContextRetriever>();
         listing.Setup(x => x.SearchAsync(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<string?>())).ReturnsAsync([]);
-        // No listing yet, so generating is a first listing rather than a regeneration.
-        var listings = new Mock<IRepository<ListingContentEntity>>();
-        listings.Setup(x => x.Query()).Returns(Array.Empty<ListingContentEntity>().AsQueryable().BuildMock());
-        return new(user.Object, products.Object, listings.Object, Mock.Of<IRepository<ListingTitle>>(),
-            Mock.Of<IRepository<ListingDescription>>(), Mock.Of<IRepository<ListingTag>>(), Mock.Of<IRepository<ListingTagItem>>(),
-            Mock.Of<IRepository<ListingGenerationHistory>>(), Mock.Of<IRepository<SeoScore>>(), Mock.Of<IRepository<ApiUsageRecord>>(),
+        // Without Listed(), there is no listing yet, so generating is a first listing rather than a regeneration.
+        static Mock<IRepository<T>> Rows<T>(List<T> rows) where T : class
+        {
+            var repository = new Mock<IRepository<T>>();
+            repository.Setup(x => x.Query()).Returns(() => rows.AsQueryable().BuildMock());
+            return repository;
+        }
+        return new(user.Object, products.Object, Rows(listingRows).Object, Rows(titleRows).Object,
+            Rows(descriptionRows).Object, Rows(tagRows).Object, Rows(new List<ListingTagItem>()).Object,
+            Rows(historyRows).Object, Mock.Of<IRepository<SeoScore>>(), Mock.Of<IRepository<ApiUsageRecord>>(),
             Mock.Of<IRagService>(), policy.Object, listing.Object, generator.Object, unitOfWork.Object, TimeProvider.System, NullLogger<ListingContentService>.Instance,
-            entitlements ?? TestEntitlements.AllowAll());
+            entitlements ?? TestEntitlements.AllowAll(), Rows(designRows).Object);
     }
 }

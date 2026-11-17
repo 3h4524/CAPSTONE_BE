@@ -234,12 +234,12 @@ internal sealed class WorkflowTestData
     }
 
     public void ListingSucceeds() => ListingContent
-        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
-        .ReturnsAsync((Guid productId, CancellationToken _, ListingSeoFeedbackDto? _) => Result.Success(
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        .ReturnsAsync((Guid productId, CancellationToken _) => Result.Success(
             new ListingContentResponseDto(productId, Guid.NewGuid(), "Vintage road trip tee", "A soft tee.", [], 1, "text-model", Now.UtcDateTime)));
 
     public void ListingFails(string message) => ListingContent
-        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
         .ReturnsAsync(Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", message)));
 
     public MockupImage AddAsset(Product product, string role = "Hero")
