@@ -302,6 +302,10 @@ public static class DependencyInjection
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketResearchSyncWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.VideoQualityWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MediaStreamDispatcher>();
+        // The API makes the AI scenes of render jobs before the media worker gets them; off, the worker makes them itself.
+        services.AddOptions<APCS.Application.Features.Workflows.AiClipPhaseSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiClipPhaseSettings.SectionName));
+        services.AddHostedService<APCS.Infrastructure.BackgroundServices.AiClipPhaseWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();

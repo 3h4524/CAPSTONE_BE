@@ -91,6 +91,14 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
             .Take(limit)
             .ToListAsync(ct);
 
+    public async Task<IReadOnlyList<ClipPhaseJob>> FindClipPhaseJobsAsync(int limit, CancellationToken ct) =>
+        await db.MediaJobs.AsNoTracking()
+            .Where(job => job.Kind == "render" && job.Status == "generating_clips")
+            .OrderBy(job => job.AvailableAt).ThenBy(job => job.Id)
+            .Select(job => new ClipPhaseJob(job.Id, job.WorkflowRunId, job.UserId, job.Payload, job.WorkflowRun.Status))
+            .Take(limit)
+            .ToListAsync(ct);
+
     public Task<bool> HasMediaWorkInFlightAsync(DateTime updatedSince, CancellationToken ct) =>
         db.MediaJobs.AsNoTracking().AnyAsync(job => (job.Kind == "render" || job.Kind == "export_zip")
             && (job.Status == "queued" || job.Status == "leased") && job.UpdatedAt >= updatedSince, ct);

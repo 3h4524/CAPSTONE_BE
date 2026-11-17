@@ -128,6 +128,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
         services.AddScoped<Features.Workflows.IAiShotQuoteService, Features.Workflows.AiShotQuoteService>();
         services.AddScoped<Features.Workflows.IAiShotJobService, Features.Workflows.AiShotJobService>();
+        services.AddScoped<Features.Workflows.IAiClipPhaseService, Features.Workflows.AiClipPhaseService>();
         services.AddScoped<APCS.Application.Abstractions.AI.IAiVideoGenerationStrategyFactory, Features.Workflows.AiVideoGenerationStrategyFactory>();
         services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();

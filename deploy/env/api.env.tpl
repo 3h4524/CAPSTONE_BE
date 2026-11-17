@@ -78,6 +78,12 @@ SystemApiKeys__MiniMax__Keys=${MINIMAX_API_KEYS}
 SystemApiKeys__MiniMax__DailyLimitPerKey=100
 SystemApiKeys__MiniMax__Strategy=rotate
 
+# The API makes the AI scenes of a render job before the media worker gets it (docs/VIDEO_WORKFLOWS.md, "AI scenes made by the API").
+# Keep MaxInFlight within what the MiniMax account allows at once; the media worker then only renders.
+AiVideo__ClipPhase__Enabled=false
+AiVideo__ClipPhase__MaxInFlight=3
+AiVideo__ClipPhase__MaxInFlightPerUser=2
+
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
 VideoQuality__AutoEvaluate=false
