@@ -133,7 +133,9 @@ older tag selected as the ref (images are reused, migrations already applied are
 `deploy/scripts/rollback.sh api` on the VM.
 
 The repository variable `DEV_MIGRATION_BRANCH` names the integration branch whose pushes migrate the
-shared dev database (`migrate-dev.yml`). No GitHub secret is needed.
+shared dev database (`migrate-dev.yml`). No GitHub secret is needed. Developers also apply
+migrations to it themselves with `scripts/Migrate-DevDb.ps1`, so both paths ignore applied
+migrations missing from the branch.
 
 ### Security gate
 
@@ -179,14 +181,19 @@ reload.
 
 ## Databases and roles
 
-Each Postgres container runs `deploy/postgres/init/01-roles.sh` on first start:
+Each Postgres container runs `deploy/postgres/init/01-roles.sh` on first start; the dev database
+also runs `02-dev-ddl-guard.sh`, which adds the `apcs_guard_dev_ddl` event trigger (function in
+schema `apcs_ops`, kept out of `public` so Flyway still sees an empty schema) refusing DDL from
+`dev_<name>` sessions that do not come from `scripts/Migrate-DevDb.ps1`. A plain `pg_dump` of the
+dev database carries the schema and the trigger along; on production it never fires because no
+`dev_<name>` login exists there, and `DROP EVENT TRIGGER apcs_guard_dev_ddl` removes it.
 
 | Role | Rights | Used by |
 |---|---|---|
 | `postgres` | superuser | operators, from inside the VM |
 | `apcs_migrator` | owns the database, DDL | Flyway |
 | `apcs_app` (prod) | read/write data | the API |
-| `dev_rw` (dev) + `dev_<name>` logins | read/write data | developers, created with `deploy/scripts/pg-dev-user.sh add <name>` |
+| `dev_rw` (dev) + `dev_<name>` logins | read/write data; member of `apcs_migrator` with `SET` only, so Flyway can `SET ROLE` to migrate | developers, created with `deploy/scripts/pg-dev-user.sh add <name>` |
 | `apcs_backup` | `pg_read_all_data` | the backup container |
 
 Schema changes follow [`migrations/README.md`](../migrations/README.md).

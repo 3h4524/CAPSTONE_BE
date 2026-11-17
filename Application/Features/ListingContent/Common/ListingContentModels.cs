@@ -1,5 +1,10 @@
 namespace APCS.Application.Features.ListingContent.Common;
 
+/// <param name="DesignText">The words printed on the design, as the seller wrote them; buyers search for them.</param>
+/// <param name="DesignPrompt">
+/// The prompt the approved design image was made from (or the seller's own prompt): its subject and style, not facts
+/// about the product.
+/// </param>
 public sealed record ListingContentInput(
     Guid ProductId,
     string Name,
@@ -8,7 +13,9 @@ public sealed record ListingContentInput(
     string? TargetAudience,
     string Description,
     IReadOnlyList<string> Keywords,
-    string? Notes);
+    string? Notes,
+    string? DesignText = null,
+    string? DesignPrompt = null);
 
 public sealed record GeneratedListingContent(
     string Title,

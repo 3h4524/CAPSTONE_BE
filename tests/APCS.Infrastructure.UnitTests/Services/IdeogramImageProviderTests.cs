@@ -239,6 +239,35 @@ public sealed class IdeogramImageProviderTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_TooManyImagesAtOnceEveryTime_SaysTheKeyIsBusy_WithoutStoppingTheJob()
+    {
+        var provider = Provider(request => request.Method == HttpMethod.Post
+            ? Json(HttpStatusCode.TooManyRequests, """{"error":"Too many requests.","reject_reason":"inflight_limit"}""")
+            : Answer(request));
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        result.IsSuccess.Should().BeFalse();
+        result.KeyBusy.Should().BeTrue();
+        result.StopsJob.Should().BeFalse("the account is fine, only busy for a few seconds");
+        result.ErrorMessage.Should().Be("Ideogram returned 429: Too many requests.");
+        sent.Should().HaveCount(3, "the first request and two more after waiting");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_InternalErrorEveryTime_IsAFailure_NotABusyKey()
+    {
+        var provider = Provider(_ => Json(HttpStatusCode.InternalServerError, """{"error":"Internal server error."}"""));
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1");
+
+        // Ideogram itself is failing: another key would meet the same.
+        result.KeyBusy.Should().BeFalse();
+        result.StopsJob.Should().BeFalse();
+        result.ErrorMessage.Should().StartWith("Ideogram returned 500");
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_InternalErrorOnce_TriesAgainAndSucceeds()
     {
         var calls = 0;

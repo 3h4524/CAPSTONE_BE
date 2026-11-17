@@ -100,7 +100,7 @@ public sealed class SellerDashboardEndpointTests
 
     private static async Task AddProductAsync(HttpClient client)
     {
-        using var created = await client.PostAsJsonAsync("/api/batches", new { name = TestAccount.Unique("Batch"), description = "Fixture batch" });
+        using var created = await client.PostAsJsonAsync("/api/batches", new { name = TestAccount.Unique("Batch"), description = "Fixture batch", defaultProductType = "tshirt" });
         created.StatusCode.Should().Be(HttpStatusCode.OK, "the fixture batch must be created");
         var batchId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
 

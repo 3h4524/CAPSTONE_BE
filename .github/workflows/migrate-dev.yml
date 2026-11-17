@@ -58,7 +58,7 @@ jobs:
           FLYWAY_PASSWORD="$(gcloud secrets versions access latest --secret apcs-dev-migrator-password --project "$GCP_PROJECT")"
           echo "::add-mask::$FLYWAY_PASSWORD"
           export FLYWAY_PASSWORD FLYWAY_USER=apcs_migrator FLYWAY_URL="jdbc:postgresql://127.0.0.1:15432/apcs?sslmode=require"
-          ./deploy/scripts/flyway.sh migrate
+          ./deploy/scripts/flyway.sh migrate -ignoreMigrationPatterns='*:missing,*:future'
           {
             echo "### Dev database after migrating \`${GITHUB_REF_NAME}\`"
             echo '```'

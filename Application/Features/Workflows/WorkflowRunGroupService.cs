@@ -567,7 +567,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         // A job of a cancelled run is no longer leased or claimed: the worker's next heartbeat finds the run cancelled.
         foreach (var run in changed)
         {
-            foreach (var job in await mediaJobs.FindAsync(x => x.WorkflowRunId == run.Id && (x.Status == "queued" || x.Status == "leased"), ct))
+            foreach (var job in await mediaJobs.FindAsync(x => x.WorkflowRunId == run.Id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus), ct))
             { job.Status = "cancelled"; job.LeaseToken = null; }
             if (videos is not null) await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct);
         }

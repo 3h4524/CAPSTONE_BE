@@ -258,9 +258,13 @@ public sealed record VideoQualityJobPayload(Guid VideoId, int? SceneOrder = null
 /// <param name="Resubmissions">How often the scene was sent again after Google dropped a clip without charging for it.</param>
 /// <param name="KeyId">The platform key the operation was started with, which its progress is asked with too; null for a
 /// Seller's own key or a scene started before the platform had several keys.</param>
+/// <param name="SubmittedAt">When the provider accepted the scene. The API makes the clips of a job in
+/// <c>generating_clips</c> and gives a scene up this long after it, and asks about it only once it has had time to finish.</param>
+/// <param name="NextAttemptAt">When a scene the provider could not take for now (over quota, overloaded) is sent again.</param>
+/// <param name="BusyAttempts">How often the provider could not take the scene for now.</param>
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
     string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0,
-    string? KeyId = null);
+    string? KeyId = null, DateTime? SubmittedAt = null, DateTime? NextAttemptAt = null, int BusyAttempts = 0);
 /// <param name="TargetSceneOrder">The one scene selected for an isolated generation or regeneration. Stored clips for the other scenes remain reusable.</param>
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates,
     int? TargetSceneOrder = null);

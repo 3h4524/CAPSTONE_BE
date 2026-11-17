@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanChangeLog, Features.Admin.SubscriptionPlans.PlanChangeLog>();
         services.AddScoped<Features.Entitlements.IFeatureCatalog, Features.Entitlements.FeatureCatalog>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IFeatureCatalogAdminService, Features.Admin.SubscriptionPlans.FeatureCatalogAdminService>();
+        services.AddScoped<Features.Admin.SystemApiKeys.ISystemApiKeyAdminService, Features.Admin.SystemApiKeys.SystemApiKeyAdminService>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanFeatureAssignmentService, Features.Admin.SubscriptionPlans.PlanFeatureAssignmentService>();
         services.AddScoped<Features.Entitlements.IPlanEntitlementService, Features.Entitlements.PlanEntitlementService>();
         services.AddScoped<Features.Entitlements.IUsageAllowanceService, Features.Entitlements.UsageAllowanceService>();
@@ -128,6 +129,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Workflows.IVideoPlanningService, Features.Workflows.VideoPlanningService>();
         services.AddScoped<Features.Workflows.IAiShotQuoteService, Features.Workflows.AiShotQuoteService>();
         services.AddScoped<Features.Workflows.IAiShotJobService, Features.Workflows.AiShotJobService>();
+        services.AddScoped<Features.Workflows.IAiClipPhaseService, Features.Workflows.AiClipPhaseService>();
         services.AddScoped<APCS.Application.Abstractions.AI.IAiVideoGenerationStrategyFactory, Features.Workflows.AiVideoGenerationStrategyFactory>();
         services.AddScoped<Features.Workflows.Validators.SaveWorkflowValidator>();
         services.AddScoped<Features.Workflows.Validators.GenerateVideoConfigValidator>();

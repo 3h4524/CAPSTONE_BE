@@ -64,7 +64,8 @@ internal sealed class WorkflowTestData
     public MockupAssetService MockupService { get; }
     public VideoArtifactService ArtifactService { get; }
 
-    public WorkflowTestData()
+    /// <param name="clipPhase">When given, the runtime holds new AI render jobs in generating_clips while the API makes their scenes.</param>
+    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null)
     {
         Workflows = Repository(WorkflowRows, x => x.Id);
         Runs = Repository(RunRows, x => x.Id);
@@ -111,7 +112,8 @@ internal sealed class WorkflowTestData
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
-            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time);
+            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time,
+            clipPhase: clipPhase is null ? null : Microsoft.Extensions.Options.Options.Create(clipPhase));
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
@@ -232,12 +234,12 @@ internal sealed class WorkflowTestData
     }
 
     public void ListingSucceeds() => ListingContent
-        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
-        .ReturnsAsync((Guid productId, CancellationToken _, ListingSeoFeedbackDto? _) => Result.Success(
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        .ReturnsAsync((Guid productId, CancellationToken _) => Result.Success(
             new ListingContentResponseDto(productId, Guid.NewGuid(), "Vintage road trip tee", "A soft tee.", [], 1, "text-model", Now.UtcDateTime)));
 
     public void ListingFails(string message) => ListingContent
-        .Setup(x => x.GenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<ListingSeoFeedbackDto?>()))
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
         .ReturnsAsync(Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", message)));
 
     public MockupImage AddAsset(Product product, string role = "Hero")

@@ -40,6 +40,7 @@ GRANT pg_read_all_data TO apcs_backup;
 CREATE ROLE :"runtime_role" LOGIN PASSWORD :'app_password';
 \else
 CREATE ROLE :"runtime_role" NOLOGIN;
+GRANT apcs_migrator TO :"runtime_role" WITH INHERIT FALSE, SET TRUE;
 \endif
 
 ALTER DATABASE :"db" OWNER TO apcs_migrator;

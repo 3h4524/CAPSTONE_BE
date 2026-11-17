@@ -1,8 +1,14 @@
 # Database migrations (Flyway)
 
 Every schema or catalog-data change is a SQL file in this folder. Nobody changes the shared dev
-database or production by hand: the dev logins have no DDL rights, and only the `apcs_migrator`
-role used by CI can create, alter, or drop objects.
+database or production by hand: only the `apcs_migrator` role can create, alter, or drop objects.
+The `dev_<name>` logins hold `apcs_migrator` with `SET` but not `INHERIT`, so a plain session has
+data rights only and a hand-written `ALTER TABLE` is refused, while Flyway started by
+`scripts/Migrate-DevDb.ps1` switches to `apcs_migrator` and can apply migrations. On the dev
+database an event trigger (`deploy/postgres/init/02-dev-ddl-guard.sh`) also refuses any DDL from a
+`dev_<name>` session whose `application_name` does not start with `Flyway`, so a manual
+`SET ROLE apcs_migrator` in a SQL client fails with a message pointing here. The script sets
+`ApplicationName=Flyway-Migrate-DevDb`; the check guards against mistakes, not against intent.
 
 ## Writing a migration
 
@@ -17,7 +23,19 @@ role used by CI can create, alter, or drop objects.
    release). The database is never rolled back; only the application image is.
 4. Seed or catalog data belongs here too, written idempotently
    (`INSERT ... ON CONFLICT DO NOTHING`).
-5. `V1__baseline.sql` is the schema of the last Neon dump (2026-10-29) with every later
+5. Apply it to the shared dev database yourself and regenerate the entities in one go:
+
+   ```powershell
+   ./scripts/Migrate-DevDb.ps1 -Scaffold
+   ```
+
+   The script reads `ConnectionStrings__DefaultConnection` from the local `.env` (your `dev_<name>`
+   login), runs Flyway in Docker with `SET ROLE apcs_migrator`, records your login as
+   `installed_by`, and then runs `Scaffold-Database.ps1`. `-Command info` shows what is applied.
+   Once a migration is on the dev database it is shared with everyone: do not edit it afterwards
+   (write a new one), and if a branch is abandoned, write a migration that undoes its changes. If a
+   file was edited anyway, `-Command repair` realigns the stored checksum.
+6. `V1__baseline.sql` is the schema of the last Neon dump (2026-10-29) with every later
    `scripts/sql` delta applied, checked column for column against the EF model; it keeps the
    check constraints and expression indexes the EF model cannot express. `V2__seed_catalog.sql`
    holds the system catalog (roles, plans, features, allowances, system templates and presets,
@@ -31,11 +49,15 @@ role used by CI can create, alter, or drop objects.
 | When | Database | How |
 |---|---|---|
 | Every pull request | empty `pgvector/pgvector:pg18` | `backend-ci.yml` job `migrations` applies all files from scratch |
+| A developer runs `scripts/Migrate-DevDb.ps1` | shared dev database | Flyway in Docker, as the developer's login with `SET ROLE apcs_migrator` |
 | Push to the branch in the repository variable `DEV_MIGRATION_BRANCH` | shared dev database | `migrate-dev.yml` |
 | Release tag on `production` | production | `deploy-prod.yml`, after a pre-deploy backup and before the new API starts |
 
-After a migration reaches the dev database, regenerate the entities with
-`./scripts/Scaffold-Database.ps1` and commit them in the same pull request.
+Both dev paths ignore applied migrations whose file is not on the branch being migrated
+(`ignoreMigrationPatterns = *:missing,*:future`), because a developer may apply a migration before
+its pull request is merged. Production keeps the strict default.
+
+Commit the regenerated entities in the same pull request as the migration.
 
 ## Running Flyway by hand
 

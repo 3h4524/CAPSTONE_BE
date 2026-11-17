@@ -35,8 +35,45 @@ public sealed class ListingContentService(
     IUnitOfWork unitOfWork,
     TimeProvider timeProvider,
     ILogger<ListingContentService> logger,
-    IPlanEntitlementService entitlements) : IListingContentService
+    IPlanEntitlementService entitlements,
+    IRepository<DesignImage>? designs = null) : IListingContentService
 {
+    /// <summary>Longest design text and artwork prompt put in the listing prompt.</summary>
+    internal const int MaxDesignTextLength = 200, MaxDesignPromptLength = 600;
+
+    public async Task<Result<ListingContentResponseDto>> GetOrGenerateAsync(Guid productId, CancellationToken cancellationToken = default)
+    {
+        if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid userId)
+            return Result.Failure<ListingContentResponseDto>(Error.Unauthorized("ListingContent.Unauthenticated", "Please sign in to generate listing content."));
+        var product = await products.Query()
+            .Where(item => item.Id == productId && item.UserId == userId && item.DeletedAt == null)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (product is null)
+            return Result.Failure<ListingContentResponseDto>(Error.NotFound("ListingContent.ProductNotFound", "The product was not found."));
+
+        var listingId = await listings.Query().Where(item => item.ProductId == productId).Select(item => (Guid?)item.Id).SingleOrDefaultAsync(cancellationToken);
+        if (listingId is { } id && await IsCurrentAsync(id, await BuildInputAsync(product, cancellationToken), cancellationToken)
+            && await GetAsync(productId, cancellationToken) is { IsSuccess: true } current)
+            return current;
+        return await GenerateAsync(productId, cancellationToken);
+    }
+
+    /// <summary>
+    /// A listing the seller edited is theirs and is kept. Otherwise it is current when its last generation was written
+    /// from the product as it is now: same details, same design.
+    /// </summary>
+    private async Task<bool> IsCurrentAsync(Guid listingId, ListingContentInput input, CancellationToken cancellationToken)
+    {
+        var edited = await titles.Query().Where(item => item.ListingContentId == listingId).OrderByDescending(item => item.VersionNumber)
+                .Select(item => (bool?)item.IsUserEdited).FirstOrDefaultAsync(cancellationToken) == true
+            || await descriptions.Query().Where(item => item.ListingContentId == listingId).OrderByDescending(item => item.VersionNumber)
+                .Select(item => (bool?)item.IsUserEdited).FirstOrDefaultAsync(cancellationToken) == true;
+        if (edited) return true;
+        var prompt = await histories.Query().Where(item => item.ListingContentId == listingId).OrderByDescending(item => item.GenerationNumber)
+            .Select(item => item.PromptUsed).FirstOrDefaultAsync(cancellationToken);
+        return prompt is not null && ListingPromptBuilder.DescribesSameProduct(prompt, input);
+    }
+
     public async Task<Result<ListingContentResponseDto>> GenerateAsync(
         Guid productId,
         CancellationToken cancellationToken = default,
@@ -69,7 +106,7 @@ public sealed class ListingContentService(
         var capCheck = await entitlements.RequireDailyCapacityAsync(userId, PlanFeatures.DailyListingCap, cancellationToken: cancellationToken);
         if (capCheck.IsFailure) return Result.Failure<ListingContentResponseDto>(capCheck.Error);
 
-        var input = BuildInput(product);
+        var input = await BuildInputAsync(product, cancellationToken);
         var query = BuildRetrievalQuery(input);
         // Both retrievers share the request-scoped DbContext. Keep them sequential so a missing
         // pgvector extension or a slow RAG store cannot create concurrent DbContext operations.
@@ -226,7 +263,7 @@ public sealed class ListingContentService(
                 "ListingContent.ProductNotFound",
                 "The product was not found."));
 
-        var input = BuildInput(product);
+        var input = await BuildInputAsync(product, cancellationToken);
         var query = BuildRetrievalQuery(input);
         var stopwatch = Stopwatch.StartNew();
         var policyContext = await ragService.SearchWithDiagnosticsAsync(
@@ -371,18 +408,42 @@ Regeneration rules:
         ? []
         : value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(13).ToArray();
 
-    private static ListingContentInput BuildInput(Product product) => new(
-        product.Id,
-        product.Name,
-        product.ProductType,
-        product.NicheCategory,
-        product.TargetAudience,
-        product.InputDescription,
-        ParseKeywords(product.MainKeywords),
-        product.Notes);
+    /// <summary>
+    /// The product's details and its design: the words printed on it, and the prompt its approved design was made from
+    /// (the final design first, then the newest), else the seller's own prompt.
+    /// </summary>
+    private async Task<ListingContentInput> BuildInputAsync(Product product, CancellationToken cancellationToken)
+    {
+        string? artwork = null;
+        if (designs is not null)
+            artwork = await designs.Query()
+                .Where(image => image.ProductId == product.Id && image.DeletedAt == null && image.ApprovalStatus == "approved")
+                .OrderByDescending(image => image.IsFinal == true).ThenByDescending(image => image.CreatedAt)
+                .Select(image => image.AiPrompt.GeneratedPrompt)
+                .FirstOrDefaultAsync(cancellationToken);
+        return new(
+            product.Id,
+            product.Name,
+            product.ProductType,
+            product.NicheCategory,
+            product.TargetAudience,
+            product.InputDescription,
+            ParseKeywords(product.MainKeywords),
+            product.Notes,
+            Shorten(product.DesiredDesignText, MaxDesignTextLength),
+            Shorten(string.IsNullOrWhiteSpace(artwork) ? product.CustomPrompt : artwork, MaxDesignPromptLength));
+    }
+
+    /// <summary>One line of at most <paramref name="max"/> characters, or null when there is nothing.</summary>
+    private static string? Shorten(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var line = string.Join(' ', value.Split(['\r', '\n', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        return line.Length <= max ? line : line[..max].TrimEnd();
+    }
 
     private static string BuildRetrievalQuery(ListingContentInput input) =>
-        $"{input.Name}; {input.ProductType}; {input.Niche}; {input.TargetAudience}; {string.Join(", ", input.Keywords)}; {input.Description}; {input.Notes}";
+        $"{input.Name}; {input.ProductType}; {input.Niche}; {input.TargetAudience}; {string.Join(", ", input.Keywords)}; {input.Description}; {input.Notes}; {input.DesignText}";
 
     private static string NormalizeTagType(string? value) => value?.Trim().ToLowerInvariant() switch
     {

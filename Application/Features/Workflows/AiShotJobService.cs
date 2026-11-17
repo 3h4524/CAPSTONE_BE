@@ -23,6 +23,13 @@ public interface IAiShotJobService
     Task<Result<AiShotProgressResponse>> PollAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct);
     Task<Result<byte[]>> DownloadAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct);
     Task<Result> StoredAsync(Guid jobId, int sceneOrder, AiShotStoredRequest request, CancellationToken ct);
+
+    /// <summary>Submits a scene of a job whose clips the API makes itself (<c>generating_clips</c>), with no worker lease.</summary>
+    Task<Result<AiShotProgressResponse>> StartClipAsync(Guid jobId, int sceneOrder, CancellationToken ct);
+    /// <summary>Asks the provider how far a scene of a <c>generating_clips</c> job is.</summary>
+    Task<Result<AiShotProgressResponse>> PollClipAsync(Guid jobId, int sceneOrder, CancellationToken ct);
+    /// <summary>Downloads a finished scene of a <c>generating_clips</c> job and keeps it in private storage.</summary>
+    Task<Result> StoreClipAsync(Guid jobId, int sceneOrder, CancellationToken ct);
 }
 
 public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<MockupImage> assets,
@@ -35,13 +42,20 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
 
-    public async Task<Result<AiShotProgressResponse>> StartAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct)
+    public Task<Result<AiShotProgressResponse>> StartAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct) =>
+        StartCoreAsync(jobId, sceneOrder, request.LeaseToken, ct);
+
+    public Task<Result<AiShotProgressResponse>> StartClipAsync(Guid jobId, int sceneOrder, CancellationToken ct) =>
+        StartCoreAsync(jobId, sceneOrder, null, ct);
+
+    /// <param name="token">The worker's lease, or null when the API makes the clips of a <c>generating_clips</c> job itself.</param>
+    private async Task<Result<AiShotProgressResponse>> StartCoreAsync(Guid jobId, int sceneOrder, Guid? token, CancellationToken ct)
     {
         AiShotPlan shot;
         MediaJob job;
         await using (var tx = await uow.BeginTransactionAsync(ct))
         {
-            var loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
+            var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
             if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
             (job, var payload, var item) = loaded.Value;
             if (item.Status == "stored") return Result.Success(new AiShotProgressResponse("stored"));
@@ -67,7 +81,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             try { lease = await systemKeys.AcquireAsync(shot.ProviderKey, ct); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", null, CancellationToken.None);
+                await MarkAsync(jobId, sceneOrder, token, "pending", null, CancellationToken.None);
                 throw;
             }
             if (lease is null)
@@ -75,7 +89,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
                 var providerName = ProviderName(shot.ProviderKey);
                 var usedUp = $"{providerName} has made as many clips as the platform allows today. Try again tomorrow.";
                 logger?.LogWarning("AI scene {Scene} of job {Job} found every system {Provider} key used up for today", sceneOrder, jobId, providerName);
-                await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", usedUp, ct);
+                await MarkAsync(jobId, sceneOrder, token, "pending", usedUp, ct);
                 return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoDailyLimitReached", usedUp));
             }
         }
@@ -85,7 +99,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Nothing was sent: the scene is put back, or the next attempt would take it for a half-sent request.
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", null, CancellationToken.None);
+            await MarkAsync(jobId, sceneOrder, token, "pending", null, CancellationToken.None);
             throw;
         }
         catch (Exception ex)
@@ -95,7 +109,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             var missing = string.Equals(shot.ProviderKey, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase)
                 ? "AI video is temporarily unavailable because the system MiniMax API key is not configured."
                 : $"The connected {shot.ProviderKey} API key is missing or failed its last check. Reconnect it, then retry.";
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", missing, ct);
+            await MarkAsync(jobId, sceneOrder, token, "failed", missing, ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(missing));
         }
         // The last check before a paid request leaves: the prompt was checked when it was planned, so this is almost
@@ -109,7 +123,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             if (verdict.IsBlocked)
             {
                 var blocked = ModerationPolicy.BlockedMessage(verdict);
-                await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", blocked, ct);
+                await MarkAsync(jobId, sceneOrder, token, "failed", blocked, ct);
                 return Result.Failure<AiShotProgressResponse>(ModerationErrors.Blocked(verdict));
             }
         }
@@ -139,7 +153,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             };
             logger?.LogWarning("AI scene {Scene} of job {Job} was refused by {Provider} with status {Status}: {Detail}", sceneOrder, jobId, providerName, ex.StatusCode, ex.Detail);
             if (lease is not null) await lease.RefundAsync(CancellationToken.None);
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Detail == null ? busy : $"{busy} {providerName}: {ex.Detail}", ct);
+            await MarkAsync(jobId, sceneOrder, token, "pending", ex.Detail == null ? busy : $"{busy} {providerName}: {ex.Detail}", ct, token is null ? BusyDelay : null);
             return Result.Failure<AiShotProgressResponse>(Error.Failure(errorCode, busy));
         }
         catch (AiVideoProviderException ex)
@@ -159,7 +173,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
                 else await lease.RefundAsync(CancellationToken.None);
             }
             // Kept with the scene, so the run can show the seller what its provider said and not only that it refused.
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "failed", ex.Detail == null ? refusal : $"{refusal} {providerName}: {ex.Detail}", ct);
+            await MarkAsync(jobId, sceneOrder, token, "failed", ex.Detail == null ? refusal : $"{refusal} {providerName}: {ex.Detail}", ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(refusal));
         }
         catch (AiVideoNotSubmittedException ex)
@@ -168,7 +182,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             // worker has gone, or the scene would be left looking half-sent.
             logger?.LogWarning(ex, "AI scene {Scene} of job {Job} was not submitted", sceneOrder, jobId);
             if (lease is not null) await lease.RefundAsync(CancellationToken.None);
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "pending", ex.Message, CancellationToken.None);
+            await MarkAsync(jobId, sceneOrder, token, "pending", ex.Message, CancellationToken.None, token is null ? NotSubmittedDelay : null);
             return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoNotSubmitted", ex.Message));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -180,24 +194,31 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             var unknown = ex is AiVideoSubmissionUnknownException ? ex.Message
                 : ex is TaskCanceledException or TimeoutException ? $"{providerName} did not answer in time."
                 : $"The request to {providerName} broke off: {ex.Message}";
-            await MarkAsync(jobId, sceneOrder, request.LeaseToken, "submitting", unknown, CancellationToken.None);
+            await MarkAsync(jobId, sceneOrder, token, "submitting", unknown, CancellationToken.None);
             return Result.Failure<AiShotProgressResponse>(Error.Conflict("AiVideoSubmissionUncertain", "AI video submission failed or has an unknown result. Do not auto-retry this paid request."));
         }
         await using (var tx = await uow.BeginTransactionAsync(ct))
         {
-            var loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
+            var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
             if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
             (job, var payload, var item) = loaded.Value;
-            Replace(job, payload, item with { OperationName = operation, Status = "polling", KeyId = lease?.KeyId });
+            Replace(job, payload, item with { OperationName = operation, Status = "polling", KeyId = lease?.KeyId,
+                SubmittedAt = time.GetUtcNow().UtcDateTime, NextAttemptAt = null });
             await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
             if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         }
         return Result.Success(new AiShotProgressResponse("polling"));
     }
 
-    public async Task<Result<AiShotProgressResponse>> PollAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct)
+    public Task<Result<AiShotProgressResponse>> PollAsync(Guid jobId, int sceneOrder, AiShotLeaseRequest request, CancellationToken ct) =>
+        PollCoreAsync(jobId, sceneOrder, request.LeaseToken, ct);
+
+    public Task<Result<AiShotProgressResponse>> PollClipAsync(Guid jobId, int sceneOrder, CancellationToken ct) =>
+        PollCoreAsync(jobId, sceneOrder, null, ct);
+
+    private async Task<Result<AiShotProgressResponse>> PollCoreAsync(Guid jobId, int sceneOrder, Guid? token, CancellationToken ct)
     {
-        var loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
+        var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
         var (job, payload, item) = loaded.Value;
         if (item.Status is "stored" or "ready") return Result.Success(new AiShotProgressResponse(item.Status));
@@ -209,7 +230,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         catch { return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoProviderUnavailable", "Could not check AI video progress. Retry the status check.")); }
         if (!result.Done) return Result.Success(new AiShotProgressResponse("polling"));
         await using var tx = await uow.BeginTransactionAsync(ct);
-        loaded = await LoadAsync(jobId, sceneOrder, request.LeaseToken, ct);
+        loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
         (job, payload, item) = loaded.Value;
         var failure = result.Failure ?? "The video provider returned no video.";
@@ -255,13 +276,78 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         return Result.Success();
     }
 
-    private async Task<(MediaJob Job, AiRenderJobPayload Payload, AiShotJobState State)?> LoadAsync(Guid id, int sceneOrder, Guid token, CancellationToken ct)
+    /// <summary>The largest clip kept: the worker refuses anything bigger, and so does the render.</summary>
+    public const int MaximumClipBytes = 100 * 1024 * 1024;
+
+    public async Task<Result> StoreClipAsync(Guid jobId, int sceneOrder, CancellationToken ct)
+    {
+        // Read what to fetch first, so the provider and storage are not called while the job and run are locked.
+        AiShotPlan shot;
+        MediaJob job;
+        AiShotJobState item;
+        {
+            var loaded = await LoadAsync(jobId, sceneOrder, null, ct);
+            if (loaded == null) return Result.Failure(LeaseError());
+            (job, var payload, item) = loaded.Value;
+            if (item.Status == "stored") return Result.Success();
+            if (item.Status != "ready" || item.DownloadUri == null) return Result.Failure(Error.Conflict("NotReady", "AI Shot clip is not ready."));
+            shot = payload.Storyboard.AiShots!.Single(x => x.SceneOrder == sceneOrder);
+        }
+
+        byte[] bytes;
+        try { bytes = await ProviderFor(shot).DownloadAsync(await KeyAsync(job.UserId, shot.ProviderKey, ct, item.KeyId), item.DownloadUri!, ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "AI scene {Scene} of job {Job} could not be downloaded", sceneOrder, jobId);
+            return Result.Failure(Error.Failure("AiVideoDownloadFailed", "Could not download the completed AI video clip."));
+        }
+        if (bytes.Length == 0 || bytes.Length > MaximumClipBytes)
+            return Result.Failure(Error.Failure("AiVideoDownloadFailed", "The completed AI video clip has an invalid size."));
+
+        // A new key for every attempt: storage never overwrites, so a half-finished earlier upload must not be in the way.
+        var key = OutputKey(job, Guid.NewGuid(), sceneOrder);
+        string version;
+        try
+        {
+            await using var content = new MemoryStream(bytes, writable: false);
+            version = await storage.UploadVideoAsync(content, key, ct);
+            if (version.Length > 40 || !await storage.VerifyAsync(key, "video", version, null, ct))
+                return Result.Failure(Error.Failure("AiVideoStoreFailed", "The AI video clip could not be verified after it was stored."));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "AI scene {Scene} of job {Job} could not be stored", sceneOrder, jobId);
+            return Result.Failure(Error.Failure("AiVideoStoreFailed", "The AI video clip could not be stored."));
+        }
+
+        await using var tx = await uow.BeginTransactionAsync(ct);
+        var current = await LoadAsync(jobId, sceneOrder, null, ct);
+        if (current == null) return Result.Failure(LeaseError());
+        var (lockedJob, lockedPayload, lockedItem) = current.Value;
+        if (lockedItem.Status != "ready") return Result.Failure(Error.Conflict("NotReady", "AI Shot clip is not ready."));
+        Replace(lockedJob, lockedPayload, lockedItem with { Status = "stored", StorageKey = key, StorageVersion = version, DownloadUri = null });
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        if (sceneNotifier != null) await sceneNotifier.ChangedAsync(lockedJob.WorkflowRunId, ct);
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// The scene with its job and run locked. A worker passes its lease token and the job must be leased to it; the API
+    /// making the clips of a <c>generating_clips</c> job itself passes none. Either way the run must still be running.
+    /// </summary>
+    private async Task<(MediaJob Job, AiRenderJobPayload Payload, AiShotJobState State)?> LoadAsync(Guid id, int sceneOrder, Guid? token, CancellationToken ct)
     {
         var unlocked = await jobs.GetByIdAsync(id, ct);
         if (unlocked == null || unlocked.Kind != "render") return null;
         var run = await state.LockRunAsync(unlocked.WorkflowRunId, ct);
         var job = await state.LockJobAsync(id, ct);
-        if (job?.Status != "leased" || job.LeaseToken != token || job.LeaseExpiresAt <= time.GetUtcNow().UtcDateTime || run?.Status != "running") return null;
+        if (job is null || run?.Status != "running") return null;
+        var holdsIt = token is { } lease
+            ? job.Status == "leased" && job.LeaseToken == lease && job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime
+            : job.Status == AiClipPhase.JobStatus;
+        if (!holdsIt) return null;
         AiRenderJobPayload payload;
         try { payload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload); }
         catch (System.Text.Json.JsonException) { return null; }
@@ -271,13 +357,25 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
 
     private static void Replace(MediaJob job, AiRenderJobPayload payload, AiShotJobState state) =>
         job.Payload = WorkflowJson.Write(payload with { AiShotStates = payload.AiShotStates.Select(x => x.SceneOrder == state.SceneOrder ? state : x).ToArray() });
-    private async Task MarkAsync(Guid jobId, int sceneOrder, Guid token, string status, string? failure, CancellationToken ct)
+    /// <summary>How long a scene the provider could not take for now waits, by how often that has happened.</summary>
+    private static TimeSpan BusyDelay(int attempt) => TimeSpan.FromSeconds(70 * attempt);
+    private static TimeSpan NotSubmittedDelay(int attempt) => TimeSpan.FromSeconds(5 * attempt);
+
+    /// <param name="retryAfter">Counts this as one more time the provider could not take the scene, and says when it is sent again.</param>
+    private async Task MarkAsync(Guid jobId, int sceneOrder, Guid? token, string status, string? failure, CancellationToken ct,
+        Func<int, TimeSpan>? retryAfter = null)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
         var loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return;
         var (job, payload, item) = loaded.Value;
-        Replace(job, payload, item with { Status = status, Failure = failure });
+        var next = item with { Status = status, Failure = failure };
+        if (retryAfter is not null)
+        {
+            var attempts = item.BusyAttempts + 1;
+            next = next with { BusyAttempts = attempts, NextAttemptAt = time.GetUtcNow().UtcDateTime + retryAfter(attempts) };
+        }
+        Replace(job, payload, next);
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
     }
