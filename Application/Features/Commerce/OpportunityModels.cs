@@ -176,6 +176,13 @@ internal sealed record SellerMarketInsightResponse(
 
 public sealed record UpdateSellerOpportunityStateRequest(string State);
 
+/// <summary>What the Seller's plan opens of the radar, for the page to show what is locked.</summary>
+/// <param name="Full">The whole radar is open.</param>
+/// <param name="VisibleOpportunities">How many opportunities are shown without the whole radar; null when all are.</param>
+/// <param name="TotalOpportunities">How many opportunities the radar ranked for the Seller.</param>
+/// <param name="AnalysesPerDay">Most AI analyses a day; null for no cap, 0 when locked.</param>
+public sealed record MarketRadarAccessResponse(bool Full, int? VisibleOpportunities, int TotalOpportunities, int? AnalysesPerDay, int AnalysesUsedToday);
+
 public interface IOpportunityService
 {
     Task<SellerResearchProfileResponse> GetProfileAsync(CancellationToken cancellationToken = default);
@@ -188,4 +195,7 @@ public interface IOpportunityService
     Task<IReadOnlyList<SellerOpportunityResponse>> ListAsync(string? state = null, int limit = 50, CancellationToken cancellationToken = default);
     Task<SellerOpportunityResponse?> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<SellerOpportunityResponse?> UpdateStateAsync(Guid id, string state, CancellationToken cancellationToken = default);
+
+    /// <summary>What the Seller's plan opens of the radar.</summary>
+    Task<MarketRadarAccessResponse> GetAccessAsync(CancellationToken cancellationToken = default);
 }

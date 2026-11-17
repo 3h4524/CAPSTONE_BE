@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanChangeLog, Features.Admin.SubscriptionPlans.PlanChangeLog>();
         services.AddScoped<Features.Entitlements.IFeatureCatalog, Features.Entitlements.FeatureCatalog>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IFeatureCatalogAdminService, Features.Admin.SubscriptionPlans.FeatureCatalogAdminService>();
+        services.AddScoped<Features.Admin.SystemApiKeys.ISystemApiKeyAdminService, Features.Admin.SystemApiKeys.SystemApiKeyAdminService>();
         services.AddScoped<Features.Admin.SubscriptionPlans.IPlanFeatureAssignmentService, Features.Admin.SubscriptionPlans.PlanFeatureAssignmentService>();
         services.AddScoped<Features.Entitlements.IPlanEntitlementService, Features.Entitlements.PlanEntitlementService>();
         services.AddScoped<Features.Entitlements.IUsageAllowanceService, Features.Entitlements.UsageAllowanceService>();
@@ -183,6 +184,7 @@ public static class DependencyInjection
         services.AddScoped<IMarketInsightsService, MarketInsightsService>();
         services.AddScoped<IOpportunityService, OpportunityService>();
         services.AddScoped<IOpportunityAnalysisService, OpportunityAnalysisService>();
+        services.AddScoped<IMarketRadarAccess, MarketRadarAccess>();
         services.AddScoped<ITranslationService, TranslationService>();
         services.AddScoped<IRagBenchmarkService, RagBenchmarkService>();
 

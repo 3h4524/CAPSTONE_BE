@@ -56,14 +56,8 @@ public static class ConfigurationSections
     /// <summary>The Google Gemini image generation options section.</summary>
     public const string Gemini = "Gemini";
 
-    /// <summary>The system-owned MiniMax video generation options section.</summary>
-    public const string MiniMax = "MiniMax";
-
     /// <summary>The Ideogram image generation options section.</summary>
     public const string Ideogram = "Ideogram";
-
-    /// <summary>The platform's own AI provider keys, used in turn up to a daily limit each.</summary>
-    public const string SystemApiKeys = "SystemApiKeys";
 
     /// <summary>The mock-up image processing options section.</summary>
     public const string Mockups = "Mockups";

@@ -1,3 +1,4 @@
+using APCS.Api.Extensions;
 using APCS.Application.Features.Commerce;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -9,7 +10,8 @@ namespace APCS.Api.Controllers;
 [Route("api/market-opportunities")]
 public sealed class MarketOpportunitiesController(
     IOpportunityService service,
-    IOpportunityAnalysisService analysisService) : ControllerBase
+    IOpportunityAnalysisService analysisService,
+    IMarketRadarAccess access) : ControllerBase
 {
     [HttpGet("profile")]
     public Task<SellerResearchProfileResponse> GetProfile(CancellationToken cancellationToken) =>
@@ -21,9 +23,19 @@ public sealed class MarketOpportunitiesController(
         CancellationToken cancellationToken) =>
         service.SaveProfileAsync(request, cancellationToken);
 
+    /// <summary>What the Seller's plan opens of the radar, so the page can show what is locked.</summary>
+    [HttpGet("access")]
+    public Task<MarketRadarAccessResponse> GetAccess(CancellationToken cancellationToken) =>
+        service.GetAccessAsync(cancellationToken);
+
+    /// <summary>Ranks the radar again now; without the whole radar at most once a day.</summary>
     [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh(CancellationToken cancellationToken) =>
-        Ok(await service.RefreshRankingAsync(cancellationToken));
+    public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
+    {
+        var allowed = await access.RequireRefreshAsync(cancellationToken);
+        if (allowed.IsFailure) return allowed.ToActionResult(this);
+        return Ok(await service.RefreshRankingAsync(cancellationToken));
+    }
 
     [HttpGet("insights")]
     public Task<IReadOnlyList<SellerNicheMarketInsightResponse>> GetInsights(
@@ -56,15 +68,14 @@ public sealed class MarketOpportunitiesController(
     }
 
     [HttpPost("{id:guid}/analyze")]
-    public async Task<IActionResult> Analyze(Guid id, CancellationToken cancellationToken)
-    {
-        var result = await analysisService.AnalyzeAsync(id, cancellationToken);
-        return result is null ? NotFound() : Ok(result);
-    }
+    public async Task<IActionResult> Analyze(Guid id, CancellationToken cancellationToken) =>
+        (await analysisService.AnalyzeAsync(id, cancellationToken)).ToActionResult(this);
 
     [HttpGet("{id:guid}/analysis/latest")]
     public async Task<IActionResult> GetLatestAnalysis(Guid id, CancellationToken cancellationToken)
     {
+        var allowed = await access.RequireFullAsync(cancellationToken);
+        if (allowed.IsFailure) return allowed.ToActionResult(this);
         var result = await analysisService.GetLatestAsync(id, cancellationToken);
         return result is null ? NotFound() : Ok(result);
     }

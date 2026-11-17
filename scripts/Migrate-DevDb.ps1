@@ -54,7 +54,7 @@ function ConvertFrom-NpgsqlConnectionString([string]$ConnectionString) {
     }
 
     return [pscustomobject]@{
-        Url      = "jdbc:postgresql://${hostName}:${port}/$($settings["database"])?sslmode=$sslMode"
+        Url      = "jdbc:postgresql://${hostName}:${port}/$($settings["database"])?sslmode=$sslMode&ApplicationName=Flyway-Migrate-DevDb"
         User     = $userName
         Password = $settings["password"]
     }

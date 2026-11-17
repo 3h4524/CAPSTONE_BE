@@ -2,14 +2,14 @@ using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Workflows;
-using APCS.Infrastructure.Options;
-using Microsoft.Extensions.Options;
 
 namespace APCS.Infrastructure.Services;
 
-/// <summary>Uses the platform MiniMax key while preserving per-owner credentials for legacy routes.</summary>
+/// <summary>
+/// Uses a platform MiniMax key (one an Admin keeps on the admin page) while preserving per-owner credentials for legacy
+/// routes.
+/// </summary>
 public sealed class AiVideoCredentialResolver(
-    IOptions<MiniMaxOptions> miniMax,
     IApiKeyRepository keys,
     IApiKeyCredentials credentials,
     ISystemApiKeyPool? systemKeys = null) : IAiVideoCredentialResolver
@@ -17,7 +17,7 @@ public sealed class AiVideoCredentialResolver(
     public async Task<string?> ResolveAsync(Guid ownerId, string providerKey, CancellationToken cancellationToken)
     {
         if (string.Equals(providerKey, AiVideoModel.ProviderKey, StringComparison.OrdinalIgnoreCase))
-            return Normalize(miniMax.Value.ApiKey) ?? Normalize(systemKeys?.AnyKey(AiVideoModel.ProviderKey));
+            return Normalize(systemKeys?.AnyKey(AiVideoModel.ProviderKey));
 
         var key = (await keys.ListOwnedAsync(ownerId, cancellationToken)).FirstOrDefault(candidate =>
             string.Equals(candidate.ServiceProvider.Trim(), providerKey, StringComparison.OrdinalIgnoreCase) &&

@@ -33,6 +33,8 @@ public static class PlanFeatures
     public const string WorkflowListing = "workflow_listing";
     public const string WorkflowPublish = "workflow_publish";
     public const string ZipExport = "zip_export";
+    public const string MarketRadarFull = "market_radar_full";
+    public const string DailyOpportunityAnalysisCap = "daily_opportunity_analysis_cap";
 
     /// <summary>Every feature an Admin can configure on a plan, in display order.</summary>
     public static readonly IReadOnlyList<PlanFeatureDefinition> All =
@@ -77,6 +79,10 @@ public static class PlanFeatures
             "Publish finished products to Etsy and Printify, once those steps are available."),
         new(ZipExport, "ZIP export", PlanFeatureKinds.Flag, "Workflow",
             "Download a finished product's files as a ZIP."),
+        new(MarketRadarFull, "Full Market Radar", PlanFeatureKinds.Flag, "Market Radar",
+            "Every opportunity of the radar with its niche's competitors, keywords, charts, action plan and risks, an on-demand refresh and the AI analysis. Without it a Seller sees the top three opportunities."),
+        new(DailyOpportunityAnalysisCap, "Daily opportunity analyses", PlanFeatureKinds.Limit, "Market Radar",
+            "Most AI analyses of opportunities a Seller asks for per day. An analysis whose evidence has not changed is reused and does not count. Leave empty for no cap."),
     ];
 
     /// <summary>

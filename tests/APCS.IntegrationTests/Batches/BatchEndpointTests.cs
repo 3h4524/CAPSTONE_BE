@@ -143,7 +143,7 @@ public sealed class BatchEndpointTests
 
         using var response = await account.Client.PostAsJsonAsync(
             Route,
-            new { name, description = "Duplicate" });
+            new { name, description = "Duplicate", defaultProductType = "tshirt" });
 
         await response.ShouldFailWithCodeAsync(HttpStatusCode.Conflict, "Batches.Duplicate");
     }
@@ -156,7 +156,7 @@ public sealed class BatchEndpointTests
 
         using var response = await account.Client.PutAsJsonAsync(
             $"{Route}/{Guid.NewGuid()}",
-            new { name = TestAccount.Unique("Missing") });
+            new { name = TestAccount.Unique("Missing"), defaultProductType = "tshirt" });
 
         await response.ShouldFailWithCodeAsync(HttpStatusCode.NotFound, "Batches.NotFound");
     }
@@ -250,6 +250,32 @@ public sealed class BatchEndpointTests
     }
 
     [TestMethod]
+    public async Task AddProduct_OfAnotherProductLine_ReturnsBadRequest()
+    {
+        _host.EnsureAvailable();
+        var account = await SignInAsync();
+        var name = await CreateAsync(account.Client, TestAccount.Unique("Apparel"));
+        var batchId = await GetIdAsync(account.Client, name);
+
+        using var response = await account.Client.PostAsJsonAsync(
+            $"{Route}/{batchId}/products",
+            new { name = "Cat mug", productType = "mug", niche = "Cats", keywords = new[] { "cat" } });
+
+        await response.ShouldFailWithCodeAsync(HttpStatusCode.BadRequest, ErrorCodes.Validation);
+    }
+
+    [TestMethod]
+    public async Task Create_WithoutAProductType_ReturnsBadRequest()
+    {
+        _host.EnsureAvailable();
+        var account = await SignInAsync();
+
+        using var response = await account.Client.PostAsJsonAsync(Route, new { name = TestAccount.Unique("NoType") });
+
+        await response.ShouldFailWithCodeAsync(HttpStatusCode.BadRequest, ErrorCodes.Validation);
+    }
+
+    [TestMethod]
     public async Task BatchEndpoints_WhenTheCallerIsNotSignedIn_ReturnUnauthorized()
     {
         _host.EnsureAvailable();
@@ -283,7 +309,7 @@ public sealed class BatchEndpointTests
     {
         using var response = await client.PostAsJsonAsync(
             Route,
-            new { name, description = "Fixture batch" });
+            new { name, description = "Fixture batch", defaultProductType = "tshirt" });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, "the fixture batch must be created");
         return name;

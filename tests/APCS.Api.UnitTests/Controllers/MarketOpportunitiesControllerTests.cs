@@ -1,5 +1,7 @@
 using APCS.Api.Controllers;
 using APCS.Application.Features.Commerce;
+using APCS.Application.Features.Entitlements;
+using APCS.Common.Models;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -29,7 +31,7 @@ public sealed class MarketOpportunitiesControllerTests
         service.Setup(x => x.SaveProfileAsync(profileRequest, cancellation.Token)).ReturnsAsync(profile);
         service.Setup(x => x.RefreshRankingAsync(cancellation.Token)).ReturnsAsync([opportunity]);
         service.Setup(x => x.ListAsync("active", 7, cancellation.Token)).ReturnsAsync([opportunity]);
-        var controller = new MarketOpportunitiesController(service.Object, Mock.Of<IOpportunityAnalysisService>());
+        var controller = new MarketOpportunitiesController(service.Object, Mock.Of<IOpportunityAnalysisService>(), Open());
 
         (await controller.GetProfile(cancellation.Token)).Should().BeSameAs(profile);
         (await controller.SaveProfile(profileRequest, cancellation.Token)).Should().BeSameAs(profile);
@@ -49,8 +51,8 @@ public sealed class MarketOpportunitiesControllerTests
         var analysisService = new Mock<IOpportunityAnalysisService>(MockBehavior.Strict);
         service.Setup(x => x.GetAsync(id, cancellation.Token)).ReturnsAsync(opportunity);
         service.Setup(x => x.UpdateStateAsync(id, "saved", cancellation.Token)).ReturnsAsync(opportunity);
-        analysisService.Setup(x => x.AnalyzeAsync(id, cancellation.Token)).ReturnsAsync(analysis);
-        var controller = new MarketOpportunitiesController(service.Object, analysisService.Object);
+        analysisService.Setup(x => x.AnalyzeAsync(id, cancellation.Token)).ReturnsAsync(Result.Success(analysis));
+        var controller = new MarketOpportunitiesController(service.Object, analysisService.Object, Open());
 
         (await controller.Get(id, cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(opportunity);
         (await controller.UpdateState(id, new("saved"), cancellation.Token)).Should().BeOfType<OkObjectResult>().Which.Value.Should().BeSameAs(opportunity);
@@ -68,14 +70,54 @@ public sealed class MarketOpportunitiesControllerTests
         var analysisService = new Mock<IOpportunityAnalysisService>(MockBehavior.Strict);
         service.Setup(x => x.GetAsync(id, cancellation.Token)).ReturnsAsync((SellerOpportunityResponse?)null);
         service.Setup(x => x.UpdateStateAsync(id, "dismissed", cancellation.Token)).ReturnsAsync((SellerOpportunityResponse?)null);
-        analysisService.Setup(x => x.AnalyzeAsync(id, cancellation.Token)).ReturnsAsync((OpportunityAnalysisResponse?)null);
-        var controller = new MarketOpportunitiesController(service.Object, analysisService.Object);
+        analysisService.Setup(x => x.AnalyzeAsync(id, cancellation.Token)).ReturnsAsync(Result.Failure<OpportunityAnalysisResponse>(Error.NotFound("MarketRadar.OpportunityNotFound", "The opportunity was not found.")));
+        var controller = new MarketOpportunitiesController(service.Object, analysisService.Object, Open());
 
         (await controller.Get(id, cancellation.Token)).Should().BeOfType<NotFoundResult>();
         (await controller.UpdateState(id, new("dismissed"), cancellation.Token)).Should().BeOfType<NotFoundResult>();
-        (await controller.Analyze(id, cancellation.Token)).Should().BeOfType<NotFoundResult>();
+        (await controller.Analyze(id, cancellation.Token)).Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(404);
         service.VerifyAll();
         analysisService.VerifyAll();
+    }
+
+    [TestMethod]
+    public async Task RefreshAndLatestAnalysis_WithoutTheWholeRadar_AreRefusedAsPlanLocked()
+    {
+        var id = Guid.NewGuid();
+        var service = new Mock<IOpportunityService>(MockBehavior.Strict);
+        var analysisService = new Mock<IOpportunityAnalysisService>(MockBehavior.Strict);
+        var access = new Mock<IMarketRadarAccess>();
+        access.Setup(x => x.RequireFullAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(PlanErrors.FeatureLocked(PlanFeatures.MarketRadarFull)));
+        access.Setup(x => x.RequireRefreshAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(PlanErrors.FeatureLocked(PlanFeatures.MarketRadarFull)));
+        var controller = new MarketOpportunitiesController(service.Object, analysisService.Object, access.Object);
+
+        (await controller.Refresh(default)).Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        (await controller.GetLatestAnalysis(id, default)).Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        service.VerifyNoOtherCalls();
+        analysisService.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task Access_ForwardsWhatThePlanOpens()
+    {
+        var answer = new MarketRadarAccessResponse(false, 3, 27, 0, 0);
+        var service = new Mock<IOpportunityService>(MockBehavior.Strict);
+        service.Setup(x => x.GetAccessAsync(It.IsAny<CancellationToken>())).ReturnsAsync(answer);
+        var controller = new MarketOpportunitiesController(service.Object, Mock.Of<IOpportunityAnalysisService>(), Open());
+
+        (await controller.GetAccess(default)).Should().BeSameAs(answer);
+    }
+
+    /// <summary>An access check that lets every request through.</summary>
+    private static IMarketRadarAccess Open()
+    {
+        var access = new Mock<IMarketRadarAccess>();
+        access.Setup(x => x.RequireFullAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        access.Setup(x => x.RequireAnalysisAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        access.Setup(x => x.RequireRefreshAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success());
+        return access.Object;
     }
 
     [TestMethod]
