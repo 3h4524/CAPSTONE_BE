@@ -67,6 +67,7 @@ public static class DependencyInjection
         services.AddScoped<Features.Shops.IListingPace, Features.Shops.ListingPace>();
         services.AddScoped<Features.Shops.IPrintifyService, Features.Shops.PrintifyService>();
         services.AddScoped<IProfileService, ProfileService>();
+        services.AddScoped<Features.Onboarding.IOnboardingProgressService, Features.Onboarding.OnboardingProgressService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAdminDashboardService, AdminDashboardService>();
         services.AddScoped<IAdminOperationsService, AdminOperationsService>();
