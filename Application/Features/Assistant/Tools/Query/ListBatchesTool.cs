@@ -32,6 +32,7 @@ public sealed class ListBatchesTool(IBatchService batches) : AssistantTool<NoArg
                 productCount = batch.ProductCount,
                 defaultNiche = batch.DefaultNiche,
                 defaultProductType = batch.DefaultProductType,
+                productLine = batch.ProductLine,
                 createdAt = batch.CreatedAt
             })
         });

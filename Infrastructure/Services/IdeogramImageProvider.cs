@@ -216,6 +216,9 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
                 return (null, ImageGenerationResult.Blocked($"Prompt blocked by Ideogram: {ErrorText(payload)}", model));
             if (RefusesAccount(response.StatusCode, payload))
                 return (null, ImageGenerationResult.AccountRefused($"Ideogram returned {(int)response.StatusCode}: {ErrorText(payload)}", model));
+            // Still too many images at once on this key after waiting: another key may take the image now.
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                return (null, ImageGenerationResult.Busy($"Ideogram returned 429: {ErrorText(payload)}", model));
             if (!response.IsSuccessStatusCode)
                 return (null, ImageGenerationResult.Failed($"Ideogram returned {(int)response.StatusCode}: {ErrorText(payload)}", model));
 

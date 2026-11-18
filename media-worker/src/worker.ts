@@ -10,6 +10,7 @@ import { createZip, downloadAssets, pngSource, uploadFile } from "./media-files"
 import { RemotionVideoRenderer } from "./renderer";
 import { packageBatchExport, type ExportProduct } from "./batch-export";
 import { runMediaStream } from "./media-stream";
+import { followAiShot, readAiShotPollingSettings } from "./ai-shot-polling";
 
 const baseUrl = new URL(process.env.APCS_API_URL ?? "http://host.docker.internal:5191");
 const key = process.env.MEDIA_WORKER_API_KEY ?? "";
@@ -24,6 +25,9 @@ const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "1");
 const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
   ? Math.min(configuredAiConcurrency, 4)
   : 1;
+// How often a scene still being generated is asked about: the provider takes minutes, so asking every few seconds
+// only adds load on the API and the database.
+const aiShotPolling = readAiShotPollingSettings(process.env);
 const internalApiTimeoutMs = 20_000;
 // A short API restart should not cancel a render that may already have spent minutes generating
 // paid AI clips. Five failed heartbeats at 15-second intervals still stop the job before its
@@ -127,12 +131,12 @@ async function execute(job: WorkerJob) {
           if (error instanceof DOMException && error.name === "TimeoutError") throw new ApiError(409, "AiVideoSubmissionUncertain");
           throw error;
         }
-        for (let check = 0; check < 240 && (state.status === "polling" || state.status === "pending"); check++) {
-          // "pending" again: the provider dropped the clip without charging and the API allows one more submission.
-          if (state.status === "pending") { state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string }; continue; }
-          await delay(5_000, undefined, { signal });
-          state = await api(`${job.id}/ai-shots/${shot.sceneOrder}/poll`, request, signal) as { status: string };
-        }
+        state = await followAiShot(state, {
+          start: async () => await api(`${job.id}/ai-shots/${shot.sceneOrder}/start`, request, signal) as { status: string },
+          poll: async () => await api(`${job.id}/ai-shots/${shot.sceneOrder}/poll`, request, signal) as { status: string },
+          delay: ms => delay(ms, undefined, { signal }),
+          now: () => Date.now()
+        }, aiShotPolling);
         if (state.status !== "ready") throw new Error(`AI Shot scene ${shot.sceneOrder + 1} did not finish`);
         const file = join(directory, `ai-shot-${shot.sceneOrder}.mp4`);
         await writeFile(file, await aiShotBytes(job, shot.sceneOrder, signal));

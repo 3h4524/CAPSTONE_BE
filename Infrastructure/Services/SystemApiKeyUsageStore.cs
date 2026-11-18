@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.AI;
 using System.Collections.Concurrent;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,13 @@ public interface ISystemApiKeyUsageStore
 
     /// <summary>Takes the key out of use until the end of the day.</summary>
     Task DisableAsync(string provider, string keyId, DateOnly day, string reason, CancellationToken cancellationToken);
+
+    /// <summary>Puts a key taken out of use back in use for the rest of the day.</summary>
+    Task ClearDisabledAsync(string provider, string keyId, DateOnly day, CancellationToken cancellationToken);
+
+    /// <summary>The uses counted on that day, and why each key was taken out of use (null while it is in use).</summary>
+    Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetAsync(string provider, IReadOnlyCollection<string> keyIds, DateOnly day,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -102,6 +110,39 @@ public sealed class RedisSystemApiKeyUsageStore(
         await fallback.DisableAsync(provider, keyId, day, reason, cancellationToken);
     }
 
+    public async Task ClearDisabledAsync(string provider, string keyId, DateOnly day, CancellationToken cancellationToken)
+    {
+        await fallback.ClearDisabledAsync(provider, keyId, day, cancellationToken);
+        // Unlike counting, this is an Admin's action: a Redis that cannot be reached is reported rather than passed over.
+        await redis.GetDatabase().KeyDeleteAsync(DisabledKey(provider, keyId, day));
+    }
+
+    public async Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetAsync(string provider, IReadOnlyCollection<string> keyIds,
+        DateOnly day, CancellationToken cancellationToken)
+    {
+        if (keyIds.Count == 0) return new Dictionary<string, SystemApiKeyUsageToday>();
+        var ids = keyIds.ToArray();
+        try
+        {
+            var values = await redis.GetDatabase().StringGetAsync(ids
+                .SelectMany(id => new RedisKey[] { CountKey(provider, id, day), DisabledKey(provider, id, day) })
+                .ToArray());
+            var usage = new Dictionary<string, SystemApiKeyUsageToday>(StringComparer.Ordinal);
+            for (var i = 0; i < ids.Length; i++)
+            {
+                var used = values[2 * i].TryParse(out int count) ? count : 0;
+                var refused = values[2 * i + 1];
+                usage[ids[i]] = new SystemApiKeyUsageToday(used, refused.IsNull ? null : refused.ToString());
+            }
+            return usage;
+        }
+        catch (Exception ex) when (ex is RedisException or TimeoutException)
+        {
+            logger.LogWarning(ex, "Redis could not read today's use of the system {Provider} keys; showing this server's count.", provider);
+            return await fallback.GetAsync(provider, keyIds, day, cancellationToken);
+        }
+    }
+
     private string CountKey(string provider, string keyId, DateOnly day) =>
         $"{redisOptions.Value.InstanceName}system-api-keys:{provider.ToLowerInvariant()}:{keyId}:{day:yyyy-MM-dd}:used";
 
@@ -146,6 +187,22 @@ public sealed class InMemorySystemApiKeyUsageStore : ISystemApiKeyUsageStore
     {
         disabled[Key(provider, keyId, day)] = reason;
         return Task.CompletedTask;
+    }
+
+    public Task ClearDisabledAsync(string provider, string keyId, DateOnly day, CancellationToken cancellationToken)
+    {
+        disabled.TryRemove(Key(provider, keyId, day), out _);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyDictionary<string, SystemApiKeyUsageToday>> GetAsync(string provider, IReadOnlyCollection<string> keyIds,
+        DateOnly day, CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<string, SystemApiKeyUsageToday> usage = keyIds.Distinct(StringComparer.Ordinal).ToDictionary(
+            id => id,
+            id => new SystemApiKeyUsageToday(counts.GetValueOrDefault(Key(provider, id, day)), disabled.GetValueOrDefault(Key(provider, id, day))),
+            StringComparer.Ordinal);
+        return Task.FromResult(usage);
     }
 
     /// <summary>How many uses of the key are counted on that day.</summary>

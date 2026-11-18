@@ -19,6 +19,50 @@ public sealed class ListingPromptBuilderTests
         "Use a calm, outdoorsy tone.");
 
     [TestMethod]
+    public void Build_NamesTheTextPrintedOnTheDesignAndItsArtwork()
+    {
+        var prompt = ListingPromptBuilder.Build(Input() with { DesignText = "Not all who wander are lost", DesignPrompt = "retro sunset over pine mountains" }, [], []);
+
+        prompt.Should().Contain("Text printed on the design: Not all who wander are lost");
+        prompt.Should().Contain("Artwork: retro sunset over pine mountains");
+        prompt.Should().Contain("use those exact words in the title");
+        prompt.Should().Contain("never as facts about the product");
+    }
+
+    [TestMethod]
+    public void DescribesSameProduct_TheSameProductAndDesign_IsCurrent()
+    {
+        var input = Input() with { DesignText = "Wander", DesignPrompt = "sunset" };
+
+        ListingPromptBuilder.DescribesSameProduct(ListingPromptBuilder.Build(input, [], []), input).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public void DescribesSameProduct_AnotherDesignTextOrKeyword_IsStale()
+    {
+        var input = Input() with { DesignText = "Wander" };
+        var prompt = ListingPromptBuilder.Build(input, [], []);
+
+        ListingPromptBuilder.DescribesSameProduct(prompt, input with { DesignText = "Explore" }).Should().BeFalse();
+        ListingPromptBuilder.DescribesSameProduct(prompt, input with { Keywords = ["camping shirt"] }).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void DescribesSameProduct_APromptFromBeforeTheDesignLines_IsComparedWithoutThem()
+    {
+        var input = Input() with { DesignText = "Wander", DesignPrompt = "sunset" };
+        var legacy = string.Join('\n', ListingPromptBuilder.Build(input, [], []).Replace("\r\n", "\n").Split('\n')
+            .Where(line => !line.StartsWith("Text printed on the design:") && !line.StartsWith("Artwork:")));
+
+        ListingPromptBuilder.DescribesSameProduct(legacy, input).Should().BeTrue();
+        ListingPromptBuilder.DescribesSameProduct(legacy, input with { Name = "Ocean shirt" }).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public void DescribesSameProduct_ATextWithoutAProductBlock_IsStale() =>
+        ListingPromptBuilder.DescribesSameProduct("no product here", Input()).Should().BeFalse();
+
+    [TestMethod]
     public void Build_WhenPolicyContextIsEmpty_UsesDefaultListingStandards()
     {
         var prompt = ListingPromptBuilder.Build(Input(), [], []);

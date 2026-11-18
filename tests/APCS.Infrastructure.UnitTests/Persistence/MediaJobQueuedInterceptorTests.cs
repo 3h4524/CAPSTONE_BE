@@ -30,6 +30,46 @@ public sealed class MediaJobQueuedInterceptorTests
     }
 
     [TestMethod]
+    public async Task SaveChanges_RenderJobMakingItsClips_WakesTheClipPhaseAndNotTheMediaQueue()
+    {
+        await using var db = Context();
+        db.MediaJobs.Add(Job("render", "generating_clips"));
+
+        await db.SaveChangesAsync();
+
+        activity.ClipPhase.Version.Should().Be(1);
+        activity.Media.Version.Should().Be(0, "the media worker never sees the job before its clips are stored");
+    }
+
+    [TestMethod]
+    public async Task SaveChanges_ClipPhaseHandsTheJobToTheWorker_WakesTheMediaQueue()
+    {
+        await using var db = Context();
+        var job = Job("render", "generating_clips");
+        db.MediaJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        job.Status = "queued";
+        await db.SaveChangesAsync();
+
+        activity.Media.Version.Should().Be(1);
+        activity.ClipPhase.Version.Should().Be(1, "only the first save announced clips to make");
+    }
+
+    [TestMethod]
+    [DataRow("export_zip", "generating_clips")]
+    [DataRow("video_quality", "generating_clips")]
+    public async Task SaveChanges_OtherKindsInTheClipPhaseStatus_DoNotWakeTheClipPhase(string kind, string status)
+    {
+        await using var db = Context();
+        db.MediaJobs.Add(Job(kind, status));
+
+        await db.SaveChangesAsync();
+
+        activity.ClipPhase.Version.Should().Be(0);
+    }
+
+    [TestMethod]
     [DataRow("video_quality", "queued")]
     [DataRow("render", "leased")]
     public async Task SaveChanges_NoRenderOrExportQueued_DoesNotSignal(string kind, string status)

@@ -42,6 +42,16 @@ public sealed class BatchService(
     private static Error MissingBatch => Error.NotFound("Batches.NotFound", "This batch was not found.");
     private static Error MissingProduct => Error.NotFound("Products.NotFound", "This product was not found in this batch.");
     private static Error PendingOnly => Error.Conflict("MSG31", "Only pending products can be edited or deleted.");
+    private static Error NoProductLine => Error.Conflict("Batches.NoProductLine",
+        "This batch has no product type yet. Edit the batch and choose one, so its products are made the same way.");
+
+    // A batch makes products of one line: the line of its product type. Null when the product may join the batch.
+    private static Error? CheckLine(Batch batch, string productType)
+    {
+        var line = ProductLines.Of(batch.DefaultProductType);
+        if (line is null) return NoProductLine;
+        return ProductLines.Of(productType) == line ? null : Error.Validation(ProductLines.WrongLineMessage(line, productType));
+    }
 
     public async Task<Result<IReadOnlyList<BatchDto>>> ListAsync(CancellationToken cancellationToken = default)
     {
@@ -85,6 +95,14 @@ public sealed class BatchService(
             .ToListAsync(cancellationToken);
         if (pendingProducts.Count == 0)
             return Result.Failure<ApproveBatchDto>(Error.Conflict("Batches.NoPendingProducts", "This batch has no pending products to queue."));
+        // One run makes one line: its designs share one aspect ratio, and its mock-ups, videos and listings one kind.
+        var line = ProductLines.Of(batch.DefaultProductType);
+        if (line is null) return Result.Failure<ApproveBatchDto>(NoProductLine);
+        var outside = pendingProducts.Where(product => ProductLines.Of(product.ProductType) != line).Select(product => product.Name).ToList();
+        if (outside.Count > 0)
+            return Result.Failure<ApproveBatchDto>(Error.Conflict("Batches.MixedProductLines",
+                $"This is a {ProductLines.Label(line)} batch, but {string.Join(", ", outside.Take(5))} {(outside.Count == 1 ? "is" : "are")} not. "
+                + "Move or delete those pending products before running it."));
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var job = new BatchJob
@@ -130,6 +148,21 @@ public sealed class BatchService(
         var name = request.Name.Trim();
         if (await batches.Query().AnyAsync(x => x.Id != batchId && x.UserId == userId && x.DeletedAt == null && x.Name.ToLower() == name.ToLower(), cancellationToken))
             return Result.Failure<BatchDto>(Error.Conflict("Batches.Duplicate", "A batch with this name already exists."));
+
+        // Another type of the same line is fine; another line only while no pending product is left of the old one.
+        // Products that have already run keep their own type: only pending products go into the next run.
+        var line = ProductLines.Of(request.DefaultProductType);
+        if (line != ProductLines.Of(batch.DefaultProductType))
+        {
+            var pendingTypes = await products.Query()
+                .Where(x => x.BatchId == batchId && x.DeletedAt == null && x.ProcessingStatus == BatchJobProductStatuses.Pending)
+                .Select(x => x.ProductType).Distinct().ToListAsync(cancellationToken);
+            var outside = pendingTypes.Where(type => ProductLines.Of(type) != line).ToList();
+            if (outside.Count > 0)
+                return Result.Failure<BatchDto>(Error.Conflict("Batches.ProductLineInUse",
+                    $"The batch still has pending {string.Join(", ", outside.Select(ProductLines.TypeLabel))} products, which are not {ProductLines.Label(line).ToLowerInvariant()}. "
+                    + "Delete them or keep a product type of their line."));
+        }
 
         batch.Name = name;
         batch.Description = Clean(request.Description);
@@ -185,6 +218,7 @@ public sealed class BatchService(
         var userId = currentUser.UserId!.Value;
         var batch = await batches.Query().SingleOrDefaultAsync(x => x.Id == batchId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
         if (batch is null) return Result.Failure<ProductDto>(MissingBatch);
+        if (CheckLine(batch, request.ProductType) is { } lineError) return Result.Failure<ProductDto>(lineError);
         var name = request.Name.Trim();
         if (await products.Query().AnyAsync(x => x.BatchId == batchId && x.DeletedAt == null && x.Name.ToLower() == name.ToLower(), cancellationToken))
             return Result.Failure<ProductDto>(Error.Conflict("Products.Duplicate", "A product with this name already exists in this batch."));
@@ -209,6 +243,7 @@ public sealed class BatchService(
         var userId = currentUser.UserId!.Value;
         var batch = await batches.Query().SingleOrDefaultAsync(x => x.Id == batchId && x.UserId == userId && x.DeletedAt == null, cancellationToken);
         if (batch is null) return Result.Failure<BatchProductImportResultDto>(MissingBatch);
+        if (ProductLines.Of(batch.DefaultProductType) is null) return Result.Failure<BatchProductImportResultDto>(NoProductLine);
 
         var existingNames = (await products.Query().Where(x => x.BatchId == batchId && x.DeletedAt == null)
             .Select(x => x.Name).ToListAsync(cancellationToken)).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -232,6 +267,11 @@ public sealed class BatchService(
             if (!validation.IsValid)
             {
                 errors.Add(new BatchProductImportErrorDto(row, item.Name ?? string.Empty, validation.Errors[0].ErrorMessage));
+                continue;
+            }
+            if (CheckLine(batch, item.ProductType) is { } lineError)
+            {
+                errors.Add(new BatchProductImportErrorDto(row, item.Name ?? string.Empty, lineError.Message));
                 continue;
             }
 
@@ -270,6 +310,8 @@ public sealed class BatchService(
         var product = (await products.FindAsync(x => x.Id == productId && x.BatchId == batchId && x.UserId == userId && x.DeletedAt == null, cancellationToken)).SingleOrDefault();
         if (product is null) return Result.Failure<ProductDto>(MissingProduct);
         if (product.ProcessingStatus != "pending") return Result.Failure<ProductDto>(PendingOnly);
+        var batch = await batches.Query().SingleAsync(x => x.Id == batchId, cancellationToken);
+        if (CheckLine(batch, request.ProductType) is { } lineError) return Result.Failure<ProductDto>(lineError);
         var name = request.Name.Trim();
         if (await products.Query().AnyAsync(x => x.Id != productId && x.BatchId == batchId && x.DeletedAt == null && x.Name.ToLower() == name.ToLower(), cancellationToken))
             return Result.Failure<ProductDto>(Error.Conflict("Products.Duplicate", "A product with this name already exists in this batch."));
