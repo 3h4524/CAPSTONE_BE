@@ -287,6 +287,9 @@ public static class DependencyInjection
                 provider.GetRequiredService<APCS.Infrastructure.Persistence.AfterCommitInterceptor>(),
                 provider.GetRequiredService<APCS.Infrastructure.Persistence.MediaJobQueuedInterceptor>()));
 
+        services.AddScoped<IOnboardingProgressRepository>(provider => new OnboardingProgressRepository(
+            connectionString,
+            provider.GetRequiredService<ILogger<OnboardingProgressRepository>>()));
         services.AddRepositories();
         services.AddApplicationServices(configuration);
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.UnbanUsersJob>();
