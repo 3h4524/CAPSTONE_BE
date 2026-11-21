@@ -103,6 +103,29 @@ public sealed class ModelAttributesTests
     }
 
     [TestMethod]
+    public void Prompts_EverySceneForOnePersonOrAGroup_AsksForThemCentered()
+    {
+        var people = new ModelAttributesDto[] { new("single", "adult", "female"), new("group", GroupType: "couple") };
+        var prompts = (from person in people
+                       from scene in ModelPhotoStyles.Scenes
+                       select ModelPhotoPrompts.Build(person, style: new(Scene: scene)).Prompt).ToList();
+
+        prompts.Should().OnlyContain(prompt => prompt.Contains("centered in the frame, with equal space to their left and right"));
+    }
+
+    [TestMethod]
+    [DataRow("street")]
+    [DataRow("cafe")]
+    [DataRow("park")]
+    public void Prompts_ARealPlace_AsksForTheBackgroundInFocus(string scene)
+    {
+        var (prompt, _) = ModelPhotoPrompts.Build(new("single", "adult", "female"), style: new(Scene: scene));
+
+        prompt.Should().Contain("deep depth of field").And.Contain("everything behind them in sharp focus")
+            .And.NotContain("blur").And.NotContain("bokeh");
+    }
+
+    [TestMethod]
     public void Prompts_AGroupWalking_StillKeepsTheirShirtsApart()
     {
         var (prompt, _) = ModelPhotoPrompts.Build(new("group", GroupType: "friends"), style: new(Pose: "walking"));

@@ -27,9 +27,11 @@ public static class ModelPhotoPrompts
 
         // The number of people is said outright: a looser description of a group lets the generator add more.
         var people = count == 1 ? "There is exactly one person in the photo." : $"There are exactly {Words[count]} people in the photo, no more.";
+        // Said outright too: left to itself, the generator sometimes puts the people off to one side.
+        var framing = $"{(group ? "The group is" : "They are")} centered in the frame, with equal space to their left and right, the camera directly in front of them.";
         var prompt =
-            $"A natural, photorealistic lifestyle photograph of {subject}. {people} {Dress(product, clean.Outfit!, group)} " +
-            $"{Pose(product, clean.Pose!, group, mood)} {Scene(clean.Scene!)}, sharp focus on the people, natural skin and realistic fabric. " +
+            $"A natural, photorealistic lifestyle photograph of {subject}. {people} {framing} {Dress(product, clean.Outfit!, group)} " +
+            $"{Pose(product, clean.Pose!, group, mood)} {Scene(clean.Scene!)}, natural skin and realistic fabric. " +
             $"Nothing behind them is white, so the {product.Noun} stands out. No other people, no text, no logos, no watermark.";
         return (prompt, group ? "4:3" : "3:4");
     }
@@ -81,15 +83,20 @@ public static class ModelPhotoPrompts
         };
     }
 
-    // A studio's plain backdrop, or a real place that stays recognizable, only slightly soft so the people stand out.
+    private const string PeopleInFocus = "sharp focus on the people";
+
+    // Says what is wanted rather than naming blur: a word in the prompt tends to bring that thing into the photo.
+    private const string AllInFocus = "shot at f/11 with deep depth of field, the people and everything behind them in sharp focus";
+
+    // A studio's plain backdrop, or a real place kept sharp from front to back.
     private static string Scene(string scene) => scene switch
     {
-        "studio_beige" => "Plain warm beige seamless backdrop, soft natural window light from one side with gentle shadows",
-        "studio_dark" => "Plain dark charcoal seamless backdrop, soft studio light from one side with gentle shadows",
-        "street" => "Outdoors on a quiet city street in soft daylight, the buildings behind them clearly recognizable and only slightly soft, with no strong background blur or bokeh",
-        "cafe" => "Inside a bright, cosy café in warm natural light, the interior behind them clearly recognizable and only slightly soft, with no strong background blur or bokeh",
-        "park" => "Outdoors in a green park in soft daylight, the trees behind them clearly recognizable and only slightly soft, with no strong background blur or bokeh",
-        _ => "Plain medium grey seamless backdrop, soft natural window light from one side with gentle shadows",
+        "studio_beige" => $"Plain warm beige seamless backdrop, soft natural window light from one side with gentle shadows, {PeopleInFocus}",
+        "studio_dark" => $"Plain dark charcoal seamless backdrop, soft studio light from one side with gentle shadows, {PeopleInFocus}",
+        "street" => $"Outdoors on a quiet city street in soft daylight, with buildings behind them, {AllInFocus}",
+        "cafe" => $"Inside a bright, cosy café in warm natural light, with the interior behind them, {AllInFocus}",
+        "park" => $"Outdoors in a green park in soft daylight, with trees behind them, {AllInFocus}",
+        _ => $"Plain medium grey seamless backdrop, soft natural window light from one side with gentle shadows, {PeopleInFocus}",
     };
 
     private static string PersonSubject(string? ageGroup, string? gender, Random? random)

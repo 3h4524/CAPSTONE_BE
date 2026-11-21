@@ -155,6 +155,23 @@ public sealed class ModelPhotoGenerationServiceTests
     }
 
     [TestMethod]
+    public async Task GenerateAsync_AGroupInAStudio_KeepsTheFullMatteSoTheirGarmentsStayApart()
+    {
+        _provider.Setup(x => x.GenerateAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        SaveModelPhotoRequestDto? saved = null;
+        _modelPhotos.Setup(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), false, It.IsAny<CancellationToken>()))
+            .Callback((SaveModelPhotoRequestDto request, bool _, CancellationToken _) => saved = request)
+            .ReturnsAsync(Result.Success(new MockupTemplateResponseDto(_saved.Id, "AI", "tshirt", _saved.BaseImageUrl, null, "{}", 2304, 1728, 0,
+                false, true, true, true, null, null, Kind: MockupRules.ModelKind)));
+
+        var result = await Service().GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("group", GroupType: "friends")), system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        saved!.PlainBackdrop.Should().BeFalse("the quick matte can join two people's garments into one");
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_BlockedByIdeogram_SaysSoAndSavesNothing()
     {
         _provider.Setup(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
