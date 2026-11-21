@@ -5,7 +5,7 @@ namespace APCS.Application.Features.Workflows;
 public interface IRunGroupPlanner
 {
     /// <summary>
-    /// Plans the oldest queued child run of a run group: writes its listing, plans its storyboard and queues its render.
+    /// Plans a queued child run, or starts a pending export after all videos in its group pass review.
     /// False when no run is waiting.
     /// </summary>
     /// <param name="actAs">Called with the run's owner before anything runs as the seller (the listing does).</param>

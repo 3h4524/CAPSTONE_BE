@@ -26,6 +26,13 @@ public interface IWorkflowRunGroupService
     Task<Result<RunGroupResponse>> CancelAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
 
     /// <summary>
+    /// Review Video for the whole batch: once the seller approved or rejected every video, the runs waiting there go on
+    /// together. An approved video is exported (and published) with its product; a rejected one is left out and its
+    /// product is exported without it.
+    /// </summary>
+    Task<Result<RunGroupResponse>> ContinueReviewAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
+
+    /// <summary>
     /// Goes on with a stopped group: one stopped at Mockup Approval waits there again; the stopped runs of one that had
     /// started are queued again and carry on from the step they stopped at, keeping what they had already made.
     /// </summary>
@@ -587,6 +594,62 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         return Result.Success(await MapAsync(group, ct));
     }
 
+    public async Task<Result<RunGroupResponse>> ContinueReviewAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct)
+    {
+        if (videos is null) return Result.Failure<RunGroupResponse>(Error.Validation("Video review is not available."));
+        await using var tx = await uow.BeginTransactionAsync(ct);
+        var group = await state.LockRunGroupAsync(groupId, ct);
+        if (group is null || group.UserId != user.UserId) return Result.Failure<RunGroupResponse>(Missing());
+        if (group.Revision != request.ExpectedRevision) return Result.Failure<RunGroupResponse>(Stale());
+        if (group.Status != "running") return Result.Failure<RunGroupResponse>(NothingToReview());
+
+        var children = (await runs.FindAsync(x => x.RunGroupId == group.Id, ct)).OrderBy(x => x.Id).ToArray();
+        var childIds = children.Select(x => x.Id).ToArray();
+        // Every video is decided on together: one still being made would otherwise be exported alone later.
+        var rendered = (await nodes.FindAsync(x => childIds.Contains(x.WorkflowRunId) && x.NodeType == "generate-video" && x.Status == "succeeded", ct))
+            .Select(x => x.WorkflowRunId).ToHashSet();
+        if (children.Any(x => !FinishedRun.Contains(x.Status) && !rendered.Contains(x.Id)))
+            return Result.Failure<RunGroupResponse>(Error.Conflict("VideosNotReady", "Wait until every video has been made, then continue."));
+
+        var decided = new List<(WorkflowRun Run, WorkflowNodeRun Review)>();
+        var undecided = 0;
+        // Locked in a fixed order, as each run is locked when it is approved or rejected.
+        foreach (var child in children.Where(x => x.Status == "waiting_for_review"))
+        {
+            var run = await state.LockRunAsync(child.Id, ct);
+            if (run is not { Status: "waiting_for_review" }) return Result.Failure<RunGroupResponse>(Stale());
+            var review = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video", ct)).Single();
+            var video = await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(review.OutputSnapshot).VideoId, ct);
+            if (video is { Status: "completed", ApprovalStatus: "approved" or "rejected" }) decided.Add((run, review));
+            else undecided++;
+        }
+        if (decided.Count == 0 && undecided == 0) return Result.Failure<RunGroupResponse>(NothingToReview());
+        if (undecided > 0)
+            return Result.Failure<RunGroupResponse>(Error.Conflict("WaitingForReview",
+                $"Approve or reject every video first: {undecided} still {(undecided == 1 ? "waits" : "wait")} for your decision."));
+
+        // Queued again, the planner carries each run on from Review Video: its export waits until every video of the
+        // batch has passed review, then packages the product with its video when approved and without it when rejected.
+        var now = time.GetUtcNow().UtcDateTime;
+        foreach (var (run, review) in decided)
+        {
+            review.Status = "succeeded"; review.UpdatedAt = now;
+            run.Status = "queued"; run.Revision++; run.UpdatedAt = now;
+        }
+        group.Revision++; group.UpdatedAt = now;
+        await uow.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        planner?.Signal();
+        if (notifier != null)
+        {
+            foreach (var (run, _) in decided) await notifier.RunChangedAsync(run, ct);
+            await notifier.GroupChangedAsync(group.Id, ct);
+        }
+        return Result.Success(await MapAsync(group, ct));
+    }
+
+    private static Error NothingToReview() => Error.Conflict("InvalidCheckpoint", "No video of this run is waiting for review.");
+
     public async Task<Result<RunGroupResponse>> ResumeAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct)
     {
         await using var tx = await uow.BeginTransactionAsync(ct);
@@ -773,7 +836,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 child?.ErrorMessage, child is null ? picked?.Config ?? ProductOwn(config, target.Product.Id) : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
                 picked?.Config is not null, child is null ? null : VideoStatusOf(child, childSteps),
                 printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage,
-                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot))));
+                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot)),
+                StepOf(childSteps, "generate-video"), StepOf(childSteps, "review-video"), StepOf(childSteps, "export-zip")));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),
@@ -817,6 +881,10 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             .OrderBy(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep ? 1 : 0)
             .ThenBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.NodeType) is var order && order < 0 ? int.MaxValue : order)
             .FirstOrDefault();
+
+    private static RunGroupStepResponse? StepOf(IReadOnlyList<WorkflowNodeRun> steps, string type) =>
+        steps.FirstOrDefault(x => x.NodeType == type) is { } step
+            ? new(step.Status, step.Stage, step.Progress, step.ErrorMessage) : null;
 
     /// <summary>
     /// The status the run would have for its video alone: its line of steps, without Push to Printify (it runs beside

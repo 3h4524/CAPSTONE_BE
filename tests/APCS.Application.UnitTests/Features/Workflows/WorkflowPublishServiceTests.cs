@@ -50,7 +50,7 @@ public sealed class WorkflowPublishServiceTests
         fixture.Nodes.Setup(x => x.Query()).Returns(() => fixture.NodeRows.AsQueryable().BuildMock());
 
         runtime = new WorkflowRuntime(fixture.Nodes.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Videos.Object, fixture.Scenes.Object,
-            fixture.Templates.Object, fixture.Jobs.Object, fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time,
+            fixture.Templates.Object, fixture.Jobs.Object, fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time, fixture.Runs.Object,
             publishQueue: queue.Object);
 
         printify.Setup(x => x.GetDraftAsync(run.ProductId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new PrintifyDraftResponseDto(
