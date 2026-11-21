@@ -107,6 +107,22 @@ public sealed class WorkflowServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_EdgeWaypoints_AreKeptInTheStoredDefinition()
+    {
+        var fixture = new WorkflowTestData();
+        var definition = WorkflowTestData.Definition(fixture.AddProduct());
+        var bent = definition.Edges[0] with { Waypoints = [new Point(120, 80), new Point(120, 240)] };
+        definition = definition with { Edges = [bent, .. definition.Edges.Skip(1)] };
+
+        var result = await fixture.WorkflowService.SaveAsync(null, new("Bent edges", "", definition), CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        var stored = WorkflowJson.Read<WorkflowDefinition>(fixture.WorkflowRows.Single().Definition);
+        stored.Edges[0].Waypoints.Should().BeEquivalentTo(new[] { new Point(120, 80), new Point(120, 240) });
+        stored.Edges.Skip(1).Should().OnlyContain(edge => edge.Waypoints == null);
+    }
+
+    [TestMethod]
     public async Task SaveAsync_CurrentRevision_UpdatesAndIncrementsRevision()
     {
         var fixture = new WorkflowTestData();

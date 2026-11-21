@@ -30,7 +30,7 @@ public sealed record Region(double X, double Y, double Width, double Height);
 public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null,
     Region? Detail = null, AiStudioFrameMetadata? StudioFrame = null);
 public sealed record WorkflowNode(string Id, string Type, string Label, Point Position, JsonElement Config);
-public sealed record WorkflowEdge(string Id, string Source, string Target);
+public sealed record WorkflowEdge(string Id, string Source, string Target, IReadOnlyList<Point>? Waypoints = null);
 public sealed record WorkflowDefinition(int Version, IReadOnlyList<WorkflowNode> Nodes, IReadOnlyList<WorkflowEdge> Edges, JsonElement? Viewport = null);
 public sealed record SaveWorkflowRequest(string Name, string Description, WorkflowDefinition Definition, long? ExpectedRevision = null);
 public sealed record WorkflowResponse(Guid Id, string Name, string Description, int NodeCount, long Revision, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, WorkflowDefinition Definition);
