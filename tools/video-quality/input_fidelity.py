@@ -31,7 +31,7 @@ def prepare_start_frame(source: Path, geometry: dict, destination: Path) -> tupl
     crop = _region(geometry.get("sourceCrop"), w, h) or (0, 0, w, h)
     x, y, cw, ch = crop
     image = image[y:y + ch, x:x + cw]
-    ratio = {"9:16": 9 / 16, "16:9": 16 / 9}.get(geometry.get("aspectRatio"))
+    ratio = {"9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4}.get(geometry.get("aspectRatio"))
     if ratio is None:
         raise ValueError("Unsupported input aspect ratio")
     if cw / ch > ratio:

@@ -36,8 +36,7 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     IAiVideoCredentialResolver videoCredentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
     IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null,
-    ISceneVideoNotifier? sceneNotifier = null, IContentModerationService? moderation = null,
-    ISystemApiKeyPool? systemKeys = null) : IAiShotJobService
+    ISceneVideoNotifier? sceneNotifier = null, ISystemApiKeyPool? systemKeys = null) : IAiShotJobService
 {
     /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
@@ -112,28 +111,15 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             await MarkAsync(jobId, sceneOrder, token, "failed", missing, ct);
             return Result.Failure<AiShotProgressResponse>(Error.Validation(missing));
         }
-        // The last check before a paid request leaves: the prompt was checked when it was planned, so this is almost
-        // always a cached answer. Nothing has been sent, so a blocked scene is simply failed with the reason.
-        if (moderation is not null)
-        {
-            var verdict = await moderation.CheckTextAsync(
-                [new ModerationText($"the scene {sceneOrder + 1} video prompt", shot.Prompt)],
-                new ModerationContext(job.UserId, ModerationFeatures.AiVideo, ModerationDirection.Input, ModerationSubjects.AiShot, jobId),
-                ct);
-            if (verdict.IsBlocked)
-            {
-                var blocked = ModerationPolicy.BlockedMessage(verdict);
-                await MarkAsync(jobId, sceneOrder, token, "failed", blocked, ct);
-                return Result.Failure<AiShotProgressResponse>(ModerationErrors.Blocked(verdict));
-            }
-        }
+        // The compiled prompt is not checked again here: it is the platform's template and rules around the seller's own
+        // scene text, which was checked when the workflow was saved and when the storyboard was planned.
 
         string operation;
         try
         {
             var source = (await assets.GetByIdAsync(shot.MockupId, ct))!;
             operation = await ProviderFor(shot).StartAsync(key, storage.SignRead(source.StorageKey, "image", source.StorageVersion),
-                shot.Prompt, ReadAspect(job.Payload), shot.DurationSeconds,
+                shot.Prompt, ReadAspect(job.Payload, shot), shot.DurationSeconds,
                 shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment",
                 shot.SourceCrop, ct);
         }
@@ -389,10 +375,10 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         if (key == null) throw new InvalidOperationException($"Configured {providerKey} API key is missing.");
         return key;
     }
-    private static string ReadAspect(string payload)
+    private static string ReadAspect(string payload, AiShotPlan shot)
     {
         var board = WorkflowJson.Read<AiRenderJobPayload>(payload).Storyboard;
-        return VideoOutputFormats.AiSourceAspect(board.OutputFormat);
+        return VideoOutputFormats.AiSourceAspect(board.OutputFormat, shot.ProviderKey);
     }
     public static string OutputKey(MediaJob job, Guid token, int sceneOrder) =>
         $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/ai-shot-{sceneOrder}";

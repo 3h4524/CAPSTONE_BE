@@ -81,7 +81,11 @@ public sealed record AiVideoSceneOptions(
     Point? AiCropPosition = null,
     // Where a batch run finds this scene's image for each design; resolved to MockupId before planning.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    SceneSource? Source = null);
+    SceneSource? Source = null,
+    // The seller's own wording of the scene's template prompt; null uses the template's. The product-preservation rules
+    // are added after it either way.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? CustomPrompt = null);
 /// <summary>
 /// The image of a scene described without naming one product's mock-up, so one scene list fits every design of a
 /// batch run. <see cref="Kind"/> is "template" (the mock-up made from <see cref="TemplateId"/>, in
@@ -98,13 +102,28 @@ public sealed record VideoOutputSpec(string Format, int Width, int Height, strin
 public static class VideoOutputFormats
 {
     public const string Default = "portrait";
-    public static bool IsSupported(string format) => format is "square" or "portrait" or "landscape";
-    public static string AiSourceAspect(string? format) => format == "landscape" ? "16:9" : "9:16";
+    public static bool IsSupported(string format) => format is "square" or "portrait" or "landscape" or "classic_landscape" or "classic_portrait";
+    /// <summary>Formats beyond square and portrait, which need the "all video formats" plan feature.</summary>
+    public static bool NeedsAllFormats(string? format) => format is "landscape" or "classic_landscape" or "classic_portrait";
+    /// <summary>The ratios MiniMax H3 makes image-to-video clips in; the first frame is cut to one of them.</summary>
+    public static bool SupportsAiAspect(string? aspectRatio) => aspectRatio is "9:16" or "16:9" or "1:1" or "4:3" or "3:4";
+    /// <summary>
+    /// The ratio an AI scene's first frame is cut to and its clip is made in. MiniMax makes clips in the output's own
+    /// ratio, so the renderer has nothing left to crop. A scene made by Veo (older videos) only knows 9:16 and 16:9.
+    /// </summary>
+    public static string AiSourceAspect(string? format, string? providerKey = null)
+    {
+        var spec = Resolve(format);
+        if (providerKey is null || providerKey == AiVideoModel.ProviderKey) return spec.AspectRatio;
+        return spec.Width > spec.Height ? "16:9" : "9:16";
+    }
     public static VideoOutputSpec Resolve(string? format) => format switch
     {
         "square" => new("square", 1080, 1080, "1:1"),
         "portrait" => new("portrait", 1080, 1920, "9:16"),
         "landscape" => new("landscape", 1920, 1080, "16:9"),
+        "classic_landscape" => new("classic_landscape", 1440, 1080, "4:3"),
+        "classic_portrait" => new("classic_portrait", 1080, 1440, "3:4"),
         _ => new(Default, 1080, 1920, "9:16"),
     };
 }

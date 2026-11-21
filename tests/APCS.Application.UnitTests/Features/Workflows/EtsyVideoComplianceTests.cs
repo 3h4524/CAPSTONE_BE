@@ -29,18 +29,31 @@ public sealed class EtsyVideoComplianceTests
         var result = EtsyVideoCompliance.Evaluate(Qa(), "2:1", format);
 
         result.Checks.Single(check => check.Key == "format").Status.Should().Be("pass");
-        result.Checks.Single(check => check.Key == "aspectRatio").Status.Should().Be("pass");
     }
 
     [TestMethod]
-    public void Evaluate_BelowRecommendedResolutionAndAspectRatio_ReturnsWarnings()
+    public void Evaluate_BelowRecommendedResolution_ReturnsWarning()
     {
         var result = EtsyVideoCompliance.Evaluate(Qa(width: 500, height: 800, hasAudio: true), "9:16", "mp4");
 
         result.Status.Should().Be("pass_with_warning");
         result.Checks.Single(check => check.Key == "resolution").Status.Should().Be("warning");
-        result.Checks.Single(check => check.Key == "aspectRatio").Status.Should().Be("warning");
         result.Checks.Single(check => check.Key == "audio").Status.Should().Be("info");
+    }
+
+    // The ratio is the seller's choice among the formats the app offers, so it is never judged.
+    [TestMethod]
+    [DataRow("1:1")]
+    [DataRow("16:9")]
+    [DataRow("9:16")]
+    [DataRow("4:3")]
+    [DataRow("3:4")]
+    public void Evaluate_AnyOfferedRatio_HasNoRatioCheckAndPasses(string aspectRatio)
+    {
+        var result = EtsyVideoCompliance.Evaluate(Qa(width: 1080, height: 1080), aspectRatio, "mp4");
+
+        result.Checks.Should().NotContain(check => check.Key == "aspectRatio");
+        result.Status.Should().Be("pass");
     }
 
     [TestMethod]

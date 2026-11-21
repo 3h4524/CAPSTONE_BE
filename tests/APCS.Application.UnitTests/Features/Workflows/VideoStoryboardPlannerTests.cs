@@ -629,7 +629,7 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_SquareAiCrop_ChangesCompositionWithoutChangingTheGeneratedClip()
+    public void Plan_SquareAiCrop_MakesTheClipSquareAndMovingTheCropOnlyChangesComposition()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
@@ -645,9 +645,41 @@ public sealed class VideoStoryboardPlannerTests
         square.Height.Should().Be(1080);
         moved.Scenes[0].AiCropPosition.Should().Be(new Point(.5, .2));
         moved.Fingerprint.Should().NotBe(square.Fingerprint);
-        moved.AiShots![0].Fingerprint.Should().Be(square.AiShots![0].Fingerprint).And.Be(portrait.AiShots![0].Fingerprint);
-        VideoOutputFormats.AiSourceAspect("square").Should().Be("9:16");
-        VideoOutputFormats.AiSourceAspect("landscape").Should().Be("16:9");
+        // The clip is made in the output's own ratio, so a square video needs another clip than a portrait one.
+        square.AiShots![0].Fingerprint.Should().NotBe(portrait.AiShots![0].Fingerprint);
+        moved.AiShots![0].Fingerprint.Should().Be(square.AiShots![0].Fingerprint);
+    }
+
+    [TestMethod]
+    [DataRow("portrait", "9:16")]
+    [DataRow("square", "1:1")]
+    [DataRow("landscape", "16:9")]
+    [DataRow("classic_landscape", "4:3")]
+    [DataRow("classic_portrait", "3:4")]
+    public void AiSourceAspect_MiniMax_IsTheOutputRatio(string format, string expected)
+    {
+        VideoOutputFormats.AiSourceAspect(format).Should().Be(expected);
+        VideoOutputFormats.Resolve(format).AspectRatio.Should().Be(expected);
+        VideoOutputFormats.SupportsAiAspect(expected).Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow("portrait", "9:16")]
+    [DataRow("square", "9:16")]
+    [DataRow("classic_portrait", "9:16")]
+    [DataRow("landscape", "16:9")]
+    [DataRow("classic_landscape", "16:9")]
+    public void AiSourceAspect_Veo_KeepsToTheTwoRatiosVeoKnows(string format, string expected) =>
+        VideoOutputFormats.AiSourceAspect(format, VeoVideoModel.ProviderKey).Should().Be(expected);
+
+    [TestMethod]
+    public void Resolve_ClassicFormats_HaveEvenSizesInTheirRatio()
+    {
+        VideoOutputFormats.Resolve("classic_landscape").Should().Be(new VideoOutputSpec("classic_landscape", 1440, 1080, "4:3"));
+        VideoOutputFormats.Resolve("classic_portrait").Should().Be(new VideoOutputSpec("classic_portrait", 1080, 1440, "3:4"));
+        VideoOutputFormats.IsSupported("classic_landscape").Should().BeTrue();
+        VideoOutputFormats.NeedsAllFormats("square").Should().BeFalse();
+        VideoOutputFormats.NeedsAllFormats("classic_portrait").Should().BeTrue();
     }
 
     [TestMethod]
@@ -845,13 +877,30 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
+    [DataRow("creator_pov_ugc")]
+    [DataRow("everyday_story_moment")]
+    [DataRow("signature_product_reveal")]
+    public void Plan_SceneWithARetiredTemplate_SaysItsTemplateIsUnavailable(string templateCode)
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id, TemplateCode: templateCode)]);
+
+        var result = _planner.Plan(product, [source], config);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("uses an unavailable template");
+    }
+
+    [TestMethod]
     public void Plan_StudioMode_NonShowcaseScene_KeepsOriginalSource()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product);
         var frame = CreateStudioFrame(source);
-        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id, TemplateCode: "signature_product_reveal")],
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new(MockupId: source.Id, TemplateCode: "macro_detail_reveal")],
             AiStudioMode: "studio", AiStudioSourceMockupId: source.Id, AiStudioFrameId: frame.Id);
 
         var result = _planner.Plan(product, [source, frame], config);
@@ -1052,14 +1101,14 @@ public sealed class VideoStoryboardPlannerTests
     }
 
     [TestMethod]
-    public void Plan_P1Rules_WithCreatorTemplate_ReturnsValidationError()
+    public void Plan_P1Rules_WithAnotherTemplate_ReturnsValidationError()
     {
         var fixture = new WorkflowTestData();
         var product = fixture.AddProduct();
         var source = fixture.AddAsset(product, "Lifestyle");
         var config = P1Config(source.Id) with
         {
-            AiScenes = [P1Scene(source.Id) with { TemplateCode = "creator_pov_ugc" }]
+            AiScenes = [P1Scene(source.Id) with { TemplateCode = "cinematic_product_showcase" }]
         };
 
         var result = _planner.Plan(product, [source], config);

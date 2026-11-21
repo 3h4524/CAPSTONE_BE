@@ -20,8 +20,6 @@ public static class EtsyVideoCompliance
             new("format", IsSupportedFormat(fileFormat) ? "pass" : "fail", $"{fileFormat.ToUpperInvariant()} is {(IsSupportedFormat(fileFormat) ? "an accepted" : "not an accepted")} listing video format."),
             new("resolution", Math.Min(qa.Width, qa.Height) >= 500 ? (Math.Min(qa.Width, qa.Height) >= 1080 ? "pass" : "warning") : "fail",
                 $"{qa.Width}×{qa.Height}; Etsy requires at least 500 px and recommends at least 1080 px."),
-            new("aspectRatio", aspectRatio is "1:2" or "2:1" ? "pass" : "warning",
-                aspectRatio is "1:2" or "2:1" ? "Matches Etsy's recommended listing-video ratio." : "Etsy recommends 1:2 or 2:1; this output remains usable but may be cropped."),
             new("audio", qa.HasAudio ? "info" : "pass", qa.HasAudio ? "Etsy removes audio after upload." : "No audio track is present.")
         };
         var status = checks.Any(check => check.Status == "fail") ? "fail" : checks.Any(check => check.Status == "warning") ? "pass_with_warning" : "pass";

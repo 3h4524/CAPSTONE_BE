@@ -445,7 +445,7 @@ public sealed class VideoStoryboardPlanner
         var modelKey = config.AiVideoModelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelKey : AiVideoModel.ModelKey;
         var model = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LiteModelName : AiVideoModel.ModelName;
         var modelPrice = modelKey == AiVideoModel.LiteModelKey ? AiVideoModel.LitePricePerSecondUsd : AiVideoModel.PricePerSecondUsd;
-        var aspect = config.OutputFormat == "landscape" ? "16:9" : "9:16";
+        var aspect = VideoOutputFormats.AiSourceAspect(config.OutputFormat);
         var prompt = BuildPrompt(options.Concept, options.Prompt);
         AiShotPlan Shot(int index, MockupImage asset, int seconds)
         {

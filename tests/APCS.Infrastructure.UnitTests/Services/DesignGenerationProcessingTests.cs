@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchProductPrompts.Common;
 using APCS.Application.Features.DesignGeneration;
@@ -104,7 +105,8 @@ public sealed class DesignGenerationProcessingTests
     // ---- Approval (SRS 3.5.12) ----
 
     // A finished job with `products` products and `variations` images each, started with the given approval mode.
-    private static async Task<Guid> SeedFinishedJobAsync(AppDbContext db, int products, int variations, bool? requireApproval)
+    private static async Task<Guid> SeedFinishedJobAsync(AppDbContext db, int products, int variations, bool? requireApproval,
+        IContentModerationService? moderation = null)
     {
         var jobId = Seed(db, productCount: products, existingUsage: 0);
         var job = await db.BatchJobs.SingleAsync(j => j.Id == jobId);
@@ -113,7 +115,7 @@ public sealed class DesignGenerationProcessingTests
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
 
-        await CreateService(db).ProcessBatchJobAsync(jobId);
+        await CreateService(db, moderation: moderation).ProcessBatchJobAsync(jobId);
         db.ChangeTracker.Clear();
         return jobId;
     }
@@ -146,6 +148,48 @@ public sealed class DesignGenerationProcessingTests
         var detail = await CreateService(db).GetJobAsync(jobId);
         detail.Value.Counters.Completed.Should().Be(2, "approved products count as completed");
         detail.Value.RequireApproval.Should().BeFalse();
+    }
+
+    // The content check allows every text and answers each image with the next of the given decisions.
+    private static IContentModerationService ImageChecks(params ModerationDecision[] decisions)
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(),
+                It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .ReturnsAsync(ModerationVerdict.Allowed(ModerationDeciders.Gemini));
+        var answers = moderation.SetupSequence(x => x.CheckImageAsync(It.IsAny<byte[]>(), It.IsAny<string>(),
+            It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()));
+        foreach (var decision in decisions)
+            answers = answers.ReturnsAsync(decision == ModerationDecision.Unchecked
+                ? ModerationVerdict.NotChecked("Gemini timed out.")
+                : new ModerationVerdict(decision, [], ModerationDeciders.Gemini));
+        return moderation.Object;
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenApprovalIsAutomatic_AndNoDesignCouldBeChecked_LeavesTheProductForReview()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 1, variations: 2, requireApproval: false,
+            moderation: ImageChecks(ModerationDecision.Unchecked, ModerationDecision.Unchecked));
+
+        // Nothing it could approve: the Seller decides in Design approval, which checks the design again.
+        (await db.DesignImages.ToListAsync()).Should().HaveCount(2).And.OnlyContain(i => i.ApprovalStatus == "pending");
+        (await db.BatchJobProducts.SingleAsync(r => r.BatchJobId == jobId)).Status.Should().Be(BatchJobProductStatuses.ImageReviewRequired);
+        (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().Contain(l => l.EventType == "approval_held");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenApprovalIsAutomatic_ApprovesTheDesignThatWasChecked()
+    {
+        await using var db = CreateContext();
+        var jobId = await SeedFinishedJobAsync(db, products: 1, variations: 2, requireApproval: false,
+            moderation: ImageChecks(ModerationDecision.Unchecked, ModerationDecision.Allow));
+
+        var images = await db.DesignImages.OrderBy(i => i.VariationIndex).ToListAsync();
+        images.Select(i => i.ApprovalStatus).Should().Equal("pending", "approved");
+        (await db.BatchJobProducts.SingleAsync(r => r.BatchJobId == jobId)).Status.Should().Be(BatchJobProductStatuses.Approved);
+        (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().NotContain(l => l.EventType == "approval_held");
     }
 
     [TestMethod]
@@ -1638,7 +1682,8 @@ public sealed class DesignGenerationProcessingTests
         int maxConcurrentImages = 1,
         Mock<IApiKeyCredentials>? credentials = null,
         IDesignTextCheckQueue? textCheckQueue = null,
-        ISystemApiKeyPool? systemKeys = null)
+        ISystemApiKeyPool? systemKeys = null,
+        IContentModerationService? moderation = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -1674,7 +1719,7 @@ public sealed class DesignGenerationProcessingTests
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)),
-            new AllowAllEntitlements(), textCheckQueue, systemKeys: systemKeys);
+            new AllowAllEntitlements(), textCheckQueue, moderation: moderation, systemKeys: systemKeys);
     }
 
     // ---- The platform's own Ideogram keys ----
