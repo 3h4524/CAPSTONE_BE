@@ -58,6 +58,7 @@ services:
     volumes:
       - keyring:/data/keyring
       - models:/app/models
+      - exports:/data/exports
     mem_limit: 5g
     depends_on:
       postgres-prod:
@@ -197,6 +198,7 @@ volumes:
   caddy_config:
   keyring:
   models:
+  exports:
   redis_data:
   redis_media_data:
   pg_prod:

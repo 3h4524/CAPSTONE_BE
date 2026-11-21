@@ -20,9 +20,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out ./
-RUN mkdir -p /app/models /data/keyring && chown -R app:app /app/models /data
+# /app belongs to root and the API runs as `app`, so ZIP exports (LocalExportStore) go to /data/exports, which `app`
+# owns; a named volume mounted there starts with this ownership.
+RUN mkdir -p /app/models /data/keyring /data/exports && chown -R app:app /app/models /data
 ENV ASPNETCORE_HTTP_PORTS=8080 \
-    DOTNET_RUNNING_IN_CONTAINER=true
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    Exports__LocalDirectory=/data/exports
 USER app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
