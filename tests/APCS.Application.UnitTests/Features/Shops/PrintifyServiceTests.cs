@@ -312,6 +312,106 @@ public sealed class PrintifyServiceTests
         result.Error.Code.Should().Be("shop.printify_product_not_found");
     }
 
+    private void OnPrintify(string? external = null, bool locked = false)
+    {
+        printify.Setup(x => x.GetProductAsync("token", 777, "p-1", It.IsAny<CancellationToken>())).ReturnsAsync(Product(external, locked));
+        printify.Setup(x => x.UpdateTextAsync("token", 777, "p-1", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Product(external));
+    }
+
+    private void VerifyMade(int times) =>
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<PrintifyNewProduct>(), It.IsAny<CancellationToken>()), Times.Exactly(times));
+
+    private void VerifyTextUpdates(int times) =>
+        printify.Verify(x => x.UpdateTextAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()), Times.Exactly(times));
+
+    [TestMethod]
+    public async Task CreateProductAsync_SameProductWithNewText_UpdatesItInsteadOfMakingASecond()
+    {
+        var service = Create();
+        OnPrintify(external: "4455");
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var again = await service.CreateProductAsync(productId, CreateRequest() with { Title = "Better Cat Tee", Description = "A better tee.", Tags = ["cat", "tee"] });
+
+        again.Value.AlreadyCreated.Should().BeTrue();
+        again.Value.EtsyListingId.Should().Be("4455");
+        VerifyMade(1);
+        printify.Verify(x => x.UpdateTextAsync("token", 777, "p-1", "Better Cat Tee", $"A better tee.\n\n{EtsyListingText.AiDisclosure}",
+            It.Is<IReadOnlyList<string>>(tags => tags.SequenceEqual(new[] { "cat", "tee" })), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_TextChangedAndChangedBack_UpdatesItEachTime()
+    {
+        var service = Create();
+        OnPrintify();
+        await service.CreateProductAsync(productId, CreateRequest());
+        await service.CreateProductAsync(productId, CreateRequest() with { Title = "Better Cat Tee" });
+
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        VerifyMade(1);
+        VerifyTextUpdates(2);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_StandInText_LeavesTheTextOnPrintifyAlone()
+    {
+        var service = Create();
+        OnPrintify();
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var again = await service.CreateProductAsync(productId, CreateRequest() with { Title = "Cat tee", KeepExistingText = true });
+
+        again.Value.AlreadyCreated.Should().BeTrue();
+        VerifyMade(1);
+        VerifyTextUpdates(0);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_NewTextWhilePrintifyPublishes_AsksToTryAgain()
+    {
+        var service = Create();
+        OnPrintify(locked: true);
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var again = await service.CreateProductAsync(productId, CreateRequest() with { Title = "Better Cat Tee" });
+
+        again.Error.Code.Should().Be("shop.printify_publishing");
+        VerifyMade(1);
+        VerifyTextUpdates(0);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_OtherVariants_MakeAnotherProduct()
+    {
+        var service = Create();
+        OnPrintify();
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        await service.CreateProductAsync(productId, CreateRequest() with { VariantIds = [101] });
+
+        VerifyMade(2);
+        VerifyTextUpdates(0);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_NewTextForAProductDeletedOnPrintify_MakesItAgain()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetProductAsync("token", 777, "p-1", It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PrintifyApiException(PrintifyFailureKind.Rejected, "404"));
+        await service.CreateProductAsync(productId, CreateRequest());
+
+        var again = await service.CreateProductAsync(productId, CreateRequest() with { Title = "Better Cat Tee" });
+
+        again.IsSuccess.Should().BeTrue();
+        VerifyMade(2);
+        VerifyTextUpdates(0);
+    }
+
     /// <summary>A mock-up of the design on a template whose print area is 400 × 500 at (100, 100), made by a job.</summary>
     private void ShownOnTemplate(string? box)
     {

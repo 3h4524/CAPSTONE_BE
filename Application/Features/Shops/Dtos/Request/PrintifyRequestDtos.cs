@@ -17,6 +17,9 @@ namespace APCS.Application.Features.Shops.Dtos.Request;
 /// With <paramref name="PlacementMockupId"/>: the design is also printed on each other side (back, sleeves) the approved
 /// mock-ups show it on, where they show it, when the provider prints that side.
 /// </param>
+/// <param name="KeepExistingText">
+/// The text is only a stand-in, so a product already on Printify keeps the title, description and tags it has.
+/// </param>
 public sealed record CreatePrintifyProductRequestDto(
     Guid DesignId,
     long BlueprintId,
@@ -33,7 +36,8 @@ public sealed record CreatePrintifyProductRequestDto(
     double X = 0.5,
     double Y = 0.5,
     Guid? PlacementMockupId = null,
-    bool PrintMockupSides = false);
+    bool PrintMockupSides = false,
+    bool KeepExistingText = false);
 
 /// <summary>The retail price of each enabled variant, confirmed against Printify's costs; then Printify publishes to Etsy.</summary>
 public sealed record PublishPrintifyProductRequestDto(IReadOnlyList<PrintifyVariantPriceDto> Prices);

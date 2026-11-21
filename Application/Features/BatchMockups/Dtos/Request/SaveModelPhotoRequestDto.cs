@@ -30,7 +30,7 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// </param>
 /// <param name="Attributes">Who is in the photo, for filtering the library; null keeps what it had.</param>
 /// <param name="PlainBackdrop">
-/// The photo is on a plain backdrop, as one made with AI is, so the garment is found the quicker way. Set only by
+/// The photo is of one person on a plain backdrop, made with AI, so the garment is found the quicker way. Set only by
 /// the server, never taken from a form.
 /// </param>
 public sealed record SaveModelPhotoRequestDto(

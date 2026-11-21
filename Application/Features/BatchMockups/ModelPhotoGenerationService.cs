@@ -129,13 +129,16 @@ public sealed class ModelPhotoGenerationService(
             logger.LogWarning(error, "The photo made with AI could not be read");
             return Result.Failure<MockupTemplateResponseDto>(Failed());
         }
+        // Only one person on a plain backdrop takes the quick matte: on a group it can close the gap between two people's
+        // garments, and they would then share one print.
+        var quickMatte = !group && ModelPhotoStyles.IsStudio(style.Scene);
         var name = await FreeNameAsync(ModelPeople.Label(request.Attributes), cancellationToken);
         using var content = new MemoryStream(bytes);
         var created = await modelPhotos.CreateAsync(new SaveModelPhotoRequestDto(
             name, productType, 0, 0, 1, 1,
             new UploadFileDto("model.jpg", "image/jpeg", bytes.Length, content),
             GarmentSelection: null, AutoPlacement: true, FindGarment: true, Attributes: request.Attributes,
-            PlainBackdrop: ModelPhotoStyles.IsStudio(style.Scene)),
+            PlainBackdrop: quickMatte),
             system, cancellationToken);
         if (created.IsFailure)
         {

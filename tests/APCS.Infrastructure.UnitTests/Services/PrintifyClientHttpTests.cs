@@ -153,6 +153,19 @@ public sealed class PrintifyClientHttpTests
     }
 
     [TestMethod]
+    public async Task UpdateTextAsync_SendsOnlyTheTitleDescriptionAndTags()
+    {
+        respond = _ => Json(ProductJson);
+        var client = Create();
+
+        await client.UpdateTextAsync("t", 777, "p-1", "New title", "New text", ["cat"], default);
+
+        requests.Single().Method.Should().Be(HttpMethod.Put);
+        requests.Single().RequestUri!.AbsolutePath.Should().Be("/v1/shops/777/products/p-1.json");
+        bodies[0].Should().Contain("\"title\":\"New title\"").And.Contain("\"description\":\"New text\"").And.Contain("\"tags\":[\"cat\"]").And.NotContain("variants");
+    }
+
+    [TestMethod]
     public async Task ProductCalls_ReadUpdateAndPublish()
     {
         respond = _ => Json(ProductJson);
