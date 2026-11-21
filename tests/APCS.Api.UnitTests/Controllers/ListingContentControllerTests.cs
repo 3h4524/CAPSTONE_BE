@@ -20,7 +20,7 @@ public sealed class ListingContentControllerTests
         var seo = new ListingSeoScoreResponseDto(productId, listing.ListingContentId, 60, 50, 55, 70, 65, 45, 4, ["Improve tags."], "regenerate", true, "v1", DateTime.UtcNow);
         using var cancellation = new CancellationTokenSource();
         var service = new Mock<IListingContentService>(MockBehavior.Strict);
-        service.Setup(x => x.GenerateAsync(productId, cancellation.Token, feedback)).ReturnsAsync(Result.Success(listing));
+        service.Setup(x => x.GenerateAsync(productId, cancellation.Token, feedback, null)).ReturnsAsync(Result.Success(listing));
         service.Setup(x => x.GetAsync(productId, cancellation.Token)).ReturnsAsync(Result.Success(listing));
         service.Setup(x => x.EvaluateSeoAsync(productId, cancellation.Token)).ReturnsAsync(Result.Success(seo));
         var controller = new ListingContentController(service.Object);

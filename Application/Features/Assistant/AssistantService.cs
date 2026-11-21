@@ -141,7 +141,7 @@ public sealed class AssistantService(
         if (currentUser.UserId is not { } userId)
             return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.Unauthenticated());
         var afterId = string.IsNullOrWhiteSpace(afterEventId) ? null : afterEventId.Trim();
-        if (afterId is not null && !IsStreamEntryId(afterId))
+        if (afterId is not null && !EventStreamEntry.IsEntryId(afterId))
             return Result.Failure<IAsyncEnumerable<AssistantTurnEntry>>(AssistantErrors.InvalidEventId());
 
         var message = await FindOwnedAssistantMessageAsync(messageId, userId, cancellationToken);
@@ -426,12 +426,6 @@ public sealed class AssistantService(
         {
             return AssistantMessageStatuses.Done;
         }
-    }
-
-    private static bool IsStreamEntryId(string value)
-    {
-        var parts = value.Split('-');
-        return parts.Length == 2 && parts.All(part => part.Length > 0 && ulong.TryParse(part, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _));
     }
 
     private static JsonElement PublicMetadata(string metadataJson)

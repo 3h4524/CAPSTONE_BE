@@ -72,6 +72,7 @@ try {
         "+APCS.Application.Features.ApiKeys.*",
         "+APCS.Application.Features.Workflows.*",
         "+APCS.Application.Features.Assistant.*",
+        "+APCS.Application.Features.ListingStreams.*",
         "+APCS.Common.*",
         "+APCS.Domain.Common.SoftDeletableEntity",
         "+APCS.Domain.Entities.AuthToken",
