@@ -197,7 +197,17 @@ public sealed class AdminModerationService(
         if (Blank(request.Severity) is { } severity) query = query.Where(term => term.Severity == severity);
         if (request.Active is bool active) query = query.Where(term => term.IsActive == active);
 
-        var list = await query.OrderBy(term => term.Category).ThenBy(term => term.Term)
+        // The milder categories first, so the list does not open on slurs and sexual terms.
+        var list = await query
+            .OrderBy(term => term.Category == ModerationCategories.IpTrademark ? 0
+                : term.Category == ModerationCategories.Illegal ? 1
+                : term.Category == ModerationCategories.ViolenceGore ? 2
+                : term.Category == ModerationCategories.SelfHarm ? 3
+                : term.Category == ModerationCategories.Hate ? 4
+                : term.Category == ModerationCategories.Sexual ? 5
+                : term.Category == ModerationCategories.SexualMinors ? 6
+                : 7)
+            .ThenBy(term => term.Term)
             .Select(term => new ModerationTermDto(term.Id, term.Term, term.Category, term.Severity, term.MatchType,
                 term.MatchUnaccented, term.Language, term.IsActive, term.Note, term.UpdatedAt))
             .ToListAsync(cancellationToken);

@@ -86,6 +86,8 @@ public static class AiVideoPromptCompiler
     internal static bool AdvancedControlsEnabled => false;
     /// <summary>Matches MiniMax's 7,000-character request limit while retaining required preservation rules.</summary>
     internal const int MaximumPromptCharacters = 7_000;
+    /// <summary>The longest wording a seller may give a scene's template prompt, leaving room for the rules after it.</summary>
+    public const int MaximumCustomPromptCharacters = 2_000;
     internal const string ProfileOrbitGuardrailKey = "profile_orbit_guardrails";
     internal const string FabricDetailGuardrailKey = "fabric_detail_guardrails";
     internal const string BrandFocusGuardrailKey = "brand_focus_guardrails";
@@ -265,7 +267,11 @@ public static class AiVideoPromptCompiler
         var productType = NormalizeProductType(productContext.ProductType);
         // Preserve persisted/custom creative directions. Concise rewrites apply only to the
         // code-owned Product On Model prompts, not seller-edited text.
-        var basePrompt = subtemplate?.BasePrompt ?? template.BasePrompt;
+        // The seller's own wording replaces the template's: it is never one of the code-owned prompts, so no rewrite
+        // below applies to it. Its {{...}} placeholders are filled in like the template's.
+        var basePrompt = string.IsNullOrWhiteSpace(settings.CustomPrompt)
+            ? subtemplate?.BasePrompt ?? template.BasePrompt
+            : settings.CustomPrompt.Trim();
         var rewriteNaturalMotion = useH3NaturalMotion && basePrompt == BuiltIns["lifestyle_in_use"].Subtemplates!
             .Single(item => item.Code == "natural_motion").BasePrompt;
         var rewriteProfileTracking = useH3Format && template.Code == "lifestyle_in_use" &&

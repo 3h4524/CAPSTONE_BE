@@ -81,7 +81,11 @@ public sealed record AiVideoSceneOptions(
     Point? AiCropPosition = null,
     // Where a batch run finds this scene's image for each design; resolved to MockupId before planning.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    SceneSource? Source = null);
+    SceneSource? Source = null,
+    // The seller's own wording of the scene's template prompt; null uses the template's. The product-preservation rules
+    // are added after it either way.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? CustomPrompt = null);
 /// <summary>
 /// The image of a scene described without naming one product's mock-up, so one scene list fits every design of a
 /// batch run. <see cref="Kind"/> is "template" (the mock-up made from <see cref="TemplateId"/>, in

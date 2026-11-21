@@ -1,5 +1,6 @@
 using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.Workflows.Validators;
@@ -23,7 +24,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     WorkflowGraphValidator graph, WorkflowRuntime runtime, GenerateVideoConfigValidator validator,
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
     IPlanEntitlementService entitlements, WorkflowPublishConnections publishConnections, ISceneVideoNotifier? sceneNotifier = null,
-    IRunTargetConfigResolver? targetResolver = null, IWorkflowRunNotifier? runNotifier = null) : IWorkflowRunService
+    IRunTargetConfigResolver? targetResolver = null, IWorkflowRunNotifier? runNotifier = null,
+    IContentModerationService? moderation = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
     {
@@ -120,6 +122,12 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     }
     public async Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct)
     {
+        // New settings sent with an action (rendering again) are checked once here, before the run is locked, since the
+        // check may wait on Gemini; planning and rendering then use them unchecked. Rewriting them to a batch design's
+        // images below changes no text.
+        if (request.Config != null &&
+            await moderation.CheckSellerTextsAsync(request.Config, user.UserId!.Value, ModerationSubjects.AiShot, id, ct) is { } blocked)
+            return Result.Failure<RunResponse>(blocked);
         await using var tx = await uow.BeginTransactionAsync(ct);
         var run = await state.LockRunAsync(id, ct);
         if (run is null || run.UserId != user.UserId) return Result.Failure<RunResponse>(Missing());

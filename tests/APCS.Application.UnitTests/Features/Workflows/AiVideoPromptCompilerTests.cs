@@ -33,6 +33,20 @@ public sealed class AiVideoPromptCompilerTests
     }
 
     [TestMethod]
+    public void Compile_CustomPrompt_ReplacesTheTemplatePromptAndKeepsThePreservationRules()
+    {
+        var template = AiVideoPromptCompiler.Catalog().Single(item => item.Code == "cinematic_product_showcase");
+
+        var prompt = AiVideoPromptCompiler.Compile(template,
+            new(TemplateCode: template.Code, CustomPrompt: "  A slow {{DURATION}}-second turn of the shirt on a wooden table.  "),
+            new("tshirt", "Hero"), 4);
+
+        prompt.Should().StartWith("A slow 4-second turn of the shirt on a wooden table.");
+        prompt.Should().NotContain(template.BasePrompt[..40]);
+        prompt.Should().Contain(AiVideoPromptCompiler.CommonGuardrail);
+    }
+
+    [TestMethod]
     public void Compile_MacroDetail_AddsDetailContextWithoutLifestyleDirections()
     {
         var template = AiVideoPromptCompiler.Catalog().Single(item => item.Code == "macro_detail_reveal");
