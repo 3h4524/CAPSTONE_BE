@@ -142,6 +142,9 @@ public interface IPrintifyClient
 
     Task<PrintifyProduct> UpdatePricesAsync(string token, long shopId, string productId, IReadOnlyList<PrintifyVariantPrice> variants, CancellationToken cancellationToken);
 
+    /// <summary>Changes only the product's title, description and tags.</summary>
+    Task<PrintifyProduct> UpdateTextAsync(string token, long shopId, string productId, string title, string description, IReadOnlyList<string> tags, CancellationToken cancellationToken);
+
     /// <summary>Asks Printify to publish the product to the store's sales channel; it finishes in the background.</summary>
     Task PublishAsync(string token, long shopId, string productId, CancellationToken cancellationToken);
 }

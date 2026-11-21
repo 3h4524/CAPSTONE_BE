@@ -767,7 +767,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 hasOverride, scenes, warnings, resolveError, child?.Id, child?.Status, current?.NodeType, current?.Stage, current?.Progress ?? 0,
                 child?.ErrorMessage, child is null ? picked?.Config ?? ProductOwn(config, target.Product.Id) : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
                 picked?.Config is not null, child is null ? null : VideoStatusOf(child, childSteps),
-                printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage)));
+                printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage,
+                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot))));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),
