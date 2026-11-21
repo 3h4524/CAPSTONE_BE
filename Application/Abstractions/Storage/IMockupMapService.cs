@@ -23,9 +23,11 @@ public interface IMockupMapService
     /// A PNG whose alpha is the garment, at the photo's size or scaled down from it; null finds the garment the
     /// person wears automatically.
     /// </param>
+    /// <param name="search">What the garment is (a top or a bag) and what the photo is like; null is a top on any backdrop.</param>
     /// <param name="cancellationToken">A cancellation token.</param>
     /// <returns>The helper images; null when the garment was to be found automatically and none was.</returns>
-    Task<PreparedBasePhoto?> PrepareModelPhotoAsync(byte[] photo, byte[]? garmentSelection, CancellationToken cancellationToken = default);
+    Task<PreparedBasePhoto?> PrepareModelPhotoAsync(byte[] photo, byte[]? garmentSelection, GarmentSearch? search = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The person the model finds in a photo, for selecting the garment on it: the mask's alpha is the

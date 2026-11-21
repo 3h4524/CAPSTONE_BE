@@ -253,7 +253,8 @@ public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Produ
                 ? await maps.MeasureGarmentsAsync(modelMask, ct)
                 : await maps.MeasureGarmentAsync(modelMask, ct) is { } one ? [one] : [];
             return onModel
-                .Select(garment => MockupRules.MapPlacementByGarment(used, onTemplate, template.OutputWidthPx, template.OutputHeightPx, garment, model.OutputWidthPx, model.OutputHeightPx))
+                .Select(garment => MockupRules.MapPlacementByGarment(used, onTemplate, template.OutputWidthPx, template.OutputHeightPx, garment, model.OutputWidthPx, model.OutputHeightPx,
+                    MockupRules.WidthShareOf(model.ProductType)))
                 .ToArray();
         }
         catch (Exception error) when (error is not OperationCanceledException || !ct.IsCancellationRequested)

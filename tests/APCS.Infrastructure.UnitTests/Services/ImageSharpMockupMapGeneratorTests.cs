@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using APCS.Application.Abstractions.Storage;
 using APCS.Infrastructure.Services;
 using FluentAssertions;
 using SixLabors.ImageSharp;
@@ -526,6 +527,48 @@ public sealed class ImageSharpMockupMapGeneratorTests
     }
 
     [TestMethod]
+    public void PlainBackdrop_TakesTheQuickAnswerAsTheOneKept_WithoutWorkingOutTheFullOne()
+    {
+        var model = new FakeGarmentSegmenter((x, y) => x > 0.2 && x < 0.8);
+        var generator = new ImageSharpMockupMapGenerator(model, new FakeClothesSegmenter((_, y) => y < 0.5 ? 0.95 : 0.05));
+        var photo = Png(200, 200, (_, _) => new Rgba32(230, 230, 230));
+
+        var selection = generator.GenerateWornGarmentMask(photo, search: new GarmentSearch(PlainBackdrop: true))!;
+        var mask = generator.GenerateGarmentMask(photo, garmentSelection: selection, search: new GarmentSearch(PlainBackdrop: true));
+        generator.GenerateDisplacementMap(photo, selection, new GarmentSearch(PlainBackdrop: true));
+
+        model.QuickCalls.Should().AllBeEquivalentTo(true).And.HaveCount(3);
+        model.PrepareFullCalls.Should().AllBeEquivalentTo(false);
+        using var image = Image.Load<Rgba32>(mask.MaskPng);
+        image.Width.Should().Be(200, "the quick answer is still scaled to the photo");
+    }
+
+    [TestMethod]
+    public void GenerateWornGarmentMask_ForABag_IsWhereTheClothesModelSeesTheBag_NotTheShirt()
+    {
+        // The person is the middle of the photo: a shirt on their top half, a bag held over their lower half.
+        var photo = Png(100, 100, (_, _) => new Rgba32(230, 230, 230));
+        var generator = new ImageSharpMockupMapGenerator(Middle,
+            new FakeClothesSegmenter((_, y) => y < 0.5 ? 0.95 : 0.05, (_, y) => y >= 0.6 ? 0.95 : 0.05));
+
+        using var mask = Image.Load<Rgba32>(generator.GenerateWornGarmentMask(photo, search: new GarmentSearch(WornGarment.Bag))!);
+
+        mask[50, 75].A.Should().Be(255, "the bag");
+        mask[50, 30].A.Should().Be(0, "the shirt is not what is printed on");
+    }
+
+    [TestMethod]
+    public void APreview_StillHasTheFullAnswerWorkedOutForTheSave()
+    {
+        var model = new FakeGarmentSegmenter((x, y) => x < 0.5);
+        var photo = Png(200, 200, (_, _) => new Rgba32(240, 240, 240));
+
+        new ImageSharpMockupMapGenerator(model).GenerateGarmentMask(photo, maxOutputSide: 100);
+
+        model.PrepareFullCalls.Should().Equal(true);
+    }
+
+    [TestMethod]
     public void GenerateGarmentMask_DarkGarment_ReportsLowLuminance()
     {
         var photo = Png(200, 200, (x, y) =>
@@ -671,16 +714,17 @@ public sealed class ImageSharpMockupMapGeneratorTests
 }
 
 /// <summary>Stands in for the clothes model: the chance of a shirt at each position 0..1; null is no model.</summary>
-internal sealed class FakeClothesSegmenter(Func<double, double, double>? shirt) : IClothesSegmenter
+internal sealed class FakeClothesSegmenter(Func<double, double, double>? shirt, Func<double, double, double>? bag = null) : IClothesSegmenter
 {
     public bool IsAvailable => shirt is not null;
 
-    public byte[]? UpperClothes(Image<Rgba32> photo, int width, int height)
+    public byte[]? Garment(Image<Rgba32> photo, int width, int height, WornGarment garment = WornGarment.UpperBody)
     {
-        if (shirt is null) return null;
+        var found = garment == WornGarment.Bag ? bag ?? ((_, _) => 0) : shirt;
+        if (found is null) return null;
         var result = new byte[width * height];
         for (var i = 0; i < result.Length; i++)
-            result[i] = (byte)Math.Round(255 * shirt((i % width + 0.5) / width, (i / width + 0.5) / height));
+            result[i] = (byte)Math.Round(255 * found((i % width + 0.5) / width, (i / width + 0.5) / height));
         return result;
     }
 }
@@ -692,9 +736,12 @@ internal sealed class FakeGarmentSegmenter(Func<double, double, bool>? isGarment
 
     public List<bool> QuickCalls { get; } = [];
 
-    public byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false)
+    public List<bool> PrepareFullCalls { get; } = [];
+
+    public byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false, bool prepareFull = true)
     {
         QuickCalls.Add(quick);
+        PrepareFullCalls.Add(prepareFull);
         if (isGarment is null) return null;
         var result = new byte[width * height];
         for (var i = 0; i < result.Length; i++)

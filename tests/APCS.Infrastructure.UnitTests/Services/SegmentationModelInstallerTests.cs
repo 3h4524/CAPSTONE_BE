@@ -158,7 +158,7 @@ public sealed class SegmentationModelInstallerTests
             }
         }
 
-        public byte[]? Segment(SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32> photo, int width, int height, bool quick = false) => null;
+        public byte[]? Segment(SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32> photo, int width, int height, bool quick = false, bool prepareFull = true) => null;
     }
 
     private sealed class FakeHandler(byte[] body, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler

@@ -10,6 +10,7 @@ using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.BatchMockups;
@@ -53,6 +54,11 @@ public sealed class ModelPhotoGenerationService(
             return Result.Failure<MockupTemplateResponseDto>(Error.Validation("Choose who is in the photo."));
         if (ModelPeople.Problem(request.Attributes) is { } problem)
             return Result.Failure<MockupTemplateResponseDto>(Error.Validation(problem));
+        var group = request.Attributes.People.Trim().ToLowerInvariant() == ModelPeople.Group;
+        if (ModelPhotoStyles.Problem(request.ProductType, request.Style, group) is { } styleProblem)
+            return Result.Failure<MockupTemplateResponseDto>(Error.Validation(styleProblem));
+        var style = ModelPhotoStyles.Clean(request.Style);
+        var productType = request.ProductType.Trim().ToLowerInvariant();
         if (imageProviders.FirstOrDefault(provider => provider.Provider == ImageGenerationProviders.Ideogram) is not { } ideogram)
             return Result.Failure<MockupTemplateResponseDto>(Error.Failure("ModelPhotoGenerationUnavailable", "Making model photos with AI is not available."));
 
@@ -69,7 +75,8 @@ public sealed class ModelPhotoGenerationService(
         if (key is null && !platform)
             return Result.Failure<MockupTemplateResponseDto>(Error.Conflict("MissingApiKey", "Connect a valid Ideogram API key before making a model photo with AI."));
 
-        var (prompt, aspectRatio) = ModelPhotoPrompts.Build(request.Attributes);
+        // The people's looks are picked at random, so two photos with the same choices differ.
+        var (prompt, aspectRatio) = ModelPhotoPrompts.Build(request.Attributes, productType, style, Random.Shared);
         ImageGenerationResult generated;
         var noOwnKey = false;
         try
@@ -122,19 +129,21 @@ public sealed class ModelPhotoGenerationService(
             logger.LogWarning(error, "The photo made with AI could not be read");
             return Result.Failure<MockupTemplateResponseDto>(Failed());
         }
-        var name = $"AI · {ModelPeople.Label(request.Attributes)} · {Guid.NewGuid().ToString("N")[..6]}";
+        var name = await FreeNameAsync(ModelPeople.Label(request.Attributes), cancellationToken);
         using var content = new MemoryStream(bytes);
         var created = await modelPhotos.CreateAsync(new SaveModelPhotoRequestDto(
-            name, request.ProductType, 0, 0, 1, 1,
+            name, productType, 0, 0, 1, 1,
             new UploadFileDto("model.jpg", "image/jpeg", bytes.Length, content),
-            GarmentSelection: null, AutoPlacement: true, FindGarment: true, Attributes: request.Attributes), system, cancellationToken);
+            GarmentSelection: null, AutoPlacement: true, FindGarment: true, Attributes: request.Attributes,
+            PlainBackdrop: ModelPhotoStyles.IsStudio(style.Scene)),
+            system, cancellationToken);
         if (created.IsFailure)
         {
             logger.LogWarning("A model photo made with AI could not be saved: {Reason}", created.Error.Message);
             return created;
         }
 
-        // Marked as made by AI, with a print area on the chest for when a garment cannot be measured.
+        // Marked as made by AI, with a print area on the chest for when the garment cannot be measured.
         var template = await templates.GetByIdAsync(created.Value.Id, cancellationToken);
         if (template is null)
             return created;
@@ -148,6 +157,26 @@ public sealed class ModelPhotoGenerationService(
     // The middle of the photo's upper half, where a chest print sits on a person framed head to mid-thigh.
     internal static MockupPosition ChestArea(int width, int height) =>
         new((int)(width * 0.35), (int)(height * 0.3), Math.Max(1, (int)(width * 0.3)), Math.Max(1, (int)(height * 0.25)));
+
+    /// <summary>
+    /// Who is in the photo ("Teen · Female", "Family"), numbered from 2 when that name is taken: names are unique, and
+    /// a code or an "AI" mark would only clutter them (the card says it was made with AI).
+    /// </summary>
+    internal async Task<string> FreeNameAsync(string label, CancellationToken cancellationToken)
+    {
+        var lower = label.ToLowerInvariant();
+        var taken = (await templates.Query()
+                .Where(template => template.Name.ToLower().StartsWith(lower))
+                .Select(template => template.Name.ToLower())
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+        if (!taken.Contains(lower))
+            return label;
+        var number = 2;
+        while (taken.Contains($"{lower} {number}"))
+            number++;
+        return $"{label} {number}";
+    }
 
     // Whether the photo is made on the platform's Ideogram keys: the platform has some, and the photo is for the shared
     // library or the Seller's plan includes them.

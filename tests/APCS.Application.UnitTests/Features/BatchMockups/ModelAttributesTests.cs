@@ -81,6 +81,65 @@ public sealed class ModelAttributesTests
     }
 
     [TestMethod]
+    public void Prompts_AHoodie_IsAPlainWhitePulloverWithNothingOverTheChest()
+    {
+        var (prompt, _) = ModelPhotoPrompts.Build(new("single", "adult", "male"), "hoodie");
+
+        prompt.Should().Contain("plain white pullover hoodie").And.Contain("no zip and no drawstrings over the chest")
+            .And.Contain("whole front of the hoodie stays visible").And.NotContain("t-shirt");
+    }
+
+    [TestMethod]
+    public void Prompts_EachSceneOutfitAndPose_ChangesThePrompt()
+    {
+        var person = new ModelAttributesDto("single", "adult", "female");
+        var prompts = ModelPhotoStyles.Scenes.Select(scene => ModelPhotoPrompts.Build(person, style: new(Scene: scene)).Prompt)
+            .Concat(ModelPhotoStyles.Outfits.Skip(1).Select(outfit => ModelPhotoPrompts.Build(person, style: new(Outfit: outfit)).Prompt))
+            .Concat(ModelPhotoStyles.Poses.Skip(1).Select(pose => ModelPhotoPrompts.Build(person, style: new(Pose: pose)).Prompt))
+            .ToList();
+
+        prompts.Should().OnlyHaveUniqueItems();
+        prompts.Should().OnlyContain(prompt => prompt.Contains("Nothing behind them is white"));
+    }
+
+    [TestMethod]
+    public void Prompts_AGroupWalking_StillKeepsTheirShirtsApart()
+    {
+        var (prompt, _) = ModelPhotoPrompts.Build(new("group", GroupType: "friends"), style: new(Pose: "walking"));
+
+        prompt.Should().Contain("walk toward the camera side by side").And.Contain("t-shirts do not touch or overlap");
+    }
+
+    [TestMethod]
+    public void Prompts_WithARandomLook_DifferForTheSameChoices()
+    {
+        var random = new Random(7);
+        var prompts = Enumerable.Range(0, 6).Select(_ => ModelPhotoPrompts.Build(new("single", "adult", "male"), random: random).Prompt).ToList();
+
+        prompts.Distinct().Should().HaveCountGreaterThan(1);
+        prompts.Should().OnlyContain(prompt => prompt.Contains("a man in his late twenties of ") && prompt.Contains(" descent, with "));
+    }
+
+    [TestMethod]
+    [DataRow("tshirt", null, null, false, true)]
+    [DataRow("hoodie", "park", "walking", true, true)]
+    [DataRow("tote_bag", null, null, false, false)]
+    [DataRow("poster", null, null, false, false)]
+    [DataRow("hoodie", "beach", null, false, false)]
+    [DataRow("hoodie", null, "leaning", true, false)]
+    public void Styles_AreCheckedForTheProductAndThePeople(string product, string? scene, string? pose, bool group, bool valid)
+    {
+        (ModelPhotoStyles.Problem(product, new(scene, null, pose), group) is null).Should().Be(valid);
+    }
+
+    [TestMethod]
+    public void Styles_OnlyAStudioIsAPlainBackdrop()
+    {
+        ModelPhotoStyles.Scenes.Where(ModelPhotoStyles.IsStudio).Should().Equal("studio_grey", "studio_beige", "studio_dark");
+        ModelPhotoStyles.IsStudio(null).Should().BeTrue("the default is the grey studio");
+    }
+
+    [TestMethod]
     public void Prompts_EveryAgeGroupAndGender_AreDistinct()
     {
         var prompts = (from age in ModelPeople.AgeGroups

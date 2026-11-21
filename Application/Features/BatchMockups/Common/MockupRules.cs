@@ -685,10 +685,11 @@ public static class MockupRules
     /// <param name="model">The garment measured on the model photo.</param>
     /// <param name="modelWidth">The model photo's width; the result stays inside it.</param>
     /// <param name="modelHeight">The model photo's height.</param>
+    /// <param name="widthShare">The share of the garment's flat width seen on the model photo (<see cref="WidthShareOf"/>).</param>
     public static MockupPosition MapPlacementByGarment(MockupPosition used, GarmentMeasurement template, int templateWidth, int templateHeight,
-        GarmentMeasurement model, int modelWidth, int modelHeight)
+        GarmentMeasurement model, int modelWidth, int modelHeight, double widthShare = WornWidthShare)
     {
-        var scale = model.BodyWidth * modelWidth / (template.BodyWidth * templateWidth * WornWidthShare);
+        var scale = model.BodyWidth * modelWidth / (template.BodyWidth * templateWidth * widthShare);
         var templateCenter = template.CenterX * templateWidth;
         var templateTop = template.Top * templateHeight;
         var modelCenter = model.CenterX * modelWidth;
@@ -703,6 +704,16 @@ public static class MockupRules
     /// design keeps the size it is printed at, so on a person it covers more of the width seen than on a flat lay.
     /// </summary>
     public const double WornWidthShare = 0.75;
+
+    /// <summary>What a design on this product is printed on in a photo of a person: the bag carried, or the top worn.</summary>
+    public static WornGarment WornGarmentOf(string? productType) =>
+        string.Equals(productType?.Trim(), "tote_bag", StringComparison.OrdinalIgnoreCase) ? WornGarment.Bag : WornGarment.UpperBody;
+
+    /// <summary>
+    /// The share of this product's flat width seen on a person: a top wraps around the body (<see cref="WornWidthShare"/>),
+    /// a bag carried with its face to the camera is seen whole.
+    /// </summary>
+    public static double WidthShareOf(string? productType) => WornGarmentOf(productType) == WornGarment.Bag ? 1.0 : WornWidthShare;
 
     // A rectangle rounded to pixels and kept inside a photo, at least one pixel wide and high.
     private static MockupPosition Within(double left, double top, double right, double bottom, int width, int height)
