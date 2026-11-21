@@ -316,6 +316,7 @@ jobs:
         run: ./deploy/scripts/sonar-security-gate.sh .sonarqube/out/.sonar/report-task.txt
 
       - name: Comment on the pull request
+        id: sonar_comment
         if: always()
         continue-on-error: true
         env:
@@ -324,3 +325,11 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SONAR_TOKEN: ${{ steps.secrets.outputs.token }}
         run: ./deploy/scripts/sonar-pr-comment.sh
+
+      - name: Fail on any Sonar finding
+        if: steps.sonar_comment.outputs.findings != '0'
+        env:
+          FINDINGS: ${{ steps.sonar_comment.outputs.findings }}
+        run: |
+          echo "::error::Sonar found $FINDINGS new issue(s) or hotspot(s) on this pull request."
+          exit 1
