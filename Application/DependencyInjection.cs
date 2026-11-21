@@ -176,6 +176,9 @@ public static class DependencyInjection
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.Confirmations.AddBatchProductsTool>();
         services.AddScoped<Features.Assistant.Tools.IAssistantTool, Features.Assistant.Tools.OfferChoicesTool>();
         services.AddScoped<IListingContentService, ListingContentService>();
+        services.AddScoped<Features.ListingStreams.ListingStreamPublisher>();
+        services.AddScoped<Features.ListingStreams.ListingStreamReader>();
+        services.AddScoped<Features.ListingStreams.IListingStreamService, Features.ListingStreams.ListingStreamService>();
         // The test reports are files on the machine that ran the suite, so the service keeps
         // them for as long as the API lives.
         services.AddSingleton<ITestReportService, TestReportService>();

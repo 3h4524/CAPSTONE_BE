@@ -41,7 +41,34 @@ public sealed class ListingContentService(
     /// <summary>Longest design text and artwork prompt put in the listing prompt.</summary>
     internal const int MaxDesignTextLength = 200, MaxDesignPromptLength = 600;
 
-    public async Task<Result<ListingContentResponseDto>> GetOrGenerateAsync(Guid productId, CancellationToken cancellationToken = default)
+    public async Task<Result<ListingContentResponseDto>> GetOrGenerateAsync(
+        Guid productId,
+        CancellationToken cancellationToken = default,
+        IListingGenerationObserver? observer = null) =>
+        await ReportAsync(await GetOrGenerateListingAsync(productId, observer, cancellationToken), observer, cancellationToken);
+
+    public async Task<Result<ListingContentResponseDto>> GenerateAsync(
+        Guid productId,
+        CancellationToken cancellationToken = default,
+        ListingSeoFeedbackDto? seoFeedback = null,
+        IListingGenerationObserver? observer = null) =>
+        await ReportAsync(await GenerateListingAsync(productId, seoFeedback, observer, cancellationToken), observer, cancellationToken);
+
+    private static async Task<Result<ListingContentResponseDto>> ReportAsync(
+        Result<ListingContentResponseDto> result,
+        IListingGenerationObserver? observer,
+        CancellationToken cancellationToken)
+    {
+        if (observer is null) return result;
+        if (result.IsSuccess) await observer.CompletedAsync(result.Value, cancellationToken);
+        else await observer.FailedAsync(result.Error.Message, cancellationToken);
+        return result;
+    }
+
+    private async Task<Result<ListingContentResponseDto>> GetOrGenerateListingAsync(
+        Guid productId,
+        IListingGenerationObserver? observer,
+        CancellationToken cancellationToken)
     {
         if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid userId)
             return Result.Failure<ListingContentResponseDto>(Error.Unauthorized("ListingContent.Unauthenticated", "Please sign in to generate listing content."));
@@ -55,7 +82,7 @@ public sealed class ListingContentService(
         if (listingId is { } id && await IsCurrentAsync(id, await BuildInputAsync(product, cancellationToken), cancellationToken)
             && await GetAsync(productId, cancellationToken) is { IsSuccess: true } current)
             return current;
-        return await GenerateAsync(productId, cancellationToken);
+        return await GenerateListingAsync(productId, null, observer, cancellationToken);
     }
 
     /// <summary>
@@ -74,10 +101,11 @@ public sealed class ListingContentService(
         return prompt is not null && ListingPromptBuilder.DescribesSameProduct(prompt, input);
     }
 
-    public async Task<Result<ListingContentResponseDto>> GenerateAsync(
+    private async Task<Result<ListingContentResponseDto>> GenerateListingAsync(
         Guid productId,
-        CancellationToken cancellationToken = default,
-        ListingSeoFeedbackDto? seoFeedback = null)
+        ListingSeoFeedbackDto? seoFeedback,
+        IListingGenerationObserver? observer,
+        CancellationToken cancellationToken)
     {
         if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid userId)
             return Result.Failure<ListingContentResponseDto>(Error.Unauthorized("ListingContent.Unauthenticated", "Please sign in to generate listing content."));
@@ -121,7 +149,10 @@ public sealed class ListingContentService(
         GeminiTextGenerationResult generated;
         try
         {
-            generated = await generator.GenerateAsync(new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema()), cancellationToken);
+            var request = new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema());
+            generated = observer is null
+                ? await generator.GenerateAsync(request, cancellationToken)
+                : await generator.GenerateStreamingAsync(request, new ListingTextStream(observer), cancellationToken);
         }
         catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.ServiceUnavailable or System.Net.HttpStatusCode.GatewayTimeout)
         {
@@ -470,5 +501,13 @@ Regeneration rules:
             logger.LogWarning(exception, "RAG {ContextType} retrieval failed for product {ProductId}; using listing defaults.", contextType, productId);
             return [];
         }
+    }
+
+    private sealed class ListingTextStream(IListingGenerationObserver observer) : IGeminiTextStreamObserver
+    {
+        public Task AttemptStartedAsync(string model, bool restarted, CancellationToken cancellationToken) =>
+            restarted ? observer.RestartedAsync(cancellationToken) : observer.StartedAsync(model, cancellationToken);
+
+        public Task TextReceivedAsync(string text, CancellationToken cancellationToken) => observer.TextAsync(text, cancellationToken);
     }
 }

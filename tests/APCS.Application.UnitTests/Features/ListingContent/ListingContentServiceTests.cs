@@ -6,6 +6,8 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Rag;
 using APCS.Application.Features.Entitlements;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.ListingContent.Common;
+using APCS.Application.Features.ListingContent.Dtos;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -201,6 +203,116 @@ public sealed class ListingContentServiceTests
         await Service().GetOrGenerateAsync(product.Id);
 
         generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithAnObserver_StreamsTheAnswerThenReportsTheSavedListing()
+    {
+        var observer = new RecordingObserver();
+        StreamAnswer(Answered[..20], Answered[20..]);
+
+        var result = await Service().GenerateAsync(product.Id, observer: observer);
+
+        result.IsSuccess.Should().BeTrue();
+        observer.Events.Should().Equal("start:text-model", $"text:{Answered[..20]}", $"text:{Answered[20..]}", "done:Road trip tee");
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithAnObserverWhenTheProviderStartsAgain_ReportsTheRestart()
+    {
+        var observer = new RecordingObserver();
+        generator.Setup(x => x.GenerateStreamingAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<IGeminiTextStreamObserver>(), It.IsAny<CancellationToken>()))
+            .Returns(async (GeminiTextGenerationRequest _, IGeminiTextStreamObserver stream, CancellationToken token) =>
+            {
+                await stream.AttemptStartedAsync("text-model", false, token);
+                await stream.TextReceivedAsync("{\"ti", token);
+                await stream.AttemptStartedAsync("fallback-model", true, token);
+                await stream.TextReceivedAsync(Answered, token);
+                return new GeminiTextGenerationResult(Answered, "fallback-model", 10, 20, "request-1");
+            });
+
+        await Service().GenerateAsync(product.Id, observer: observer);
+
+        observer.Events.Should().Equal("start:text-model", "text:{\"ti", "reset", $"text:{Answered}", "done:Road trip tee");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithAnObserverAndAnIncompleteAnswer_ReportsTheFailure()
+    {
+        var observer = new RecordingObserver();
+        StreamAnswer("Sorry, I cannot help with that.");
+
+        var result = await Service().GenerateAsync(product.Id, observer: observer);
+
+        result.Error.Code.Should().Be("ListingContent.IncompleteResponse");
+        observer.Events.Last().Should().Be($"failed:{result.Error.Message}");
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithAnObserverOnALockedPlan_ReportsTheFailureWithoutStreaming()
+    {
+        var observer = new RecordingObserver();
+        var starter = TestEntitlements.Plan(features: new Dictionary<string, PlanFeatureValue> { [PlanFeatures.WorkflowListing] = new(false, null) });
+
+        var result = await Service(starter).GenerateAsync(product.Id, observer: observer);
+
+        observer.Events.Should().Equal($"failed:{result.Error.Message}");
+        generator.Verify(x => x.GenerateStreamingAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<IGeminiTextStreamObserver>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GetOrGenerateAsync_WithAnObserverAndACurrentListing_ReportsItAtOnceWithoutGenerating()
+    {
+        Listed(PromptFor(product));
+        var observer = new RecordingObserver();
+
+        await Service().GetOrGenerateAsync(product.Id, observer: observer);
+
+        observer.Events.Should().Equal("done:Old title");
+        generator.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task GetOrGenerateAsync_WithoutAnObserver_DoesNotStream()
+    {
+        Answer(Answered);
+
+        await Service().GetOrGenerateAsync(product.Id);
+
+        generator.Verify(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+        generator.Verify(x => x.GenerateStreamingAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<IGeminiTextStreamObserver>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private void StreamAnswer(params string[] chunks) =>
+        generator.Setup(x => x.GenerateStreamingAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<IGeminiTextStreamObserver>(), It.IsAny<CancellationToken>()))
+            .Returns(async (GeminiTextGenerationRequest _, IGeminiTextStreamObserver stream, CancellationToken token) =>
+            {
+                await stream.AttemptStartedAsync("text-model", false, token);
+                foreach (var chunk in chunks)
+                    await stream.TextReceivedAsync(chunk, token);
+                return new GeminiTextGenerationResult(string.Concat(chunks), "text-model", 10, 20, "request-1");
+            });
+
+    private sealed class RecordingObserver : IListingGenerationObserver
+    {
+        public List<string> Events { get; } = [];
+
+        public Task StartedAsync(string model, CancellationToken cancellationToken) => Record($"start:{model}");
+
+        public Task TextAsync(string text, CancellationToken cancellationToken) => Record($"text:{text}");
+
+        public Task RestartedAsync(CancellationToken cancellationToken) => Record("reset");
+
+        public Task CompletedAsync(ListingContentResponseDto listing, CancellationToken cancellationToken) => Record($"done:{listing.Title}");
+
+        public Task FailedAsync(string message, CancellationToken cancellationToken) => Record($"failed:{message}");
+
+        private Task Record(string item)
+        {
+            Events.Add(item);
+            return Task.CompletedTask;
+        }
     }
 
     private ListingContentService Service(TestEntitlements? entitlements = null)

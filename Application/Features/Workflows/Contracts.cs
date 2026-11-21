@@ -152,10 +152,10 @@ public sealed record CostRange(string Currency, decimal Minimum, decimal Maximum
 public sealed record VideoModeCapability(string Mode, bool Enabled, string Availability, string Description, bool SupportsFallback, CostRange? EstimatedCostRange = null);
 public sealed record NodeCapability(string Type, bool Enabled, string Description);
 public sealed record WorkflowCapabilities(int DefinitionVersion, IReadOnlyList<NodeCapability> Nodes, IReadOnlyList<VideoModeCapability> VideoModes);
-public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey);
+public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey, Guid? ListingStreamId = null);
 public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid? VideoId = null, long? ReviewRevision = null,
     GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null,
-    int? SceneOrder = null);
+    int? SceneOrder = null, Guid? ListingStreamId = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes,
     Guid? RunGroupId = null, string? ArtworkGroupKey = null);

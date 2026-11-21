@@ -80,6 +80,21 @@ With a scene list (`WorkflowGraphValidator.SupportsBatchVideos`), the video part
 
 The frontend resolves `@apcs/video-composition` from `../CAPSTONE_BE/shared/video-composition`, and `Start-VideoDev.ps1` looks for the frontend in `../CAPSTONE_FE` first and `../../Frontend/CAPSTONE_FE` second. With npm the package must be installed as a copy (`install-links=true` in the frontend's `.npmrc`): Turbopack does not resolve a link that points outside the project.
 
+## Live listing stream
+
+A run writes its listing (`generate-listing`) inside `POST /api/workflows/{id}/runs` and the `retry_listing` action, so the canvas can follow Gemini as it writes. The client picks a GUID, opens `GET /api/listing-streams/{streamId}` (Seller, `text/event-stream`, resumable with `Last-Event-ID` or `?after=` like the assistant stream) and sends the same GUID as `listingStreamId` in `StartRunRequest` or `RunActionRequest`. The stream may be opened first: the reader waits up to two minutes for the first event.
+
+| Event | Data |
+|---|---|
+| `start` | `{ productId, model }`: Gemini starts writing the product's listing. |
+| `delta` | `{ productId, text }`: the next chunk of the model's raw JSON answer. |
+| `reset` | `{ productId }`: the provider started again (fallback model or retry); drop the text received so far. |
+| `done` | `{ productId, listing }`: the saved listing (`ListingContentResponseDto`), also sent alone when a current listing is reused without Gemini. |
+| `failed` | `{ productId, message }` |
+| `end` | `{}`: always written last, when the request is finished with listings, whatever the outcome (also when the run has no listing step). |
+
+The events live in the Redis stream `{prefix}listing:stream:{userId}:{streamId}` (same limits and expiry as the assistant's turn buffer, through the shared `RedisEventStreamBuffer`), so only the user who started the request can read it. A Redis failure is logged and never fails the listing. Batch video runs are not streamed: `RunGroupPlannerWorker` writes their listings in the background, after the request that confirmed them has returned.
+
 ## Setup
 
 For this Windows workspace, `./scripts/Start-VideoDev.ps1` starts the Release API at localhost:5191, frontend at localhost:3000 and local media worker using installed smoke-test binaries. It creates a shared ephemeral worker secret in child-process environments, not a file, and refuses occupied ports instead of stopping existing processes. Logs are in ignored `artifacts/video-dev`. Stop the returned processes before rerunning; the secret changes each launch. This convenience launcher does not replace production secret/container configuration.
