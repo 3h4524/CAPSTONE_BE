@@ -16,7 +16,6 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
     IRepository<MockupTemplate>? mockupTemplates = null,
-    Abstractions.Moderation.IContentModerationService? moderation = null,
     Microsoft.Extensions.Options.IOptions<AiClipPhaseSettings>? clipPhase = null)
 {
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
@@ -56,7 +55,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var prepared = promptPreparation is null
             ? planned.Value
             : await promptPreparation.PrepareAsync(run.UserId, planned.Value, approved, ct);
-        return await moderation.CheckAiShotPromptsAsync(prepared, run.UserId, ct);
+        // The seller's scene text was checked when it was stored (see AiShotPromptModeration).
+        return Result.Success(prepared);
     }
 
     /// <param name="listingStream">Where a listing written now is streamed to, when the request asked for it.</param>

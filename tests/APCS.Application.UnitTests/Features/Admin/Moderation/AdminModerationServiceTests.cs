@@ -112,6 +112,21 @@ public sealed class AdminModerationServiceTests
     }
 
     [TestMethod]
+    public async Task ListTermsAsync_PutsTheMilderCategoriesFirst()
+    {
+        foreach (var (term, category) in new[]
+                 {
+                     ("porn", "sexual"), ("kkk", "hate"), ("lolicon", "sexual_minors"), ("suicide", "self_harm"),
+                     ("gore", "violence_gore"), ("meth", "illegal"), ("nike", "ip_trademark"), ("disney", "ip_trademark")
+                 })
+            termRows.Add(new ModerationTerm { Id = Guid.NewGuid(), Term = term, Category = category, Severity = "flag", MatchType = "word", Language = "en" });
+
+        var terms = (await Service().ListTermsAsync(new ListModerationTermsRequestDto())).Value;
+
+        terms.Select(term => term.Term).Should().Equal("disney", "nike", "meth", "gore", "suicide", "kkk", "porn", "lolicon");
+    }
+
+    [TestMethod]
     public async Task CreateTermAsync_NormalizesRecordsAndRefreshesTheBlocklist()
     {
         var blocklist = Blocklist();

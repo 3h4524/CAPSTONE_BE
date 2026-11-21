@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using APCS.Application.Abstractions.Storage;
 using APCS.Infrastructure.Options;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,15 +20,15 @@ internal interface IClothesSegmenter
     bool IsAvailable { get; }
 
     /// <summary>
-    /// How likely (0..255) each pixel is the garment worn on the upper body (a tee, a shirt, a hoodie), at
-    /// <paramref name="width"/> x <paramref name="height"/>; <see langword="null"/> when the model is not available
-    /// or failed on this photo.
+    /// How likely (0..255) each pixel is <paramref name="garment"/>: the garment worn on the upper body (a tee, a shirt,
+    /// a hoodie) or the bag carried, at <paramref name="width"/> x <paramref name="height"/>; <see langword="null"/>
+    /// when the model is not available or failed on this photo.
     /// </summary>
-    byte[]? UpperClothes(Image<Rgba32> photo, int width, int height);
+    byte[]? Garment(Image<Rgba32> photo, int width, int height, WornGarment garment = WornGarment.UpperBody);
 }
 
 /// <summary>
-/// Runs SegFormer B2 fine-tuned on clothes (ATR labels; "Upper-clothes" is label 4). It knows a shirt from the
+/// Runs SegFormer B2 fine-tuned on clothes (ATR labels; "Upper-clothes" is label 4, "Bag" label 16). It knows a shirt from the
 /// arms, face and trousers of the person wearing it, which the object matte (BiRefNet) cannot tell apart.
 /// Its answer is coarse (a quarter of its input), so the edge against the background comes from the matte.
 /// </summary>
@@ -39,6 +40,7 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
 {
     private const int ModelSize = 512;
     private const int UpperClothesLabel = 4;
+    private const int BagLabel = 16;
     private const int RememberedAnswers = 4;
     private static readonly float[] Mean = [0.485f, 0.456f, 0.406f];
     private static readonly float[] Deviation = [0.229f, 0.224f, 0.225f];
@@ -47,7 +49,7 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
     private readonly ILogger<SegFormerClothesSegmenter> _logger;
     private readonly object _running = new();
     // A preview is followed by saving the same photo, which asks again.
-    private readonly LinkedList<(string Key, float[] Probability, int Width, int Height)> _recent = new();
+    private readonly LinkedList<(string Key, Answer Answer)> _recent = new();
     private volatile bool _disposed;
 
     public SegFormerClothesSegmenter(IOptions<MockupOptions> options, IHostEnvironment environment, ILogger<SegFormerClothesSegmenter> logger)
@@ -79,7 +81,7 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
 
     public bool IsAvailable => _session.Value is not null;
 
-    public byte[]? UpperClothes(Image<Rgba32> photo, int width, int height)
+    public byte[]? Garment(Image<Rgba32> photo, int width, int height, WornGarment garment = WornGarment.UpperBody)
     {
         if (_session.Value is not { } session)
             return null;
@@ -89,14 +91,14 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
         small.CopyPixelDataTo(pixels);
         var key = Convert.ToHexString(SHA256.HashData(MemoryMarshal.AsBytes(pixels.AsSpan())));
 
-        (float[] Probability, int Width, int Height)? answer;
+        Answer answer;
         lock (_running)
         {
             if (_disposed)
                 return null;
             var known = _recent.FirstOrDefault(entry => entry.Key == key);
-            if (known.Probability is not null)
-                answer = (known.Probability, known.Width, known.Height);
+            if (known.Answer is not null)
+                answer = known.Answer;
             else
             {
                 try
@@ -108,13 +110,14 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
                     _logger.LogError(ex, "The clothes model failed on a photo.");
                     return null;
                 }
-                _recent.AddFirst((key, answer.Value.Probability, answer.Value.Width, answer.Value.Height));
+                _recent.AddFirst((key, answer));
                 if (_recent.Count > RememberedAnswers) _recent.RemoveLast();
             }
         }
 
         // Scaled up smoothly, so the garment's edge against an arm is a curve rather than blocks.
-        var (probability, w, h) = answer.Value;
+        var (upper, bag, w, h) = answer;
+        var probability = garment == WornGarment.Bag ? bag : upper;
         using var map = Image.LoadPixelData<L8>(probability.Select(value => ImageMaskOps.ToByte(value * 255)).ToArray(), w, h);
         map.Mutate(c => c.Resize(width, height, KnownResamplers.Triangle));
         var result = new byte[width * height];
@@ -122,8 +125,11 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
         return result;
     }
 
-    // The chance of the upper-body garment in each cell of the model's answer: a softmax over its labels.
-    private static (float[] Probability, int Width, int Height) Run(InferenceSession session, Rgba32[] pixels)
+    // The chances of the upper-body garment and of a bag in each cell of the model's answer, from one run.
+    private sealed record Answer(float[] Upper, float[] Bag, int Width, int Height);
+
+    // The chance of each label in a cell is a softmax over all of them.
+    private static Answer Run(InferenceSession session, Rgba32[] pixels)
     {
         var input = new DenseTensor<float>([1, 3, ModelSize, ModelSize]);
         for (var i = 0; i < pixels.Length; i++)
@@ -137,7 +143,8 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
         using var results = session.Run([NamedOnnxValue.CreateFromTensor(session.InputMetadata.Keys.First(), input)]);
         var logits = results[0].AsTensor<float>();
         var (labels, height, width) = (logits.Dimensions[1], logits.Dimensions[2], logits.Dimensions[3]);
-        var probability = new float[width * height];
+        var upper = new float[width * height];
+        var bag = new float[width * height];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
@@ -146,10 +153,11 @@ internal sealed class SegFormerClothesSegmenter : IClothesSegmenter, IDisposable
                 for (var label = 0; label < labels; label++) top = Math.Max(top, logits[0, label, y, x]);
                 double sum = 0;
                 for (var label = 0; label < labels; label++) sum += Math.Exp(logits[0, label, y, x] - top);
-                probability[y * width + x] = (float)(Math.Exp(logits[0, UpperClothesLabel, y, x] - top) / sum);
+                upper[y * width + x] = (float)(Math.Exp(logits[0, UpperClothesLabel, y, x] - top) / sum);
+                bag[y * width + x] = labels > BagLabel ? (float)(Math.Exp(logits[0, BagLabel, y, x] - top) / sum) : 0f;
             }
         }
-        return (probability, width, height);
+        return new Answer(upper, bag, width, height);
     }
 
     public void Dispose()

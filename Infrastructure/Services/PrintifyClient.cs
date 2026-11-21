@@ -189,6 +189,13 @@ public sealed class PrintifyClient(
         return ReadProduct(document.RootElement);
     }
 
+    public async Task<PrintifyProduct> UpdateTextAsync(string token, long shopId, string productId, string title, string description, IReadOnlyList<string> tags, CancellationToken cancellationToken)
+    {
+        var body = new { title, description, tags };
+        using var document = await SendAsync(HttpMethod.Put, $"shops/{shopId}/products/{Uri.EscapeDataString(productId)}.json", token, body, cancellationToken);
+        return ReadProduct(document.RootElement);
+    }
+
     public async Task PublishAsync(string token, long shopId, string productId, CancellationToken cancellationToken)
     {
         // Everything APCS set goes to the listing; Printify also brings its shipping template so orders route back to it.

@@ -78,6 +78,8 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("Standard camera movement and framing has an invalid crop or transform value.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.ExtraInstructions is null or { Length: <= 500 }))
             .WithMessage("Keep each scene's extra instructions under 500 characters.");
+        RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.CustomPrompt is null or { Length: <= AiVideoPromptCompiler.MaximumCustomPromptCharacters }))
+            .WithMessage($"Keep each scene's custom prompt under {AiVideoPromptCompiler.MaximumCustomPromptCharacters} characters.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => scene.PromptRuleVersion is null or AiVideoPromptRules.CurrentVersion))
             .WithMessage("Choose a supported prompt-rule version.");
         RuleFor(x => x.AiScenes).Must(x => x is null || x.All(scene => !scene.PromptRuleVersion.HasValue ||

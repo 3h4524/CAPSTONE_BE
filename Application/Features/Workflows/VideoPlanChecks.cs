@@ -31,7 +31,7 @@ public static class VideoPlanChecks
         if (config.Mode == "ai_shot") return await entitlements.RequireFeatureAsync(userId, PlanFeatures.AiVideo, ct);
         var standard = await entitlements.RequireFeatureAsync(userId, PlanFeatures.StandardVideo, ct);
         if (standard.IsFailure) return standard;
-        if (config.OutputFormat == "landscape")
+        if (VideoOutputFormats.NeedsAllFormats(config.OutputFormat))
         {
             var format = await entitlements.RequireFeatureAsync(userId, PlanFeatures.AllVideoFormats, ct);
             if (format.IsFailure) return format;

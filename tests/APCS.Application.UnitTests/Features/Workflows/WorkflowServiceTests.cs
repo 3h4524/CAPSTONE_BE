@@ -24,6 +24,19 @@ public sealed class WorkflowServiceTests
     }
 
     [TestMethod]
+    public void VideoTexts_NamesASceneCustomPromptSoTheEditorCanMarkIt()
+    {
+        var config = new GenerateVideoConfig(Mode: "ai_shot",
+            AiScenes: [new AiVideoSceneOptions(), new AiVideoSceneOptions(CustomPrompt: "A slow turn on a wooden table.")]);
+        var definition = new WorkflowDefinition(2,
+            [new WorkflowNode("video", "generate-video", "Generate video", new(0, 0), System.Text.Json.JsonSerializer.SerializeToElement(config))],
+            []);
+
+        WorkflowService.VideoTexts(definition).Should().ContainSingle()
+            .Which.Should().Be(new APCS.Application.Abstractions.Moderation.ModerationText("scene 2 custom prompt", "A slow turn on a wooden table."));
+    }
+
+    [TestMethod]
     public async Task SaveAsync_InvalidRequest_InvokesValidatorBeforePersistence()
     {
         var fixture = new WorkflowTestData();

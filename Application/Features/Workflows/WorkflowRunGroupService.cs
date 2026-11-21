@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.BackgroundJobs;
+using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.BatchMockups.Common;
@@ -55,7 +56,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     IRunGroupPlannerQueue? planner = null, IWorkflowRunNotifier? notifier = null,
     Validators.GenerateVideoConfigValidator? videoValidator = null, IAiShotQuoteService? quotes = null,
     ILifestyleMockupService? lifestyle = null, IRepository<MockupTemplate>? mockupTemplates = null,
-    IRunGroupStartQueue? startQueue = null, IRepository<PromoVideo>? videos = null) : IWorkflowRunGroupService
+    IRunGroupStartQueue? startQueue = null, IRepository<PromoVideo>? videos = null,
+    IContentModerationService? moderation = null) : IWorkflowRunGroupService
 {
     /// <summary>Videos one group makes at most.</summary>
     public const int MaximumTargets = 10;
@@ -319,6 +321,9 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 return Result.Failure<RunGroupResponse>(Error.Validation("A design's own settings have to be a scene list, without the Product on Model pack."));
             if (videoValidator != null && await videoValidator.ValidateForBatchAsync(config, ct) is { IsValid: false } invalid)
                 return Result.Failure<RunGroupResponse>(Error.Validation(string.Join(" ", invalid.Errors.Select(x => x.ErrorMessage))));
+            // Checked once here, before the group is locked (the check may wait on Gemini): its runs plan from it unchecked.
+            if (await moderation.CheckSellerTextsAsync(config, user.UserId!.Value, ModerationSubjects.AiShot, groupId, ct) is { } blocked)
+                return Result.Failure<RunGroupResponse>(blocked);
         }
         await using var tx = await uow.BeginTransactionAsync(ct);
         var group = await state.LockRunGroupAsync(groupId, ct);
@@ -767,7 +772,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 hasOverride, scenes, warnings, resolveError, child?.Id, child?.Status, current?.NodeType, current?.Stage, current?.Progress ?? 0,
                 child?.ErrorMessage, child is null ? picked?.Config ?? ProductOwn(config, target.Product.Id) : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
                 picked?.Config is not null, child is null ? null : VideoStatusOf(child, childSteps),
-                printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage)));
+                printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage,
+                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot))));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),

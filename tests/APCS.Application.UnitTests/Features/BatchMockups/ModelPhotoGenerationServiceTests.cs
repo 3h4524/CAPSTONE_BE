@@ -12,6 +12,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using MockQueryable.Moq;
 using Moq;
 
 namespace APCS.Application.UnitTests.Features.BatchMockups;
@@ -25,6 +26,7 @@ public sealed class ModelPhotoGenerationServiceTests
     private readonly Mock<IImageGenerationProvider> _provider = new();
     private readonly Mock<IModelPhotoService> _modelPhotos = new();
     private readonly Mock<IRepository<MockupTemplate>> _templates = new();
+    private readonly List<MockupTemplate> _existing = [];
     private readonly Mock<IRepository<ApiUsageRecord>> _usage = new();
     private readonly Mock<IApiKeyRepository> _keys = new();
     private readonly Mock<IMockupMapService> _maps = new();
@@ -44,6 +46,7 @@ public sealed class ModelPhotoGenerationServiceTests
             .ReturnsAsync(Result.Success(new MockupTemplateResponseDto(_saved.Id, "AI", "tshirt", _saved.BaseImageUrl, null, "{}", 1728, 2304, 0,
                 false, true, true, true, null, null, Kind: MockupRules.ModelKind)));
         _templates.Setup(x => x.GetByIdAsync(_saved.Id, It.IsAny<CancellationToken>())).ReturnsAsync(_saved);
+        _templates.Setup(x => x.Query()).Returns(() => _existing.AsQueryable().BuildMock());
         _maps.Setup(x => x.ToJpegAsync(Png, It.IsAny<CancellationToken>())).ReturnsAsync(Jpeg);
     }
 
@@ -65,18 +68,32 @@ public sealed class ModelPhotoGenerationServiceTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value.AiGenerated.Should().BeTrue();
-        (prompt, ratio).Should().Be(ModelPhotoPrompts.Build(attributes));
+        ratio.Should().Be("3:4");
+        prompt.Should().Contain("a man in his late sixties").And.Contain("plain white crew-neck short-sleeve cotton t-shirt")
+            .And.Contain("medium grey seamless backdrop");
         saved!.FindGarment.Should().BeTrue();
+        // Made on a plain grey backdrop, so the garment is found the quicker way.
+        saved.PlainBackdrop.Should().BeTrue();
+        saved.ProductType.Should().Be("tshirt");
         // Kept as a JPEG: a 2K PNG photo can be over the upload limit.
         (saved.Photo!.ContentType, saved.Photo.Length).Should().Be(("image/jpeg", Jpeg.Length));
         saved.AutoPlacement.Should().BeTrue();
         saved.Attributes.Should().Be(attributes);
-        saved.Name.Should().StartWith("AI · Senior · Male");
+        saved.Name.Should().Be("Senior · Male", "who is in the photo, with no code or AI mark");
         _saved.AiGenerated.Should().BeTrue();
         MockupRules.IsAutomaticPlacement(_saved.PrintAreaConfig).Should().BeTrue();
         MockupRules.ParsePrintArea(_saved.PrintAreaConfig).Should().Be(ModelPhotoGenerationService.ChestArea(1728, 2304));
         _usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.UserId == Seller && r.CostUsd == 0.03m && r.Provider == "ideogram"),
             true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task FreeName_IsNumberedFromTwoWhenTaken()
+    {
+        _existing.AddRange([new MockupTemplate { Name = "Teen · Female" }, new MockupTemplate { Name = "teen · female 2" }, new MockupTemplate { Name = "Family" }]);
+
+        (await Service().FreeNameAsync("Teen · Female", default)).Should().Be("Teen · Female 3");
+        (await Service().FreeNameAsync("Couple", default)).Should().Be("Couple");
     }
 
     [TestMethod]
@@ -97,6 +114,61 @@ public sealed class ModelPhotoGenerationServiceTests
 
         result.Error.Type.Should().Be(ErrorType.Validation);
         _provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    [DataRow("mug", null, "single")]
+    [DataRow("tote_bag", null, "single")]
+    [DataRow("tshirt", "seated", "group")]
+    [DataRow("tshirt", "dancing", "single")]
+    public async Task GenerateAsync_AProductNotWornOrAStyleThatDoesNotFit_IsRefusedBeforeAnythingIsMade(string product, string? pose, string people)
+    {
+        var attributes = people == "group" ? new ModelAttributesDto("group", GroupType: "friends") : new ModelAttributesDto("single", "adult", "female");
+
+        var result = await Service().GenerateAsync(new GenerateModelPhotoRequestDto(product, attributes, new(Pose: pose)), system: false);
+
+        result.Error.Type.Should().Be(ErrorType.Validation);
+        _provider.Verify(x => x.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_AHoodieInACafe_IsMadeInThatStyle_AndFoundOnABusyBackground()
+    {
+        string? prompt = null;
+        _provider.Setup(x => x.GenerateAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .Callback((string _, string text, string _, bool _, bool _, CancellationToken _) => prompt = text)
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        SaveModelPhotoRequestDto? saved = null;
+        _modelPhotos.Setup(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), false, It.IsAny<CancellationToken>()))
+            .Callback((SaveModelPhotoRequestDto request, bool _, CancellationToken _) => saved = request)
+            .ReturnsAsync(Result.Success(new MockupTemplateResponseDto(_saved.Id, "AI", "hoodie", _saved.BaseImageUrl, null, "{}", 1728, 2304, 0,
+                false, true, true, true, null, null, Kind: MockupRules.ModelKind)));
+
+        var result = await Service().GenerateAsync(
+            new GenerateModelPhotoRequestDto("hoodie", new("single", "adult", "male"), new("cafe", "streetwear", "walking")), system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        prompt.Should().Contain("plain white pullover hoodie").And.Contain("café").And.Contain("cargo trousers").And.Contain("walk toward the camera");
+        saved!.ProductType.Should().Be("hoodie");
+        saved.PlainBackdrop.Should().BeFalse("a café is not a plain backdrop");
+        MockupRules.ParsePrintArea(_saved.PrintAreaConfig).Should().Be(ModelPhotoGenerationService.ChestArea(1728, 2304));
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_AGroupInAStudio_KeepsTheFullMatteSoTheirGarmentsStayApart()
+    {
+        _provider.Setup(x => x.GenerateAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        SaveModelPhotoRequestDto? saved = null;
+        _modelPhotos.Setup(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), false, It.IsAny<CancellationToken>()))
+            .Callback((SaveModelPhotoRequestDto request, bool _, CancellationToken _) => saved = request)
+            .ReturnsAsync(Result.Success(new MockupTemplateResponseDto(_saved.Id, "AI", "tshirt", _saved.BaseImageUrl, null, "{}", 2304, 1728, 0,
+                false, true, true, true, null, null, Kind: MockupRules.ModelKind)));
+
+        var result = await Service().GenerateAsync(new GenerateModelPhotoRequestDto("tshirt", new("group", GroupType: "friends")), system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        saved!.PlainBackdrop.Should().BeFalse("the quick matte can join two people's garments into one");
     }
 
     [TestMethod]

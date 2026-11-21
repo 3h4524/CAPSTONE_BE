@@ -33,13 +33,15 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
 
     public bool IsAvailable => segmenter.IsAvailable;
 
-    public byte[] GenerateDisplacementMap(byte[] baseImage, byte[]? garmentSelection = null)
+    public byte[] GenerateDisplacementMap(byte[] baseImage, byte[]? garmentSelection = null, GarmentSearch? search = null)
     {
+        search ??= GarmentSearch.Default;
         using var source = LoadPhoto(baseImage);
         using var working = ScaledCopy(source, WorkingMaxSide);
         var (w, h) = (working.Width, working.Height);
 
-        var matte = GarmentMatte(source, Pixels(working), w, h, garmentSelection);
+        var matte = GarmentMatte(source, Pixels(working), w, h, garmentSelection, search.Garment, search.PlainBackdrop,
+            prepareFull: !search.PlainBackdrop);
         var garment = matte.Select(a => a / 255f).ToArray();
         var luminance = Pixels(working).Select(p => (float)Luma(p)).ToArray();
 
@@ -74,16 +76,20 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
         return EncodePng(displacement);
     }
 
-    public GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null, byte[]? garmentSelection = null)
+    public GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null, byte[]? garmentSelection = null,
+        GarmentSearch? search = null)
     {
+        search ??= GarmentSearch.Default;
         using var loaded = LoadPhoto(baseImage);
         using var scaled = maxOutputSide is int limit ? ScaledCopy(loaded, limit) : null;
         var source = scaled ?? loaded;
         var (width, height) = (source.Width, source.Height);
         var full = Pixels(source);
 
-        // The model's matte is used as it comes. A preview asks for the quick one.
-        var alpha = GarmentMatte(loaded, full, width, height, garmentSelection, quick: maxOutputSide is not null);
+        // The model's matte is used as it comes. A preview asks for the quick one, as does a photo on a plain backdrop,
+        // whose quick matte is the one kept.
+        var alpha = GarmentMatte(loaded, full, width, height, garmentSelection, search.Garment,
+            quick: maxOutputSide is not null || search.PlainBackdrop, prepareFull: !search.PlainBackdrop);
 
         double covered = 0, luminanceSum = 0;
         for (var i = 0; i < alpha.Length; i++)
@@ -148,16 +154,17 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
     /// The model's soft edge is kept where the garment meets the background.
     /// </summary>
     /// <param name="pixels">The photo's pixels at <paramref name="width"/> x <paramref name="height"/>.</param>
-    private byte[] GarmentMatte(Image<Rgba32> photo, Rgba32[] pixels, int width, int height, byte[]? garmentSelection, bool quick = false)
+    private byte[] GarmentMatte(Image<Rgba32> photo, Rgba32[] pixels, int width, int height, byte[]? garmentSelection,
+        WornGarment worn = WornGarment.UpperBody, bool quick = false, bool prepareFull = true)
     {
-        var matte = segmenter.Segment(photo, width, height, quick)
+        var matte = segmenter.Segment(photo, width, height, quick, prepareFull)
             ?? throw new InvalidOperationException("The segmentation model could not process this photo.");
         if (garmentSelection is null)
             return FillGarmentHoles(pixels, matte, width, height);
 
         // Where the matte cut into the garment (white on a white wall), the clothes model puts it back.
-        if (clothes is { IsAvailable: true } && clothes.UpperClothes(photo, width, height) is { } upper)
-            matte = MendPersonMatte(pixels, matte, upper);
+        if (clothes is { IsAvailable: true } && clothes.Garment(photo, width, height, worn) is { } found)
+            matte = MendPersonMatte(pixels, matte, found);
 
         // A selection brushed by hand or found by the clothes model is a few pixels off where it meets an arm,
         // the neck or other clothes; its edge is moved onto the photo's.
@@ -168,8 +175,9 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
         return matte;
     }
 
-    public byte[]? GenerateWornGarmentMask(byte[] photo, int? maxOutputSide = null)
+    public byte[]? GenerateWornGarmentMask(byte[] photo, int? maxOutputSide = null, GarmentSearch? search = null)
     {
+        search ??= GarmentSearch.Default;
         if (clothes is not { IsAvailable: true })
             return null;
 
@@ -179,8 +187,9 @@ internal sealed class ImageSharpMockupMapGenerator(IGarmentSegmenter segmenter, 
 
         // The person's outline from the matte, the garment from the clothes model: each is good at what the other
         // is not (a smooth edge against the background; telling a shirt from the arm in front of it).
-        var person = segmenter.Segment(loaded, width, height, quick: maxOutputSide is not null);
-        var upper = clothes.UpperClothes(loaded, width, height);
+        var person = segmenter.Segment(loaded, width, height, quick: maxOutputSide is not null || search.PlainBackdrop,
+            prepareFull: !search.PlainBackdrop);
+        var upper = clothes.Garment(loaded, width, height, search.Garment);
         if (upper is null || person is null)
             return null;
         var pixels = Pixels(scaled ?? loaded);

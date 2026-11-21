@@ -24,6 +24,26 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_NewSettingsWithBlockedSceneText_AreRefusedBeforeTheRunIsTouched()
+    {
+        var moderation = new Mock<APCS.Application.Abstractions.Moderation.IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<APCS.Application.Abstractions.Moderation.ModerationText>>(),
+                It.IsAny<APCS.Application.Abstractions.Moderation.ModerationContext>(), It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new APCS.Application.Abstractions.Moderation.ModerationVerdict(APCS.Application.Abstractions.Moderation.ModerationDecision.Block,
+                [new(APCS.Application.Abstractions.Moderation.ModerationCategories.ViolenceGore, APCS.Application.Abstractions.Moderation.ModerationSeverity.High, "scene 1 custom prompt")],
+                APCS.Application.Abstractions.Moderation.ModerationDeciders.Gemini));
+        var fixture = new WorkflowTestData(moderation: moderation.Object);
+        var run = PrepareReview(fixture);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new AiVideoSceneOptions(CustomPrompt: "something violent")]);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: config), default);
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        fixture.State.Verify(x => x.LockRunAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task StartAsync_ForeignWorkflow_DoesNotCreateRunEvenWhenProductIsOwned()
     {
         var fixture = new WorkflowTestData();
