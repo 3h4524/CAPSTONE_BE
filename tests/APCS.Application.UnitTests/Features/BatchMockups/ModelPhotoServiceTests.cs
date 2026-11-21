@@ -40,7 +40,7 @@ public sealed class ModelPhotoServiceTests
             .ReturnsAsync((UploadFileDto _, string key, CancellationToken _) => new PublicImageUploadResult($"https://res.cloudinary.com/demo/image/upload/v1/{key}.jpg", 1000, 1500));
 
         _maps.SetupGet(x => x.IsAvailable).Returns(true);
-        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<CancellationToken>()))
+        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<GarmentSearch?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(() => new PreparedBasePhoto([9], [1], _stats, 1000, 1500));
         _maps.Setup(x => x.DownloadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(JpegBytes);
         _maps.Setup(x => x.StoreHelpersAsync(It.IsAny<string>(), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
@@ -62,7 +62,7 @@ public sealed class ModelPhotoServiceTests
         (stored.OutputWidthPx, stored.OutputHeightPx).Should().Be((1000, 1500));
         result.Value.Kind.Should().Be(MockupRules.ModelKind);
         result.Value.IsMine.Should().BeTrue();
-        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, SelectionBytes, It.IsAny<CancellationToken>()), Times.Once);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, SelectionBytes, GarmentSearch.Default, It.IsAny<CancellationToken>()), Times.Once);
         _maps.Verify(x => x.StoreHelpersAsync(MockupRules.HelperKeyPrefix(stored.Id, stored.PrintMapsVersion!.Value), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -159,15 +159,57 @@ public sealed class ModelPhotoServiceTests
     }
 
     [TestMethod]
-    public async Task CreateAsync_PrintAreaOutsideThePhoto_IsRefusedAndTheUploadRemoved()
+    public async Task CreateAsync_PrintAreaOutsideThePhoto_IsRefusedAndTheUploadsRemoved()
     {
-        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<CancellationToken>()))
+        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<GarmentSearch?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new PreparedBasePhoto([9], [1], _stats));
+        var deleted = new List<string>();
+        _images.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((string key, CancellationToken _) => deleted.Add(key)).Returns(Task.CompletedTask);
 
         var result = await Service().CreateAsync(Request() with { X = 900, Width = 300 }, system: false);
 
         result.IsFailure.Should().BeTrue();
-        _images.Verify(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        // The print maps went up alongside the photo, so they are removed with it.
+        deleted.Should().HaveCount(3);
+        deleted.Should().ContainSingle(key => key.EndsWith("-displace"));
+        deleted.Should().ContainSingle(key => key.EndsWith("-mask"));
+        _rows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_PrintMapsGoUpAlongsideThePhoto_NotAfterIt()
+    {
+        var photoUpload = new TaskCompletionSource<PublicImageUploadResult>();
+        _images.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((UploadFileDto _, string key, CancellationToken _) => photoUpload.Task);
+        var mapsStarted = false;
+        _maps.Setup(x => x.StoreHelpersAsync(It.IsAny<string>(), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()))
+            .Callback(() => mapsStarted = true).Returns(Task.CompletedTask);
+
+        var saving = Service().CreateAsync(Request(), system: false);
+        mapsStarted.Should().BeTrue("the maps are sent while the photo is still uploading");
+        photoUpload.SetResult(new PublicImageUploadResult("https://res.cloudinary.com/demo/image/upload/v1/photo.jpg", 1000, 1500));
+        var result = await saving;
+
+        result.IsSuccess.Should().BeTrue();
+        var stored = _rows.Should().ContainSingle().Subject;
+        _maps.Verify(x => x.StoreHelpersAsync(MockupRules.HelperKeyPrefix(stored.Id, stored.PrintMapsVersion!.Value), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_PhotoUploadFails_RemovesThePrintMapsSentAlongside()
+    {
+        _images.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary is down"));
+        var deleted = new List<string>();
+        _images.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((string key, CancellationToken _) => deleted.Add(key)).Returns(Task.CompletedTask);
+
+        var saving = () => Service().CreateAsync(Request(), system: false);
+
+        await saving.Should().ThrowAsync<InvalidOperationException>();
+        deleted.Should().HaveCount(2).And.OnlyContain(key => key.EndsWith("-displace") || key.EndsWith("-mask"));
         _rows.Should().BeEmpty();
     }
 
@@ -222,7 +264,7 @@ public sealed class ModelPhotoServiceTests
 
         result.IsSuccess.Should().BeTrue();
         _maps.Verify(x => x.DownloadAsync(own.BaseImageUrl, It.IsAny<CancellationToken>()), Times.Once);
-        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, SelectionBytes, It.IsAny<CancellationToken>()), Times.Once);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, SelectionBytes, GarmentSearch.Default, It.IsAny<CancellationToken>()), Times.Once);
         own.PrintMapsVersion.Should().NotBe(1);
         MockupRules.HasCurrentMaps(own).Should().BeTrue();
     }
@@ -233,13 +275,31 @@ public sealed class ModelPhotoServiceTests
         var result = await Service().CreateAsync(Request(selection: false) with { FindGarment = true }, system: false);
 
         result.IsSuccess.Should().BeTrue();
-        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, It.IsAny<CancellationToken>()), Times.Once);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, GarmentSearch.Default, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_OnAPlainBackdrop_FindsTheGarmentTheQuickWay()
+    {
+        var result = await Service().CreateAsync(Request(selection: false) with { FindGarment = true, PlainBackdrop = true }, system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, new GarmentSearch(WornGarment.UpperBody, true), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_ATote_LooksForTheBagTheModelCarries()
+    {
+        var result = await Service().CreateAsync(Request(selection: false) with { FindGarment = true, ProductType = "tote_bag" }, system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, new GarmentSearch(WornGarment.Bag, false), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [TestMethod]
     public async Task CreateAsync_FindGarmentWhenThereIsNone_IsRefusedBeforeAnythingIsStored()
     {
-        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), null, It.IsAny<CancellationToken>()))
+        _maps.Setup(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), null, GarmentSearch.Default, It.IsAny<CancellationToken>()))
             .ReturnsAsync((PreparedBasePhoto?)null);
 
         var result = await Service().CreateAsync(Request(selection: false) with { FindGarment = true }, system: false);
@@ -258,7 +318,7 @@ public sealed class ModelPhotoServiceTests
 
         result.IsSuccess.Should().BeTrue();
         _maps.Verify(x => x.DownloadAsync(own.BaseImageUrl, It.IsAny<CancellationToken>()), Times.Once);
-        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, It.IsAny<CancellationToken>()), Times.Once);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(JpegBytes, null, GarmentSearch.Default, It.IsAny<CancellationToken>()), Times.Once);
         own.PrintMapsVersion.Should().NotBe(1);
     }
 
@@ -272,7 +332,7 @@ public sealed class ModelPhotoServiceTests
         result.IsSuccess.Should().BeTrue();
         own.Name.Should().Be("Renamed");
         own.PrintMapsVersion.Should().Be(1);
-        _maps.Verify(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<CancellationToken>()), Times.Never);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), GarmentSearch.Default, It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

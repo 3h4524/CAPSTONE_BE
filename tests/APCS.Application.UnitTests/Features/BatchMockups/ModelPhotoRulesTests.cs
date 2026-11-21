@@ -57,6 +57,20 @@ public sealed class ModelPhotoRulesTests
     }
 
     [TestMethod]
+    public void MapPlacementByGarment_ABagCarried_IsSeenAtItsWholeFlatWidth()
+    {
+        var template = new GarmentMeasurement(0.1, 0.9, 0.5, 0.5);
+        var model = new GarmentMeasurement(0.2, 0.8, 0.45, 0.3);
+        var used = new MockupPosition(700, 400, 600, 800);
+
+        var mapped = MockupRules.MapPlacementByGarment(used, template, 2000, 2000, model, 1000, 1500, MockupRules.WidthShareOf("tote_bag"));
+
+        // The bodies scale by 0.3 and nothing wraps around: 180 x 240.
+        mapped.Should().Be(new MockupPosition(360, 360, 180, 240));
+        MockupRules.WidthShareOf("tshirt").Should().Be(MockupRules.WornWidthShare);
+    }
+
+    [TestMethod]
     public void MapPlacementByGarment_KeepsTheDesignsShape()
     {
         var mapped = MockupRules.MapPlacementByGarment(new MockupPosition(800, 600, 900, 1200),

@@ -25,8 +25,12 @@ internal interface IGarmentSegmenter
     /// <param name="photo">The photo.</param>
     /// <param name="width">The width to return the matte at.</param>
     /// <param name="height">The height to return the matte at.</param>
-    /// <param name="quick">A faster, slightly coarser answer, for a preview.</param>
-    byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false);
+    /// <param name="quick">A faster, slightly coarser answer, for a preview or a photo on a plain backdrop.</param>
+    /// <param name="prepareFull">
+    /// With <paramref name="quick"/>, also work out the full answer in the background, for the save that usually
+    /// follows a preview. False when the quick answer is the one kept.
+    /// </param>
+    byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false, bool prepareFull = true);
 }
 
 /// <summary>
@@ -82,7 +86,7 @@ internal sealed class BiRefNetGarmentSegmenter : IGarmentSegmenter, IDisposable
 
     public bool IsAvailable => _session.Value is not null;
 
-    public byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false)
+    public byte[]? Segment(Image<Rgba32> photo, int width, int height, bool quick = false, bool prepareFull = true)
     {
         if (_session.Value is not { } session)
             return null;
@@ -95,7 +99,7 @@ internal sealed class BiRefNetGarmentSegmenter : IGarmentSegmenter, IDisposable
 
         // A preview is usually followed by saving the same photo, which needs the full matte. It is
         // worked out in the background meanwhile, so the save finds it ready instead of waiting.
-        if (quick)
+        if (quick && prepareFull)
         {
             var (fullPixels, fullKey) = ModelInput(photo, ModelSize);
             _ = Task.Run(() => MatteOf(session, fullPixels, fullKey, ModelSize));

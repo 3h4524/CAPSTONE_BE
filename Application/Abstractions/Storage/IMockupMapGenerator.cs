@@ -16,7 +16,8 @@ public interface IMockupMapGenerator
     /// </summary>
     /// <param name="baseImage">The photo.</param>
     /// <param name="garmentSelection">For a photo of a person, the part that is the garment (see <see cref="GenerateGarmentMask"/>).</param>
-    byte[] GenerateDisplacementMap(byte[] baseImage, byte[]? garmentSelection = null);
+    /// <param name="search">What the garment is and what the photo is like; null is a top on any backdrop.</param>
+    byte[] GenerateDisplacementMap(byte[] baseImage, byte[]? garmentSelection = null, GarmentSearch? search = null);
 
     /// <summary>
     /// Separates the garment from a plain background. The PNG's alpha is the garment and its gray
@@ -30,16 +31,18 @@ public interface IMockupMapGenerator
     /// is the part the seller selected as the garment. The garment is then only that part of the
     /// person, so skin, hair and other clothes are never recolored or printed on.
     /// </param>
-    GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null, byte[]? garmentSelection = null);
+    /// <param name="search">What the garment is and what the photo is like; null is a top on any backdrop.</param>
+    GarmentMaskResult GenerateGarmentMask(byte[] baseImage, int? maxOutputSide = null, byte[]? garmentSelection = null, GarmentSearch? search = null);
 
     /// <summary>
-    /// The garment a person wears on their upper body, found without a click: a PNG whose alpha is the garment,
+    /// The garment a person wears on their upper body (or the bag they carry), found without a click: a PNG whose alpha is the garment,
     /// usable as the garment selection of <see cref="GenerateGarmentMask"/>. <see langword="null"/> when the
     /// clothes model is not installed, or found no such garment.
     /// </summary>
     /// <param name="photo">The photo of a person.</param>
     /// <param name="maxOutputSide">Scales the result down to this longest side.</param>
-    byte[]? GenerateWornGarmentMask(byte[] photo, int? maxOutputSide = null);
+    /// <param name="search">What the garment is and what the photo is like; null is a top on any backdrop.</param>
+    byte[]? GenerateWornGarmentMask(byte[] photo, int? maxOutputSide = null, GarmentSearch? search = null);
 
     /// <summary>
     /// The garment mask with its edge pulled in by a pixel, for lifting the garment onto another
@@ -60,6 +63,28 @@ public interface IMockupMapGenerator
 /// <param name="HeightPx">Height of the photo as the mask describes it.</param>
 public sealed record GarmentMaskResult(
     byte[] MaskPng, double GarmentCoverage, double GarmentLuminance, int WidthPx = 0, int HeightPx = 0);
+
+/// <summary>What a design is printed on in a photo of a person.</summary>
+public enum WornGarment
+{
+    /// <summary>A top worn on the upper body: a t-shirt, a hoodie.</summary>
+    UpperBody,
+
+    /// <summary>A bag the person carries, with its face to the camera: a tote bag.</summary>
+    Bag
+}
+
+/// <summary>How the garment on a photo of a person is found.</summary>
+/// <param name="Garment">What the garment is.</param>
+/// <param name="PlainBackdrop">
+/// The photo is on a plain backdrop (as one made with AI in a studio is): the person is found on a smaller copy, which
+/// is several times quicker and as good against such a backdrop.
+/// </param>
+public sealed record GarmentSearch(WornGarment Garment = WornGarment.UpperBody, bool PlainBackdrop = false)
+{
+    /// <summary>A top, on any backdrop.</summary>
+    public static readonly GarmentSearch Default = new();
+}
 
 /// <summary>Removes the plain backdrop around generated artwork.</summary>
 public interface IDesignBackgroundRemover
