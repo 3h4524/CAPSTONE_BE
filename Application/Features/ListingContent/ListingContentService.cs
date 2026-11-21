@@ -41,6 +41,8 @@ public sealed class ListingContentService(
     /// <summary>Longest design text and artwork prompt put in the listing prompt.</summary>
     internal const int MaxDesignTextLength = 200, MaxDesignPromptLength = 600;
 
+    internal const string ListingModel = "gemini-3.5-flash-lite";
+
     public async Task<Result<ListingContentResponseDto>> GetOrGenerateAsync(
         Guid productId,
         CancellationToken cancellationToken = default,
@@ -149,7 +151,8 @@ public sealed class ListingContentService(
         GeminiTextGenerationResult generated;
         try
         {
-            var request = new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema());
+            var request = new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema(),
+                Model: ListingModel, FallbackModel: ListingModel);
             generated = observer is null
                 ? await generator.GenerateAsync(request, cancellationToken)
                 : await generator.GenerateStreamingAsync(request, new ListingTextStream(observer), cancellationToken);
