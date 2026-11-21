@@ -184,7 +184,9 @@ async function execute(job: WorkerJob) {
       }
       stage = "Exporting"; progress = 40;
       let zip = join(directory, "package.zip");
-      if (payload.storyboard && payload.productName) {
+      const manifest = payload.manifest;
+      // A product whose video was rejected at review is packaged the same way, with no video in it.
+      if (payload.productName && (payload.storyboard || manifest.videoId === null)) {
         const outputImages: ExportProduct["images"] = [];
         for (const [index, mockup] of (payload.approvedMockups ?? []).entries()) {
           const source = assets.get(`mockups/${mockup.id}.png`);
@@ -199,41 +201,48 @@ async function execute(job: WorkerJob) {
           if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new Error("An approved design has an invalid file format");
           outputImages.push({ id: design.id, path: `design/design-${String(index + 1).padStart(2, "0")}.${extension}`, file: source.file });
         }
-        const sourceSnapshot = payload.sources;
-        const scenesReady = Boolean(sourceSnapshot && sourceSnapshot.videoId === payload.videoId &&
-          sourceSnapshot.storyboardFingerprint === payload.storyboard.fingerprint && sourceSnapshot.scenes.length === payload.storyboard.scenes.length &&
-          payload.storyboard.scenes.every(scene => {
-            const source = sourceSnapshot.scenes.find(item => item.sceneOrder === scene.sceneOrder);
-            return source && source.mockupId === scene.mockupId && source.sourceHash === scene.sourceHash &&
-              source.imageStorageVersion && assets.has(`scene-sources/${scene.sceneOrder}.png`) &&
-              (scene.generationStrategy !== "ai_shot" || source.clipFingerprint === payload.storyboard!.aiShots?.find(shot => shot.sceneOrder === scene.sceneOrder)?.fingerprint &&
-                source.clipStorageVersion && assets.has(`scene-clips/${scene.sceneOrder}.mp4`));
-          }));
-        const sceneSource: NonNullable<ExportProduct["videos"][number]["snapshot"]> | null = scenesReady ? {
-          videoId: payload.videoId, storyboardFingerprint: payload.storyboard.fingerprint,
-          scenes: sourceSnapshot!.scenes.map(item => ({ sceneOrder: item.sceneOrder, mockupId: item.mockupId, sourceRevision: item.sourceRevision,
-            sourceHash: item.sourceHash, imageVersion: item.imageStorageVersion!, imageFile: assets.get(`scene-sources/${item.sceneOrder}.png`)!.file,
-            clipFingerprint: item.clipFingerprint, clipVersion: item.clipStorageVersion,
-            clipFile: item.clipStorageKey ? assets.get(`scene-clips/${item.sceneOrder}.mp4`)?.file : null }))
-        } : null;
-        const mainVideo = assets.get("video.mp4"), thumbnail = assets.get("thumbnail.png");
-        if (!mainVideo || !thumbnail) throw new Error("The approved video or thumbnail is missing");
-        const packages = await packageBatchExport(directory, [{ id: payload.manifest.productId, name: payload.productName,
-          type: payload.productType ?? "product", images: outputImages, listing: payload.listing ?? null, guide: payload.etsyGuide ?? null,
-          videos: [{ id: payload.videoId, version: payload.manifest.version, file: mainVideo.file,
-            storageVersion: payload.videoStorageVersion ?? payload.manifest.fingerprint, thumbnailFile: thumbnail.file,
-            thumbnailVersion: payload.thumbnailStorageVersion ?? payload.manifest.fingerprint,
+        const videos: ExportProduct["videos"] = [];
+        const storyboard = payload.storyboard;
+        if (manifest.videoId !== null && storyboard) {
+          const videoId = manifest.videoId;
+          const sourceSnapshot = payload.sources;
+          const scenesReady = Boolean(sourceSnapshot && sourceSnapshot.videoId === videoId &&
+            sourceSnapshot.storyboardFingerprint === storyboard.fingerprint && sourceSnapshot.scenes.length === storyboard.scenes.length &&
+            storyboard.scenes.every(scene => {
+              const source = sourceSnapshot.scenes.find(item => item.sceneOrder === scene.sceneOrder);
+              return source && source.mockupId === scene.mockupId && source.sourceHash === scene.sourceHash &&
+                source.imageStorageVersion && assets.has(`scene-sources/${scene.sceneOrder}.png`) &&
+                (scene.generationStrategy !== "ai_shot" || source.clipFingerprint === storyboard.aiShots?.find(shot => shot.sceneOrder === scene.sceneOrder)?.fingerprint &&
+                  source.clipStorageVersion && assets.has(`scene-clips/${scene.sceneOrder}.mp4`));
+            }));
+          const sceneSource: NonNullable<ExportProduct["videos"][number]["snapshot"]> | null = scenesReady ? {
+            videoId, storyboardFingerprint: storyboard.fingerprint,
+            scenes: sourceSnapshot!.scenes.map(item => ({ sceneOrder: item.sceneOrder, mockupId: item.mockupId, sourceRevision: item.sourceRevision,
+              sourceHash: item.sourceHash, imageVersion: item.imageStorageVersion!, imageFile: assets.get(`scene-sources/${item.sceneOrder}.png`)!.file,
+              clipFingerprint: item.clipFingerprint, clipVersion: item.clipStorageVersion,
+              clipFile: item.clipStorageKey ? assets.get(`scene-clips/${item.sceneOrder}.mp4`)?.file : null }))
+          } : null;
+          const mainVideo = assets.get("video.mp4"), thumbnail = assets.get("thumbnail.png");
+          if (!mainVideo || !thumbnail) throw new Error("The approved video or thumbnail is missing");
+          videos.push({ id: videoId, version: manifest.version, file: mainVideo.file,
+            storageVersion: payload.videoStorageVersion ?? manifest.fingerprint, thumbnailFile: thumbnail.file,
+            thumbnailVersion: payload.thumbnailStorageVersion ?? manifest.fingerprint,
             includeScenes: scenesReady, sceneWarning: scenesReady ? undefined : "Scene clips are unavailable for this video version; the final video is included.",
-            storyboard: payload.storyboard, snapshot: sceneSource }] }], renderer, 400 * 1024 * 1024, signal);
+            storyboard, snapshot: sceneSource });
+        }
+        const packages = await packageBatchExport(directory, [{ id: manifest.productId, name: payload.productName,
+          type: payload.productType ?? "product", images: outputImages, listing: payload.listing ?? null, guide: payload.etsyGuide ?? null,
+          videos }], renderer, 400 * 1024 * 1024, signal);
         if (packages.length !== 1) throw new Error("Expected one ZIP package for this product");
         zip = packages[0]!;
       } else {
-        for (const scene of payload.manifest.scenes) {
+        if (manifest.videoId === null) throw new Error("A package without a video needs its product");
+        for (const scene of manifest.scenes) {
           const source = assets.get(scene.source);
           if (!source) throw new Error("Missing ZIP source");
           pngSource(source.data, scene.sourceHash);
         }
-        await createZip(zip, assets, payload.manifest, signal);
+        await createZip(zip, assets, manifest, signal);
       }
       stage = "Uploading"; progress = 90;
       const output = await uploadLocalPackage(job, zip, signal);

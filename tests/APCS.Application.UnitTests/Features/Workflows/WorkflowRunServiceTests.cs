@@ -972,8 +972,8 @@ public sealed class WorkflowRunServiceTests
             ApprovalStatus = "pending", ReviewRevision = 2, VersionNumber = 1, SeriesId = Guid.NewGuid(), StorageKey = "private/approved-video", StorageVersion = "1",
             ThumbnailStorageKey = "private/thumbnail", ThumbnailStorageVersion = "1", Fingerprint = "fixed-fingerprint" };
         fixture.VideoRows.Add(video);
-        var review = fixture.NodeRows.Single(x => x.NodeType == "review-video"); review.Status = "waiting_for_review"; review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
-        fixture.NodeRows.Single(x => x.NodeType == "generate-video").OutputSnapshot = review.OutputSnapshot;
+        var review = fixture.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video"); review.Status = "waiting_for_review"; review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
+        fixture.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").OutputSnapshot = review.OutputSnapshot;
         fixture.SceneRows.Add(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = asset.Id, SourceRevision = 3,
             SourceHash = asset.ContentHash, GenerationStrategy = "standard", SceneOrder = 0 });
         return run;

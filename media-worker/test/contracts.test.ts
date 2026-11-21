@@ -78,3 +78,12 @@ test("ZIP manifest rejects secrets or provider metadata", () => {
   assert.equal(exportPayloadSchema.safeParse(payload).success, true);
   assert.equal(exportPayloadSchema.safeParse({ ...payload, manifest: { ...manifest, prompt: "secret", signedUrl: "https://example.com" } }).success, false);
 });
+test("a product whose video was rejected is packaged without one, and the payload agrees with its manifest", () => {
+  const productId = "fdc00975-356a-4340-857f-a1fa2c273241";
+  const manifest = { schemaVersion: 1, productId, videoId: null, scenes: [] };
+  const payload = { exportId: productId, videoId: null, videoStorageKey: null, videoStorageVersion: null, thumbnailStorageKey: null,
+    thumbnailStorageVersion: null, manifest, productName: "Nam123" };
+  assert.equal(exportPayloadSchema.safeParse(payload).success, true);
+  assert.equal(exportPayloadSchema.safeParse({ ...payload, videoId: productId }).success, false);
+  assert.equal(exportPayloadSchema.safeParse({ ...payload, manifest: { ...manifest, scenes: [{ order: 0 }] } }).success, false);
+});

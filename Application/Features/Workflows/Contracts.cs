@@ -299,8 +299,10 @@ public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard S
 /// <param name="AiMade">A photo made or edited with AI; a physical listing needs one besides such photos.</param>
 public sealed record ExportAssetSnapshot(Guid Id, string StorageKey, string? StorageVersion, string? Sha256 = null, long Revision = 0, string? FileFormat = null, bool AiMade = false);
 public sealed record ExportListingSnapshot(string Title, string Description, IReadOnlyList<string> Tags, int Version);
-public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion,
-    string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
+/// <summary>One product's package for the media worker.</summary>
+/// <param name="VideoId">The approved video, or null when the seller rejected it at review: the product is packaged without it.</param>
+public sealed record ExportJobPayload(Guid ExportId, Guid? VideoId, string? VideoStorageKey, string? VideoStorageVersion,
+    string? ThumbnailStorageKey, string? ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
     string? ProductType = null, IReadOnlyList<ExportAssetSnapshot>? ApprovedMockups = null,
     IReadOnlyList<ExportAssetSnapshot>? Designs = null, ExportListingSnapshot? Listing = null,
     Storyboard? Storyboard = null, VideoExportSourceSnapshot? Sources = null, string? EtsyGuide = null);

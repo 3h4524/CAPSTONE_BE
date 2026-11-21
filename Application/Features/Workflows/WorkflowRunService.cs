@@ -214,7 +214,10 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             video.ReviewRevision++; video.ApprovedBy = request.Action == "approve_video" ? user.UserId : null;
             video.ApprovedAt = request.Action == "approve_video" ? time.GetUtcNow().UtcDateTime : null;
             review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
-            if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
+            // In a batch the seller decides on every video, then Continue goes on with them all at once
+            // (WorkflowRunGroupService.ContinueReviewAsync): until then a decision can be changed. A single run goes on
+            // as soon as its video is approved.
+            if (request.Action == "approve_video" && run.RunGroupId is null) { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
             else { review.Status = "waiting_for_review"; run.Status = "waiting_for_review"; }
         }
         else if (request.Action == "retry" && checkpoints.FirstOrDefault(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed") is { } failedPublish)

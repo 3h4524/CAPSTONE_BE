@@ -41,6 +41,27 @@ test("batch export renders scenes from the selected video snapshot and includes 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("batch export packages a product whose video was rejected, without any video", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apcs-batch-novideo-"));
+  try {
+    const id = "fdc00975-356a-4340-857f-a1fa2c273241";
+    const input = join(directory, "input.png");
+    await writeFile(input, fixtureImage());
+    const product: ExportProduct = { id, name: "Nam123", type: "tshirt", images: [
+      { id: "mockup-1", file: input, path: "mockup/mockup-01.png" },
+      { id: "design-1", file: input, path: "design/design-01.png" },
+    ], listing: { title: "Tee", description: "Text", tags: ["tee"], version: 1 }, guide: "No video: it was rejected at review.", videos: [] };
+    const renderer: SceneRenderer = { async renderScene() { throw new Error("Renderer must not run"); } };
+    const parts = await packageBatchExport(directory, [product], renderer, 4 * 1024 * 1024, AbortSignal.timeout(10_000));
+    const zip = await readFile(parts[0]!);
+    const root = `Nam123__${id}`;
+    for (const name of [`${root}/mockup/mockup-01.png`, `${root}/design/design-01.png`, `${root}/listing/listing.json`])
+      assert.ok(zip.includes(Buffer.from(name)), name);
+    // The empty video folder stays, and the product's manifest lists the video as missing.
+    assert.ok(!zip.includes(Buffer.from(`${root}/video/final/`)), "no video file");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("batch export rejects an AI clip whose fingerprint differs from the selected video", async () => {
   const directory = await mkdtemp(join(tmpdir(), "apcs-batch-ai-"));
   try {

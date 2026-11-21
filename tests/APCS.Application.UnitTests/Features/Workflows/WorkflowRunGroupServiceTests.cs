@@ -958,6 +958,75 @@ public sealed class WorkflowRunGroupServiceTests
         listed.Single(x => x.Id == fromBatch.Id).BatchJobId.Should().BeNull();
     }
 
+    /// <summary>A started group with two videos waiting at Review Video, decided on as given (null: not yet).</summary>
+    private static async Task<(WorkflowRunGroup Group, WorkflowRun First, WorkflowRun Second)> GroupAtReviewAsync(RunGroupTestData data,
+        string? first, string? second)
+    {
+        await data.StartAsync();
+        var group = data.GroupRows.Single();
+        group.Status = "running";
+        var runs = new[] { WorkflowRunServiceTests.PrepareReview(data.Base), WorkflowRunServiceTests.PrepareReview(data.Base) };
+        foreach (var (run, decision) in runs.Zip(new[] { first, second }))
+        {
+            run.RunGroupId = group.Id;
+            data.Base.VideoRows.Single(x => x.WorkflowRunId == run.Id).ApprovalStatus = decision ?? "pending";
+        }
+        return (group, runs[0], runs[1]);
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_EveryVideoDecided_ExportsApprovedWithVideoAndRejectedWithout()
+    {
+        var data = new RunGroupTestData();
+        var (group, approved, rejected) = await GroupAtReviewAsync(data, "approved", "rejected");
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        foreach (var run in new[] { approved, rejected })
+        {
+            run.Status.Should().Be("queued");
+            data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video").Status.Should().Be("succeeded");
+        }
+        data.Planner.Verify(x => x.Signal(), Times.Once);
+
+        // The planner carries both on: every video has passed review, so both exports start.
+        while (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)) { }
+        var payloads = data.Base.JobRows.Where(x => x.Kind == "export_zip")
+            .ToDictionary(x => x.WorkflowRunId, x => WorkflowJson.Read<ExportJobPayload>(x.Payload));
+        payloads[approved.Id].VideoId.Should().Be(data.Base.VideoRows.Single(x => x.WorkflowRunId == approved.Id).Id);
+        payloads[rejected.Id].VideoId.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_AVideoNotDecidedYet_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var (group, first, second) = await GroupAtReviewAsync(data, "approved", null);
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Approve or reject every video first: 1 still waits");
+        first.Status.Should().Be("waiting_for_review");
+        second.Status.Should().Be("waiting_for_review");
+        data.Planner.Verify(x => x.Signal(), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_AVideoStillBeingMade_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var (group, _, second) = await GroupAtReviewAsync(data, "approved", "approved");
+        second.Status = "running";
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == second.Id && x.NodeType == "generate-video").Status = "running";
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Wait until every video has been made");
+    }
+
     /// <summary>Keeps what is handed to the background, as the worker's queue does.</summary>
     internal sealed class FakeStartQueue : IRunGroupStartQueue
     {
