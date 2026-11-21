@@ -73,7 +73,7 @@ Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 
 # The API makes the AI scenes of a render job before the media worker gets it (docs/VIDEO_WORKFLOWS.md, "AI scenes made by the API").
 # Keep MaxInFlight within what the MiniMax account allows at once; the media worker then only renders.
-AiVideo__ClipPhase__Enabled=false
+AiVideo__ClipPhase__Enabled=true
 AiVideo__ClipPhase__MaxInFlight=3
 AiVideo__ClipPhase__MaxInFlightPerUser=2
 
