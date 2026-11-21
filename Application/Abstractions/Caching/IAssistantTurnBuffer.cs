@@ -17,9 +17,8 @@ public interface IAssistantTurnBuffer
     Task<IAssistantTurnSignal> WatchStopAsync(Guid turnId, CancellationToken cancellationToken = default);
 }
 
-public sealed record AssistantTurnEntry(string Id, string Type, string Data);
+public sealed record AssistantTurnEntry(string Id, string Type, string Data) : EventStreamEntry(Id, Type, Data);
 
-public interface IAssistantTurnSignal : IAsyncDisposable
+public interface IAssistantTurnSignal : IEventStreamSignal
 {
-    Task WaitAsync(TimeSpan timeout, CancellationToken cancellationToken);
 }

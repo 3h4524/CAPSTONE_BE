@@ -293,7 +293,7 @@ public sealed class PrintifyService(
         return Result.Success(new PrintifyDraftResponseDto(
             product.Id, product.Name, connection, title, content.IsSuccess ? content.Value.Description : product.InputDescription, tags,
             warnings, approvedDesigns, approvedMockups,
-            await LastSettingsAsync(userId, cancellationToken), history, etsyConnected));
+            await LastSettingsAsync(userId, cancellationToken), history, etsyConnected, content.IsSuccess));
     }
 
     public async Task<Result<PrintifyProductDto>> CreateProductAsync(Guid productId, CreatePrintifyProductRequestDto request, CancellationToken cancellationToken = default)
@@ -376,13 +376,13 @@ public sealed class PrintifyService(
         var key = $"product:{productId}:create:{Hash(payloadJson)}";
 
         var log = (await uploads.FindAsync(row => row.PrintifyIntegrationId == integration.Id && row.IdempotencyKey == key, cancellationToken)).SingleOrDefault();
-        if (log is { UploadStatus: "success", PrintifyProductId: { } existingId })
+        // The same product again, whatever its text: a second one would become a second, paid Etsy listing.
+        if (await SameProductLogAsync(integration.Id, productId, payload, cancellationToken) is { PrintifyProductId: { } existingId } pushed)
         {
-            // The same push again: show the product already made instead of making a second one.
+            PrintifyProduct? existing = null;
             try
             {
-                var existing = await printify.GetProductAsync(token, shopId, existingId, cancellationToken);
-                return Result.Success(ToDto(productId, existing, LogState.Read(log.ApiResponse), shipping, alreadyCreated: true, []));
+                existing = await printify.GetProductAsync(token, shopId, existingId, cancellationToken);
             }
             catch (PrintifyApiException exception) when (exception.Kind != PrintifyFailureKind.Rejected)
             {
@@ -390,7 +390,27 @@ public sealed class PrintifyService(
             }
             catch (PrintifyApiException)
             {
-                // Deleted on Printify since: make it again under the same record.
+                // Deleted on Printify since: make it again.
+            }
+            if (existing is not null)
+            {
+                var pushedState = LogState.Read(pushed.ApiResponse);
+                if (request.KeepExistingText || Deserialize<CreatePayload>(pushed.UploadPayload)?.HasSameTextAs(payload) == true)
+                    return Result.Success(ToDto(productId, existing, pushedState, shipping, alreadyCreated: true, []));
+                if (existing.IsLocked)
+                    return Result.Failure<PrintifyProductDto>(Error.Conflict("shop.printify_publishing", "Printify is still publishing this product. Try again in a minute."));
+                try
+                {
+                    var updated = await printify.UpdateTextAsync(token, shopId, existingId, title, payload.Description, tags, cancellationToken);
+                    pushed.UploadPayload = payloadJson;
+                    await uploads.UpdateAsync(pushed, saveChange: true, cancellationToken);
+                    return Result.Success(ToDto(productId, updated, pushedState, shipping, alreadyCreated: true,
+                        ["The title, description and tags of the product already on Printify were updated."]));
+                }
+                catch (PrintifyApiException exception)
+                {
+                    return Result.Failure<PrintifyProductDto>(await FailureAsync(access.Value, exception, cancellationToken));
+                }
             }
         }
 
@@ -407,6 +427,7 @@ public sealed class PrintifyService(
         }
         else
         {
+            log.UploadPayload = payloadJson;
             log.UploadStatus = "retrying";
             log.RetryCount = (log.RetryCount ?? 0) + 1;
             log.AttemptedAt = now;
@@ -839,6 +860,13 @@ public sealed class PrintifyService(
             : new PrintifyProductSettingsDto(null, null, null, null, [], [], DefaultPrice);
     }
 
+    /// <summary>The latest push that made this same product (design, garment, variants, price and print) in this store.</summary>
+    private async Task<PrintifyUploadLog?> SameProductLogAsync(Guid integrationId, Guid productId, CreatePayload payload, CancellationToken cancellationToken) =>
+        (await uploads.FindAsync(row => row.PrintifyIntegrationId == integrationId && row.ProductId == productId && row.SyncType == "create"
+                && row.UploadStatus == "success" && row.PrintifyProductId != null, cancellationToken))
+            .OrderByDescending(row => row.AttemptedAt)
+            .FirstOrDefault(row => Deserialize<CreatePayload>(row.UploadPayload)?.MakesSameProductAs(payload) == true);
+
     private Task<Product?> OwnedProductAsync(Guid productId, Guid userId, CancellationToken cancellationToken) =>
         products.Query().Where(product => product.Id == productId && product.UserId == userId && product.DeletedAt == null)
             .SingleOrDefaultAsync(cancellationToken);
@@ -877,7 +905,17 @@ public sealed class PrintifyService(
         Guid DesignId, long BlueprintId, string? BlueprintTitle, long PrintProviderId, string? PrintProviderTitle,
         IReadOnlyList<long> VariantIds, IReadOnlyList<string> Colors, IReadOnlyList<string> Sizes,
         string Title, string Description, IReadOnlyList<string> Tags, decimal Price, double Scale, string Position, double X = 0.5, double Y = 0.5,
-        IReadOnlyList<PrintifyPlacement>? MorePlacements = null, int Angle = 0);
+        IReadOnlyList<PrintifyPlacement>? MorePlacements = null, int Angle = 0)
+    {
+        public bool MakesSameProductAs(CreatePayload other) =>
+            DesignId == other.DesignId && BlueprintId == other.BlueprintId && PrintProviderId == other.PrintProviderId
+            && VariantIds.SequenceEqual(other.VariantIds) && Price == other.Price && Position == other.Position
+            && Scale.Equals(other.Scale) && X.Equals(other.X) && Y.Equals(other.Y) && Angle == other.Angle
+            && (MorePlacements ?? []).SequenceEqual(other.MorePlacements ?? []);
+
+        public bool HasSameTextAs(CreatePayload other) =>
+            Title == other.Title && Description == other.Description && Tags.SequenceEqual(other.Tags);
+    }
 
     /// <summary>The front mock-up a print follows, and an approved mock-up of each other side of its garment, by side.</summary>
     internal sealed record MockupSides(Guid? FrontId, IReadOnlyList<(string View, Guid MockupId)> Others);

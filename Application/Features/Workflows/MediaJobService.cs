@@ -89,12 +89,13 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         else
         {
             var payload = WorkflowJson.Read<ExportJobPayload>(job.Payload);
-            var video = await videos.GetByIdAsync(payload.VideoId, ct);
-            if (video?.ApprovalStatus != "approved") { await FailAsync(job.Id, new(token, "Video is no longer approved."), ct); return Result.Success<WorkerJob?>(null); }
+            // A package without a video (rejected at review) carries the product's other files only.
+            var video = payload.VideoId is Guid videoId ? await videos.GetByIdAsync(videoId, ct) : null;
+            if (payload.VideoId is not null && video?.ApprovalStatus != "approved") { await FailAsync(job.Id, new(token, "Video is no longer approved."), ct); return Result.Success<WorkerJob?>(null); }
             var packageItems = await items.FindAsync(x => x.ExportPackageId == payload.ExportId, ct);
             var productId = packageItems.Select(x => x.ProductId).Distinct().SingleOrDefault();
             var approvedSnapshot = payload.ApprovedMockups ?? [];
-            if (approvedSnapshot.Count == 0)
+            if (approvedSnapshot.Count == 0 && video is not null)
             {
                 approvedSnapshot = (await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct)).Where(x => x.MockupImageId.HasValue)
                     .Select(x => new ExportAssetSnapshot(x.MockupImageId!.Value, "", null, x.SourceHash, x.SourceRevision ?? 0)).DistinctBy(x => x.Id).ToArray();
@@ -120,7 +121,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                 { await FailAsync(job.Id, new(token, "An approved design is no longer available."), ct); return Result.Success<WorkerJob?>(null); }
                 workerAssets.Add(new(source.Id, source.ImageUrl, $"designs/{source.Id}"));
             }
-            if (payload.Sources is { } sources && sources.VideoId == video.Id && sources.StoryboardFingerprint == payload.Storyboard?.Fingerprint)
+            if (video is not null && payload.Sources is { } sources && sources.VideoId == video.Id && sources.StoryboardFingerprint == payload.Storyboard?.Fingerprint)
             {
                 foreach (var sceneSource in sources.Scenes)
                 {
@@ -149,8 +150,11 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                     workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"model-photos/{asset.Id}.png"));
                 }
             }
-            workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey, "video", payload.VideoStorageVersion), "video.mp4"));
-            workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
+            if (video is not null)
+            {
+                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey!, "video", payload.VideoStorageVersion), "video.mp4"));
+                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey!, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
+            }
         }
         return Result.Success<WorkerJob?>(new(job.Id, token, job.Kind, JsonSerializer.Deserialize<JsonElement>(job.Payload), workerAssets, uploads));
     }
@@ -191,7 +195,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         var renewal = await state.RenewLeaseAsync(id, request.LeaseToken, request.Stage, request.Progress, now, now.AddMinutes(2), ProgressStep, ct);
         if (renewal is null) return Result.Failure(LeaseError());
         if (renewal.StepWritten && runNotifier != null)
-            await runNotifier.ProgressAsync(renewal.RunId, renewal.RunGroupId, renewal.Stage, renewal.Progress, ct);
+            await runNotifier.ProgressAsync(renewal.RunId, renewal.RunGroupId, renewal.Stage, renewal.Progress, ct, renewal.NodeType);
         return Result.Success();
     }
 
@@ -279,9 +283,9 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         else
         {
             var payload = WorkflowJson.Read<ExportJobPayload>(job.Payload);
-            var video = await videos.GetByIdAsync(payload.VideoId, ct);
-            if (video?.ApprovalStatus != "approved") return Result.Failure(Error.Conflict("NotApproved", "Video approval was revoked."));
-            foreach (var scene in await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct))
+            var video = payload.VideoId is Guid videoId ? await videos.GetByIdAsync(videoId, ct) : null;
+            if (payload.VideoId is not null && video?.ApprovalStatus != "approved") return Result.Failure(Error.Conflict("NotApproved", "Video approval was revoked."));
+            foreach (var scene in video is null ? [] : await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct))
             {
                 var asset = scene.MockupImageId.HasValue ? await state.LockMockupAsync(scene.MockupImageId.Value, ct) : null;
                 if (asset?.ApprovedRevision != scene.SourceRevision || asset?.MetadataRevision != scene.SourceRevision ||

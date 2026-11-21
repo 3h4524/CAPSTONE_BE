@@ -367,7 +367,7 @@ public sealed class VideoPromptPreparationServiceTests
             .ReturnsAsync((Guid _, Storyboard board, IReadOnlyList<MockupImage> _, CancellationToken _) => board with { Fingerprint = "prepared-runtime" });
         var runtime = new WorkflowRuntime(fixture.Nodes.Object, fixture.Products.Object, fixture.Assets.Object,
             fixture.Videos.Object, fixture.Scenes.Object, fixture.Templates.Object, fixture.Jobs.Object,
-            fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time,
+            fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time, fixture.Runs.Object,
             promptPreparation: preparation.Object);
         using var cancellation = new CancellationTokenSource();
         var first = await runtime.PlanAsync(run, config, cancellation.Token);

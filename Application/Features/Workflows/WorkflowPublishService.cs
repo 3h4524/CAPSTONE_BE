@@ -53,6 +53,10 @@ public sealed class WorkflowPublishService(
     /// <summary>APCS mock-ups added to the listing Printify creates, in front of its own.</summary>
     internal const int AttachedMockups = 5;
 
+    /// <summary>Why a product stayed on Printify although the step publishes to Etsy.</summary>
+    internal const string NoListingWarning =
+        "No listing content is ready, so nothing was sent to Etsy. Write the title, description and tags on Printify and publish there, or generate the listing and run the workflow again.";
+
     public async Task<Guid?> OwnerOfAsync(Guid nodeRunId, CancellationToken cancellationToken) =>
         await nodes.Query().Where(node => node.Id == nodeRunId).Select(node => (Guid?)node.WorkflowRun.UserId).SingleOrDefaultAsync(cancellationToken);
 
@@ -89,11 +93,13 @@ public sealed class WorkflowPublishService(
             // A new listing waits its turn instead of failing: the step carries on by itself once the shop may list again.
             // A product only made on Printify adds no Etsy listing, so it never waits for the shop's pace.
             if (current.Stage != "publishing" && pace is not null && AddsEtsyListing(snapshot.NodeType, snapshot.InputSnapshot)
-                && await pace.CheckAsync(snapshot.UserId, cancellationToken) is { Allowed: false, RetryAtUtc: { } retryAt })
+                && await pace.CheckAsync(snapshot.UserId, cancellationToken) is { Allowed: false, RetryAtUtc: { } retryAt }
+                // Without listing content the product stops on Printify, which adds no Etsy listing either.
+                && !(snapshot.NodeType == WorkflowCapabilityRegistry.PrintifyStep && await LacksListingAsync(snapshot.WorkflowRunId, snapshot.ProductId, cancellationToken)))
                 outcome = Outcome.Wait(current, retryAt);
             else
             outcome = snapshot.NodeType == "publish-printify"
-                ? await PrintifyAsync(snapshot.ProductId, snapshot.InputSnapshot, Source(snapshot.DefinitionSnapshot), snapshot.ProductType, current, cancellationToken)
+                ? await PrintifyAsync(snapshot.WorkflowRunId, snapshot.ProductId, snapshot.InputSnapshot, Source(snapshot.DefinitionSnapshot), snapshot.ProductType, current, cancellationToken)
                 : await EtsyAsync(snapshot.ProductId, snapshot.InputSnapshot, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -173,7 +179,7 @@ public sealed class WorkflowPublishService(
         catch (System.Text.Json.JsonException) { return null; }
     }
 
-    private async Task<Outcome> PrintifyAsync(Guid productId, string input, MockupPrintifyConfig? source, string productType,
+    private async Task<Outcome> PrintifyAsync(Guid workflowRunId, Guid productId, string input, MockupPrintifyConfig? source, string productType,
         PublishNodeState current, CancellationToken cancellationToken)
     {
         // Already created and publishing: only follow it, without reading the catalog again.
@@ -215,6 +221,8 @@ public sealed class WorkflowPublishService(
         var draft = await printify.GetDraftAsync(productId, cancellationToken);
         if (draft.IsFailure)
             return Outcome.Fail(draft.Error.Message);
+        // A listing that failed or was never written does not go to Etsy: the seller finishes it on Printify or runs again.
+        var noListing = !draft.Value.HasListingContent || await ListingFailedAsync(workflowRunId, cancellationToken);
         var design = config.DesignId is { } designId ? draft.Value.Designs.FirstOrDefault(row => row.Id == designId) : draft.Value.Designs.FirstOrDefault();
         if (design is null)
             return Outcome.Fail(config.DesignId is null
@@ -240,14 +248,18 @@ public sealed class WorkflowPublishService(
         var placementMockup = fromMockup ? draft.Value.Mockups.FirstOrDefault() : null;
         var created = await printify.CreateProductAsync(productId, new CreatePrintifyProductRequestDto(
             design.Id, config.BlueprintId.Value, config.BlueprintTitle, config.PrintProviderId.Value, config.PrintProviderTitle,
-            variantIds, draft.Value.Title, draft.Value.Description, draft.Value.Tags, PrintifyService.DefaultPrice, Position: config.Position,
-            PlacementMockupId: placementMockup?.Id, PrintMockupSides: fromMockup), cancellationToken);
+            variantIds, draft.Value.Title, string.IsNullOrWhiteSpace(draft.Value.Description) ? draft.Value.ProductName : draft.Value.Description,
+            draft.Value.Tags, PrintifyService.DefaultPrice, Position: config.Position,
+            PlacementMockupId: placementMockup?.Id, PrintMockupSides: fromMockup, KeepExistingText: noListing), cancellationToken);
         if (created.IsFailure)
             return Outcome.Fail(created.Error.Message);
         var product = created.Value;
         var warnings = matchWarnings.Concat(product.Warnings).ToList();
         if (config.PublishToEtsy == false)
             return Outcome.Done(new PublishNodeState("done", product.PrintifyProductId, Warnings: warnings, MadeAs: madeAs));
+        if (noListing)
+            return Outcome.Done(new PublishNodeState("done", product.PrintifyProductId, EtsyListingId: product.EtsyListingId, EtsyUrl: product.EtsyUrl,
+                Warnings: [.. warnings, NoListingWarning], MadeAs: madeAs));
 
         // Each variant is priced against what Printify charges for it, so larger sizes cost the buyer more.
         var profit = config.TargetProfit ?? PrintifyPublishConfig.DefaultProfit;
@@ -287,6 +299,13 @@ public sealed class WorkflowPublishService(
             return Outcome.Fail("Printify has not finished publishing to Etsy after 15 minutes. Check the product on Printify, then retry this step.");
         return Outcome.Pending(current with { Warnings = warnings });
     }
+
+    private Task<bool> ListingFailedAsync(Guid workflowRunId, CancellationToken cancellationToken) =>
+        nodes.Query().AnyAsync(row => row.WorkflowRunId == workflowRunId && row.NodeType == "generate-listing" && row.Status == "failed", cancellationToken);
+
+    private async Task<bool> LacksListingAsync(Guid workflowRunId, Guid productId, CancellationToken cancellationToken) =>
+        await ListingFailedAsync(workflowRunId, cancellationToken)
+        || await printify.GetDraftAsync(productId, cancellationToken) is { IsSuccess: true, Value.HasListingContent: false };
 
     private async Task<Outcome> EtsyAsync(Guid productId, string input, CancellationToken cancellationToken)
     {

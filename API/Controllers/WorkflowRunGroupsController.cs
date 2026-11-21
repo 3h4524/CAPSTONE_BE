@@ -74,6 +74,11 @@ public sealed class WorkflowRunGroupsController(IWorkflowRunGroupService groups,
     public async Task<IActionResult> Confirm(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
         (await groups.ConfirmAsync(id, request, ct)).ToActionResult(this);
 
+    /// <summary>Goes on from Review Video once every video is approved or rejected: approved ones with their product, rejected ones without.</summary>
+    [HttpPost("api/run-groups/{id:guid}/continue-review")]
+    public async Task<IActionResult> ContinueReview(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
+        (await groups.ContinueReviewAsync(id, request, ct)).ToActionResult(this);
+
     [HttpPost("api/run-groups/{id:guid}/cancel")]
     public async Task<IActionResult> Cancel(Guid id, RunGroupRevisionRequest request, CancellationToken ct) =>
         (await groups.CancelAsync(id, request, ct)).ToActionResult(this);

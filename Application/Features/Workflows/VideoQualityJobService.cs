@@ -152,14 +152,15 @@ public sealed class VideoQualityJobService(IRepository<WorkflowRun> runs, IRepos
                     var reference = await VideoQualityReferenceMockup.ReadAsync(source, assets, storage, cancellationToken);
                     VideoQualityInputGeometry? geometry = null;
                     if (target.ProviderKey == "minimax" && target.SourceHash is not null &&
-                        target.SourceHash == source.ContentHash && target.InputAspectRatio is "9:16" or "16:9")
+                        target.SourceHash == source.ContentHash && target.InputAspectRatio is { } inputAspect &&
+                        VideoOutputFormats.SupportsAiAspect(inputAspect))
                     {
                         Region? artwork = null;
                         try { artwork = WorkflowJson.Read<MockupRegions>(source.Regions).Artwork; }
                         catch (JsonException) { }
                         static VideoQualityRegion? Map(Region? region) => region is null ? null :
                             new VideoQualityRegion(region.X, region.Y, region.Width, region.Height);
-                        geometry = new(target.InputAspectRatio, Map(target.SourceCrop), Map(artwork));
+                        geometry = new(inputAspect, Map(target.SourceCrop), Map(artwork));
                     }
                     pending.Add(new(storage.SignRead(target.StorageKey, "video", target.StorageVersion), sourceBytes, target.SceneOrder, reference, geometry));
                 }
@@ -268,7 +269,7 @@ public sealed class VideoQualityJobService(IRepository<WorkflowRun> runs, IRepos
                     item.Fingerprint == shot.Fingerprint && item.Status == "stored");
                 return new VideoQualitySceneJobTarget(shot.SceneOrder, shot.MockupId, shot.Fingerprint,
                     state?.StorageKey, state?.StorageVersion, shot.ProviderKey, shot.SourceHash,
-                    VideoOutputFormats.AiSourceAspect(render.Value.Payload.Storyboard.OutputFormat), shot.SourceCrop);
+                    VideoOutputFormats.AiSourceAspect(render.Value.Payload.Storyboard.OutputFormat, shot.ProviderKey), shot.SourceCrop);
             }).ToArray() ?? [];
     }
 

@@ -148,7 +148,7 @@ public sealed class ModelPhotoService(
         PreparedBasePhoto? prepared = null;
         if (readable)
         {
-            var analyzed = await PrepareAsync(photo, selection, cancellationToken);
+            var analyzed = await PrepareAsync(photo, selection, SearchOf(request), cancellationToken);
             if (analyzed.IsFailure)
                 return Result.Failure<MockupTemplateResponseDto>(analyzed.Error);
             prepared = analyzed.Value;
@@ -156,11 +156,35 @@ public sealed class ModelPhotoService(
                 return Result.Failure<MockupTemplateResponseDto>(MockupErrors.InvalidPrintArea());
         }
 
-        var uploaded = await UploadPhotoAsync(request.Photo, photo, storageKey, cancellationToken);
-        async Task<Result<MockupTemplateResponseDto>> RefuseAsync(Error error)
+        // Print maps already worked out go up alongside the photo rather than after it.
+        var mapsVersion = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        var mapsKey = MockupRules.HelperKeyPrefix(templateId, mapsVersion);
+        var maps = prepared is null ? null : UploadHelpersAsync(templateId, mapsKey, prepared, cancellationToken);
+        async Task CleanUpAsync()
         {
             await TryDeleteImageAsync(storageKey, cancellationToken);
+            if (maps is not null)
+                await TryDeleteHelpersAsync(mapsKey, cancellationToken);
+        }
+        async Task<Result<MockupTemplateResponseDto>> RefuseAsync(Error error)
+        {
+            await CleanUpAsync();
             return Result.Failure<MockupTemplateResponseDto>(error);
+        }
+
+        var photoUpload = UploadPhotoAsync(request.Photo, photo, storageKey, cancellationToken);
+        PublicImageUploadResult uploaded;
+        try
+        {
+            if (maps is not null)
+                await Task.WhenAll(photoUpload, maps);
+            uploaded = await photoUpload;
+        }
+        catch
+        {
+            if (maps is not null)
+                await TryDeleteHelpersAsync(mapsKey, cancellationToken);
+            throw;
         }
 
         if (!FitsWithin(position, uploaded.WidthPx, uploaded.HeightPx))
@@ -169,11 +193,14 @@ public sealed class ModelPhotoService(
         // A format the analysis can't read is analyzed from the JPEG the CDN makes of it.
         if (prepared is null)
         {
-            var analyzed = await PrepareStoredAsync(uploaded.Url, selection, cancellationToken);
+            var analyzed = await PrepareStoredAsync(uploaded.Url, selection, SearchOf(request), cancellationToken);
             if (analyzed.IsFailure)
                 return await RefuseAsync(analyzed.Error);
             prepared = analyzed.Value;
+            maps = UploadHelpersAsync(templateId, mapsKey, prepared, cancellationToken);
         }
+        if (await maps! is { } storeError)
+            return await RefuseAsync(storeError);
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var template = new MockupTemplate
@@ -195,9 +222,7 @@ public sealed class ModelPhotoService(
         };
         // A photo saved without saying who is in it is taken as one person.
         ModelPeople.Apply(template, request.Attributes ?? new ModelAttributesDto(ModelPeople.Single));
-
-        if (await StoreHelpersAsync(template, prepared, cancellationToken) is { } storeError)
-            return await RefuseAsync(storeError);
+        UseHelpers(template, mapsVersion);
 
         try
         {
@@ -205,14 +230,14 @@ public sealed class ModelPhotoService(
         }
         catch (DbUpdateException)
         {
-            await TryDeleteImageAsync(storageKey, cancellationToken);
+            await CleanUpAsync();
             if (await IsNameTakenAsync(request.Name, null, cancellationToken))
                 return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
             throw;
         }
         catch
         {
-            await TryDeleteImageAsync(storageKey, cancellationToken);
+            await CleanUpAsync();
             throw;
         }
 
@@ -264,7 +289,7 @@ public sealed class ModelPhotoService(
                 var readable = MockupImageValidators.IsDirectlyReadable(photo);
                 if (readable)
                 {
-                    var analyzed = await PrepareAsync(photo, selection, cancellationToken);
+                    var analyzed = await PrepareAsync(photo, selection, SearchOf(request), cancellationToken);
                     if (analyzed.IsFailure)
                         return Result.Failure<MockupTemplateResponseDto>(analyzed.Error);
                     prepared = analyzed.Value;
@@ -279,7 +304,7 @@ public sealed class ModelPhotoService(
                 outputHeight = uploaded.HeightPx;
                 if (!readable)
                 {
-                    var analyzed = await PrepareStoredAsync(uploaded.Url, selection, cancellationToken);
+                    var analyzed = await PrepareStoredAsync(uploaded.Url, selection, SearchOf(request), cancellationToken);
                     if (analyzed.IsFailure)
                         return await RefuseAsync(analyzed.Error);
                     prepared = analyzed.Value;
@@ -287,7 +312,7 @@ public sealed class ModelPhotoService(
             }
             else
             {
-                var analyzed = await PrepareStoredAsync(template.BaseImageUrl, selection, cancellationToken);
+                var analyzed = await PrepareStoredAsync(template.BaseImageUrl, selection, SearchOf(request), cancellationToken);
                 if (analyzed.IsFailure)
                     return Result.Failure<MockupTemplateResponseDto>(analyzed.Error);
                 prepared = analyzed.Value;
@@ -364,6 +389,10 @@ public sealed class ModelPhotoService(
     private static string PrintAreaConfig(SaveModelPhotoRequestDto request, MockupPosition position) =>
         QuadOf(request) is { } quad ? MockupRules.SerializePrintQuad(quad) : MockupRules.SerializePrintArea(position, request.AutoPlacement);
 
+    // A tote bag is found as the bag the person carries; any other product as the top they wear.
+    private static GarmentSearch SearchOf(SaveModelPhotoRequestDto request) =>
+        new(MockupRules.WornGarmentOf(request.ProductType), request.PlainBackdrop);
+
     private static bool CanChange(MockupTemplate template, bool system, Guid userId) =>
         system ? template.UserId is null : template.UserId == userId;
 
@@ -371,12 +400,13 @@ public sealed class ModelPhotoService(
     private static async Task<byte[]?> SelectionOfAsync(SaveModelPhotoRequestDto request, CancellationToken cancellationToken) =>
         request.FindGarment || request.GarmentSelection is null ? null : await ReadAllAsync(request.GarmentSelection.Content, cancellationToken);
 
-    private async Task<Result<PreparedBasePhoto>> PrepareAsync(byte[] photo, byte[]? selection, CancellationToken cancellationToken)
+    private async Task<Result<PreparedBasePhoto>> PrepareAsync(byte[] photo, byte[]? selection, GarmentSearch search,
+        CancellationToken cancellationToken)
     {
         PreparedBasePhoto? prepared;
         try
         {
-            prepared = await mapService.PrepareModelPhotoAsync(photo, selection, cancellationToken);
+            prepared = await mapService.PrepareModelPhotoAsync(photo, selection, search, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -392,7 +422,8 @@ public sealed class ModelPhotoService(
             : Result.Success(prepared);
     }
 
-    private async Task<Result<PreparedBasePhoto>> PrepareStoredAsync(string baseImageUrl, byte[]? selection, CancellationToken cancellationToken)
+    private async Task<Result<PreparedBasePhoto>> PrepareStoredAsync(string baseImageUrl, byte[]? selection, GarmentSearch search,
+        CancellationToken cancellationToken)
     {
         byte[] jpeg;
         try
@@ -405,30 +436,48 @@ public sealed class ModelPhotoService(
             return Result.Failure<PreparedBasePhoto>(MockupErrors.ModelPhotoUnusable("the photo could not be read. Try again."));
         }
 
-        return await PrepareAsync(jpeg, selection, cancellationToken);
+        return await PrepareAsync(jpeg, selection, search, cancellationToken);
     }
 
-    // The garment is always recolored: the photo's garment passed the light-garment check, so its own color is white.
     private async Task<Error?> StoreHelpersAsync(MockupTemplate template, PreparedBasePhoto prepared, CancellationToken cancellationToken)
     {
         var version = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        if (await UploadHelpersAsync(template.Id, MockupRules.HelperKeyPrefix(template.Id, version), prepared, cancellationToken) is { } error)
+            return error;
+        UseHelpers(template, version);
+        return null;
+    }
+
+    private async Task<Error?> UploadHelpersAsync(Guid templateId, string keyPrefix, PreparedBasePhoto prepared, CancellationToken cancellationToken)
+    {
         try
         {
-            await mapService.StoreHelpersAsync(MockupRules.HelperKeyPrefix(template.Id, version), prepared, cancellationToken);
+            await mapService.StoreHelpersAsync(keyPrefix, prepared, cancellationToken);
+            return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(ex, "Could not store the print maps of model photo {TemplateId}.", template.Id);
+            logger.LogWarning(ex, "Could not store the print maps of model photo {TemplateId}.", templateId);
             return MockupErrors.ModelPhotoUnusable("its print maps could not be stored. Try again.");
         }
+    }
 
+    // The garment is always recolored: the photo's garment passed the light-garment check, so its own color is white.
+    private static void UseHelpers(MockupTemplate template, long version)
+    {
         template.PrintMapsSourceUrl = template.BaseImageUrl;
         template.PrintMapsVersion = version;
         template.AllowRecolor = true;
         template.GarmentIsLight = true;
         template.GarmentColor = null;
         template.BackgroundRemoved = false;
-        return null;
+    }
+
+    // Best effort, as for the photo: a model photo's print maps are its displacement map and garment mask.
+    private async Task TryDeleteHelpersAsync(string keyPrefix, CancellationToken cancellationToken)
+    {
+        await TryDeleteImageAsync(MockupRules.DisplacementMapKey(keyPrefix), cancellationToken);
+        await TryDeleteImageAsync(MockupRules.GarmentMaskKey(keyPrefix), cancellationToken);
     }
 
     private MockupTemplateResponseDto Map(MockupTemplate template, Guid userId)

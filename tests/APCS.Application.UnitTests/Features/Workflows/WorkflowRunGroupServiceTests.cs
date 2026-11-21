@@ -287,6 +287,25 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
+    public async Task UpdateConfigAsync_OwnSettingsWithBlockedSceneText_AreRefusedAndNotKept()
+    {
+        var moderation = new Mock<APCS.Application.Abstractions.Moderation.IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<APCS.Application.Abstractions.Moderation.ModerationText>>(),
+                It.IsAny<APCS.Application.Abstractions.Moderation.ModerationContext>(), It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new APCS.Application.Abstractions.Moderation.ModerationVerdict(APCS.Application.Abstractions.Moderation.ModerationDecision.Block,
+                [new(APCS.Application.Abstractions.Moderation.ModerationCategories.ViolenceGore, APCS.Application.Abstractions.Moderation.ModerationSeverity.High, "scene 1 custom prompt")],
+                APCS.Application.Abstractions.Moderation.ModerationDeciders.Gemini));
+        var data = new RunGroupTestData(moderation: moderation.Object);
+        var group = await data.StartAsync();
+        var own = data.SharedConfig() with { AiScenes = [data.SharedConfig().AiScenes![0] with { CustomPrompt = "something violent" }] };
+
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), own), default);
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        data.GroupRows.Single().TargetOverrides.Should().Be("{}");
+    }
+
+    [TestMethod]
     public async Task UpdateConfigAsync_Null_PutsTheDesignBackOnTheSharedSettingsAndKeepsItsScenePicks()
     {
         var data = new RunGroupTestData();
@@ -939,6 +958,75 @@ public sealed class WorkflowRunGroupServiceTests
         listed.Single(x => x.Id == fromBatch.Id).BatchJobId.Should().BeNull();
     }
 
+    /// <summary>A started group with two videos waiting at Review Video, decided on as given (null: not yet).</summary>
+    private static async Task<(WorkflowRunGroup Group, WorkflowRun First, WorkflowRun Second)> GroupAtReviewAsync(RunGroupTestData data,
+        string? first, string? second)
+    {
+        await data.StartAsync();
+        var group = data.GroupRows.Single();
+        group.Status = "running";
+        var runs = new[] { WorkflowRunServiceTests.PrepareReview(data.Base), WorkflowRunServiceTests.PrepareReview(data.Base) };
+        foreach (var (run, decision) in runs.Zip(new[] { first, second }))
+        {
+            run.RunGroupId = group.Id;
+            data.Base.VideoRows.Single(x => x.WorkflowRunId == run.Id).ApprovalStatus = decision ?? "pending";
+        }
+        return (group, runs[0], runs[1]);
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_EveryVideoDecided_ExportsApprovedWithVideoAndRejectedWithout()
+    {
+        var data = new RunGroupTestData();
+        var (group, approved, rejected) = await GroupAtReviewAsync(data, "approved", "rejected");
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        foreach (var run in new[] { approved, rejected })
+        {
+            run.Status.Should().Be("queued");
+            data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video").Status.Should().Be("succeeded");
+        }
+        data.Planner.Verify(x => x.Signal(), Times.Once);
+
+        // The planner carries both on: every video has passed review, so both exports start.
+        while (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)) { }
+        var payloads = data.Base.JobRows.Where(x => x.Kind == "export_zip")
+            .ToDictionary(x => x.WorkflowRunId, x => WorkflowJson.Read<ExportJobPayload>(x.Payload));
+        payloads[approved.Id].VideoId.Should().Be(data.Base.VideoRows.Single(x => x.WorkflowRunId == approved.Id).Id);
+        payloads[rejected.Id].VideoId.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_AVideoNotDecidedYet_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var (group, first, second) = await GroupAtReviewAsync(data, "approved", null);
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Approve or reject every video first: 1 still waits");
+        first.Status.Should().Be("waiting_for_review");
+        second.Status.Should().Be("waiting_for_review");
+        data.Planner.Verify(x => x.Signal(), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ContinueReviewAsync_AVideoStillBeingMade_IsRefused()
+    {
+        var data = new RunGroupTestData();
+        var (group, _, second) = await GroupAtReviewAsync(data, "approved", "approved");
+        second.Status = "running";
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == second.Id && x.NodeType == "generate-video").Status = "running";
+
+        var result = await data.Service.ContinueReviewAsync(group.Id, new(group.Revision), default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Message.Should().Contain("Wait until every video has been made");
+    }
+
     /// <summary>Keeps what is handed to the background, as the worker's queue does.</summary>
     internal sealed class FakeStartQueue : IRunGroupStartQueue
     {
@@ -975,7 +1063,8 @@ public sealed class WorkflowRunGroupServiceTests
         /// <summary>The queue a started group is handed to when it is made ready in the background; null runs it in the request.</summary>
         public FakeStartQueue? StartQueue { get; }
 
-        public RunGroupTestData(bool previewApproved = true, bool background = false)
+        public RunGroupTestData(bool previewApproved = true, bool background = false,
+            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
         {
             var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
             Base.State.Setup(x => x.LockRunGroupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -994,7 +1083,7 @@ public sealed class WorkflowRunGroupServiceTests
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
                 Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
                 lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object,
-                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object);
+                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object, moderation: moderation);
             GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
             RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,

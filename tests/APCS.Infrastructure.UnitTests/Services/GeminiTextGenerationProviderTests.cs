@@ -109,6 +109,133 @@ public sealed class GeminiTextGenerationProviderTests
         (await action.Should().ThrowAsync<InvalidOperationException>()).Which.Should().NotBeOfType<GeminiContentBlockedException>();
     }
 
+    [TestMethod]
+    public async Task GenerateStreamingAsync_HandsEachChunkOverAndReturnsTheWholeAnswerWithTheLastChunksUsage()
+    {
+        string? path = null, body = null;
+        var observer = new RecordingStreamObserver();
+        var provider = Provider(request =>
+        {
+            path = request.RequestUri!.PathAndQuery;
+            body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return Stream(
+                """{"candidates":[{"content":{"parts":[{"text":"{\"title\":"}]}}],"responseId":"response-1"}""",
+                """{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true},{"text":"\"ok\"}"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":5},"responseId":"response-1"}""");
+        });
+
+        var result = await provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing.", ResponseSchema: new { type = "OBJECT" }), observer);
+
+        path.Should().Be("/v1beta/models/primary-model:streamGenerateContent?alt=sse");
+        body.Should().Contain("\"responseMimeType\":\"application/json\"").And.Contain("\"responseSchema\":{\"type\":\"OBJECT\"}");
+        observer.Events.Should().Equal("attempt:primary-model", "text:{\"title\":", "text:\"ok\"}");
+        result.Should().Be(new GeminiTextGenerationResult("{\"title\":\"ok\"}", "primary-model", 12, 5, "response-1"));
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_PrimaryModelOverloaded_SignalsARestartAndUsesTheFallbackModel()
+    {
+        var observer = new RecordingStreamObserver();
+        var provider = Provider(request => request.RequestUri!.AbsolutePath.Contains("primary-model")
+            ? Response(HttpStatusCode.ServiceUnavailable, Overloaded)
+            : Stream("""{"candidates":[{"content":{"parts":[{"text":"{\"title\":\"ok\"}"}]}}]}"""));
+
+        var result = await provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing."), observer);
+
+        result.Model.Should().Be("fallback-model");
+        observer.Events.Should().Equal("attempt:primary-model", "restart:fallback-model", "text:{\"title\":\"ok\"}");
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_OverloadedInTheMiddleOfTheStream_StartsAgainOnTheFallbackModel()
+    {
+        var observer = new RecordingStreamObserver();
+        var provider = Provider(request => request.RequestUri!.AbsolutePath.Contains("primary-model")
+            ? Stream("""{"candidates":[{"content":{"parts":[{"text":"{\"ti"}]}}]}""", """{"error":{"code":503,"message":"Overloaded."}}""")
+            : Stream("""{"candidates":[{"content":{"parts":[{"text":"{\"title\":\"ok\"}"}]}}]}"""));
+
+        var result = await provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing."), observer);
+
+        result.Text.Should().Be("{\"title\":\"ok\"}");
+        observer.Events.Should().Equal("attempt:primary-model", "text:{\"ti", "restart:fallback-model", "text:{\"title\":\"ok\"}");
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_RequestRejected_IsNotRetried()
+    {
+        var calls = 0;
+        var provider = Provider(_ => { calls++; return Response(HttpStatusCode.BadRequest, """{"error":{"message":"API key not valid."}}"""); });
+
+        var act = () => provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing."), new RecordingStreamObserver());
+
+        (await act.Should().ThrowAsync<HttpRequestException>()).Which.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        calls.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_RefusedBySafetyFilter_SaysSo()
+    {
+        var provider = Provider(_ => Stream("""{"candidates":[{"finishReason":"SAFETY"}]}"""));
+
+        var act = () => provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing."), new RecordingStreamObserver());
+
+        (await act.Should().ThrowAsync<GeminiContentBlockedException>()).Which.Reason.Should().Be("SAFETY");
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_EmptyAnswer_IsAnUnusableAnswer()
+    {
+        var provider = Provider(_ => Stream("""{"candidates":[{"finishReason":"STOP"}]}"""));
+
+        var act = () => provider.GenerateStreamingAsync(new GeminiTextGenerationRequest("Write a listing."), new RecordingStreamObserver());
+
+        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Should().NotBeOfType<GeminiContentBlockedException>();
+    }
+
+    [TestMethod]
+    public async Task GenerateStreamingAsync_NoModelAnswersInTime_FailsAsATimeout()
+    {
+        var provider = new GeminiTextGenerationProvider(
+            new HttpClient(new HangingHandler()) { BaseAddress = new Uri("https://example.test/v1beta/") },
+            Microsoft.Extensions.Options.Options.Create(new GeminiTextGenerationOptions { ApiKey = "key", Model = "primary-model", FallbackModel = "" }));
+
+        var act = () => provider.GenerateStreamingAsync(
+            new GeminiTextGenerationRequest("Write a listing.", AttemptTimeout: TimeSpan.FromMilliseconds(20)), new RecordingStreamObserver());
+
+        (await act.Should().ThrowAsync<HttpRequestException>()).Which.StatusCode.Should().Be(HttpStatusCode.GatewayTimeout);
+    }
+
+    private static HttpResponseMessage Stream(params string[] chunks) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(string.Concat(chunks.Select(chunk => $"data: {chunk}\r\n\r\n")), Encoding.UTF8, "text/event-stream")
+        };
+
+    private sealed class RecordingStreamObserver : IGeminiTextStreamObserver
+    {
+        public List<string> Events { get; } = [];
+
+        public Task AttemptStartedAsync(string model, bool restarted, CancellationToken cancellationToken)
+        {
+            Events.Add($"{(restarted ? "restart" : "attempt")}:{model}");
+            return Task.CompletedTask;
+        }
+
+        public Task TextReceivedAsync(string text, CancellationToken cancellationToken)
+        {
+            Events.Add($"text:{text}");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+    }
+
     private static GeminiTextGenerationProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send) =>
         new(new HttpClient(new Handler(send)) { BaseAddress = new Uri("https://example.test/v1beta/") },
             Microsoft.Extensions.Options.Options.Create(new GeminiTextGenerationOptions { ApiKey = "key", Model = "primary-model", FallbackModel = "fallback-model" }));

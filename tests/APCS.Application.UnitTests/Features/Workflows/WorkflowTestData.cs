@@ -6,13 +6,17 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.ListingContent.Common;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.ListingStreams;
+using APCS.Application.UnitTests.Features.ListingStreams;
 using APCS.Application.Features.Shops;
 using APCS.Application.Features.Shops.Common;
 using APCS.Application.Features.Shops.Dtos.Response;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
 
@@ -56,6 +60,7 @@ internal sealed class WorkflowTestData
     public Mock<ILocalExportStore> LocalExports { get; } = new();
     public Mock<IShopService> Shops { get; } = new();
     public Mock<IPrintifyService> Printify { get; } = new();
+    public FakeListingStreamBuffer ListingStreams { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
     public WorkflowService WorkflowService { get; }
@@ -65,7 +70,8 @@ internal sealed class WorkflowTestData
     public VideoArtifactService ArtifactService { get; }
 
     /// <param name="clipPhase">When given, the runtime holds new AI render jobs in generating_clips while the API makes their scenes.</param>
-    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null)
+    /// <param name="moderation">When given, the run service checks the seller's text of new video settings with it.</param>
+    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null, APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
     {
         Workflows = Repository(WorkflowRows, x => x.Id);
         Runs = Repository(RunRows, x => x.Id);
@@ -100,7 +106,7 @@ internal sealed class WorkflowTestData
                 job.Progress = Math.Max(job.Progress, progress); job.Stage = stage; job.HeartbeatAt = now; job.LeaseExpiresAt = until;
                 var write = previousStage != stage || job.Progress - previousProgress >= threshold;
                 if (write && NodeRows.SingleOrDefault(x => x.Id == job.WorkflowNodeRunId) is { } node) { node.Progress = job.Progress; node.Stage = stage; }
-                return new LeaseRenewal(run.Id, run.RunGroupId, stage, job.Progress, write);
+                return new LeaseRenewal(run.Id, run.RunGroupId, stage, job.Progress, write, job.Kind == "export_zip" ? "export-zip" : "generate-video");
             });
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
         Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
@@ -112,12 +118,13 @@ internal sealed class WorkflowTestData
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
-            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time,
+            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time, Runs.Object,
             clipPhase: clipPhase is null ? null : Microsoft.Extensions.Options.Options.Create(clipPhase));
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
-            new(Shops.Object, Printify.Object));
+            new(Shops.Object, Printify.Object), moderation: moderation,
+            listingStreams: new(ListingStreams, current.Object, NullLogger<ListingStreamWriter>.Instance));
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
@@ -234,12 +241,12 @@ internal sealed class WorkflowTestData
     }
 
     public void ListingSucceeds() => ListingContent
-        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-        .ReturnsAsync((Guid productId, CancellationToken _) => Result.Success(
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<IListingGenerationObserver?>()))
+        .ReturnsAsync((Guid productId, CancellationToken _, IListingGenerationObserver? _) => Result.Success(
             new ListingContentResponseDto(productId, Guid.NewGuid(), "Vintage road trip tee", "A soft tee.", [], 1, "text-model", Now.UtcDateTime)));
 
     public void ListingFails(string message) => ListingContent
-        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<IListingGenerationObserver?>()))
         .ReturnsAsync(Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", message)));
 
     public MockupImage AddAsset(Product product, string role = "Hero")

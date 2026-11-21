@@ -155,7 +155,7 @@ public sealed class AiClipPhaseService(IWorkflowStateRepository state, IUnitOfWo
             await tx.CommitAsync(ct);
         }
         if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
-        if (runNotifier != null) await runNotifier.ProgressAsync(job.WorkflowRunId, run!.RunGroupId, AiClipPhase.Stage, progress, ct);
+        if (runNotifier != null) await runNotifier.ProgressAsync(job.WorkflowRunId, run!.RunGroupId, AiClipPhase.Stage, progress, ct, "generate-video");
     }
 
     private async Task FailAsync(Guid jobId, string code, CancellationToken ct)

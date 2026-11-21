@@ -26,7 +26,6 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
     GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
     VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
     IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null,
-    Abstractions.Moderation.IContentModerationService? moderation = null,
     ICultureAccessor? cultureAccessor = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
@@ -92,7 +91,8 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
         var prepared = promptPreparation is null
             ? planned.Value
             : await promptPreparation.PrepareAsync(user.UserId!.Value, planned.Value, sources, ct);
-        return await moderation.CheckAiShotPromptsAsync(prepared, user.UserId!.Value, ct);
+        // A preview sends nothing to a provider; the seller's scene text is checked when it is stored.
+        return Result.Success(prepared);
     }
 
     public async Task<Result<IReadOnlyList<VideoTemplateCatalogItem>>> ListTemplatesAsync(CancellationToken ct)

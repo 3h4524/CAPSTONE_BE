@@ -19,7 +19,7 @@ public interface IRunGroupExportService
 {
     Task<Result<RunGroupExportSummary>> SummaryAsync(Guid groupId, CancellationToken ct);
 
-    /// <summary>One ZIP with the package of every video of the run that is ready: a folder per product and design.</summary>
+    /// <summary>One ZIP with every video's package, once the whole group is ready: a folder per product and design.</summary>
     Task<Result<Stream>> OpenAsync(Guid groupId, CancellationToken ct);
 }
 
@@ -45,7 +45,8 @@ public sealed class RunGroupExportService(ICurrentUser user, IRepository<Workflo
     {
         var found = await ReadyAsync(groupId, ct);
         if (found.IsFailure) return Result.Failure<Stream>(found.Error);
-        if (found.Value.Packages.Count == 0) return Result.Failure<Stream>(NothingReady());
+        if (found.Value.Packages.Count == 0 || found.Value.Packages.Count != found.Value.Videos)
+            return Result.Failure<Stream>(Error.Conflict("ExportNotReady", "Wait until every video of this run has been approved and packaged."));
 
         var output = new FileStream(Path.Combine(Path.GetTempPath(), $"apcs-group-export-{Guid.NewGuid():N}.zip"), FileMode.CreateNew,
             FileAccess.ReadWrite, FileShare.None, 128 * 1024, FileOptions.DeleteOnClose | FileOptions.Asynchronous);

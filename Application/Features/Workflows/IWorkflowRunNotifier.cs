@@ -13,5 +13,5 @@ public interface IWorkflowRunNotifier
     Task GroupChangedAsync(Guid groupId, CancellationToken cancellationToken = default);
 
     /// <summary>A render or export moved on to another stage or a noticeably higher progress.</summary>
-    Task ProgressAsync(Guid runId, Guid? groupId, string stage, int progress, CancellationToken cancellationToken = default);
+    Task ProgressAsync(Guid runId, Guid? groupId, string stage, int progress, CancellationToken cancellationToken = default, string? nodeType = null);
 }

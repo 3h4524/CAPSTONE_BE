@@ -30,7 +30,7 @@ public sealed record Region(double X, double Y, double Width, double Height);
 public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null,
     Region? Detail = null, AiStudioFrameMetadata? StudioFrame = null);
 public sealed record WorkflowNode(string Id, string Type, string Label, Point Position, JsonElement Config);
-public sealed record WorkflowEdge(string Id, string Source, string Target);
+public sealed record WorkflowEdge(string Id, string Source, string Target, IReadOnlyList<Point>? Waypoints = null);
 public sealed record WorkflowDefinition(int Version, IReadOnlyList<WorkflowNode> Nodes, IReadOnlyList<WorkflowEdge> Edges, JsonElement? Viewport = null);
 public sealed record SaveWorkflowRequest(string Name, string Description, WorkflowDefinition Definition, long? ExpectedRevision = null);
 public sealed record WorkflowResponse(Guid Id, string Name, string Description, int NodeCount, long Revision, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, WorkflowDefinition Definition);
@@ -81,7 +81,11 @@ public sealed record AiVideoSceneOptions(
     Point? AiCropPosition = null,
     // Where a batch run finds this scene's image for each design; resolved to MockupId before planning.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    SceneSource? Source = null);
+    SceneSource? Source = null,
+    // The seller's own wording of the scene's template prompt; null uses the template's. The product-preservation rules
+    // are added after it either way.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    string? CustomPrompt = null);
 /// <summary>
 /// The image of a scene described without naming one product's mock-up, so one scene list fits every design of a
 /// batch run. <see cref="Kind"/> is "template" (the mock-up made from <see cref="TemplateId"/>, in
@@ -98,13 +102,28 @@ public sealed record VideoOutputSpec(string Format, int Width, int Height, strin
 public static class VideoOutputFormats
 {
     public const string Default = "portrait";
-    public static bool IsSupported(string format) => format is "square" or "portrait" or "landscape";
-    public static string AiSourceAspect(string? format) => format == "landscape" ? "16:9" : "9:16";
+    public static bool IsSupported(string format) => format is "square" or "portrait" or "landscape" or "classic_landscape" or "classic_portrait";
+    /// <summary>Formats beyond square and portrait, which need the "all video formats" plan feature.</summary>
+    public static bool NeedsAllFormats(string? format) => format is "landscape" or "classic_landscape" or "classic_portrait";
+    /// <summary>The ratios MiniMax H3 makes image-to-video clips in; the first frame is cut to one of them.</summary>
+    public static bool SupportsAiAspect(string? aspectRatio) => aspectRatio is "9:16" or "16:9" or "1:1" or "4:3" or "3:4";
+    /// <summary>
+    /// The ratio an AI scene's first frame is cut to and its clip is made in. MiniMax makes clips in the output's own
+    /// ratio, so the renderer has nothing left to crop. A scene made by Veo (older videos) only knows 9:16 and 16:9.
+    /// </summary>
+    public static string AiSourceAspect(string? format, string? providerKey = null)
+    {
+        var spec = Resolve(format);
+        if (providerKey is null || providerKey == AiVideoModel.ProviderKey) return spec.AspectRatio;
+        return spec.Width > spec.Height ? "16:9" : "9:16";
+    }
     public static VideoOutputSpec Resolve(string? format) => format switch
     {
         "square" => new("square", 1080, 1080, "1:1"),
         "portrait" => new("portrait", 1080, 1920, "9:16"),
         "landscape" => new("landscape", 1920, 1080, "16:9"),
+        "classic_landscape" => new("classic_landscape", 1440, 1080, "4:3"),
+        "classic_portrait" => new("classic_portrait", 1080, 1440, "3:4"),
         _ => new(Default, 1080, 1920, "9:16"),
     };
 }
@@ -152,10 +171,10 @@ public sealed record CostRange(string Currency, decimal Minimum, decimal Maximum
 public sealed record VideoModeCapability(string Mode, bool Enabled, string Availability, string Description, bool SupportsFallback, CostRange? EstimatedCostRange = null);
 public sealed record NodeCapability(string Type, bool Enabled, string Description);
 public sealed record WorkflowCapabilities(int DefinitionVersion, IReadOnlyList<NodeCapability> Nodes, IReadOnlyList<VideoModeCapability> VideoModes);
-public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey);
+public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey, Guid? ListingStreamId = null);
 public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid? VideoId = null, long? ReviewRevision = null,
     GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null,
-    int? SceneOrder = null);
+    int? SceneOrder = null, Guid? ListingStreamId = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes,
     Guid? RunGroupId = null, string? ArtworkGroupKey = null);
@@ -280,8 +299,10 @@ public sealed record AiShotPromptSnapshot(string ConfigFingerprint, Storyboard S
 /// <param name="AiMade">A photo made or edited with AI; a physical listing needs one besides such photos.</param>
 public sealed record ExportAssetSnapshot(Guid Id, string StorageKey, string? StorageVersion, string? Sha256 = null, long Revision = 0, string? FileFormat = null, bool AiMade = false);
 public sealed record ExportListingSnapshot(string Title, string Description, IReadOnlyList<string> Tags, int Version);
-public sealed record ExportJobPayload(Guid ExportId, Guid VideoId, string VideoStorageKey, string VideoStorageVersion,
-    string ThumbnailStorageKey, string ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
+/// <summary>One product's package for the media worker.</summary>
+/// <param name="VideoId">The approved video, or null when the seller rejected it at review: the product is packaged without it.</param>
+public sealed record ExportJobPayload(Guid ExportId, Guid? VideoId, string? VideoStorageKey, string? VideoStorageVersion,
+    string? ThumbnailStorageKey, string? ThumbnailStorageVersion, JsonElement Manifest, string? ProductName = null,
     string? ProductType = null, IReadOnlyList<ExportAssetSnapshot>? ApprovedMockups = null,
     IReadOnlyList<ExportAssetSnapshot>? Designs = null, ExportListingSnapshot? Listing = null,
     Storyboard? Storyboard = null, VideoExportSourceSnapshot? Sources = null, string? EtsyGuide = null);

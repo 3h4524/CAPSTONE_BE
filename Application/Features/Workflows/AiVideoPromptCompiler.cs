@@ -86,6 +86,8 @@ public static class AiVideoPromptCompiler
     internal static bool AdvancedControlsEnabled => false;
     /// <summary>Matches MiniMax's 7,000-character request limit while retaining required preservation rules.</summary>
     internal const int MaximumPromptCharacters = 7_000;
+    /// <summary>The longest wording a seller may give a scene's template prompt, leaving room for the rules after it.</summary>
+    public const int MaximumCustomPromptCharacters = 2_000;
     internal const string ProfileOrbitGuardrailKey = "profile_orbit_guardrails";
     internal const string FabricDetailGuardrailKey = "fabric_detail_guardrails";
     internal const string BrandFocusGuardrailKey = "brand_focus_guardrails";
@@ -116,10 +118,19 @@ public static class AiVideoPromptCompiler
     public static bool RequiresPerson(string? templateCode) =>
         BuiltIns.GetValueOrDefault(AiStudioFrameIdentity.NormalizeTemplateCode(templateCode))?.RequiresLifestyle ?? false;
 
+    /// <summary>
+    /// Templates no longer offered: each asks the video model to invent what the approved images do not show (a
+    /// product held toward the camera, a new everyday setting, a dark-to-light reveal on a white mock-up). They stay
+    /// defined so the prompts of videos already made still read, but they are left out of the catalog, so no new
+    /// scene can use them and planning a saved scene that does says its template is unavailable.
+    /// </summary>
+    public static readonly IReadOnlySet<string> RetiredTemplateCodes =
+        new HashSet<string>(["creator_pov_ugc", "everyday_story_moment", "signature_product_reveal"], StringComparer.Ordinal);
+
     public static IReadOnlyList<AiVideoTemplateDefinition> Catalog(IEnumerable<VideoTemplate>? persisted = null)
     {
         var stored = ReadPersisted(persisted);
-        return BuiltIns.Values.Select(item => stored.TryGetValue(item.Code, out var overrideValue)
+        return BuiltIns.Values.Where(item => !RetiredTemplateCodes.Contains(item.Code)).Select(item => stored.TryGetValue(item.Code, out var overrideValue)
                 ? PreferCurrentDefinition(item, overrideValue)
                 : item)
             .Select(WithRequiredGuardrail)
@@ -256,7 +267,11 @@ public static class AiVideoPromptCompiler
         var productType = NormalizeProductType(productContext.ProductType);
         // Preserve persisted/custom creative directions. Concise rewrites apply only to the
         // code-owned Product On Model prompts, not seller-edited text.
-        var basePrompt = subtemplate?.BasePrompt ?? template.BasePrompt;
+        // The seller's own wording replaces the template's: it is never one of the code-owned prompts, so no rewrite
+        // below applies to it. Its {{...}} placeholders are filled in like the template's.
+        var basePrompt = string.IsNullOrWhiteSpace(settings.CustomPrompt)
+            ? subtemplate?.BasePrompt ?? template.BasePrompt
+            : settings.CustomPrompt.Trim();
         var rewriteNaturalMotion = useH3NaturalMotion && basePrompt == BuiltIns["lifestyle_in_use"].Subtemplates!
             .Single(item => item.Code == "natural_motion").BasePrompt;
         var rewriteProfileTracking = useH3Format && template.Code == "lifestyle_in_use" &&

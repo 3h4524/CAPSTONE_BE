@@ -24,6 +24,26 @@ public sealed class WorkflowRunServiceTests
     }
 
     [TestMethod]
+    public async Task ActionAsync_NewSettingsWithBlockedSceneText_AreRefusedBeforeTheRunIsTouched()
+    {
+        var moderation = new Mock<APCS.Application.Abstractions.Moderation.IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<APCS.Application.Abstractions.Moderation.ModerationText>>(),
+                It.IsAny<APCS.Application.Abstractions.Moderation.ModerationContext>(), It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new APCS.Application.Abstractions.Moderation.ModerationVerdict(APCS.Application.Abstractions.Moderation.ModerationDecision.Block,
+                [new(APCS.Application.Abstractions.Moderation.ModerationCategories.ViolenceGore, APCS.Application.Abstractions.Moderation.ModerationSeverity.High, "scene 1 custom prompt")],
+                APCS.Application.Abstractions.Moderation.ModerationDeciders.Gemini));
+        var fixture = new WorkflowTestData(moderation: moderation.Object);
+        var run = PrepareReview(fixture);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", AiScenes: [new AiVideoSceneOptions(CustomPrompt: "something violent")]);
+
+        var result = await fixture.RunService.ActionAsync(run.Id, new(7, "rerender", Config: config), default);
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        fixture.State.Verify(x => x.LockRunAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        fixture.JobRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task StartAsync_ForeignWorkflow_DoesNotCreateRunEvenWhenProductIsOwned()
     {
         var fixture = new WorkflowTestData();
@@ -952,8 +972,8 @@ public sealed class WorkflowRunServiceTests
             ApprovalStatus = "pending", ReviewRevision = 2, VersionNumber = 1, SeriesId = Guid.NewGuid(), StorageKey = "private/approved-video", StorageVersion = "1",
             ThumbnailStorageKey = "private/thumbnail", ThumbnailStorageVersion = "1", Fingerprint = "fixed-fingerprint" };
         fixture.VideoRows.Add(video);
-        var review = fixture.NodeRows.Single(x => x.NodeType == "review-video"); review.Status = "waiting_for_review"; review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
-        fixture.NodeRows.Single(x => x.NodeType == "generate-video").OutputSnapshot = review.OutputSnapshot;
+        var review = fixture.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video"); review.Status = "waiting_for_review"; review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
+        fixture.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video").OutputSnapshot = review.OutputSnapshot;
         fixture.SceneRows.Add(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = asset.Id, SourceRevision = 3,
             SourceHash = asset.ContentHash, GenerationStrategy = "standard", SceneOrder = 0 });
         return run;

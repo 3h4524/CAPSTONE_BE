@@ -38,16 +38,17 @@ public sealed class MockupMapService(
         }, cancellationToken);
 
     // A model photo keeps the photo's own background (the person stands in it), so it has no cut mask.
-    public Task<PreparedBasePhoto?> PrepareModelPhotoAsync(byte[] photo, byte[]? garmentSelection, CancellationToken cancellationToken = default) =>
+    public Task<PreparedBasePhoto?> PrepareModelPhotoAsync(byte[] photo, byte[]? garmentSelection, GarmentSearch? search = null,
+        CancellationToken cancellationToken = default) =>
         Task.Run(() =>
         {
             // Found automatically at the photo's full size, not taken from the smaller preview.
-            var selection = garmentSelection ?? generator.GenerateWornGarmentMask(photo);
+            var selection = garmentSelection ?? generator.GenerateWornGarmentMask(photo, search: search);
             if (selection is null)
                 return null;
 
-            var garment = generator.GenerateGarmentMask(photo, garmentSelection: selection);
-            var displacement = generator.GenerateDisplacementMap(photo, selection);
+            var garment = generator.GenerateGarmentMask(photo, garmentSelection: selection, search: search);
+            var displacement = generator.GenerateDisplacementMap(photo, selection, search);
             return (PreparedBasePhoto?)new PreparedBasePhoto(
                 garment.MaskPng, displacement,
                 new GarmentMaskStats(garment.GarmentCoverage, garment.GarmentLuminance), garment.WidthPx, garment.HeightPx);
@@ -161,13 +162,15 @@ public sealed class MockupMapService(
             return stream.ToArray();
         }, cancellationToken);
 
-    public async Task StoreHelpersAsync(string keyPrefix, PreparedBasePhoto prepared, CancellationToken cancellationToken = default)
+    // Sent side by side: none depends on another, and the mask alone is a few MB.
+    public Task StoreHelpersAsync(string keyPrefix, PreparedBasePhoto prepared, CancellationToken cancellationToken = default)
     {
+        var uploads = new List<Task> { UploadAsync(prepared.MaskPng, MockupRules.GarmentMaskKey(keyPrefix), cancellationToken) };
         if (prepared.DisplacementPng is { } displacement)
-            await UploadAsync(displacement, MockupRules.DisplacementMapKey(keyPrefix), cancellationToken);
-        await UploadAsync(prepared.MaskPng, MockupRules.GarmentMaskKey(keyPrefix), cancellationToken);
+            uploads.Add(UploadAsync(displacement, MockupRules.DisplacementMapKey(keyPrefix), cancellationToken));
         if (prepared.CutMaskPng is { } cut)
-            await UploadAsync(cut, MockupRules.CutMaskKey(keyPrefix), cancellationToken);
+            uploads.Add(UploadAsync(cut, MockupRules.CutMaskKey(keyPrefix), cancellationToken));
+        return Task.WhenAll(uploads);
     }
 
     public async Task<bool> EnsureCutMaskAsync(string maskUrl, string cutMaskUrl, string cutMaskKey, CancellationToken cancellationToken = default)

@@ -104,4 +104,19 @@ public sealed record PublishNodeState(
     IReadOnlyList<string>? Warnings = null,
     IReadOnlyList<Guid>? MockupIds = null,
     bool MockupsAfterPrintify = false,
-    string? MadeAs = null);
+    string? MadeAs = null)
+{
+    /// <summary>What a step's output snapshot asks the seller to check; none when it cannot be read.</summary>
+    public static IReadOnlyList<string> WarningsIn(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return [];
+        try
+        {
+            return WorkflowJson.Read<PublishNodeState>(output).Warnings ?? [];
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return [];
+        }
+    }
+}

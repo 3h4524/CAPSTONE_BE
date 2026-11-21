@@ -482,6 +482,7 @@ public static class DependencyInjection
             return StackExchange.Redis.ConnectionMultiplexer.Connect(redisConfiguration);
         });
         services.AddSingleton<IAssistantTurnBuffer, RedisAssistantTurnBuffer>();
+        services.AddSingleton<IListingStreamBuffer, RedisListingStreamBuffer>();
 
         return services;
     }

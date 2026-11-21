@@ -38,6 +38,7 @@ public sealed record PrintifyVariantOptionDto(long Id, string Title, string? Col
 
 /// <summary>The Printify push form for a product.</summary>
 /// <param name="EtsyConnected">Whether APCS can add its mock-ups to the Etsy listing Printify creates.</param>
+/// <param name="HasListingContent">False when the title and description are only the product's name and input text.</param>
 /// <remarks>A Printify product carries the design and its mock-ups only: no video.</remarks>
 public sealed record PrintifyDraftResponseDto(
     Guid ProductId,
@@ -51,7 +52,8 @@ public sealed record PrintifyDraftResponseDto(
     IReadOnlyList<EtsyDraftMockupDto> Mockups,
     PrintifyProductSettingsDto Defaults,
     IReadOnlyList<PrintifyHistoryDto> History,
-    bool EtsyConnected);
+    bool EtsyConnected,
+    bool HasListingContent = true);
 
 /// <summary>The choices of the seller's last Printify push.</summary>
 public sealed record PrintifyProductSettingsDto(

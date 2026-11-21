@@ -16,7 +16,7 @@ public static class ExportEtsyGuide
     public const string FileName = "ETSY-LISTING-GUIDE.txt";
 
     public static string Build(string productName, string? productType, IReadOnlyList<ExportGuidePhoto> photos, IReadOnlyList<string> designFiles,
-        string videoFile, bool hasListing, EtsyPublishConfig? etsy, bool viaPrintify)
+        string? videoFile, bool hasListing, EtsyPublishConfig? etsy, bool viaPrintify)
     {
         var text = new StringBuilder();
         void Line(string value = "") => text.Append(value).Append('\n');
@@ -41,7 +41,9 @@ public static class ExportEtsyGuide
         Line();
 
         Line("2. Video");
-        Line($"   - {videoFile} (5-15 seconds, as Etsy requires).");
+        Line(videoFile is null
+            ? "   No video: it was rejected at review. Add one later if you like (5-15 seconds, as Etsy requires)."
+            : $"   - {videoFile} (5-15 seconds, as Etsy requires).");
         Line();
 
         Line("3. Title, description and tags");

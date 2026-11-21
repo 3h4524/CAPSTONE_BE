@@ -66,10 +66,11 @@ public sealed record RunGroupTargetResponse(string Key, Guid ProductId, string P
     string DesignLabel, string? PreviewUrl, int MockupCount, int ApprovedCount, int PendingCount, bool Selected, bool HasOverride,
     IReadOnlyList<RunGroupScenePreview> Scenes, IReadOnlyList<string> Warnings, string? ResolveError,
     Guid? RunId, string? RunStatus, string? CurrentStep, string? Stage, int Progress, string? RunError,
-    GenerateVideoConfig? Config = null, bool HasOwnConfig = false, string? VideoStatus = null, RunGroupStepResponse? Printify = null);
+    GenerateVideoConfig? Config = null, bool HasOwnConfig = false, string? VideoStatus = null, RunGroupStepResponse? Printify = null,
+    RunGroupStepResponse? GenerateVideo = null, RunGroupStepResponse? ReviewVideo = null, RunGroupStepResponse? ExportZip = null);
 
 /// <summary>One step of a design's run: its status (<c>pending</c>, <c>running</c>, <c>succeeded</c>, <c>failed</c>...), stage, progress and error.</summary>
-public sealed record RunGroupStepResponse(string Status, string? Stage, int Progress, string? Error);
+public sealed record RunGroupStepResponse(string Status, string? Stage, int Progress, string? Error, IReadOnlyList<string>? Warnings = null);
 
 public sealed record RunGroupScenePreview(int SceneIndex, Guid? MockupId, string? PreviewUrl, string? Warning, bool Overridden);
 

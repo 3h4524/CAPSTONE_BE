@@ -50,7 +50,7 @@ public sealed class WorkflowPublishServiceTests
         fixture.Nodes.Setup(x => x.Query()).Returns(() => fixture.NodeRows.AsQueryable().BuildMock());
 
         runtime = new WorkflowRuntime(fixture.Nodes.Object, fixture.Products.Object, fixture.Assets.Object, fixture.Videos.Object, fixture.Scenes.Object,
-            fixture.Templates.Object, fixture.Jobs.Object, fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time,
+            fixture.Templates.Object, fixture.Jobs.Object, fixture.Exports.Object, fixture.Items.Object, new(), fixture.ListingContent.Object, fixture.Time, fixture.Runs.Object,
             publishQueue: queue.Object);
 
         printify.Setup(x => x.GetDraftAsync(run.ProductId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new PrintifyDraftResponseDto(
@@ -269,6 +269,72 @@ public sealed class WorkflowPublishServiceTests
 
         Step("publish-printify").Status.Should().Be("succeeded");
         run.Status.Should().Be("cancelled");
+    }
+
+    private void DraftWithoutListing(string description = "A soft tee.") =>
+        printify.Setup(x => x.GetDraftAsync(run.ProductId, It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(new PrintifyDraftResponseDto(
+            run.ProductId, "Cat tee", new PrintifyConnectionDto("connected", 777, "APCSCo", "etsy", "key", null, 0), "Cat tee", description, [], [],
+            [new ShopDesignDto(designId, "https://cdn.test/d.png", 4500, 5400, "png", 3, true)],
+            [new EtsyDraftMockupDto(mockupId, "https://cdn.test/m.png", 1080, 1080)],
+            new PrintifyProductSettingsDto(null, null, null, null, [], [], 24.99m), [], true, HasListingContent: false)));
+
+    [TestMethod]
+    public async Task ProcessAsync_NoListingContent_StopsOnPrintifyAndSaysWhy()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        DraftWithoutListing();
+        await runtime.AdvanceAsync(run, default);
+
+        (await service.ProcessAsync(Step("publish-printify").Id, default)).Should().BeNull();
+
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request => request.KeepExistingText), It.IsAny<CancellationToken>()), Times.Once);
+        printify.Verify(x => x.PublishAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<PublishPrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        Step("publish-printify").Status.Should().Be("succeeded");
+        PublishNodeState.WarningsIn(Step("publish-printify").OutputSnapshot).Should().Contain(WorkflowPublishService.NoListingWarning);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_NoListingAndNoDescription_SendsTheProductNameAsTheDescription()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        DraftWithoutListing(description: "");
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.Is<CreatePrintifyProductRequestDto>(request => request.Description == "Cat tee"), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_TheRunsListingFailed_DoesNotPublishAnOlderListing()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        fixture.NodeRows.Add(new WorkflowNodeRun
+        {
+            Id = Guid.NewGuid(), WorkflowRunId = run.Id, WorkflowRun = run, NodeId = "listing", NodeType = "generate-listing", Status = "failed", Attempt = 1,
+            InputSnapshot = "{}", OutputSnapshot = "{}", CreatedAt = WorkflowTestData.Now.UtcDateTime, UpdatedAt = WorkflowTestData.Now.UtcDateTime,
+        });
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        printify.Verify(x => x.PublishAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<PublishPrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
+        Step("publish-printify").Status.Should().Be("succeeded");
+    }
+
+    [TestMethod]
+    public async Task ProcessAsync_NoListingContent_DoesNotWaitForTheShopsListingPace()
+    {
+        var service = Create(("publish-printify", PrintifySettings));
+        DraftWithoutListing();
+        pace.Setup(x => x.CheckAsync(run.UserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListingPaceDecision(false, WorkflowTestData.Now.UtcDateTime.AddMinutes(40), "pace"));
+        await runtime.AdvanceAsync(run, default);
+
+        await service.ProcessAsync(Step("publish-printify").Id, default);
+
+        Step("publish-printify").Status.Should().Be("succeeded");
+        printify.Verify(x => x.CreateProductAsync(run.ProductId, It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private void EtsyDraftWith(params EtsyDraftMockupDto[] mockups) =>

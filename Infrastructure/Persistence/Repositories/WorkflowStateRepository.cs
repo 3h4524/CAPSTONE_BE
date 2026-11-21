@@ -49,7 +49,21 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
         db.WorkflowRunGroups.FromSqlInterpolated($"SELECT * FROM public.workflow_run_groups WHERE id = {id} FOR UPDATE").FirstOrDefaultAsync(ct);
 
     public Task<WorkflowRun?> ClaimQueuedGroupRunAsync(CancellationToken ct) =>
-        db.WorkflowRuns.FromSqlInterpolated($"SELECT * FROM public.workflow_runs WHERE status = 'queued' AND run_group_id IS NOT NULL ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED").FirstOrDefaultAsync(ct);
+        db.WorkflowRuns.FromSqlInterpolated($"""
+            SELECT r.* FROM public.workflow_runs r
+            WHERE r.run_group_id IS NOT NULL AND (r.status = 'queued' OR (
+                r.status = 'running'
+                AND EXISTS (SELECT 1 FROM public.workflow_node_runs e
+                    WHERE e.workflow_run_id = r.id AND e.node_type = 'export-zip' AND e.status = 'pending')
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.workflow_runs sibling
+                    WHERE sibling.run_group_id = r.run_group_id AND (
+                        NOT EXISTS (SELECT 1 FROM public.workflow_node_runs v WHERE v.workflow_run_id = sibling.id
+                            AND v.node_type = 'generate-video' AND v.status = 'succeeded')
+                        OR NOT EXISTS (SELECT 1 FROM public.workflow_node_runs review WHERE review.workflow_run_id = sibling.id
+                            AND review.node_type = 'review-video' AND review.status = 'succeeded')))))
+            ORDER BY r.created_at, r.id LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+            """).FirstOrDefaultAsync(ct);
 
     public async Task<LeaseRenewal?> RenewLeaseAsync(Guid jobId, Guid leaseToken, string stage, int progress, DateTime now, DateTime leaseUntil,
         int stepThreshold, CancellationToken ct)
@@ -63,17 +77,18 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
               AND EXISTS (SELECT 1 FROM public.workflow_runs r WHERE r.id = j.workflow_run_id AND r.status = 'running')
             RETURNING j.workflow_run_id AS "RunId", j.workflow_node_run_id AS "NodeRunId",
               (SELECT r.run_group_id FROM public.workflow_runs r WHERE r.id = j.workflow_run_id) AS "RunGroupId",
-              p.stage AS "PreviousStage", p.progress AS "PreviousProgress", j.progress AS "Progress"
+              p.stage AS "PreviousStage", p.progress AS "PreviousProgress", j.progress AS "Progress",
+              CASE WHEN j.kind = 'export_zip' THEN 'export-zip' ELSE 'generate-video' END AS "NodeType"
             """).ToListAsync(ct);
         if (renewed.SingleOrDefault() is not { } row) return null;
         var writeStep = row.PreviousStage != stage || row.Progress - row.PreviousProgress >= stepThreshold;
         if (writeStep)
             await db.WorkflowNodeRuns.Where(node => node.Id == row.NodeRunId)
                 .ExecuteUpdateAsync(set => set.SetProperty(node => node.Progress, row.Progress).SetProperty(node => node.Stage, stage), ct);
-        return new(row.RunId, row.RunGroupId, stage, row.Progress, writeStep);
+        return new(row.RunId, row.RunGroupId, stage, row.Progress, writeStep, row.NodeType);
     }
 
-    private sealed record RenewedRow(Guid RunId, Guid NodeRunId, Guid? RunGroupId, string? PreviousStage, int PreviousProgress, int Progress);
+    private sealed record RenewedRow(Guid RunId, Guid NodeRunId, Guid? RunGroupId, string? PreviousStage, int PreviousProgress, int Progress, string NodeType);
 
     public async Task<IReadOnlyList<FailedMediaJob>> FindFailedJobsOfRunningRunsAsync(int limit, CancellationToken ct) =>
         await db.MediaJobs.AsNoTracking()
