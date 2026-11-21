@@ -84,7 +84,9 @@ version and redeploy (or run `render-env.sh` and restart the service).
 Production-specific settings in `api.env.tpl`: `ASPNETCORE_ENVIRONMENT=Production` (Development
 would enable Swagger and the anonymous `/api/dev/*` endpoints), `ASPNETCORE_FORWARDEDHEADERS_ENABLED`
 (client IPs from Caddy), the Data Protection key ring on the `keyring` volume (part of the backup;
-losing it makes every saved seller API key undecryptable), ONNX models on the `models` volume, and
+losing it makes every saved seller API key undecryptable), ONNX models on the `models` volume, the
+sellers' ZIP exports on the `exports` volume (`Exports__LocalDirectory=/data/exports`, set in the API image: `/app`
+belongs to root and the API runs as `app`, so the default `/app/private-exports` cannot be created), and
 the `RateLimiting__*` limits. The OCR text check, the video-quality worker, and admin "Run tests"
 need tools the runtime image does not contain and stay disabled.
 
