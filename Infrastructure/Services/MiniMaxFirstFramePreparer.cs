@@ -54,7 +54,7 @@ public sealed class MiniMaxFirstFramePreparer(IHttpClientFactory clients) : IVid
 
     private static Rectangle CentreCrop(int width, int height, string aspectRatio)
     {
-        var targetRatio = aspectRatio == "9:16" ? 9d / 16d : 16d / 9d;
+        var targetRatio = RatioOf(aspectRatio);
         var currentRatio = (double)width / height;
         if (currentRatio > targetRatio)
         {
@@ -63,6 +63,18 @@ public sealed class MiniMaxFirstFramePreparer(IHttpClientFactory clients) : IVid
         }
         var targetHeight = Math.Max(1, (int)Math.Round(width / targetRatio));
         return new Rectangle(0, (height - targetHeight) / 2, width, targetHeight);
+    }
+
+    /// <summary>"4:3" as 4 / 3. The caller has already checked the ratio is one MiniMax makes videos in.</summary>
+    private static double RatioOf(string aspectRatio)
+    {
+        var parts = aspectRatio.Split(':');
+        if (parts.Length == 2 &&
+            double.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var width) &&
+            double.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var height) &&
+            width > 0 && height > 0)
+            return width / height;
+        throw new ArgumentException("Unsupported aspect ratio.", nameof(aspectRatio));
     }
 
     private static async Task<byte[]> ReadLimitedAsync(Stream stream, int limit, string message, CancellationToken ct)

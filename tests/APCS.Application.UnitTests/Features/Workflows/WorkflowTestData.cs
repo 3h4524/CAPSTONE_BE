@@ -65,7 +65,8 @@ internal sealed class WorkflowTestData
     public VideoArtifactService ArtifactService { get; }
 
     /// <param name="clipPhase">When given, the runtime holds new AI render jobs in generating_clips while the API makes their scenes.</param>
-    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null)
+    /// <param name="moderation">When given, the run service checks the seller's text of new video settings with it.</param>
+    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null, APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
     {
         Workflows = Repository(WorkflowRows, x => x.Id);
         Runs = Repository(RunRows, x => x.Id);
@@ -117,7 +118,7 @@ internal sealed class WorkflowTestData
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
-            new(Shops.Object, Printify.Object));
+            new(Shops.Object, Printify.Object), moderation: moderation);
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);

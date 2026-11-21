@@ -29,6 +29,10 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// photo, finds it again on the saved one.
 /// </param>
 /// <param name="Attributes">Who is in the photo, for filtering the library; null keeps what it had.</param>
+/// <param name="PlainBackdrop">
+/// The photo is on a plain backdrop, as one made with AI is, so the garment is found the quicker way. Set only by
+/// the server, never taken from a form.
+/// </param>
 public sealed record SaveModelPhotoRequestDto(
     string Name,
     string ProductType,
@@ -41,9 +45,11 @@ public sealed record SaveModelPhotoRequestDto(
     bool AutoPlacement = false,
     IReadOnlyList<MockupPoint>? PrintQuad = null,
     bool FindGarment = false,
-    ModelAttributesDto? Attributes = null);
+    ModelAttributesDto? Attributes = null,
+    bool PlainBackdrop = false);
 
-/// <summary>Makes a model photo with AI, of the people described, wearing a plain white t-shirt.</summary>
-/// <param name="ProductType">The product type the garment is.</param>
+/// <summary>Makes a model photo with AI, of the people described, wearing the plain white product.</summary>
+/// <param name="ProductType">The product: 'tshirt' or 'hoodie'.</param>
 /// <param name="Attributes">Who is in the photo: one person of an age group and gender, or a group.</param>
-public sealed record GenerateModelPhotoRequestDto(string ProductType, ModelAttributesDto Attributes);
+/// <param name="Style">Where the photo is taken, how the people are dressed and stand; null is a casual studio shot.</param>
+public sealed record GenerateModelPhotoRequestDto(string ProductType, ModelAttributesDto Attributes, ModelPhotoStyleDto? Style = null);

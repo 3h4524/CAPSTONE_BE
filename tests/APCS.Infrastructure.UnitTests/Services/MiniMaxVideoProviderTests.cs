@@ -51,7 +51,7 @@ public sealed class MiniMaxVideoProviderTests
 
     [TestMethod]
     [DataRow(3, "9:16", "Move naturally.")]
-    [DataRow(8, "1:1", "Move naturally.")]
+    [DataRow(8, "21:9", "Move naturally.")]
     [DataRow(8, "9:16", "")]
     public async Task StartAsync_UnsupportedSettings_AreRejectedBeforeAnyRequest(int seconds, string aspect, string prompt)
     {

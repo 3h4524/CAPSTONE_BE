@@ -19,8 +19,8 @@ public sealed class VideoAutoApprovalTests
     [TestMethod]
     public void Approve_FinishedListableVideoWithEtsyWarnings_IsApprovedByTheOwnerAtANewReviewRevision()
     {
-        // 9:16 is an Etsy warning (it may be cropped), not a failure.
-        var video = Video(WorkflowTestData.Qa());
+        // A short side under 1080 px is an Etsy warning, not a failure.
+        var video = Video(WorkflowTestData.Qa() with { Width = 720, Height = 1280 });
 
         VideoAutoApproval.Approve(video, Owner, Now).Should().BeTrue();
 

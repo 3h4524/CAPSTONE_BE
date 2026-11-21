@@ -15,6 +15,7 @@ public sealed class MockupMapServiceTests
     private const string MaskUrl = "https://res.cloudinary.com/demo/image/upload/v1/mockup-templates/t-1-mask.png";
     private const string PhotoUrl = "https://res.cloudinary.com/demo/image/upload/v1/mockup-templates/t-1.avif";
 
+    private static readonly GarmentSearch Plain = new(PlainBackdrop: true);
     private readonly Mock<IMockupMapGenerator> _generator = new(MockBehavior.Strict);
     private readonly Mock<IPublicImageService> _images = new();
     private readonly FakeHandler _http = new();
@@ -68,8 +69,8 @@ public sealed class MockupMapServiceTests
     public async Task PrepareAsync_FullSize_MakesTheMaskTheMapAndTheCutMask()
     {
         var photo = new byte[] { 1 };
-        _generator.Setup(x => x.GenerateGarmentMask(photo, null, null)).Returns(Garment([2]));
-        _generator.Setup(x => x.GenerateDisplacementMap(photo, null)).Returns([3]);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, null, null, null)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateDisplacementMap(photo, null, null)).Returns([3]);
         _generator.Setup(x => x.GenerateCutMask(It.Is<byte[]>(m => m[0] == 2))).Returns([4]);
 
         var prepared = await CreateService().PrepareAsync(photo);
@@ -85,7 +86,7 @@ public sealed class MockupMapServiceTests
     public async Task PrepareAsync_Preview_MakesOnlyASmallMask()
     {
         var photo = new byte[] { 1 };
-        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.PreviewMaxSide, null)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.PreviewMaxSide, null, null)).Returns(Garment([2]));
 
         var prepared = await CreateService().PrepareAsync(photo, preview: true);
 
@@ -98,8 +99,8 @@ public sealed class MockupMapServiceTests
     {
         var photo = new byte[] { 1 };
         var selection = new byte[] { 9 };
-        _generator.Setup(x => x.GenerateGarmentMask(photo, null, selection)).Returns(Garment([2]));
-        _generator.Setup(x => x.GenerateDisplacementMap(photo, selection)).Returns([3]);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, null, selection, null)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateDisplacementMap(photo, selection, null)).Returns([3]);
 
         var prepared = await CreateService().PrepareModelPhotoAsync(photo, selection);
 
@@ -109,10 +110,38 @@ public sealed class MockupMapServiceTests
     }
 
     [TestMethod]
+    public async Task PrepareModelPhotoAsync_OnAPlainBackdrop_AsksForTheQuickAnswerThroughout()
+    {
+        var photo = new byte[] { 1 };
+        var worn = new byte[] { 9 };
+        _generator.Setup(x => x.GenerateWornGarmentMask(photo, null, Plain)).Returns(worn);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, null, worn, Plain)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateDisplacementMap(photo, worn, Plain)).Returns([3]);
+
+        var prepared = await CreateService().PrepareModelPhotoAsync(photo, null, Plain);
+
+        prepared!.MaskPng.Should().Equal(2);
+        prepared.DisplacementPng.Should().Equal(3);
+    }
+
+    [TestMethod]
+    public async Task PrepareModelPhotoAsync_ForATote_LooksForTheBagThroughout()
+    {
+        var photo = new byte[] { 1 };
+        var bag = new byte[] { 9 };
+        var search = new GarmentSearch(WornGarment.Bag, PlainBackdrop: true);
+        _generator.Setup(x => x.GenerateWornGarmentMask(photo, null, search)).Returns(bag);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, null, bag, search)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateDisplacementMap(photo, bag, search)).Returns([3]);
+
+        (await CreateService().PrepareModelPhotoAsync(photo, null, search))!.MaskPng.Should().Equal(2);
+    }
+
+    [TestMethod]
     public async Task PrepareModelPhotoAsync_NoGarmentFound_IsNull()
     {
         var photo = new byte[] { 1 };
-        _generator.Setup(x => x.GenerateWornGarmentMask(photo, null)).Returns((byte[]?)null);
+        _generator.Setup(x => x.GenerateWornGarmentMask(photo, null, null)).Returns((byte[]?)null);
 
         (await CreateService().PrepareModelPhotoAsync(photo, null)).Should().BeNull();
     }
@@ -122,8 +151,8 @@ public sealed class MockupMapServiceTests
     {
         var photo = new byte[] { 1 };
         var worn = Mask(200, 120, (20, 20, 70, 110), (130, 20, 180, 110));
-        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null)).Returns(Garment([2]));
-        _generator.Setup(x => x.GenerateWornGarmentMask(photo, MockupMapService.ModelPreviewMaxSide)).Returns(worn);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null, null)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateWornGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null)).Returns(worn);
 
         var prepared = await CreateService().PreviewModelPhotoAsync(photo);
 
@@ -135,8 +164,8 @@ public sealed class MockupMapServiceTests
     public async Task PreviewModelPhotoAsync_NoGarmentFound_HasNoCount()
     {
         var photo = new byte[] { 1 };
-        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null)).Returns(Garment([2]));
-        _generator.Setup(x => x.GenerateWornGarmentMask(photo, MockupMapService.ModelPreviewMaxSide)).Returns((byte[]?)null);
+        _generator.Setup(x => x.GenerateGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null, null)).Returns(Garment([2]));
+        _generator.Setup(x => x.GenerateWornGarmentMask(photo, MockupMapService.ModelPreviewMaxSide, null)).Returns((byte[]?)null);
 
         (await CreateService().PreviewModelPhotoAsync(photo)).GarmentCount.Should().BeNull();
     }

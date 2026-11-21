@@ -61,7 +61,8 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
             },
             resolution = AiVideoModel.Resolution,
             duration = durationSeconds,
-            // H3 derives image-to-video ratio from the prepared first frame.
+            // H3 derives image-to-video ratio from the prepared first frame, which is already cut to `aspectRatio`;
+            // Lite cannot derive it and is told.
             ratio = lite ? aspectRatio : "adaptive"
         });
 
@@ -205,7 +206,7 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
     {
         if (string.IsNullOrWhiteSpace(prompt) || prompt.Length > 7000)
             throw new ArgumentException("MiniMax prompt must contain 1 to 7000 characters.", nameof(prompt));
-        if (durationSeconds is < 4 or > 15 || aspectRatio is not ("9:16" or "16:9"))
+        if (durationSeconds is < 4 or > 15 || !VideoOutputFormats.SupportsAiAspect(aspectRatio))
             throw new ArgumentException("Unsupported MiniMax video settings.");
     }
 

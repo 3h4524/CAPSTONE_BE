@@ -876,9 +876,12 @@ public sealed class DesignGenerationService(
     // the image, to compare how each place comes out), when it says.
     private sealed record DesignRequest(string Prompt, string? Placement);
 
-    private sealed record VariationOutcome(bool Saved, string? BlockedReason = null)
+    // `Held`: the design was kept but its content check could not run, so it waits for the Seller even when approval is
+    // automatic (approving it checks it again).
+    private sealed record VariationOutcome(bool Saved, string? BlockedReason = null, bool Held = false)
     {
         public static readonly VariationOutcome Made = new(true);
+        public static readonly VariationOutcome MadeUnchecked = new(true, Held: true);
         public static readonly VariationOutcome Lost = new(false);
     }
 
@@ -1059,7 +1062,7 @@ public sealed class DesignGenerationService(
             // back, and a full queue only means this design goes unchecked.
             if (textCheckQueue is not null && run.PrintedPhrases is { } phrases && phrases.TryGetValue(row.Id, out var phrase))
                 textCheckQueue.TryEnqueue(new DesignTextCheckRequest(designImageId, imageBytes, phrase));
-            return VariationOutcome.Made;
+            return outputCheck == ModerationDecision.Unchecked ? VariationOutcome.MadeUnchecked : VariationOutcome.Made;
         }
         finally
         {
@@ -1095,7 +1098,11 @@ public sealed class DesignGenerationService(
         // approved while one of its designs is (SetImageApprovalAsync's rule), the new ones being approved automatically
         // or left for review.
         var hasDesigns = successCount > 0 || history is not null;
-        var hasApproved = history?.HasApproved == true || (successCount > 0 && run.ReviewedStatus == BatchJobProductStatuses.Approved);
+        // Automatic approval only approves the designs whose content check ran: a product whose new designs all wait
+        // (the check was unavailable) needs the Seller's review, like a job without automatic approval.
+        var heldCount = outcomes.Count(outcome => outcome.Saved && outcome.Held);
+        var hasApproved = history?.HasApproved == true
+            || (successCount > heldCount && run.ReviewedStatus == BatchJobProductStatuses.Approved);
         var status = !hasDesigns ? BatchJobProductStatuses.Failed
             : hasApproved ? BatchJobProductStatuses.Approved
             : BatchJobProductStatuses.ImageReviewRequired;
@@ -1109,6 +1116,10 @@ public sealed class DesignGenerationService(
                 run.Stop.Reason ?? "No new design could be made; the earlier ones are kept.", cancellationToken);
         if (run.RequireApproval == false && successCount > 0)
             await KeepOneApprovedDesignAsync(row, history?.LastVariation ?? 0, cancellationToken);
+        if (run.RequireApproval == false && heldCount > 0 && !hasApproved)
+            await LogAsync(job.Id, row.Id, "warning", "approval_held",
+                "The content check could not look at this product's designs, so they were not approved automatically. Review them in Design approval.",
+                cancellationToken);
 
         if (product is not null)
         {

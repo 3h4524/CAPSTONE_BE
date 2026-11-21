@@ -287,6 +287,25 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
+    public async Task UpdateConfigAsync_OwnSettingsWithBlockedSceneText_AreRefusedAndNotKept()
+    {
+        var moderation = new Mock<APCS.Application.Abstractions.Moderation.IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<APCS.Application.Abstractions.Moderation.ModerationText>>(),
+                It.IsAny<APCS.Application.Abstractions.Moderation.ModerationContext>(), It.IsAny<CancellationToken>(), false))
+            .ReturnsAsync(new APCS.Application.Abstractions.Moderation.ModerationVerdict(APCS.Application.Abstractions.Moderation.ModerationDecision.Block,
+                [new(APCS.Application.Abstractions.Moderation.ModerationCategories.ViolenceGore, APCS.Application.Abstractions.Moderation.ModerationSeverity.High, "scene 1 custom prompt")],
+                APCS.Application.Abstractions.Moderation.ModerationDeciders.Gemini));
+        var data = new RunGroupTestData(moderation: moderation.Object);
+        var group = await data.StartAsync();
+        var own = data.SharedConfig() with { AiScenes = [data.SharedConfig().AiScenes![0] with { CustomPrompt = "something violent" }] };
+
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), own), default);
+
+        result.Error.Code.Should().Be("ContentPolicyViolation");
+        data.GroupRows.Single().TargetOverrides.Should().Be("{}");
+    }
+
+    [TestMethod]
     public async Task UpdateConfigAsync_Null_PutsTheDesignBackOnTheSharedSettingsAndKeepsItsScenePicks()
     {
         var data = new RunGroupTestData();
@@ -975,7 +994,8 @@ public sealed class WorkflowRunGroupServiceTests
         /// <summary>The queue a started group is handed to when it is made ready in the background; null runs it in the request.</summary>
         public FakeStartQueue? StartQueue { get; }
 
-        public RunGroupTestData(bool previewApproved = true, bool background = false)
+        public RunGroupTestData(bool previewApproved = true, bool background = false,
+            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
         {
             var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
             Base.State.Setup(x => x.LockRunGroupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -994,7 +1014,7 @@ public sealed class WorkflowRunGroupServiceTests
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
                 Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
                 lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object,
-                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object);
+                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object, moderation: moderation);
             GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
             RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,

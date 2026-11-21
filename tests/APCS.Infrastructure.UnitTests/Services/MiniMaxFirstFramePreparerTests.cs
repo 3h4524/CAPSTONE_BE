@@ -15,9 +15,13 @@ namespace APCS.Infrastructure.UnitTests.Services;
 public sealed class MiniMaxFirstFramePreparerTests
 {
     [TestMethod]
-    [DataRow("9:16", 270, 480)]
-    [DataRow("16:9", 640, 360)]
-    public async Task PrepareAsync_CroppedSource_MatchesPixelsSentByMiniMax(string aspect, int expectedWidth, int expectedHeight)
+    // The crop leaves 640 x 480 px at (80, 160); the frame is its centre in the ratio, so (x, y) is the frame's first pixel.
+    [DataRow("9:16", 270, 480, 265, 160)]
+    [DataRow("16:9", 640, 360, 80, 220)]
+    [DataRow("1:1", 480, 480, 160, 160)]
+    [DataRow("4:3", 640, 480, 80, 160)]
+    [DataRow("3:4", 360, 480, 220, 160)]
+    public async Task PrepareAsync_CroppedSource_MatchesPixelsSentByMiniMax(string aspect, int expectedWidth, int expectedHeight, int firstX, int firstY)
     {
         using var image = new Image<Rgba32>(800, 800);
         for (var y = 0; y < 800; y++)
@@ -47,7 +51,7 @@ public sealed class MiniMaxFirstFramePreparerTests
         using var prepared = Image.Load<Rgba32>(analysisPixels);
         prepared.Width.Should().Be(expectedWidth);
         prepared.Height.Should().Be(expectedHeight);
-        prepared[0, 0].Should().Be(aspect == "9:16" ? image[265, 160] : image[80, 220]);
+        prepared[0, 0].Should().Be(image[firstX, firstY]);
     }
 
     private sealed class Handler(Func<HttpRequestMessage, Task<HttpResponseMessage>> send) : HttpMessageHandler

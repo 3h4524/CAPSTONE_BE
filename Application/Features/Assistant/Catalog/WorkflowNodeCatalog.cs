@@ -90,7 +90,7 @@ public static class WorkflowNodeCatalog
         ]),
         new("generate-video", "Generate Video", "Builds a promo video from the approved mockups.", Order("generate-video"),
         [
-            new("outputFormat", "select", "Output format", [new("square", "Square 1080x1080"), new("portrait", "Portrait 1080x1920"), new("landscape", "Landscape 1920x1080")]),
+            new("outputFormat", "select", "Output format", [new("square", "Square 1080x1080"), new("portrait", "Portrait 1080x1920"), new("landscape", "Landscape 1920x1080"), new("classic_landscape", "Classic landscape 1440x1080"), new("classic_portrait", "Classic portrait 1080x1440")]),
             new("textOverlay", "text", "Text overlay", MaxLength: 120),
             new("standardOptions.transition", "select", "Transition (Standard mode)",
                 [new("none", "None"), new("fade", "Fade"), new("swipe", "Swipe"), new("zoom", "Zoom"), new("flash", "Flash"), new("whip_pan", "Whip pan"), new("blur", "Blur")],

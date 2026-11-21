@@ -74,19 +74,9 @@ public sealed class WorkflowService(ICurrentUser user, IRepository<Workflow> wor
             try { config = WorkflowJson.Config<GenerateVideoConfig>(node); }
             catch (JsonException) { continue; }
             foreach (var own in new[] { config }.Concat(config.ProductConfigs?.Values.Where(value => value is not null) ?? []))
-            {
-                texts.Add(new("the shared scene directions", own.AiGlobalInstructions));
-                foreach (var (scene, index) in (own.AiScenes ?? []).Select((scene, index) => (scene, index + 1)))
-                {
-                    texts.Add(new($"scene {index} instructions", scene.ExtraInstructions));
-                    texts.Add(new($"scene {index} start", scene.StartingState));
-                    texts.Add(new($"scene {index} action", scene.PrimaryAction));
-                    texts.Add(new($"scene {index} end", scene.EndingState));
-                    texts.Add(new($"scene {index} keyframe prompt", scene.StudioPrompt));
-                }
-            }
+                texts.AddRange(AiShotPromptModeration.SellerTexts(own));
         }
-        return texts.Where(text => !string.IsNullOrWhiteSpace(text.Value)).ToList();
+        return texts;
     }
 
     public async Task<Result> DeleteAsync(Guid id, long revision, CancellationToken ct)
