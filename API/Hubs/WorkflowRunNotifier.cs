@@ -8,10 +8,12 @@ namespace APCS.Api.Hubs;
 /// Sends "RunChanged" to the pages following a run and to the pages following its run group, and "RunGroupChanged"
 /// to the latter when the group itself changes. The event names what changed; pages read it again.
 /// </summary>
-public sealed class WorkflowRunNotifier(IHubContext<WorkflowHub> hub, ILogger<WorkflowRunNotifier> logger) : IWorkflowRunNotifier
+public sealed class WorkflowRunNotifier(IHubContext<WorkflowHub> hub, ILogger<WorkflowRunNotifier> logger,
+    APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue planner) : IWorkflowRunNotifier
 {
     public async Task RunChangedAsync(WorkflowRun run, CancellationToken cancellationToken = default)
     {
+        if (run.RunGroupId is not null) planner.Signal();
         var change = new { runId = run.Id.ToString("D"), groupId = run.RunGroupId?.ToString("D"), status = run.Status, revision = run.Revision };
         try
         {
@@ -26,9 +28,9 @@ public sealed class WorkflowRunNotifier(IHubContext<WorkflowHub> hub, ILogger<Wo
         }
     }
 
-    public async Task ProgressAsync(Guid runId, Guid? groupId, string stage, int progress, CancellationToken cancellationToken = default)
+    public async Task ProgressAsync(Guid runId, Guid? groupId, string stage, int progress, CancellationToken cancellationToken = default, string? nodeType = null)
     {
-        var change = new { runId = runId.ToString("D"), groupId = groupId?.ToString("D"), stage, progress };
+        var change = new { runId = runId.ToString("D"), groupId = groupId?.ToString("D"), stage, progress, nodeType };
         try
         {
             await hub.Clients.Group(WorkflowHub.GroupName(runId)).SendAsync("RunProgress", change, CancellationToken.None);

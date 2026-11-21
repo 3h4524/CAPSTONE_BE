@@ -102,6 +102,18 @@ public sealed class RunGroupExportServiceTests
     }
 
     [TestMethod]
+    public async Task OpenAsync_OneOfTwoPackagesReady_RefusesPartialDownload()
+    {
+        AddVideo("Tee-A__a", "first");
+        AddVideo("Tee-B__b", "second", status: "preparing");
+
+        var result = await Service().OpenAsync(_group.Id, default);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Code.Should().Be("ExportNotReady");
+    }
+
+    [TestMethod]
     public async Task OpenAsync_NothingReady_IsNotFound()
     {
         AddVideo("Tee-A__a", "first", status: "preparing");

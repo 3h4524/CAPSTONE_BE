@@ -101,7 +101,7 @@ internal sealed class WorkflowTestData
                 job.Progress = Math.Max(job.Progress, progress); job.Stage = stage; job.HeartbeatAt = now; job.LeaseExpiresAt = until;
                 var write = previousStage != stage || job.Progress - previousProgress >= threshold;
                 if (write && NodeRows.SingleOrDefault(x => x.Id == job.WorkflowNodeRunId) is { } node) { node.Progress = job.Progress; node.Stage = stage; }
-                return new LeaseRenewal(run.Id, run.RunGroupId, stage, job.Progress, write);
+                return new LeaseRenewal(run.Id, run.RunGroupId, stage, job.Progress, write, job.Kind == "export_zip" ? "export-zip" : "generate-video");
             });
         Unit.Setup(x => x.BeginTransactionAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Transaction.Object);
         Quotes.Setup(x => x.VerifyAsync(It.IsAny<WorkflowRun>(), It.IsAny<GenerateVideoConfig>(), It.IsAny<string?>(),
@@ -113,7 +113,7 @@ internal sealed class WorkflowTestData
         var current = new Mock<ICurrentUser>();
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
-            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time,
+            Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time, Runs.Object,
             clipPhase: clipPhase is null ? null : Microsoft.Extensions.Options.Options.Create(clipPhase));
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,

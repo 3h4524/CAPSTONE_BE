@@ -191,7 +191,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         var renewal = await state.RenewLeaseAsync(id, request.LeaseToken, request.Stage, request.Progress, now, now.AddMinutes(2), ProgressStep, ct);
         if (renewal is null) return Result.Failure(LeaseError());
         if (renewal.StepWritten && runNotifier != null)
-            await runNotifier.ProgressAsync(renewal.RunId, renewal.RunGroupId, renewal.Stage, renewal.Progress, ct);
+            await runNotifier.ProgressAsync(renewal.RunId, renewal.RunGroupId, renewal.Stage, renewal.Progress, ct, renewal.NodeType);
         return Result.Success();
     }
 

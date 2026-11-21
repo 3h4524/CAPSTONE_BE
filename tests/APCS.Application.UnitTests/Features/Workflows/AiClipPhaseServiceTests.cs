@@ -109,7 +109,7 @@ public sealed class AiClipPhaseServiceTests
         node.Stage.Should().Be(AiClipPhase.Stage);
         run.Status.Should().Be("running");
         sceneNotifier.Verify(x => x.ChangedAsync(run.Id, It.IsAny<CancellationToken>()), Times.Once);
-        runNotifier.Verify(x => x.ProgressAsync(run.Id, run.RunGroupId, AiClipPhase.Stage, AiClipPhase.DoneProgress, It.IsAny<CancellationToken>()), Times.Once);
+        runNotifier.Verify(x => x.ProgressAsync(run.Id, run.RunGroupId, AiClipPhase.Stage, AiClipPhase.DoneProgress, It.IsAny<CancellationToken>(), "generate-video"), Times.Once);
     }
 
     [TestMethod]
@@ -286,7 +286,7 @@ public sealed class AiClipPhaseServiceTests
         job.Status.Should().Be(AiClipPhase.JobStatus);
         job.Progress.Should().Be(AiClipPhase.StartProgress + 10);
         fixture.NodeRows.Single(x => x.Id == job.WorkflowNodeRunId).Progress.Should().Be(AiClipPhase.StartProgress + 10);
-        runNotifier.Verify(x => x.ProgressAsync(run.Id, run.RunGroupId, AiClipPhase.Stage, AiClipPhase.StartProgress + 10, It.IsAny<CancellationToken>()), Times.Once);
+        runNotifier.Verify(x => x.ProgressAsync(run.Id, run.RunGroupId, AiClipPhase.Stage, AiClipPhase.StartProgress + 10, It.IsAny<CancellationToken>(), "generate-video"), Times.Once);
     }
 
     [TestMethod]

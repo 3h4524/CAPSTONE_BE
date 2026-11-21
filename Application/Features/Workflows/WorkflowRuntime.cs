@@ -11,6 +11,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<MockupImage> assets, IRepository<PromoVideo> videos, IRepository<PromoVideoScene> scenes,
     IRepository<VideoTemplate> templates, IRepository<MediaJob> jobs, IRepository<ExportPackage> exports,
     IRepository<ExportPackageItem> exportItems, VideoStoryboardPlanner planner, IListingContentService listingContent, TimeProvider time,
+    IRepository<WorkflowRun> runs,
     IVideoExperienceContextService? experiences = null, IVideoPromptPreparationService? promptPreparation = null,
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
@@ -178,6 +179,17 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     }
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;
                 case "export-zip":
+                    // A batch exports only after every video has finished and passed review. The planner
+                    // resumes pending exports after the last review commits (also after a server restart).
+                    if (run.RunGroupId is Guid groupId)
+                    {
+                        var siblings = await runs.FindAsync(x => x.RunGroupId == groupId && x.Id != run.Id, ct);
+                        var siblingIds = siblings.Select(x => x.Id).ToArray();
+                        var upstream = await nodes.FindAsync(x => siblingIds.Contains(x.WorkflowRunId) &&
+                            (x.NodeType == "generate-video" || x.NodeType == "review-video"), ct);
+                        if (siblings.Any(sibling => upstream.Count(x => x.WorkflowRunId == sibling.Id && x.Status == "succeeded") != 2))
+                            return;
+                    }
                     var pointer = WorkflowJson.Read<VideoPointer>(checkpoints.Single(x => x.NodeType == "review-video").OutputSnapshot);
                     var approvedVideo = (await videos.GetByIdAsync(pointer.VideoId, ct))!;
                     if (approvedVideo.ApprovalStatus != "approved") { node.Status = "failed"; run.Status = "failed"; run.ErrorMessage = "Export requires the exact approved video."; return; }
@@ -236,6 +248,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         IncludeListingContent = exportListing is not null, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
                     var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, approvedVideo, exportListing is not null);
                     node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
+                    node.Stage = "Exporting"; node.Progress = 0;
                     await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo.Id, approvedVideo.StorageKey!, approvedVideo.StorageVersion!,
                         approvedVideo.ThumbnailStorageKey!, approvedVideo.ThumbnailStorageVersion!, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
                         exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot, guide), ct); return;

@@ -39,7 +39,8 @@ public interface IWorkflowStateRepository
     Task<WorkflowRunGroup?> LockRunGroupAsync(Guid groupId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Locks the oldest queued child run of a run group, skipping the ones another planner holds, or returns null.
+    /// Locks a queued child run or a pending export whose entire group has passed video review,
+    /// skipping runs another planner holds, or returns null.
     /// </summary>
     Task<WorkflowRun?> ClaimQueuedGroupRunAsync(CancellationToken cancellationToken);
 
@@ -54,7 +55,7 @@ public interface IWorkflowStateRepository
 }
 
 /// <param name="StepWritten">Whether the run's step changed, so pages following the run should hear about it.</param>
-public sealed record LeaseRenewal(Guid RunId, Guid? RunGroupId, string Stage, int Progress, bool StepWritten);
+public sealed record LeaseRenewal(Guid RunId, Guid? RunGroupId, string Stage, int Progress, bool StepWritten, string? NodeType = null);
 
 /// <summary>A failed render or export job, with the step it belongs to.</summary>
 public sealed record FailedMediaJob(Guid RunId, Guid NodeRunId, string? ErrorMessage);

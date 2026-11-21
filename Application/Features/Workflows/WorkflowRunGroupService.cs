@@ -773,7 +773,8 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 child?.ErrorMessage, child is null ? picked?.Config ?? ProductOwn(config, target.Product.Id) : RunConfig(stepsByRun.GetValueOrDefault(child.Id)),
                 picked?.Config is not null, child is null ? null : VideoStatusOf(child, childSteps),
                 printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage,
-                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot))));
+                    PublishNodeState.WarningsIn(printifyStep.OutputSnapshot)),
+                StepOf(childSteps, "generate-video"), StepOf(childSteps, "review-video"), StepOf(childSteps, "export-zip")));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),
@@ -817,6 +818,10 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             .OrderBy(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep ? 1 : 0)
             .ThenBy(x => Array.IndexOf(WorkflowCapabilityRegistry.RunOrder, x.NodeType) is var order && order < 0 ? int.MaxValue : order)
             .FirstOrDefault();
+
+    private static RunGroupStepResponse? StepOf(IReadOnlyList<WorkflowNodeRun> steps, string type) =>
+        steps.FirstOrDefault(x => x.NodeType == type) is { } step
+            ? new(step.Status, step.Stage, step.Progress, step.ErrorMessage) : null;
 
     /// <summary>
     /// The status the run would have for its video alone: its line of steps, without Push to Printify (it runs beside

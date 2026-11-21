@@ -285,11 +285,11 @@ public sealed class MediaJobServiceTests
         (await service.HeartbeatAsync(job.Id, new(job.LeaseToken!.Value, "Rendering", 42), default)).IsSuccess.Should().BeTrue();
         job.Progress.Should().Be(42);
         node.Progress.Should().Be(40);
-        notifier.Verify(x => x.ProgressAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        notifier.Verify(x => x.ProgressAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<string?>()), Times.Never);
 
         (await service.HeartbeatAsync(job.Id, new(job.LeaseToken!.Value, "Rendering", 47), default)).IsSuccess.Should().BeTrue();
         node.Progress.Should().Be(47);
-        notifier.Verify(x => x.ProgressAsync(run.Id, null, "Rendering", 47, It.IsAny<CancellationToken>()), Times.Once);
+        notifier.Verify(x => x.ProgressAsync(run.Id, null, "Rendering", 47, It.IsAny<CancellationToken>(), "generate-video"), Times.Once);
     }
 
     [TestMethod]
