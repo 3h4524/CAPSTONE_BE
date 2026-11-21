@@ -6,13 +6,17 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
 using APCS.Application.Features.ListingContent;
+using APCS.Application.Features.ListingContent.Common;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.ListingStreams;
+using APCS.Application.UnitTests.Features.ListingStreams;
 using APCS.Application.Features.Shops;
 using APCS.Application.Features.Shops.Common;
 using APCS.Application.Features.Shops.Dtos.Response;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Moq;
 
@@ -56,6 +60,7 @@ internal sealed class WorkflowTestData
     public Mock<ILocalExportStore> LocalExports { get; } = new();
     public Mock<IShopService> Shops { get; } = new();
     public Mock<IPrintifyService> Printify { get; } = new();
+    public FakeListingStreamBuffer ListingStreams { get; } = new();
     public WorkflowCapabilityRegistry Capabilities { get; } = new();
     public WorkflowRuntime Runtime { get; }
     public WorkflowService WorkflowService { get; }
@@ -118,7 +123,8 @@ internal sealed class WorkflowTestData
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
-            new(Shops.Object, Printify.Object), moderation: moderation);
+            new(Shops.Object, Printify.Object), moderation: moderation,
+            listingStreams: new(ListingStreams, current.Object, NullLogger<ListingStreamWriter>.Instance));
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
@@ -235,12 +241,12 @@ internal sealed class WorkflowTestData
     }
 
     public void ListingSucceeds() => ListingContent
-        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-        .ReturnsAsync((Guid productId, CancellationToken _) => Result.Success(
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<IListingGenerationObserver?>()))
+        .ReturnsAsync((Guid productId, CancellationToken _, IListingGenerationObserver? _) => Result.Success(
             new ListingContentResponseDto(productId, Guid.NewGuid(), "Vintage road trip tee", "A soft tee.", [], 1, "text-model", Now.UtcDateTime)));
 
     public void ListingFails(string message) => ListingContent
-        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+        .Setup(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(), It.IsAny<IListingGenerationObserver?>()))
         .ReturnsAsync(Result.Failure<ListingContentResponseDto>(Error.Failure("ListingContent.ProviderBusy", message)));
 
     public MockupImage AddAsset(Product product, string role = "Hero")

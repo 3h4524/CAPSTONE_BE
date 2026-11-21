@@ -2,6 +2,7 @@ using System.Text.Json;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.ListingContent;
 using APCS.Application.Features.ListingContent.Dtos;
+using APCS.Application.Features.ListingStreams;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 
@@ -58,12 +59,13 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         return Result.Success(prepared);
     }
 
-    public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct)
+    /// <param name="listingStream">Where a listing written now is streamed to, when the request asked for it.</param>
+    public async Task AdvanceAsync(WorkflowRun run, CancellationToken ct, ListingStreamWriter? listingStream = null)
     {
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
         var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
         var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
-        if (listing is { Status: "pending" }) await GenerateListingAsync(run, checkpoints, listing, ct);
+        if (listing is { Status: "pending" }) await GenerateListingAsync(run, checkpoints, listing, listingStream, ct);
         if (IsListingOnly(checkpoints))
         {
             if (listing is not null) FinishListingOnlyRun(run, listing);
@@ -288,11 +290,12 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         publishQueue?.Enqueue(node.Id);
     }
     /// <summary>Writes the listing again after it failed, without touching the video steps.</summary>
-    public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
+    public async Task RetryListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct,
+        ListingStreamWriter? listingStream = null)
     {
         var listing = checkpoints.Single(x => x.NodeType == "generate-listing");
         listing.Attempt++;
-        await GenerateListingAsync(run, checkpoints, listing, ct);
+        await GenerateListingAsync(run, checkpoints, listing, listingStream, ct);
         if (IsListingOnly(checkpoints)) FinishListingOnlyRun(run, listing);
     }
 
@@ -300,7 +303,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     private static bool IsListingOnly(IReadOnlyList<WorkflowNodeRun> checkpoints) =>
         checkpoints.All(x => x.NodeType != "generate-video" && !WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType));
 
-    private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing, CancellationToken ct)
+    private async Task GenerateListingAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, WorkflowNodeRun listing,
+        ListingStreamWriter? listingStream, CancellationToken ct)
     {
         var input = checkpoints.Single(x => x.NodeType == "product-input");
         if (input.Status != "succeeded")
@@ -309,7 +313,7 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             input.Status = "succeeded";
             input.Progress = 100;
         }
-        var result = await listingContent.GetOrGenerateAsync(run.ProductId, ct);
+        var result = await listingContent.GetOrGenerateAsync(run.ProductId, ct, listingStream?.For(run.ProductId));
         listing.UpdatedAt = time.GetUtcNow().UtcDateTime;
         if (result.IsFailure)
         {

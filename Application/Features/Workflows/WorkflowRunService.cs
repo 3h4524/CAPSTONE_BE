@@ -3,6 +3,7 @@ using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Moderation;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Features.Entitlements;
+using APCS.Application.Features.ListingStreams;
 using APCS.Application.Features.Workflows.Validators;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
@@ -25,9 +26,22 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     WorkflowCapabilityRegistry capabilities, IAiShotQuoteService quotes, TimeProvider time,
     IPlanEntitlementService entitlements, WorkflowPublishConnections publishConnections, ISceneVideoNotifier? sceneNotifier = null,
     IRunTargetConfigResolver? targetResolver = null, IWorkflowRunNotifier? runNotifier = null,
-    IContentModerationService? moderation = null) : IWorkflowRunService
+    IContentModerationService? moderation = null, ListingStreamPublisher? listingStreams = null) : IWorkflowRunService
 {
     public async Task<Result<RunResponse>> StartAsync(Guid workflowId, StartRunRequest request, CancellationToken ct)
+    {
+        var listingStream = listingStreams?.Open(request.ListingStreamId);
+        try
+        {
+            return await StartRunAsync(workflowId, request, listingStream, ct);
+        }
+        finally
+        {
+            if (listingStream is not null) await listingStream.EndAsync();
+        }
+    }
+
+    private async Task<Result<RunResponse>> StartRunAsync(Guid workflowId, StartRunRequest request, ListingStreamWriter? listingStream, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > 100)
             return Result.Failure<RunResponse>(Error.Validation("Provide an idempotency key of 1–100 characters."));
@@ -77,7 +91,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             await nodes.AddAsync(new() { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = node.Id, NodeType = node.Type,
                 Status = "pending", Attempt = 1, InputSnapshot = node.Config.GetRawText(), OutputSnapshot = "{}", CreatedAt = now, UpdatedAt = now }, cancellationToken: ct);
         await uow.SaveChangesAsync(ct);
-        await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        await runtime.AdvanceAsync(run, ct, listingStream); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
         return Result.Success(await MapAsync(run, ct));
     }
@@ -122,6 +136,19 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     }
     public async Task<Result<RunResponse>> ActionAsync(Guid id, RunActionRequest request, CancellationToken ct)
     {
+        var listingStream = listingStreams?.Open(request.ListingStreamId);
+        try
+        {
+            return await ApplyActionAsync(id, request, listingStream, ct);
+        }
+        finally
+        {
+            if (listingStream is not null) await listingStream.EndAsync();
+        }
+    }
+
+    private async Task<Result<RunResponse>> ApplyActionAsync(Guid id, RunActionRequest request, ListingStreamWriter? listingStream, CancellationToken ct)
+    {
         // New settings sent with an action (rendering again) are checked once here, before the run is locked, since the
         // check may wait on Gemini; planning and rendering then use them unchecked. Rewriting them to a batch design's
         // images below changes no text.
@@ -158,7 +185,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             // The video part may still be working or waiting for review: only a run that failed because of Printify
             // goes back to running.
             if (run.Status == "failed") { run.Status = "running"; run.ErrorMessage = null; }
-            await runtime.AdvanceAsync(run, ct);
+            await runtime.AdvanceAsync(run, ct, listingStream);
         }
         else if (request.Action == "cancel")
         {
@@ -170,7 +197,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
         }
         else if (request.Action == "resume")
         {
-            var resumed = await ResumeAsync(run, checkpoints, request, ct);
+            var resumed = await ResumeAsync(run, checkpoints, request, listingStream, ct);
             if (resumed.IsFailure) return Result.Failure<RunResponse>(resumed.Error);
         }
         else if (request.Action == "resume_mockups")
@@ -190,7 +217,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
                 if (consent.IsFailure) return Result.Failure<RunResponse>(consent.Error);
             }
             gate.Status = "succeeded"; gate.OutputSnapshot = WorkflowJson.Write(new { mockupIds = approved.Select(x => x.Id), revisions = approved.Select(x => x.MetadataRevision) });
-            run.Status = "running"; await runtime.AdvanceAsync(run, ct);
+            run.Status = "running"; await runtime.AdvanceAsync(run, ct, listingStream);
         }
         else if (request.Action == "retry_listing")
         {
@@ -200,7 +227,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             // renew its lease against the same run in the meantime.
             if (run.Status is "running" or "cancelled")
                 return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "Retry the listing once the video step is waiting for you or has finished."));
-            await runtime.RetryListingAsync(run, checkpoints, ct);
+            await runtime.RetryListingAsync(run, checkpoints, ct, listingStream);
         }
         else if (request.Action is "approve_video" or "reject_video")
         {
@@ -214,7 +241,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             video.ReviewRevision++; video.ApprovedBy = request.Action == "approve_video" ? user.UserId : null;
             video.ApprovedAt = request.Action == "approve_video" ? time.GetUtcNow().UtcDateTime : null;
             review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
-            if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct); }
+            if (request.Action == "approve_video") { review.Status = "succeeded"; run.Status = "running"; await runtime.AdvanceAsync(run, ct, listingStream); }
             else { review.Status = "waiting_for_review"; run.Status = "waiting_for_review"; }
         }
         else if (request.Action == "retry" && checkpoints.FirstOrDefault(x => WorkflowCapabilityRegistry.PublishSteps.Contains(x.NodeType) && x.Status == "failed") is { } failedPublish)
@@ -224,7 +251,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (run.Status != "failed") return Result.Failure<RunResponse>(Error.Conflict("InvalidCheckpoint", "This run is not available for the requested action."));
             failedPublish.Status = "pending"; failedPublish.Attempt++; failedPublish.ErrorMessage = null; failedPublish.Stage = null;
             run.Status = "running"; run.ErrorMessage = null;
-            await runtime.AdvanceAsync(run, ct);
+            await runtime.AdvanceAsync(run, ct, listingStream);
         }
         else if (request.Action is "rerender" or "retry" or "regenerate_ai_shot")
         {
@@ -327,7 +354,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             }
             foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && x.Status == "failed", ct)) job.Status = "cancelled";
             run.Status = "running"; run.ErrorMessage = null; if (reopenCancelledScene) run.CompletedAt = null;
-            await runtime.AdvanceAsync(run, ct);
+            await runtime.AdvanceAsync(run, ct, listingStream);
         }
         else return Result.Failure<RunResponse>(Error.Validation("Unknown run action."));
         run.Revision++; run.UpdatedAt = time.GetUtcNow().UtcDateTime;
@@ -349,7 +376,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
     /// stored AI clips are used again. Settings sent with it (a scene made longer...) replace the video's: only the
     /// clips they change are made again. Nothing asks for a second confirmation of the cost.
     /// </summary>
-    private async Task<Result> ResumeAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, RunActionRequest request, CancellationToken ct)
+    private async Task<Result> ResumeAsync(WorkflowRun run, IReadOnlyList<WorkflowNodeRun> checkpoints, RunActionRequest request,
+        ListingStreamWriter? listingStream, CancellationToken ct)
     {
         if (run.Status != "cancelled")
             return Result.Failure(Error.Conflict("InvalidCheckpoint", "Only a stopped run can be resumed."));
@@ -404,7 +432,7 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             group.Status = "running"; group.CompletedAt = null; group.Revision++; group.UpdatedAt = now;
         }
         run.Status = "running";
-        await runtime.AdvanceAsync(run, ct);
+        await runtime.AdvanceAsync(run, ct, listingStream);
         return Result.Success();
     }
 

@@ -10,7 +10,7 @@ This document is the source of truth for architecture, the Service/Repository pa
 - Entity Framework Core 8 with Npgsql and a database-first PostgreSQL model reverse-engineered from schema `public`, whose changes are Flyway migrations in `migrations/`.
 - Direct EF account persistence with GUID `User` identifiers, ASP.NET Core's `PasswordHasher<User>`, role codes, and a permission catalogue; ASP.NET Identity stores are not used.
 - Custom JWT access tokens and hashed, rotating refresh tokens.
-- Redis through `IDistributedCache` and the Application `ICacheService` abstraction, plus a shared `IConnectionMultiplexer` behind `IAssistantTurnBuffer` for the assistant's resumable answers.
+- Redis through `IDistributedCache` and the Application `ICacheService` abstraction, plus a shared `IConnectionMultiplexer` behind `IAssistantTurnBuffer` (the assistant's resumable answers) and `IListingStreamBuffer` (live workflow listings), both built on `RedisEventStreamBuffer`.
 - MSTest, FluentAssertions, and Moq for the current unit-test suite.
 
 Do not add a technology merely because generic Clean Architecture or .NET guidance recommends it. Introduce a dependency only for an approved feature and document the durable architectural consequence.

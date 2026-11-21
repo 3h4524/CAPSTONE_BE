@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace APCS.Api.Extensions;
 
-public sealed class ServerSentEventsResult(IAsyncEnumerable<AssistantTurnEntry> events) : IActionResult
+public sealed class ServerSentEventsResult(IAsyncEnumerable<EventStreamEntry> events) : IActionResult
 {
     public async Task ExecuteResultAsync(ActionContext context)
     {

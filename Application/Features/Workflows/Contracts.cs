@@ -30,7 +30,7 @@ public sealed record Region(double X, double Y, double Width, double Height);
 public sealed record MockupRegions(Point? FocalPoint = null, Region? Product = null, Region? Artwork = null,
     Region? Detail = null, AiStudioFrameMetadata? StudioFrame = null);
 public sealed record WorkflowNode(string Id, string Type, string Label, Point Position, JsonElement Config);
-public sealed record WorkflowEdge(string Id, string Source, string Target);
+public sealed record WorkflowEdge(string Id, string Source, string Target, IReadOnlyList<Point>? Waypoints = null);
 public sealed record WorkflowDefinition(int Version, IReadOnlyList<WorkflowNode> Nodes, IReadOnlyList<WorkflowEdge> Edges, JsonElement? Viewport = null);
 public sealed record SaveWorkflowRequest(string Name, string Description, WorkflowDefinition Definition, long? ExpectedRevision = null);
 public sealed record WorkflowResponse(Guid Id, string Name, string Description, int NodeCount, long Revision, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, WorkflowDefinition Definition);
@@ -171,10 +171,10 @@ public sealed record CostRange(string Currency, decimal Minimum, decimal Maximum
 public sealed record VideoModeCapability(string Mode, bool Enabled, string Availability, string Description, bool SupportsFallback, CostRange? EstimatedCostRange = null);
 public sealed record NodeCapability(string Type, bool Enabled, string Description);
 public sealed record WorkflowCapabilities(int DefinitionVersion, IReadOnlyList<NodeCapability> Nodes, IReadOnlyList<VideoModeCapability> VideoModes);
-public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey);
+public sealed record StartRunRequest(long ExpectedWorkflowRevision, string IdempotencyKey, Guid? ListingStreamId = null);
 public sealed record RunActionRequest(long ExpectedRevision, string Action, Guid? VideoId = null, long? ReviewRevision = null,
     GenerateVideoConfig? Config = null, string? ExpectedStoryboardFingerprint = null, string? AiShotQuoteToken = null,
-    int? SceneOrder = null);
+    int? SceneOrder = null, Guid? ListingStreamId = null);
 public sealed record NodeRunResponse(Guid Id, string NodeId, string NodeType, string Status, int Attempt, string? Stage, int Progress, string? ErrorMessage, JsonElement Output);
 public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, string Status, long Revision, long WorkflowRevision, DateTimeOffset CreatedAt, string? ErrorMessage, IReadOnlyList<NodeRunResponse> Nodes,
     Guid? RunGroupId = null, string? ArtworkGroupKey = null);
