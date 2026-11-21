@@ -32,7 +32,7 @@ fi
 existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
   --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id" | tail -n 1)"
 
-if [[ "$findings" -gt 0 ]]; then
+if [ "$findings" -gt 0 ]; then
   {
     echo "$marker"
     echo "### :x: Sonar check failed"
