@@ -80,7 +80,7 @@ if [[ "$findings" -gt 0 ]]; then
     echo
     echo "[SonarCloud dashboard]($dashboard_url) · [Workflow run]($run_url)"
   } > "$body"
-elif [[ -n "$existing" ]]; then
+else
   {
     echo "$marker"
     echo "### :white_check_mark: Sonar check passed"
@@ -91,9 +91,6 @@ elif [[ -n "$existing" ]]; then
     echo
     echo "[SonarCloud dashboard]($dashboard_url) · [Workflow run]($run_url)"
   } > "$body"
-else
-  echo "No findings and no earlier report, so nothing to post."
-  exit 0
 fi
 
 if [[ -n "$existing" ]]; then
