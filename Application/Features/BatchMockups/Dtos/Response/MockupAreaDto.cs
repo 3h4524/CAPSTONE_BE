@@ -32,3 +32,10 @@ public sealed record MockupAreaDto(
 /// <param name="Kind">"same", "design" or "none", as <see cref="MockupAreaDto.Source"/>.</param>
 /// <param name="DesignImageId">The design printed there when <paramref name="Kind"/> is "design".</param>
 public sealed record MockupAreaSourceDto(string Kind, Guid? DesignImageId = null);
+
+/// <summary>
+/// Where a job puts the design on one template's main print area, in the photo's pixels. The template itself, which a
+/// system template shares with every Seller, stays as it is.
+/// </summary>
+/// <param name="Rotation">Degrees the design is turned about the area's center, clockwise.</param>
+public sealed record MockupTemplatePlacementDto(int X, int Y, int Width, int Height, double Rotation = 0);

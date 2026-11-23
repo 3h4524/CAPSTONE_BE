@@ -22,6 +22,8 @@ namespace APCS.Application.UnitTests.Features.Shops;
 [TestClass]
 public sealed class PrintifyServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private readonly Guid userId = Guid.NewGuid();
     private readonly Guid productId = Guid.NewGuid();
     private readonly Mock<ICurrentUser> current = new();
@@ -500,6 +502,24 @@ public sealed class PrintifyServiceTests
     }
 
     [TestMethod]
+    public async Task CreateProductAsync_ABackPlacedPastThePrintArea_SaysItWasMovedIn()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetVariantsAsync("token", 6, 99, It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new PrintifyCatalogVariant(101, "White / S", "White", "S", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+            new PrintifyCatalogVariant(102, "White / M", "White", "M", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+        ]);
+        ShownOnTemplate("""{"x":200,"y":125,"width":200,"height":250}""");
+        var back = BackSideShown();
+        back.BatchJobProduct!.BatchJob.Config = back.BatchJobProduct.BatchJob.Config.Replace("\"x\":200", "\"x\":450");
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id, PrintMockupSides = true }, cancellationToken: TestContext.CancellationToken);
+
+        result.Value.Warnings.Should().ContainSingle(warning => warning.Contains("outside Printify's print area on the back"));
+    }
+
+    [TestMethod]
     public async Task CreateProductAsync_AProviderThatDoesNotPrintTheBack_PrintsTheFrontOnly_AndSaysSo()
     {
         var service = Create();
@@ -563,6 +583,20 @@ public sealed class PrintifyServiceTests
         var slot = $"{design.Id:N}.{mockup.MockupTemplateId:N}.FFFFFF";
         mockup.BatchJobProduct!.BatchJob.Config = "{\"mockupOverrides\":{\"" + slot + "\":{\"mockupTemplateId\":\"" + mockup.MockupTemplateId
             + "\",\"garmentColor\":\"#FFFFFF\",\"areas\":[{\"key\":\"main\",\"x\":200,\"y\":125,\"width\":200,\"height\":250,\"rotation\":0,\"source\":\"same\"}]}}}";
+
+        await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
+
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.X == 0.5 && product.Y == 0.3 && Math.Abs(product.Scale - 0.4722) < 0.0001), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_APositionSetForTheJob_IsWhereTheDesignIsPrinted()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        mockup.BatchJobProduct!.BatchJob.Config = "{\"mockupTemplatePlacements\":{\"" + mockup.MockupTemplateId
+            + "\":{\"x\":200,\"y\":125,\"width\":200,\"height\":250,\"rotation\":0}}}";
 
         await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id });
 

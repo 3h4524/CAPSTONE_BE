@@ -9,6 +9,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using MockQueryable.Moq;
 using Moq;
 
@@ -17,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.BatchMockups;
 [TestClass]
 public sealed class ModelPhotoServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly Guid Seller = Guid.NewGuid();
     private static readonly byte[] JpegBytes = [0xFF, 0xD8, 0xFF, 0xE0];
     private static readonly byte[] SelectionBytes = [0x89, 0x50, 0x4E, 0x47, 7, 7];
@@ -25,6 +28,7 @@ public sealed class ModelPhotoServiceTests
     private readonly Mock<IRepository<MockupTemplate>> _templates = new();
     private readonly Mock<IPublicImageService> _images = new();
     private readonly Mock<IMockupMapService> _maps = new();
+    private readonly ModelPhotoSettings _settings = new() { PrintWithoutAi = true };
     private GarmentMaskStats _stats = new(0.12, 0.88);
 
     public ModelPhotoServiceTests()
@@ -408,6 +412,134 @@ public sealed class ModelPhotoServiceTests
         library.IsActive.Should().BeFalse();
     }
 
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void GetOptions_SaysWhetherAMockupCanGoOnAPhotoWithoutAi(bool on)
+    {
+        _settings.PrintWithoutAi = on;
+
+        Service().GetOptions().PrintWithoutAi.Should().Be(on);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithoutPrintingWithoutAi_OnlyStoresThePhoto()
+    {
+        _settings.PrintWithoutAi = false;
+        _maps.SetupGet(x => x.IsAvailable).Returns(false);
+
+        var result = await Service().CreateAsync(Request(selection: false), system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        var stored = _rows.Should().ContainSingle().Subject;
+        MockupRules.HasCurrentMaps(stored).Should().BeFalse();
+        stored.AllowRecolor.Should().BeFalse();
+        result.Value.RealisticPrintReady.Should().BeFalse();
+        result.Value.GarmentMaskUrl.Should().BeNull();
+        MockupRules.IsAutomaticPlacement(stored.PrintAreaConfig).Should().BeTrue();
+        MockupRules.ParsePrintArea(stored.PrintAreaConfig).Should().Be(ModelPhotoGenerationService.ChestArea(1000, 1500));
+        _images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), MockupRules.BaseImageKey(stored.Id), It.IsAny<CancellationToken>()), Times.Once);
+        _maps.Verify(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<GarmentSearch?>(), It.IsAny<CancellationToken>()), Times.Never);
+        _maps.Verify(x => x.StoreHelpersAsync(It.IsAny<string>(), It.IsAny<PreparedBasePhoto>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CreateAsync_WithoutPrintingWithoutAi_APrintAreaLargerThanThePhotoIsNotARefusal()
+    {
+        _settings.PrintWithoutAi = false;
+
+        var result = await Service().CreateAsync(Request(selection: false) with { X = 0, Y = 0, Width = 5000, Height = 5000 }, system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WithoutPrintingWithoutAi_ANewPhotoIsStoredAndItsOldMapsStopCounting()
+    {
+        _settings.PrintWithoutAi = false;
+        var owned = AddModelPhoto(Seller);
+        var oldPhoto = owned.BaseImageUrl;
+
+        var result = await Service().UpdateAsync(owned.Id, Request(selection: false), system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        owned.BaseImageUrl.Should().NotBe(oldPhoto);
+        MockupRules.HasCurrentMaps(owned).Should().BeFalse();
+        MockupRules.ParsePrintArea(owned.PrintAreaConfig).Should().Be(ModelPhotoGenerationService.ChestArea(1000, 1500));
+        _maps.Verify(x => x.PrepareModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<byte[]>(), It.IsAny<GarmentSearch?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task UpdateAsync_WithoutPrintingWithoutAi_ChangingOnlyTheNameKeepsItsMapsAndPrintArea()
+    {
+        _settings.PrintWithoutAi = false;
+        var owned = AddModelPhoto(Seller);
+        var area = owned.PrintAreaConfig;
+
+        var result = await Service().UpdateAsync(owned.Id, Request(photo: false, selection: false) with { Name = "Renamed" }, system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        owned.Name.Should().Be("Renamed");
+        owned.PrintAreaConfig.Should().Be(area);
+        MockupRules.HasCurrentMaps(owned).Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task PreviewAsync_WithoutPrintingWithoutAi_IsRefusedBeforeAnalyzingThePhoto()
+    {
+        _settings.PrintWithoutAi = false;
+        var photo = new UploadFileDto("model.jpg", "image/jpeg", JpegBytes.Length, new MemoryStream(JpegBytes));
+
+        var result = await Service().PreviewAsync(photo, cancellationToken: TestContext.CancellationToken);
+
+        result.Error.Code.Should().Be("BatchMockups.PrintWithoutAiOff");
+        _maps.Verify(x => x.PreviewModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static ModelPhotoLinkDto Linked() =>
+        new("Adult · Female", "tshirt", "https://ideogram.ai/photo.png?exp=1", new ModelAttributesDto("single", "adult", "female"));
+
+    [TestMethod]
+    public async Task CreateFromLinkAsync_StoresThePhotoFromItsLink_AsAPhotoForAiDressing()
+    {
+        _settings.PrintWithoutAi = false;
+        _images.Setup(x => x.UploadJpegFromUrlAsync(Linked().ImageUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string key, CancellationToken _) => new PublicImageUploadResult($"https://res.cloudinary.com/demo/image/upload/v1/{key}.jpg", 1728, 2304));
+
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        var stored = _rows.Should().ContainSingle().Subject;
+        (stored.UserId, stored.Kind, stored.Name, stored.Gender).Should().Be((Seller, MockupRules.ModelKind, "Adult · Female", "female"));
+        (stored.OutputWidthPx, stored.OutputHeightPx).Should().Be((1728, 2304));
+        stored.BaseImageUrl.Should().EndWith($"{MockupRules.BaseImageKey(stored.Id)}.jpg");
+        MockupRules.HasCurrentMaps(stored).Should().BeFalse();
+        MockupRules.ParsePrintArea(stored.PrintAreaConfig).Should().Be(ModelPhotoGenerationService.ChestArea(1728, 2304));
+        _images.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task CreateFromLinkAsync_ALinkStorageCannotRead_IsReportedSoTheFileCanBeSent()
+    {
+        _settings.PrintWithoutAi = false;
+        _images.Setup(x => x.UploadJpegFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary could not fetch it."));
+
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.Error.Code.Should().Be(MockupErrors.PhotoLinkNotStoredCode);
+        _rows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task CreateFromLinkAsync_WithPrintingWithoutAiOn_IsLeftToTheFullSave()
+    {
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
+
+        result.Error.Code.Should().Be(MockupErrors.PhotoLinkNotStoredCode);
+        _images.Verify(x => x.UploadJpegFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private ModelPhotoService Service()
     {
         var currentUser = new Mock<ICurrentUser>();
@@ -416,7 +548,7 @@ public sealed class ModelPhotoServiceTests
         var compositor = new Mock<IMockupCompositor>();
         compositor.Setup(x => x.BuildAssetUrl(It.IsAny<string>(), It.IsAny<string>())).Returns("https://cdn/mask.png");
         return new ModelPhotoService(currentUser.Object, _templates.Object, _images.Object, compositor.Object, _maps.Object,
-            new SaveModelPhotoValidator(), TimeProvider.System, NullLogger<ModelPhotoService>.Instance);
+            new SaveModelPhotoValidator(), TimeProvider.System, NullLogger<ModelPhotoService>.Instance, Options.Create(_settings));
     }
 
     private static SaveModelPhotoRequestDto Request(bool photo = true, bool selection = true) =>

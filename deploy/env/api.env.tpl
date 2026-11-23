@@ -77,6 +77,9 @@ AiVideo__ClipPhase__Enabled=true
 AiVideo__ClipPhase__MaxInFlight=3
 AiVideo__ClipPhase__MaxInFlightPerUser=2
 
+# Putting a mock-up on a model photo without AI. Off, a model photo is only stored and is dressed with AI.
+ModelPhotos__PrintWithoutAi=false
+
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
 VideoQuality__AutoEvaluate=false

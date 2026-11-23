@@ -2,11 +2,13 @@ using System.Text.RegularExpressions;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.Workflows;
 
@@ -36,11 +38,12 @@ public interface IModelPhotoMockupService
 /// <remarks>
 /// The result is stored like the AI lifestyle image (a Lifestyle mock-up in the design's artwork group), as a
 /// snapshot so a video can use it. It stays pending until the seller approves it at the Mockup Approval gate.
+/// Refused while <see cref="ModelPhotoSettings.PrintWithoutAi"/> is off.
 /// </remarks>
 public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
     IRepository<MockupTemplate> templates, IRepository<DesignImage> designs, IRepository<BatchJobProduct> rows,
     IRepository<BatchJob> batches, IMockupCompositor compositor, IMockupMapService maps, IMediaStorage storage, IMockupAssetService mockups,
-    IUnitOfWork uow, TimeProvider time, ILogger<ModelPhotoMockupService> logger) : IModelPhotoMockupService
+    IUnitOfWork uow, TimeProvider time, ILogger<ModelPhotoMockupService> logger, IOptions<ModelPhotoSettings> settings) : IModelPhotoMockupService
 {
     public const string Role = "Lifestyle";
 
@@ -100,6 +103,8 @@ public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Produ
     /// <summary>The composite of the mock-up's design on the model photo, after every check; nothing is stored.</summary>
     private async Task<Result<Composed>> ComposeAsync(Guid productId, ModelPhotoMockupRequest request, CancellationToken ct)
     {
+        if (!settings.Value.PrintWithoutAi)
+            return Result.Failure<Composed>(MockupErrors.PrintWithoutAiOff());
         if (user.UserId is not Guid userId || await products.GetByIdAsync(productId, ct) is not { DeletedAt: null } product || product.UserId != userId)
             return Result.Failure<Composed>(Missing());
         if (request.GarmentColor is { } requested && !Regex.IsMatch(requested, MockupRules.GarmentColorPattern))

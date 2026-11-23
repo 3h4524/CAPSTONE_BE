@@ -121,6 +121,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddSignalR();
 builder.Services.AddScoped<APCS.Application.Features.Workflows.ISceneVideoNotifier, APCS.Api.Hubs.SceneVideoNotifier>();
 builder.Services.AddScoped<APCS.Application.Features.Workflows.IWorkflowRunNotifier, APCS.Api.Hubs.WorkflowRunNotifier>();
+builder.Services.AddScoped<APCS.Application.Features.DesignGeneration.IDesignJobNotifier, APCS.Api.Hubs.DesignJobNotifier>();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.ISupportTicketNotifier, APCS.Api.Hubs.SupportTicketNotifier>();
 builder.Services.AddScoped<APCS.Application.Abstractions.Notifications.INotificationHubClient, APCS.Api.Hubs.NotificationHubClient>();
 builder.Services.AddSingleton<APCS.Application.Features.TestReports.ITestReportRunBroadcaster, APCS.Api.Hubs.TestReportRunBroadcaster>();

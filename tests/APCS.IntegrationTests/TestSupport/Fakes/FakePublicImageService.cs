@@ -41,6 +41,34 @@ public sealed class FakePublicImageService : IPublicImageService
     }
 
     /// <inheritdoc />
+    public Task<PublicImageUploadResult> UploadImageFromUrlAsync(
+        string sourceUrl,
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+
+        _stored[storageKey] = new UploadFileDto("linked.png", "image/png", 0, Stream.Null);
+
+        return Task.FromResult(new PublicImageUploadResult($"https://storage.test/{storageKey}", 0, 0));
+    }
+
+    /// <inheritdoc />
+    public Task<PublicImageUploadResult> UploadJpegFromUrlAsync(
+        string sourceUrl,
+        string storageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
+
+        _stored[storageKey] = new UploadFileDto("linked.jpg", "image/jpeg", 0, Stream.Null);
+
+        return Task.FromResult(new PublicImageUploadResult($"https://storage.test/{storageKey}", 0, 0));
+    }
+
+    /// <inheritdoc />
     public Task DeleteImageAsync(string storageKey, CancellationToken cancellationToken = default)
     {
         _stored.Remove(storageKey);

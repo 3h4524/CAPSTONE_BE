@@ -97,6 +97,9 @@ public sealed class ContentModerationService(
         return verdict;
     }
 
+    public async Task<bool> ChecksImagesAsync(CancellationToken cancellationToken = default) =>
+        ClassifierAvailable(await runtimeSettings.GetAsync(cancellationToken));
+
     public async Task<ModerationVerdict> CheckImageAsync(
         byte[] imageBytes,
         string mimeType,

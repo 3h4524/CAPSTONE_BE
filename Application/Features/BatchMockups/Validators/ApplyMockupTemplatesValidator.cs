@@ -59,5 +59,13 @@ public sealed class ApplyMockupTemplatesValidator : AbstractValidator<ApplyMocku
             .Must(byTemplate => byTemplate.Values.All(byArea => byArea is null || byArea.All(entry => MockupRules.AreaSourceProblem(entry.Key, entry.Value) is null)))
             .WithMessage("A print area prints the mock-up's design, another chosen design or nothing.")
             .When(request => request.AreaSources is not null);
+
+        RuleFor(request => request.TemplatePlacements!)
+            .Must((request, byTemplate) => byTemplate.Keys.All(id => request.TemplateIds is not null && request.TemplateIds.Contains(id)))
+            .WithMessage("A print position can only be set for the selected templates.")
+            .Must(byTemplate => byTemplate.Values.All(placement => placement is { X: >= 0, Y: >= 0, Width: > 0, Height: > 0 }
+                && double.IsFinite(placement.Rotation) && Math.Abs(placement.Rotation) <= MockupRules.MaximumRotation))
+            .WithMessage($"A print position needs a place of 0 or more, a size above 0 and a turn from -{MockupRules.MaximumRotation} to {MockupRules.MaximumRotation} degrees.")
+            .When(request => request.TemplatePlacements is not null);
     }
 }

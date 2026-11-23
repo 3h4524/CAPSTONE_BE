@@ -18,9 +18,14 @@ namespace APCS.Application.Features.BatchMockups.Dtos.Request;
 /// What is printed in the print areas of the selected templates, keyed by template id and then area key. An area
 /// not listed prints its template's default: the main area the mock-up's design, the others nothing.
 /// </param>
+/// <param name="TemplatePlacements">
+/// Where this job puts the design on the main print area of the selected templates, keyed by template id. A template
+/// not listed uses its own print area.
+/// </param>
 public sealed record ApplyMockupTemplatesRequestDto(
     IReadOnlyList<Guid> TemplateIds,
     IReadOnlyList<string>? GarmentColors = null,
     IReadOnlyDictionary<Guid, IReadOnlyList<string>>? TemplateColors = null,
     IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>>? TemplateBackgrounds = null,
-    IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>>? AreaSources = null);
+    IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>>? AreaSources = null,
+    IReadOnlyDictionary<Guid, MockupTemplatePlacementDto>? TemplatePlacements = null);

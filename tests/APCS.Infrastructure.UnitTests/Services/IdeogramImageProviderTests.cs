@@ -12,6 +12,8 @@ namespace APCS.Infrastructure.UnitTests.Services;
 [TestClass]
 public sealed class IdeogramImageProviderTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private const string ImageUrl = "https://ideogram.ai/api/images/ephemeral/abc.png?exp=1";
     private const string FreshImageUrl = "https://ideogram.ai/api/images/ephemeral/abc.png?exp=2";
     private const string GenerationUrl = "https://api.ideogram.ai/v2/generations/g1";
@@ -51,6 +53,45 @@ public sealed class IdeogramImageProviderTests
         // The key goes to the API only, never to the image link.
         sent[2].RequestUri!.AbsoluteUri.Should().Be(ImageUrl);
         sent[2].Headers.Contains("Api-Key").Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GenerateLinkAsync_StopsAtTheLink_WithoutDownloadingTheImage()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.GenerateLinkAsync("key", "A person.", "3:4", cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ImageBytes.Should().BeNull();
+        result.ImageUrl.Should().Be(ImageUrl);
+        result.EstimatedCostUsd.Should().Be(0.03m);
+        sent.Should().NotContain(request => request.RequestUri!.AbsoluteUri == ImageUrl);
+    }
+
+    [TestMethod]
+    public async Task GenerateLinkAsync_Transparent_AsksForTheTransparentModel()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.GenerateLinkAsync("key", "A fox.", "1:1", transparentBackground: true, enrichPrompt: true, cancellationToken: TestContext.CancellationToken);
+
+        result.ImageUrl.Should().Be(ImageUrl);
+        result.ModelUsed.Should().Be("ideogram-4-transparent");
+        using var request = JsonDocument.Parse(body);
+        request.RootElement.GetProperty("magic_prompt").GetString().Should().Be("on");
+    }
+
+    [TestMethod]
+    public async Task DownloadLinkAsync_ReadsTheImageWithoutTheApiKey()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.DownloadLinkAsync(ImageGenerationResult.Linked(ImageUrl, "ideogram-4", 0.03m), cancellationToken: TestContext.CancellationToken);
+
+        result.ImageBytes.Should().Equal(Image);
+        result.EstimatedCostUsd.Should().Be(0.03m);
+        sent.Should().ContainSingle().Which.Headers.Contains("Api-Key").Should().BeFalse();
     }
 
     [TestMethod]

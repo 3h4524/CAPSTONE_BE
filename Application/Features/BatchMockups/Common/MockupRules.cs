@@ -492,6 +492,79 @@ public static class MockupRules
         root[AreaSourcesConfigKey] = byTemplate;
     }
 
+    /// <summary>Where a job puts the design on its templates' main print area, by template id.</summary>
+    public const string TemplatePlacementsConfigKey = "mockupTemplatePlacements";
+
+    /// <summary>The job's print positions, by template id. Entries that can't be read are skipped.</summary>
+    public static IReadOnlyDictionary<Guid, MockupTemplatePlacementDto> ReadTemplatePlacements(string? config)
+    {
+        var result = new Dictionary<Guid, MockupTemplatePlacementDto>();
+        if (string.IsNullOrWhiteSpace(config))
+            return result;
+        try
+        {
+            if (JsonNode.Parse(config)?[TemplatePlacementsConfigKey] is not JsonObject byTemplate)
+                return result;
+            foreach (var (templateKey, value) in byTemplate)
+            {
+                if (!Guid.TryParse(templateKey, out var templateId) || value is not JsonObject entry)
+                    continue;
+                if (ReadInt(entry, "x") is not (>= 0 and var x) || ReadInt(entry, "y") is not (>= 0 and var y)
+                    || ReadInt(entry, "width") is not (> 0 and var width) || ReadInt(entry, "height") is not (> 0 and var height))
+                    continue;
+                result[templateId] = new MockupTemplatePlacementDto(x, y, width, height, ReadRotation(entry));
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            result.Clear();
+        }
+        return result;
+    }
+
+    /// <summary>The job's config with its print positions; none removes the entry.</summary>
+    public static void WriteTemplatePlacements(JsonObject root, IReadOnlyDictionary<Guid, MockupTemplatePlacementDto> placements)
+    {
+        if (placements.Count == 0)
+        {
+            root.Remove(TemplatePlacementsConfigKey);
+            return;
+        }
+        var byTemplate = new JsonObject();
+        foreach (var (templateId, placement) in placements)
+        {
+            byTemplate[templateId.ToString()] = new JsonObject
+            {
+                ["x"] = placement.X,
+                ["y"] = placement.Y,
+                ["width"] = placement.Width,
+                ["height"] = placement.Height,
+                ["rotation"] = NormalizeRotation(placement.Rotation),
+            };
+        }
+        root[TemplatePlacementsConfigKey] = byTemplate;
+    }
+
+    /// <summary>The template's print areas with the main one where the job puts it; without a position, as they are.</summary>
+    public static MockupPrintLayout WithPlacement(MockupPrintLayout layout, MockupTemplatePlacementDto? placement) =>
+        placement is null
+            ? layout
+            : layout with
+            {
+                Areas =
+                [
+                    layout.Main with
+                    {
+                        X = placement.X,
+                        Y = placement.Y,
+                        Width = placement.Width,
+                        Height = placement.Height,
+                        Rotation = NormalizeRotation(placement.Rotation),
+                    },
+                    .. layout.Areas.Skip(1),
+                ],
+            };
+
     private static string? ReadString(JsonObject? node, string name) =>
         node?[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
