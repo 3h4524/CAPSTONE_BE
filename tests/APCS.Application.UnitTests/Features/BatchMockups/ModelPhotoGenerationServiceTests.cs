@@ -266,6 +266,121 @@ public sealed class ModelPhotoGenerationServiceTests
         _usage.Verify(x => x.AddAsync(It.IsAny<ApiUsageRecord>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // ---- Shown as soon as it is drawn, and stored from Ideogram's link ----
+
+    private const string Link = "https://ideogram.ai/api/images/ephemeral/photo.png?exp=1";
+    private static readonly GenerateModelPhotoRequestDto AdultFemale = new("tshirt", new("single", "adult", "female"));
+
+    private Result<MockupTemplateResponseDto> SavedPhoto() =>
+        Result.Success(new MockupTemplateResponseDto(_saved.Id, "AI", "tshirt", _saved.BaseImageUrl, null, "{}", 1728, 2304, 0,
+            false, true, false, false, null, null, Kind: MockupRules.ModelKind));
+
+    private Mock<IImageLinkProvider> DrawsALink(bool printWithoutAi = false)
+    {
+        var linked = _provider.As<IImageLinkProvider>();
+        _modelPhotos.Setup(x => x.GetOptions()).Returns(new ModelPhotoOptionsDto(printWithoutAi));
+        linked.Setup(x => x.GenerateLinkAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Linked(Link, "ideogram-4", 0.03m));
+        _modelPhotos.Setup(x => x.CreateFromLinkAsync(It.IsAny<ModelPhotoLinkDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(SavedPhoto());
+        return linked;
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_ShowsThePhotoFirst_ThenStoresItFromItsLinkWithoutReadingItHere()
+    {
+        DrawsALink();
+        var steps = new List<string>();
+        _modelPhotos.Setup(x => x.CreateFromLinkAsync(It.IsAny<ModelPhotoLinkDto>(), false, It.IsAny<CancellationToken>()))
+            .Callback((ModelPhotoLinkDto photo, bool _, CancellationToken _) => steps.Add($"stored {photo.ImageUrl}"))
+            .ReturnsAsync(SavedPhoto());
+
+        var result = await Service().GenerateAsync(AdultFemale, system: false, link =>
+        {
+            steps.Add($"shown {link}");
+            return Task.CompletedTask;
+        });
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.AiGenerated.Should().BeTrue();
+        steps.Should().Equal($"shown {Link}", $"stored {Link}");
+        _saved.AiGenerated.Should().BeTrue();
+        _maps.Verify(x => x.ToJpegAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>()), Times.Never);
+        _modelPhotos.Verify(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        _usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.CostUsd == 0.03m), true, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WhenThePersonLeavesAfterSeeingThePhoto_StillSavesIt()
+    {
+        DrawsALink();
+        CancellationToken? storedWith = null;
+        _modelPhotos.Setup(x => x.CreateFromLinkAsync(It.IsAny<ModelPhotoLinkDto>(), false, It.IsAny<CancellationToken>()))
+            .Callback((ModelPhotoLinkDto _, bool _, CancellationToken token) => storedWith = token)
+            .ReturnsAsync(SavedPhoto());
+        using var leaving = new CancellationTokenSource();
+
+        var result = await Service().GenerateAsync(AdultFemale, system: false, _ =>
+        {
+            leaving.Cancel();
+            return Task.CompletedTask;
+        }, leaving.Token);
+
+        result.IsSuccess.Should().BeTrue();
+        storedWith!.Value.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WhenStorageCannotReadTheLink_SendsThePhotoThroughThisServer()
+    {
+        var linked = DrawsALink();
+        _modelPhotos.Setup(x => x.CreateFromLinkAsync(It.IsAny<ModelPhotoLinkDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupTemplateResponseDto>(MockupErrors.PhotoLinkNotStored()));
+        linked.Setup(x => x.DownloadLinkAsync(It.Is<ImageGenerationResult>(r => r.ImageUrl == Link), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+
+        var result = await Service().GenerateAsync(AdultFemale, system: false);
+
+        result.IsSuccess.Should().BeTrue();
+        _maps.Verify(x => x.ToJpegAsync(Png, It.IsAny<CancellationToken>()), Times.Once);
+        _modelPhotos.Verify(x => x.CreateAsync(It.Is<SaveModelPhotoRequestDto>(r => r.Photo!.ContentType == "image/jpeg"), false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WhenThePhotoCannotBeReadBackEither_SaysItWasMadeButNotSaved()
+    {
+        var linked = DrawsALink();
+        _modelPhotos.Setup(x => x.CreateFromLinkAsync(It.IsAny<ModelPhotoLinkDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupTemplateResponseDto>(MockupErrors.PhotoLinkNotStored()));
+        linked.Setup(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Failed("gone", "ideogram-4"));
+
+        var result = await Service().GenerateAsync(AdultFemale, system: false);
+
+        result.Error.Code.Should().Be("ModelPhotoNotSaved");
+        _modelPhotos.Verify(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_WithPrintingWithoutAiOn_ReadsThePhotoHere_ForItsPrintMaps()
+    {
+        var linked = DrawsALink(printWithoutAi: true);
+        _provider.Setup(x => x.GenerateAsync("plain-key", It.IsAny<string>(), It.IsAny<string>(), false, false, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        var shown = false;
+
+        var result = await Service().GenerateAsync(AdultFemale, system: false, _ =>
+        {
+            shown = true;
+            return Task.CompletedTask;
+        });
+
+        result.IsSuccess.Should().BeTrue();
+        shown.Should().BeFalse("there is no link to show");
+        linked.Verify(x => x.GenerateLinkAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+        _modelPhotos.Verify(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private ModelPhotoGenerationService Service(IPlanEntitlementService? entitlements = null, ISystemApiKeyPool? systemKeys = null)
     {
         var currentUser = new Mock<ICurrentUser>();

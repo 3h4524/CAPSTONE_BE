@@ -77,6 +77,15 @@ public static class MockupErrors
     public static Error ModelPhotoRequired() =>
         Error.Validation("Upload a photo of a person wearing a plain, light garment.");
 
+    public static Error PrintWithoutAiOff() =>
+        Error.Conflict("BatchMockups.PrintWithoutAiOff", "Putting a mock-up on a model photo without AI is turned off. Use the AI option instead.");
+
+    public const string PhotoLinkNotStoredCode = "BatchMockups.PhotoLinkNotStored";
+
+    /// <summary>Storage could not fetch a photo from its link; the caller can still send the file itself.</summary>
+    public static Error PhotoLinkNotStored() =>
+        Error.Failure(PhotoLinkNotStoredCode, "The photo could not be stored from its link.");
+
     public static Error GarmentSelectionRequired() =>
         Error.Validation("Select the garment on the photo.");
 

@@ -23,10 +23,17 @@ public interface IModelPhotoGenerationService
     /// saves it as a model photo: the seller's own, or the shared library's when <paramref name="system"/>.
     /// </summary>
     Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The same, handing <paramref name="onDrawn"/> a temporary link to the photo as soon as Ideogram has drawn it, while
+    /// it is still being saved. From then on a cancelled request no longer stops the save: the photo is paid for.
+    /// </summary>
+    Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, Func<string, Task> onDrawn, CancellationToken cancellationToken = default);
 }
 
 /// <remarks>
-/// The photo is made once and kept: mock-ups are then put on it without AI, so the print is exactly the design.
+/// The photo is made once and kept, for mock-ups to be put on it. With <see cref="ModelPhotoSettings.PrintWithoutAi"/>
+/// off that is done with AI and the photo is only stored; on, it is done without AI, so the print is exactly the design.
 /// The prompt is fixed wording for the attributes chosen (<see cref="ModelPhotoPrompts"/>), never free text. The
 /// garment is found automatically, as for an uploaded photo, and designs are placed by measuring it.
 /// </remarks>
@@ -44,7 +51,16 @@ public sealed class ModelPhotoGenerationService(
     IPlanEntitlementService? entitlements = null,
     ISystemApiKeyPool? systemKeys = null) : IModelPhotoGenerationService
 {
-    public async Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default)
+    // How long a photo already paid for may take to be saved once a request can no longer cancel it.
+    private static readonly TimeSpan SaveTimeout = TimeSpan.FromMinutes(2);
+
+    public Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default) =>
+        MakeAsync(request, system, null, cancellationToken);
+
+    public Task<Result<MockupTemplateResponseDto>> GenerateAsync(GenerateModelPhotoRequestDto request, bool system, Func<string, Task> onDrawn, CancellationToken cancellationToken = default) =>
+        MakeAsync(request, system, onDrawn, cancellationToken);
+
+    private async Task<Result<MockupTemplateResponseDto>> MakeAsync(GenerateModelPhotoRequestDto request, bool system, Func<string, Task>? onDrawn, CancellationToken cancellationToken)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("create"));
@@ -77,6 +93,12 @@ public sealed class ModelPhotoGenerationService(
 
         // The people's looks are picked at random, so two photos with the same choices differ.
         var (prompt, aspectRatio) = ModelPhotoPrompts.Build(request.Attributes, productType, style, Random.Shared);
+        // With no print maps to work out this server has no use for the photo itself: it stays at Ideogram until storage
+        // fetches it.
+        var linked = modelPhotos.GetOptions() is { PrintWithoutAi: false } ? ideogram as IImageLinkProvider : null;
+        Task<ImageGenerationResult> Draw(string apiKey) => linked is not null
+            ? linked.GenerateLinkAsync(apiKey, prompt, aspectRatio, cancellationToken: cancellationToken)
+            : ideogram.GenerateAsync(apiKey, prompt, aspectRatio, cancellationToken: cancellationToken);
         ImageGenerationResult generated;
         var noOwnKey = false;
         try
@@ -89,9 +111,8 @@ public sealed class ModelPhotoGenerationService(
             }
             noOwnKey = ownKey is null;
             generated = platform
-                ? await systemKeys!.GenerateImageAsync(ImageGenerationProviders.Ideogram, ownKey,
-                    apiKey => ideogram.GenerateAsync(apiKey, prompt, aspectRatio, cancellationToken: cancellationToken), cancellationToken)
-                : await ideogram.GenerateAsync(ownKey!, prompt, aspectRatio, cancellationToken: cancellationToken);
+                ? await systemKeys!.GenerateImageAsync(ImageGenerationProviders.Ideogram, ownKey, Draw, cancellationToken)
+                : await Draw(ownKey!);
         }
         catch (Exception error) when (error is HttpRequestException or InvalidOperationException or CryptographicException)
         {
@@ -110,36 +131,25 @@ public sealed class ModelPhotoGenerationService(
                 : Failed());
         }
 
-        // Ideogram has charged for it, whatever happens to the photo next.
+        // Ideogram has charged for it, whatever happens to the photo next. Once the person can see it, leaving the page no
+        // longer stops it from being saved.
+        using var saveTimeout = new CancellationTokenSource(SaveTimeout);
+        var saving = onDrawn is not null && generated.ImageUrl is not null ? saveTimeout.Token : cancellationToken;
         var now = time.GetUtcNow().UtcDateTime;
         await usage.AddAsync(new ApiUsageRecord
         {
             Id = Guid.NewGuid(), UserId = userId, Provider = ImageGenerationProviders.Ideogram, Feature = "image_generation",
             ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
-        }, saveChange: true, cancellationToken);
+        }, saveChange: true, saving);
 
-        // A 2K PNG photo can be over the upload limit; as a JPEG it is a fraction of it and looks the same.
-        byte[] bytes;
-        try
-        {
-            bytes = await maps.ToJpegAsync(generated.ImageBytes!, cancellationToken);
-        }
-        catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-        {
-            logger.LogWarning(error, "The photo made with AI could not be read");
-            return Result.Failure<MockupTemplateResponseDto>(Failed());
-        }
+        if (onDrawn is not null && generated.ImageUrl is { } drawn)
+            await onDrawn(drawn);
+
         // Only one person on a plain backdrop takes the quick matte: on a group it can close the gap between two people's
         // garments, and they would then share one print.
         var quickMatte = !group && ModelPhotoStyles.IsStudio(style.Scene);
-        var name = await FreeNameAsync(ModelPeople.Label(request.Attributes), cancellationToken);
-        using var content = new MemoryStream(bytes);
-        var created = await modelPhotos.CreateAsync(new SaveModelPhotoRequestDto(
-            name, productType, 0, 0, 1, 1,
-            new UploadFileDto("model.jpg", "image/jpeg", bytes.Length, content),
-            GarmentSelection: null, AutoPlacement: true, FindGarment: true, Attributes: request.Attributes,
-            PlainBackdrop: quickMatte),
-            system, cancellationToken);
+        var name = await FreeNameAsync(ModelPeople.Label(request.Attributes), saving);
+        var created = await StoreAsync(generated, linked, new PhotoToSave(name, productType, request.Attributes, quickMatte, system), saving);
         if (created.IsFailure)
         {
             logger.LogWarning("A model photo made with AI could not be saved: {Reason}", created.Error.Message);
@@ -147,14 +157,56 @@ public sealed class ModelPhotoGenerationService(
         }
 
         // Marked as made by AI, with a print area on the chest for when the garment cannot be measured.
-        var template = await templates.GetByIdAsync(created.Value.Id, cancellationToken);
+        var template = await templates.GetByIdAsync(created.Value.Id, saving);
         if (template is null)
             return created;
         template.AiGenerated = true;
         template.PrintAreaConfig = MockupRules.SerializePrintArea(ChestArea(template.OutputWidthPx, template.OutputHeightPx), automatic: true);
         template.UpdatedAt = now;
-        await templates.UpdateAsync(template, saveChange: true, cancellationToken);
+        await templates.UpdateAsync(template, saveChange: true, saving);
         return Result.Success(created.Value with { AiGenerated = true, PrintAreaConfig = template.PrintAreaConfig });
+    }
+
+    private sealed record PhotoToSave(string Name, string ProductType, ModelAttributesDto Attributes, bool QuickMatte, bool System);
+
+    // Straight from Ideogram's link when it has one. If storage cannot read the link, the photo comes through this server.
+    private async Task<Result<MockupTemplateResponseDto>> StoreAsync(ImageGenerationResult generated, IImageLinkProvider? linked,
+        PhotoToSave photo, CancellationToken cancellationToken)
+    {
+        var image = generated;
+        if (generated.ImageUrl is { } link && linked is not null)
+        {
+            var stored = await modelPhotos.CreateFromLinkAsync(
+                new ModelPhotoLinkDto(photo.Name, photo.ProductType, link, photo.Attributes), photo.System, cancellationToken);
+            if (stored.IsSuccess || stored.Error.Code != MockupErrors.PhotoLinkNotStoredCode)
+                return stored;
+
+            image = await linked.DownloadLinkAsync(generated, cancellationToken);
+            if (!image.IsSuccess)
+            {
+                logger.LogWarning("A model photo made with AI could not be read back: {Reason}", image.ErrorMessage);
+                return Result.Failure<MockupTemplateResponseDto>(NotSaved());
+            }
+        }
+
+        // A 2K PNG photo can be over the upload limit; as a JPEG it is a fraction of it and looks the same.
+        byte[] bytes;
+        try
+        {
+            bytes = await maps.ToJpegAsync(image.ImageBytes!, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(error, "The photo made with AI could not be read");
+            return Result.Failure<MockupTemplateResponseDto>(Failed());
+        }
+        using var content = new MemoryStream(bytes);
+        return await modelPhotos.CreateAsync(new SaveModelPhotoRequestDto(
+            photo.Name, photo.ProductType, 0, 0, 1, 1,
+            new UploadFileDto("model.jpg", "image/jpeg", bytes.Length, content),
+            GarmentSelection: null, AutoPlacement: true, FindGarment: true, Attributes: photo.Attributes,
+            PlainBackdrop: photo.QuickMatte),
+            photo.System, cancellationToken);
     }
 
     // The middle of the photo's upper half, where a chest print sits on a person framed head to mid-thigh.
@@ -189,4 +241,6 @@ public sealed class ModelPhotoGenerationService(
             && (await entitlements.GetAsync(userId, cancellationToken)).IsEnabled(PlanFeatures.SystemImageKeys)));
 
     private static Error Failed() => Error.Failure("ModelPhotoGenerationFailed", "Ideogram could not make the photo. Try again.");
+
+    private static Error NotSaved() => Error.Failure("ModelPhotoNotSaved", "The photo was made but could not be saved. Try again.");
 }

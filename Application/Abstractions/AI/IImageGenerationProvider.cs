@@ -80,7 +80,7 @@ public sealed record ImageGenerationResult(
     string ModelUsed,
     decimal EstimatedCostUsd)
 {
-    public bool IsSuccess => ImageBytes is not null;
+    public bool IsSuccess => ImageBytes is not null || ImageUrl is not null;
 
     /// <summary>
     /// <see langword="true"/> when the provider turned the account away (no credits, a key it no longer accepts, a
@@ -106,8 +106,15 @@ public sealed record ImageGenerationResult(
     /// <summary>The prompt the provider actually drew from, when it rewrites the one it was sent.</summary>
     public string? ProviderPrompt { get; init; }
 
+    /// <summary>The provider's temporary link to the image, for a call that asked for the link instead of the bytes (see <see cref="IImageLinkProvider"/>).</summary>
+    public string? ImageUrl { get; init; }
+
     public static ImageGenerationResult Success(byte[] imageBytes, string mimeType, string model, decimal estimatedCostUsd) =>
         new(imageBytes, mimeType, false, null, model, estimatedCostUsd);
+
+    /// <summary>An image that was made and is still at the provider, behind <paramref name="imageUrl"/>.</summary>
+    public static ImageGenerationResult Linked(string imageUrl, string model, decimal estimatedCostUsd) =>
+        new(null, null, false, null, model, estimatedCostUsd) { ImageUrl = imageUrl };
 
     public static ImageGenerationResult Blocked(string reason, string model) =>
         new(null, null, true, reason, model, 0);

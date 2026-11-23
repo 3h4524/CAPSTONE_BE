@@ -50,6 +50,16 @@ public sealed class ModelPhotosControllerTests
     }
 
     [TestMethod]
+    public void Options_TellSellersAndAdminsWhatIsOffered()
+    {
+        var options = new ModelPhotoOptionsDto(PrintWithoutAi: false);
+        _service.Setup(s => s.GetOptions()).Returns(options);
+
+        Seller().Options().Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(options);
+        Admin().Options().Should().BeOfType<OkObjectResult>().Which.Value.Should().Be(options);
+    }
+
+    [TestMethod]
     public async Task List_PassesTheProductTypeAndWhoIsInThePhotos()
     {
         var id = Guid.NewGuid();
@@ -85,6 +95,86 @@ public sealed class ModelPhotosControllerTests
         (await Seller().Generate(request, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         (await Admin().Generate(request, CancellationToken.None)).Should().BeOfType<ObjectResult>()
             .Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+    }
+
+    private static readonly GenerateModelPhotoRequestDto StreamRequest = new("tshirt", new ModelAttributesDto("single", "adult", "female", null));
+
+    private static async Task<string> ReadStreamAsync(IActionResult result)
+    {
+        var context = new DefaultHttpContext();
+        var body = new MemoryStream();
+        context.Response.Body = body;
+        await result.ExecuteResultAsync(new ActionContext { HttpContext = context });
+        return System.Text.Encoding.UTF8.GetString(body.ToArray());
+    }
+
+    [TestMethod]
+    public async Task GenerateStream_SendsThePhotoAsSoonAsItIsDrawn_ThenTheSavedOne()
+    {
+        var id = Guid.NewGuid();
+        _generation.Setup(s => s.GenerateAsync(StreamRequest, false, It.IsAny<Func<string, Task>>(), It.IsAny<CancellationToken>()))
+            .Returns(async (GenerateModelPhotoRequestDto _, bool _, Func<string, Task> onDrawn, CancellationToken _) =>
+            {
+                await onDrawn("https://ideogram.ai/photo.png");
+                return Result.Success(Photo(id));
+            });
+
+        var text = await ReadStreamAsync(Seller().GenerateStream(StreamRequest));
+
+        text.IndexOf("event: started", StringComparison.Ordinal).Should().BeGreaterThanOrEqualTo(0);
+        text.IndexOf("event: preview", StringComparison.Ordinal).Should().BeGreaterThan(text.IndexOf("event: started", StringComparison.Ordinal));
+        text.IndexOf("event: saved", StringComparison.Ordinal).Should().BeGreaterThan(text.IndexOf("event: preview", StringComparison.Ordinal));
+        text.Should().Contain("\"url\":\"https://ideogram.ai/photo.png\"").And.Contain($"\"id\":\"{id}\"");
+    }
+
+    [TestMethod]
+    public async Task GenerateStream_ForTheLibrary_SaysWhyItFailed()
+    {
+        _generation.Setup(s => s.GenerateAsync(StreamRequest, true, It.IsAny<Func<string, Task>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupTemplateResponseDto>(Error.Conflict("MissingApiKey", "Connect an Ideogram key.")));
+
+        var text = await ReadStreamAsync(Admin().GenerateStream(StreamRequest));
+
+        text.Should().Contain("event: failed").And.Contain("MissingApiKey").And.Contain("Connect an Ideogram key.");
+        text.Should().NotContain("event: saved");
+    }
+
+    [TestMethod]
+    public async Task GenerateStream_AnUnexpectedError_IsReportedWithoutItsDetails()
+    {
+        _generation.Setup(s => s.GenerateAsync(StreamRequest, false, It.IsAny<Func<string, Task>>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("secret connection detail"));
+
+        var text = await ReadStreamAsync(Seller().GenerateStream(StreamRequest));
+
+        text.Should().Contain("event: failed").And.NotContain("secret connection detail");
+    }
+
+    [TestMethod]
+    public async Task GenerateStream_WhenThePersonLeaves_StaysOpenUntilThePhotoIsSaved()
+    {
+        using var leaving = new CancellationTokenSource();
+        var drawn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var save = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _generation.Setup(s => s.GenerateAsync(StreamRequest, false, It.IsAny<Func<string, Task>>(), It.IsAny<CancellationToken>()))
+            .Returns(async (GenerateModelPhotoRequestDto _, bool _, Func<string, Task> onDrawn, CancellationToken _) =>
+            {
+                await onDrawn("https://ideogram.ai/photo.png");
+                await leaving.CancelAsync();
+                drawn.SetResult();
+                await save.Task;
+                return Result.Success(Photo(Guid.NewGuid()));
+            });
+        var context = new DefaultHttpContext { RequestAborted = leaving.Token };
+        context.Response.Body = new MemoryStream();
+
+        var running = Seller().GenerateStream(StreamRequest).ExecuteResultAsync(new ActionContext { HttpContext = context });
+        await drawn.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(50);
+
+        running.IsCompleted.Should().BeFalse("the save still uses this request's services");
+        save.SetResult();
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [TestMethod]

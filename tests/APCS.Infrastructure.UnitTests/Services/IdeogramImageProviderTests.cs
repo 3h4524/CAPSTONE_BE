@@ -54,6 +54,45 @@ public sealed class IdeogramImageProviderTests
     }
 
     [TestMethod]
+    public async Task GenerateLinkAsync_StopsAtTheLink_WithoutDownloadingTheImage()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.GenerateLinkAsync("key", "A person.", "3:4");
+
+        result.IsSuccess.Should().BeTrue();
+        result.ImageBytes.Should().BeNull();
+        result.ImageUrl.Should().Be(ImageUrl);
+        result.EstimatedCostUsd.Should().Be(0.03m);
+        sent.Should().NotContain(request => request.RequestUri!.AbsoluteUri == ImageUrl);
+    }
+
+    [TestMethod]
+    public async Task GenerateLinkAsync_Transparent_AsksForTheTransparentModel()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.GenerateLinkAsync("key", "A fox.", "1:1", transparentBackground: true, enrichPrompt: true);
+
+        result.ImageUrl.Should().Be(ImageUrl);
+        result.ModelUsed.Should().Be("ideogram-4-transparent");
+        using var request = JsonDocument.Parse(body);
+        request.RootElement.GetProperty("magic_prompt").GetString().Should().Be("on");
+    }
+
+    [TestMethod]
+    public async Task DownloadLinkAsync_ReadsTheImageWithoutTheApiKey()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.DownloadLinkAsync(ImageGenerationResult.Linked(ImageUrl, "ideogram-4", 0.03m));
+
+        result.ImageBytes.Should().Equal(Image);
+        result.EstimatedCostUsd.Should().Be(0.03m);
+        sent.Should().ContainSingle().Which.Headers.Contains("Api-Key").Should().BeFalse();
+    }
+
+    [TestMethod]
     public async Task GenerateAsync_PromptToFillOut_TurnsIdeogramsMagicPromptOn()
     {
         var provider = Provider(Answer);

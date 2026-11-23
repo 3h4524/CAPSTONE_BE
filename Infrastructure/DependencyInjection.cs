@@ -312,6 +312,8 @@ public static class DependencyInjection
         services.AddOptions<APCS.Application.Features.Workflows.AiClipPhaseSettings>()
             .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiClipPhaseSettings.SectionName));
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AiClipPhaseWorker>();
+        services.AddOptions<APCS.Application.Features.BatchMockups.ModelPhotoSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.BatchMockups.ModelPhotoSettings.SectionName));
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();
