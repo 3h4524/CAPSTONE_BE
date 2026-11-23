@@ -176,7 +176,7 @@ public sealed class MockupTemplateService(
 
         return Result.Success(new BatchMockupSelectionResponseDto(
             batch.Id, ReadSelection(batch.Config), ReadColors(batch.Config), ReadTemplateColors(batch.Config), ReadTemplateBackgrounds(batch.Config),
-            MockupRules.ReadAreaSources(batch.Config)));
+            MockupRules.ReadAreaSources(batch.Config), MockupRules.ReadTemplatePlacements(batch.Config)));
     }
 
     public async Task<Result<BatchMockupSelectionResponseDto>> ApplyAsync(Guid batchJobId, ApplyMockupTemplatesRequestDto request, CancellationToken cancellationToken = default)
@@ -225,6 +225,22 @@ public sealed class MockupTemplateService(
                 return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.PrintifyColorNotOffered(
                     candidates.First(template => template.Id == templateId).Name, stray));
         }
+        // The job's own print position on a template, a system one too: it stays on the photo and, on a Printify
+        // template, inside Printify's print area.
+        var placements = request.TemplatePlacements ?? new Dictionary<Guid, MockupTemplatePlacementDto>();
+        foreach (var (templateId, placement) in placements)
+        {
+            var placedOn = candidates.First(template => template.Id == templateId);
+            if (MockupRules.ParsePrintLayout(placedOn.PrintAreaConfig) is not { } placedLayout)
+                return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.InvalidPrintArea());
+            var moved = MockupRules.WithPlacement(placedLayout, placement).Main;
+            if (!AreasFit([moved], placedOn.OutputWidthPx, placedOn.OutputHeightPx))
+                return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.InvalidPrintArea());
+            if (MockupRules.PrintifyFrameOf(placedOn.PrintAreaConfig) is { } printifyFrame
+                && await PrintifyLinkAsync(templateId, cancellationToken) is not null
+                && !MockupRules.LiesWithin(moved, printifyFrame))
+                return Result.Failure<BatchMockupSelectionResponseDto>(MockupErrors.OutsidePrintifyArea(placedOn.Name));
+        }
         var backgrounds = NormalizeTemplateBackgrounds(request.TemplateBackgrounds);
         // The cut mask is made now, so the mock-ups made later are plain URLs like every other one. A template's other
         // sides are put on the same background.
@@ -247,11 +263,11 @@ public sealed class MockupTemplateService(
             .Where(entry => entry.Areas.Count > 0)
             .ToDictionary(entry => entry.Key, entry => entry.Areas);
 
-        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors, colorsByTemplate, backgrounds, areaSources);
+        batch.Config = WriteSelection(batch.Config, request.TemplateIds, colors, colorsByTemplate, backgrounds, areaSources, placements);
         batch.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
         await batches.UpdateAsync(batch, saveChange: true, cancellationToken);
 
-        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate, backgrounds, areaSources));
+        return Result.Success(new BatchMockupSelectionResponseDto(batch.Id, request.TemplateIds, colors, colorsByTemplate, backgrounds, areaSources, placements));
     }
 
     public async Task<Result<MockupTemplateResponseDto>> CreateAsync(CreateMockupTemplateRequestDto request, bool system = false, CancellationToken cancellationToken = default)
@@ -841,6 +857,7 @@ public sealed class MockupTemplateService(
         var backgrounds = ReadTemplateBackgrounds(batch.Config);
         var overrides = ReadOverrides(batch.Config);
         var areaSources = MockupRules.ReadAreaSources(batch.Config);
+        var jobPlacements = MockupRules.ReadTemplatePlacements(batch.Config);
 
         var selectedTemplates = await templates.Query()
             .Where(template => selectedIds.Contains(template.Id) && template.IsActive == true && template.Kind != MockupRules.ModelKind
@@ -1010,7 +1027,8 @@ public sealed class MockupTemplateService(
                 }
             }
 
-            var resolved = MockupRules.ResolveAreas(made.Layout, custom, areaSources.GetValueOrDefault(made.Template.Id));
+            var resolved = MockupRules.ResolveAreas(MockupRules.WithPlacement(made.Layout, jobPlacements.GetValueOrDefault(made.Template.Id)),
+                custom, areaSources.GetValueOrDefault(made.Template.Id));
             var placements = Placements(resolved, designImage, areaDesigns,
                 () => AddError($"A design chosen for a print area of {made.Template.Name} is no longer in this job, so that area was left empty."));
             if (placements.Count == 0)
@@ -1121,7 +1139,7 @@ public sealed class MockupTemplateService(
                         removed.Add(new(slotKey, product.Id, designImage.Id, template.Id, template.Name, color,
                             RemovedPreviewUrl(shownTemplate, designImage, kept, kept is null ? color : kept.GarmentColor,
                                 kept is null ? MockupRules.ResolveBackground(backgrounds.GetValueOrDefault(template.Id), color) : kept.BackgroundColor,
-                                areaSources.GetValueOrDefault(shownTemplate.Id), areaDesigns),
+                                areaSources.GetValueOrDefault(shownTemplate.Id), areaDesigns, jobPlacements.GetValueOrDefault(shownTemplate.Id)),
                             kept));
                         continue;
                     }
@@ -1162,7 +1180,7 @@ public sealed class MockupTemplateService(
         var allImages = current.Select(item => MapImage(item.Image) with { SlotKey = item.SlotKey, Override = item.Override }).ToList();
 
         return Result.Success(new GenerateAllMockupsResultDto(
-            created.Count, noDesignImageCount, noCompatibleTemplateCount, errors, allImages, noApprovedImageCount, removed));
+            created.Count, noDesignImageCount, noCompatibleTemplateCount, errors, allImages, noApprovedImageCount, removed, jobPlacements));
     }
 
     public async Task<Result<GenerateAllMockupsResultDto>> SaveOverrideAsync(Guid batchJobId, SaveMockupOverrideRequestDto request, CancellationToken cancellationToken = default)
@@ -1274,10 +1292,11 @@ public sealed class MockupTemplateService(
                     return Result.Failure<MockupOverrideDto>(MockupErrors.AreaDesignNotFound());
             }
         }
-        // A Printify template's print area is Printify's print area: the design moves inside it, never past it.
+        // A Printify template's print area is Printify's print area, on each of its sides (the link is on the front's
+        // template): the design moves inside it, never past it.
         if ((requested.PrintArea is not null || requested.Areas is not null)
             && MockupRules.PrintifyFrameOf(template.PrintAreaConfig) is { } printifyFrame
-            && await PrintifyLinkAsync(template.Id, cancellationToken) is not null)
+            && await IsPrintifyLinkedAsync(template, cancellationToken))
         {
             var placed = requested.Areas?.FirstOrDefault(item => item.Key == MockupRules.MainAreaKey)
                 ?? (requested.PrintArea is { } moved
@@ -1672,11 +1691,12 @@ public sealed class MockupTemplateService(
     // What a removed mock-up looks like as it was set up: the same URL it had, so showing it makes nothing new. Null
     // when it could not be made anyway.
     private string? RemovedPreviewUrl(MockupTemplate template, DesignImage design, MockupOverrideDto? custom, string? color,
-        string? background, IReadOnlyDictionary<string, MockupAreaSourceDto>? sources, IReadOnlyDictionary<Guid, DesignImage> areaDesigns)
+        string? background, IReadOnlyDictionary<string, MockupAreaSourceDto>? sources, IReadOnlyDictionary<Guid, DesignImage> areaDesigns,
+        MockupTemplatePlacementDto? jobPlacement)
     {
         if (MockupRules.ParsePrintLayout(template.PrintAreaConfig) is not { } layout)
             return null;
-        var placements = Placements(MockupRules.ResolveAreas(layout, custom, sources), design, areaDesigns);
+        var placements = Placements(MockupRules.ResolveAreas(MockupRules.WithPlacement(layout, jobPlacement), custom, sources), design, areaDesigns);
         if (placements.Count == 0)
             return null;
         try
@@ -1906,7 +1926,8 @@ public sealed class MockupTemplateService(
         IReadOnlyList<string> garmentColors,
         IReadOnlyDictionary<Guid, IReadOnlyList<string>> colorsByTemplate,
         IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, string>> backgrounds,
-        IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>> areaSources)
+        IReadOnlyDictionary<Guid, IReadOnlyDictionary<string, MockupAreaSourceDto>> areaSources,
+        IReadOnlyDictionary<Guid, MockupTemplatePlacementDto> placements)
     {
         JsonObject root;
         try
@@ -1957,6 +1978,7 @@ public sealed class MockupTemplateService(
         }
 
         MockupRules.WriteAreaSources(root, areaSources);
+        MockupRules.WriteTemplatePlacements(root, placements);
         return root.ToJsonString();
     }
 }
