@@ -53,7 +53,8 @@ public sealed class DesignGenerationService(
     IDesignTextCheckQueue? textCheckQueue = null,
     IContentModerationService? moderation = null,
     IMediaStorage? mediaStorage = null,
-    ISystemApiKeyPool? systemKeys = null) : IDesignGenerationService
+    ISystemApiKeyPool? systemKeys = null,
+    IDesignJobNotifier? notifier = null) : IDesignGenerationService
 {
     // Products whose designs are printed as a standalone graphic on the item, not edge to edge.
     private static readonly HashSet<string> GraphicPrintTypes = new(StringComparer.OrdinalIgnoreCase) { "tshirt", "hoodie", "tote_bag" };
@@ -599,7 +600,11 @@ public sealed class DesignGenerationService(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken);
+        await NotifyChangedAsync(job);
     }
+
+    // The Seller's open pages read the job again now rather than at their next poll.
+    private Task NotifyChangedAsync(BatchJob job) => notifier?.ChangedAsync(job.UserId, job.Id) ?? Task.CompletedTask;
 
     // Synthesizes the effective prompt of one product from its template or own prompt and the Seller's changes
     // (SRS 3.5.10), and stores it for the row as the product's next prompt version.
@@ -868,6 +873,7 @@ public sealed class DesignGenerationService(
                 variationCount, lastVariation, imageSlots, cancellationToken)));
 
         await WithDbAsync(() => CompleteRowAsync(run, row, product, outcomes, history, cancellationToken), cancellationToken);
+        await NotifyChangedAsync(job);
     }
 
     // How one requested design came out: saved, or not made, with the provider's reason when it blocked it (a safety or
@@ -920,10 +926,12 @@ public sealed class DesignGenerationService(
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             providerTimeout.CancelAfter(settings.Value.ProviderTimeout);
 
+            // An image that needs no cut-out here can go from the provider straight to storage.
+            var linkProvider = cutOut ? null : run.ImageProvider as IImageLinkProvider;
             ImageGenerationResult result;
             try
             {
-                result = await GenerateImageAsync(run, request.Prompt, transparent, enrich, providerTimeout.Token);
+                result = await GenerateImageAsync(run, request.Prompt, transparent, enrich, linkProvider, providerTimeout.Token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
@@ -953,56 +961,94 @@ public sealed class DesignGenerationService(
             }
 
             var cutOutStarted = timeProvider.GetTimestamp();
-            var (imageBytes, mimeType) = cutOut
-                ? CutOutBackground(result.ImageBytes!, result.MimeType!)
-                : (result.ImageBytes!, result.MimeType!);
+            // Null while the image is still at the provider, behind its link.
+            var imageBytes = result.ImageBytes;
+            var mimeType = result.MimeType;
+            if (cutOut)
+                (imageBytes, mimeType) = CutOutBackground(result.ImageBytes!, result.MimeType!);
             var cutOutTime = timeProvider.GetElapsedTime(cutOutStarted);
 
             // Keyed by the image's own id (created before upload) so each file maps 1:1 to its row
             // and a later regenerate with the same prompt can never overwrite an existing image.
             var designImageId = Guid.NewGuid();
 
-            // The platform's own look at the image before it is kept. A blocked image is dropped like one the provider
-            // blocked; one that could not be checked is kept but waits for approval, which checks it again.
-            var outputCheck = ModerationDecision.Allow;
-            if (moderation is not null)
-            {
-                var verdict = await moderation.CheckImageAsync(imageBytes, mimeType,
-                    new ModerationContext(job.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Output,
-                        ModerationSubjects.DesignImage, designImageId), cancellationToken);
-                if (verdict.IsBlocked)
-                {
-                    var message = ModerationPolicy.BlockedMessage(verdict);
-                    await WithDbAsync(() => LogAsync(job.Id, row.Id, "warning", "generation_blocked",
-                        "Content policy: " + message, cancellationToken), cancellationToken);
-                    return new VariationOutcome(false, message);
-                }
-                outputCheck = verdict.Decision;
-            }
-
             var storageKey = $"design-images/{designImageId:N}";
-            PublicImageUploadResult uploaded;
-            var uploadStarted = timeProvider.GetTimestamp();
+
+            // Storing the image and the platform's own look at it run side by side, so the image only waits for the slower
+            // of the two. Its row is written once both are done: nothing links to the file before it has passed.
             using var uploadTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             uploadTimeout.CancelAfter(settings.Value.UploadTimeout);
-            using (var stream = new MemoryStream(imageBytes))
+
+            // With a link, storage fetches its own copy, and the file is only read here for the content check, which the
+            // design has to wait for. The OCR of its text reads the stored file later, in the background.
+            var checksImage = moderation is not null && (result.ImageUrl is null || await moderation.ChecksImagesAsync(cancellationToken));
+            var reading = linkProvider is not null && result.ImageUrl is not null && checksImage
+                ? ReadDesignAsync(linkProvider, result, uploadTimeout.Token)
+                : Task.FromResult<DesignRead?>(null);
+            var uploading = result.ImageUrl is { } link
+                ? UploadDesignFromLinkAsync(link, storageKey, uploadTimeout.Token)
+                : UploadDesignAsync(imageBytes!, mimeType!, storageKey, uploadTimeout.Token);
+
+            TimeSpan? readTime = null;
+            ModerationVerdict verdict;
+            try
             {
-                try
+                if (await reading is { } read)
+                    (imageBytes, mimeType, readTime) = (read.Bytes, read.MimeType, read.Took);
+                // An image that could not be read is recorded as not checked, so approving it checks the stored file.
+                verdict = !checksImage
+                    ? ModerationVerdict.Allowed(ModerationDeciders.Disabled)
+                    : await moderation!.CheckImageAsync(imageBytes ?? Array.Empty<byte>(), mimeType ?? "image/png",
+                        new ModerationContext(job.UserId, ModerationFeatures.DesignGeneration, ModerationDirection.Output,
+                            ModerationSubjects.DesignImage, designImageId), cancellationToken);
+            }
+            catch
+            {
+                // Stopped before an answer, as when the job is cancelled: the file never passed, so it does not stay.
+                await uploading;
+                await DiscardDesignFileAsync(job, row, storageKey);
+                throw;
+            }
+            var upload = await uploading;
+
+            // A blocked image is dropped like one the provider blocked, its file included, even after a failed upload that
+            // may still have landed. One that could not be checked is kept but waits for approval, which checks it again.
+            if (verdict.IsBlocked)
+            {
+                await DiscardDesignFileAsync(job, row, storageKey);
+                var message = ModerationPolicy.BlockedMessage(verdict);
+                await WithDbAsync(() => LogAsync(job.Id, row.Id, "warning", "generation_blocked",
+                    "Content policy: " + message, cancellationToken), cancellationToken);
+                return new VariationOutcome(false, message);
+            }
+            var outputCheck = verdict.Decision;
+
+            // Storage could not fetch it from the link: the file goes through this server instead.
+            if (upload.Stored is null && result.ImageUrl is not null && linkProvider is not null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var retryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                retryTimeout.CancelAfter(settings.Value.UploadTimeout);
+                if (imageBytes is null && await ReadDesignAsync(linkProvider, result, retryTimeout.Token) is { } again)
+                    (imageBytes, mimeType, readTime) = (again.Bytes, again.MimeType, again.Took);
+                if (imageBytes is not null)
                 {
-                    // Gemini returns JPEG, so the stored size comes from the upload rather than the bytes.
-                    uploaded = await publicImages.UploadImageWithMetadataAsync(
-                        new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
-                        storageKey,
-                        uploadTimeout.Token);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
-                {
-                    await WithDbAsync(() => LogAsync(job.Id, row.Id, "error", "upload_failed",
-                        ex is OperationCanceledException ? "Image upload timed out." : ex.Message, cancellationToken), cancellationToken);
-                    return VariationOutcome.Lost;
+                    var fetchTime = upload.Took;
+                    var sent = await UploadDesignAsync(imageBytes, mimeType ?? "image/png", storageKey, retryTimeout.Token);
+                    upload = sent with { Took = fetchTime + sent.Took };
                 }
             }
-            var uploadTime = timeProvider.GetElapsedTime(uploadStarted);
+
+            if (upload.Stored is not { } uploaded)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await WithDbAsync(() => LogAsync(job.Id, row.Id, "error", "upload_failed",
+                    upload.Error ?? "Image upload failed.", cancellationToken), cancellationToken);
+                return VariationOutcome.Lost;
+            }
+            var uploadTime = upload.Took;
+            var timing = result.ImageUrl is null ? result : result with { DownloadTime = readTime ?? TimeSpan.Zero };
+            var (storedBytes, storedType) = (imageBytes, mimeType);
 
             // Saved right away, so the image shows up while the others are still being made.
             await WithDbAsync(async () =>
@@ -1025,7 +1071,7 @@ public sealed class DesignGenerationService(
 
                 var (width, height) = uploaded.WidthPx > 0 && uploaded.HeightPx > 0
                     ? (uploaded.WidthPx, uploaded.HeightPx)
-                    : TryReadPngDimensions(imageBytes);
+                    : storedBytes is not null ? TryReadPngDimensions(storedBytes) : (0, 0);
                 await designImages.AddAsync(new DesignImage
                 {
                     Id = designImageId,
@@ -1040,8 +1086,8 @@ public sealed class DesignGenerationService(
                     ImageUrl = uploaded.Url,
                     ImageWidthPx = width,
                     ImageHeightPx = height,
-                    FileFormat = FileExtension(mimeType),
-                    FileSizeMb = Math.Round(imageBytes.Length / 1024m / 1024m, 3),
+                    FileFormat = uploaded.Format ?? FileExtension(storedType),
+                    FileSizeMb = Math.Round((uploaded.SizeBytes ?? storedBytes?.Length ?? 0) / 1024m / 1024m, 3),
                     // An image the content check could not look at is never approved automatically.
                     ApprovalStatus = run.RequireApproval == false && outputCheck != ModerationDecision.Unchecked
                         ? ApprovalStatuses.Approved
@@ -1054,20 +1100,102 @@ public sealed class DesignGenerationService(
                     CreatedAt = timeProvider.GetUtcNow().UtcDateTime
                 }, cancellationToken: cancellationToken);
                 await LogTimingAsync(job.Id, row.Id, variation + 1, variationCount,
-                    TimeSpan.FromSeconds((double)elapsedSeconds), result, cutOutTime, uploadTime, cancellationToken);
+                    TimeSpan.FromSeconds((double)elapsedSeconds), timing, cutOutTime, uploadTime, cancellationToken);
                 await unitOfWork.SaveChangesAsync(cancellationToken);
             }, cancellationToken);
+            await NotifyChangedAsync(job);
 
             // Its text is read in the background once it is saved: the result warns the Seller, it never holds the image
             // back, and a full queue only means this design goes unchecked.
             if (textCheckQueue is not null && run.PrintedPhrases is { } phrases && phrases.TryGetValue(row.Id, out var phrase))
-                textCheckQueue.TryEnqueue(new DesignTextCheckRequest(designImageId, imageBytes, phrase));
+                textCheckQueue.TryEnqueue(new DesignTextCheckRequest(designImageId, storedBytes, phrase, storedBytes is null ? storageKey : null));
             return outputCheck == ModerationDecision.Unchecked ? VariationOutcome.MadeUnchecked : VariationOutcome.Made;
         }
         finally
         {
             imageSlots.Release();
         }
+    }
+
+    // What became of one design's upload. It never throws, so the content check beside it always gets its answer in.
+    private sealed record DesignUpload(PublicImageUploadResult? Stored, string? Error, TimeSpan Took);
+
+    private async Task<DesignUpload> UploadDesignAsync(byte[] imageBytes, string mimeType, string storageKey, CancellationToken cancellationToken)
+    {
+        var started = timeProvider.GetTimestamp();
+        try
+        {
+            using var stream = new MemoryStream(imageBytes, writable: false);
+            // Gemini returns JPEG, so the stored size comes from the upload rather than the bytes.
+            var stored = await publicImages.UploadImageWithMetadataAsync(
+                new UploadFileDto($"{Guid.NewGuid()}.{FileExtension(mimeType)}", mimeType, stream.Length, stream),
+                storageKey,
+                cancellationToken);
+            return new DesignUpload(stored, null, timeProvider.GetElapsedTime(started));
+        }
+        catch (Exception ex)
+        {
+            return new DesignUpload(null, ex is OperationCanceledException ? "Image upload timed out." : ex.Message,
+                timeProvider.GetElapsedTime(started));
+        }
+    }
+
+    private async Task<DesignUpload> UploadDesignFromLinkAsync(string link, string storageKey, CancellationToken cancellationToken)
+    {
+        var started = timeProvider.GetTimestamp();
+        try
+        {
+            var stored = await publicImages.UploadImageFromUrlAsync(link, storageKey, cancellationToken);
+            return new DesignUpload(stored, null, timeProvider.GetElapsedTime(started));
+        }
+        catch (Exception ex)
+        {
+            return new DesignUpload(null, ex is OperationCanceledException ? "Image upload timed out." : ex.Message,
+                timeProvider.GetElapsedTime(started));
+        }
+    }
+
+    // The image behind the provider's link, or null when it could not be read. It never throws.
+    private sealed record DesignRead(byte[] Bytes, string MimeType, TimeSpan Took);
+
+    private async Task<DesignRead?> ReadDesignAsync(IImageLinkProvider provider, ImageGenerationResult linked, CancellationToken cancellationToken)
+    {
+        var started = timeProvider.GetTimestamp();
+        try
+        {
+            var read = await provider.DownloadLinkAsync(linked, cancellationToken);
+            return read.ImageBytes is { } bytes
+                ? new DesignRead(bytes, read.MimeType ?? "image/png", timeProvider.GetElapsedTime(started))
+                : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    // Removes a file that did not pass the content check from public storage, even while the job is being cancelled.
+    // Deleting a file that never arrived does nothing. One it could not delete is logged, so it can be removed by hand.
+    private async Task DiscardDesignFileAsync(BatchJob job, BatchJobProduct row, string storageKey)
+    {
+        const int attempts = 2;
+        Exception? failure = null;
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            using var timeout = new CancellationTokenSource(settings.Value.UploadTimeout);
+            try
+            {
+                await publicImages.DeleteImageAsync(storageKey, timeout.Token);
+                return;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        }
+        await WithDbAsync(() => LogAsync(job.Id, row.Id, "error", "design_file_not_deleted",
+            $"The file {storageKey} did not pass the content check and could not be deleted: {failure?.Message}",
+            CancellationToken.None), CancellationToken.None);
     }
 
     // A product keeps one approved design. Automatic approval approves every design as it is made, so once the product is
@@ -1354,6 +1482,7 @@ public sealed class DesignGenerationService(
             ["cutOutMs"] = (long)cutOut.TotalMilliseconds,
             ["uploadMs"] = (long)upload.TotalMilliseconds,
         };
+        if (result.ImageUrl is not null) details["storedFromLink"] = true;
         // A provider that answers with a link reports making the image and downloading it apart.
         var providerParts = string.Empty;
         if (result.GenerateTime is TimeSpan generate && result.DownloadTime is TimeSpan download)
@@ -1424,14 +1553,17 @@ public sealed class DesignGenerationService(
     /// they have one, takes over; without one the job stops asking.
     /// </summary>
     private async Task<ImageGenerationResult> GenerateImageAsync(JobRun run, string prompt, bool transparent, bool enrich,
-        CancellationToken cancellationToken)
+        IImageLinkProvider? byLink, CancellationToken cancellationToken)
     {
         var provider = run.ImageProvider;
-        if (!run.UseSystemKeys || systemKeys is null)
-            return await provider.GenerateAsync(run.ApiKey!, prompt, run.AspectRatio, transparent, enrich, cancellationToken);
+        Task<ImageGenerationResult> Draw(string key) => byLink is not null
+            ? byLink.GenerateLinkAsync(key, prompt, run.AspectRatio, transparent, enrich, cancellationToken)
+            : provider.GenerateAsync(key, prompt, run.AspectRatio, transparent, enrich, cancellationToken);
 
-        return await systemKeys.GenerateImageAsync(provider.Provider, run.ApiKey,
-            key => provider.GenerateAsync(key, prompt, run.AspectRatio, transparent, enrich, cancellationToken), cancellationToken);
+        if (!run.UseSystemKeys || systemKeys is null)
+            return await Draw(run.ApiKey!);
+
+        return await systemKeys.GenerateImageAsync(provider.Provider, run.ApiKey, Draw, cancellationToken);
     }
 
     // What the Seller is told when the server running the job cannot decrypt their key, and what to do about it.

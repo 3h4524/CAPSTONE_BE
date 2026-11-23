@@ -1,6 +1,7 @@
 using APCS.Application.Abstractions.AI;
 using APCS.Application.Abstractions.BackgroundJobs;
 using APCS.Application.Abstractions.Persistence;
+using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.DesignGeneration.Common;
 using APCS.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -14,12 +15,19 @@ namespace APCS.Application.Features.DesignGeneration;
 public sealed class DesignTextCheckService(
     IDesignTextReader reader,
     IRepository<DesignImage> designImages,
-    IUnitOfWork unitOfWork)
+    IUnitOfWork unitOfWork,
+    IMediaStorage? mediaStorage = null)
 {
     /// <summary>True when the result was saved; false when the text could not be read or the design is gone.</summary>
     public async Task<bool> CheckAsync(DesignTextCheckRequest request, CancellationToken cancellationToken = default)
     {
-        var lines = await reader.ReadAsync(request.Image, cancellationToken);
+        // A design stored straight from the provider's link is read back here, so the job never waited for it.
+        var file = request.Image;
+        if (file is null && request.StorageKey is { } key && mediaStorage is not null)
+            file = await mediaStorage.ReadPublicImageAsync(key, cancellationToken);
+        if (file is null) return false;
+
+        var lines = await reader.ReadAsync(file, cancellationToken);
         if (lines is null) return false;
 
         var image = await designImages.Query().SingleOrDefaultAsync(i => i.Id == request.DesignImageId, cancellationToken);

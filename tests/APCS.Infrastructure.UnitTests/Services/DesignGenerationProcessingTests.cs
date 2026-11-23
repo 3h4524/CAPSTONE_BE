@@ -192,6 +192,395 @@ public sealed class DesignGenerationProcessingTests
         (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().NotContain(l => l.EventType == "approval_held");
     }
 
+    // ---- The Seller's page is told at once ----
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_TellsTheSellersPageAsSoonAsAnImageIsSaved_AndWhenTheJobEnds()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var imagesWhenTold = new List<int>();
+        var notifier = new Mock<IDesignJobNotifier>();
+        notifier.Setup(x => x.ChangedAsync(UserId, jobId, It.IsAny<CancellationToken>()))
+            .Callback(() => imagesWhenTold.Add(db.DesignImages.Count()))
+            .Returns(Task.CompletedTask);
+
+        await CreateService(db, notifier: notifier.Object).ProcessBatchJobAsync(jobId);
+
+        imagesWhenTold.Should().HaveCount(3, "the image, its product and the job").And.OnlyContain(count => count == 1);
+    }
+
+    // ---- Stored straight from the provider's link ----
+
+    private const string DesignLink = "https://ideogram.ai/api/images/ephemeral/design.png?exp=1";
+
+    private static Mock<IImageGenerationProvider> DrawsADesignLink(out Mock<IImageLinkProvider> linked)
+    {
+        var provider = new Mock<IImageGenerationProvider>();
+        provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Ideogram);
+        provider.SetupGet(x => x.SupportsTransparentBackground).Returns(true);
+        linked = provider.As<IImageLinkProvider>();
+        linked.Setup(x => x.GenerateLinkAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Linked(DesignLink, "ideogram-4", 0.03m) with { GenerateTime = TimeSpan.FromSeconds(13) });
+        linked.Setup(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
+        return provider;
+    }
+
+    private static Mock<IPublicImageService> StoresFromLink()
+    {
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageFromUrlAsync(DesignLink, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string key, CancellationToken _) => new PublicImageUploadResult($"https://img.example/{key}.png", 2048, 1536, 3_145_728, "png"));
+        return storage;
+    }
+
+    private static Mock<IContentModerationService> ImageCheck(ModerationVerdict verdict, bool active = true)
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .ReturnsAsync(ModerationVerdict.Allowed(ModerationDeciders.Gemini));
+        moderation.Setup(x => x.ChecksImagesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(active);
+        moderation.Setup(x => x.CheckImageAsync(It.IsAny<byte[]>(), It.IsAny<string>(), It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(verdict);
+        return moderation;
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithAProviderLink_StoresTheDesignFromIt_WithoutReadingItHere()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var storage = StoresFromLink();
+
+        await CreateService(db, provider: provider, storage: storage).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var image = await db.DesignImages.SingleAsync();
+        image.ImageUrl.Should().Be($"https://img.example/design-images/{image.Id:N}.png");
+        (image.ImageWidthPx, image.ImageHeightPx, image.FileFormat, image.FileSizeMb).Should().Be((2048, 1536, "png", 3.000m));
+        image.GenerationMetadata.Should().NotContain("ideogram.ai", "the link is temporary and signed");
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Never);
+        storage.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        var timing = await db.BatchJobLogs.SingleAsync(l => l.EventType == "image_timing");
+        timing.Details.Should().Contain("\"storedFromLink\":true").And.Contain("\"downloadMs\":0");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithTheGeminiCheckOn_ReadsTheImageForIt_AndStillStoresFromTheLink()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var storage = StoresFromLink();
+        var moderation = ImageCheck(ModerationVerdict.Allowed(ModerationDeciders.Gemini));
+
+        await CreateService(db, provider: provider, storage: storage, moderation: moderation.Object).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Once);
+        moderation.Verify(x => x.CheckImageAsync(Png, "image/png", It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
+        storage.Verify(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithTheGeminiCheckOff_DoesNotReadTheImage()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var moderation = ImageCheck(ModerationVerdict.Allowed(ModerationDeciders.Disabled), active: false);
+
+        await CreateService(db, provider: provider, storage: StoresFromLink(), moderation: moderation.Object).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Never);
+        moderation.Verify(x => x.CheckImageAsync(It.IsAny<byte[]>(), It.IsAny<string>(), It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_ABlockedDesignStoredFromItsLink_IsDeleted()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out _);
+        var storage = StoresFromLink();
+        var moderation = ImageCheck(BlockedVerdict());
+
+        await CreateService(db, provider: provider, storage: storage, moderation: moderation.Object).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+        VerifyDesignFileDeleted(storage, Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenStorageCannotFetchTheLink_SendsTheFileThroughThisServer()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageFromUrlAsync(DesignLink, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary could not fetch it."));
+
+        await CreateService(db, provider: provider, storage: storage).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var image = await db.DesignImages.SingleAsync();
+        (image.ImageWidthPx, image.FileFormat).Should().Be((1024, "png"));
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Once);
+        storage.Verify(x => x.UploadImageWithMetadataAsync(It.Is<UploadFileDto>(f => f.ContentType == "image/png"), image.StorageKey, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenTheImageCannotBeReadForItsCheck_KeepsItAsNotChecked()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        linked.Setup(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Failed("gone", "ideogram-4"));
+        var moderation = ImageCheck(ModerationVerdict.NotChecked("The image could not be read."));
+
+        await CreateService(db, provider: provider, storage: StoresFromLink(), moderation: moderation.Object).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.SingleAsync()).ApprovalStatus.Should().Be("pending");
+        moderation.Verify(x => x.CheckImageAsync(It.Is<byte[]>(b => b.Length == 0), It.IsAny<string>(), It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenNeitherStorageNorThisServerCanReadTheLink_LogsTheFailure()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        linked.Setup(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Failed("gone", "ideogram-4"));
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageFromUrlAsync(DesignLink, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary could not fetch it."));
+
+        await CreateService(db, provider: provider, storage: storage).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+        (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().Contain(l => l.EventType == "upload_failed");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithOnlyTheTextCheckOn_SavesWithoutReadingTheImage_AndTheCheckReadsTheStoredFile()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var queue = new CapturingTextCheckQueue();
+
+        await CreateService(db, provider: provider, storage: StoresFromLink(), textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        var image = await db.DesignImages.AsNoTracking().SingleAsync();
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Never);
+        var request = queue.Requests.Should().ContainSingle().Subject;
+        request.Image.Should().BeNull();
+        request.StorageKey.Should().Be(image.StorageKey);
+
+        var media = new Mock<IMediaStorage>();
+        media.Setup(x => x.ReadPublicImageAsync(image.StorageKey, It.IsAny<CancellationToken>())).ReturnsAsync(Png);
+        var reader = ReaderFinding();
+        var saved = await new DesignTextCheckService(reader.Object, new Repository<DesignImage>(db), db, media.Object).CheckAsync(request);
+
+        saved.Should().BeTrue();
+        reader.Verify(x => x.ReadAsync(Png, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WithTheGeminiCheckOn_HandsItsCopyOfTheImageToTheTextCheck()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out var linked);
+        var queue = new CapturingTextCheckQueue();
+        var moderation = ImageCheck(ModerationVerdict.Allowed(ModerationDeciders.Gemini));
+
+        await CreateService(db, provider: provider, storage: StoresFromLink(), textCheckQueue: queue, moderation: moderation.Object)
+            .ProcessBatchJobAsync(jobId);
+
+        linked.Verify(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()), Times.Once);
+        var request = queue.Requests.Should().ContainSingle().Subject;
+        request.Image.Should().Equal(Png);
+        request.StorageKey.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task TextCheck_WhenTheStoredFileCannotBeRead_LeavesTheDesignWithoutACheck()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0, imageProvider: ImageGenerationProviders.Ideogram);
+        var provider = DrawsADesignLink(out _);
+        var queue = new CapturingTextCheckQueue();
+        await CreateService(db, provider: provider, storage: StoresFromLink(), textCheckQueue: queue).ProcessBatchJobAsync(jobId);
+        db.ChangeTracker.Clear();
+        var reader = ReaderFinding();
+
+        var saved = await new DesignTextCheckService(reader.Object, new Repository<DesignImage>(db), db).CheckAsync(queue.Requests.Single());
+
+        saved.Should().BeFalse("nothing can read the stored file here");
+        reader.Verify(x => x.ReadAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>()), Times.Never);
+        (await TextCheckOfTheImageAsync(db)).Should().BeNull();
+    }
+
+    // ---- The image check and the upload, side by side ----
+
+    private static readonly TimeSpan SideBySideWait = TimeSpan.FromSeconds(10);
+
+    // The content check allows every text and answers each image as told.
+    private static IContentModerationService ImageCheckAnswering(Func<CancellationToken, Task<ModerationVerdict>> answer)
+    {
+        var moderation = new Mock<IContentModerationService>();
+        moderation.Setup(x => x.CheckTextAsync(It.IsAny<IReadOnlyList<ModerationText>>(), It.IsAny<ModerationContext>(),
+                It.IsAny<CancellationToken>(), It.IsAny<bool>()))
+            .ReturnsAsync(ModerationVerdict.Allowed(ModerationDeciders.Gemini));
+        moderation.Setup(x => x.CheckImageAsync(It.IsAny<byte[]>(), It.IsAny<string>(), It.IsAny<ModerationContext>(), It.IsAny<CancellationToken>()))
+            .Returns((byte[] _, string _, ModerationContext _, CancellationToken token) => answer(token));
+        return moderation.Object;
+    }
+
+    private static ModerationVerdict BlockedVerdict() => new(ModerationDecision.Block, [], ModerationDeciders.Gemini);
+
+    private static void VerifyDesignFileDeleted(Mock<IPublicImageService> storage, Func<Times> times) =>
+        storage.Verify(x => x.DeleteImageAsync(It.Is<string>(key => key.StartsWith("design-images/")), It.IsAny<CancellationToken>()), times);
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_ChecksAndUploadsTheImageAtTheSameTime()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var uploadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var checkStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (UploadFileDto _, string key, CancellationToken _) =>
+            {
+                uploadStarted.TrySetResult();
+                await checkStarted.Task.WaitAsync(SideBySideWait);
+                return new PublicImageUploadResult($"https://img.example/{key}.png", 1024, 768);
+            });
+        var moderation = ImageCheckAnswering(async _ =>
+        {
+            checkStarted.TrySetResult();
+            await uploadStarted.Task.WaitAsync(SideBySideWait);
+            return ModerationVerdict.Allowed(ModerationDeciders.Gemini);
+        });
+
+        await CreateService(db, storage: storage, moderation: moderation, keepUploadSetup: true).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(1);
+        VerifyDesignFileDeleted(storage, Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenTheImageIsBlocked_DeletesItsFileAndSavesNoRow()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var storage = new Mock<IPublicImageService>();
+
+        await CreateService(db, storage: storage, moderation: ImageChecks(ModerationDecision.Block)).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+        VerifyDesignFileDeleted(storage, Times.Once);
+        (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().Contain(l => l.EventType == "generation_blocked");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenABlockedFileCannotBeDeleted_TriesAgainAndLogsIt()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.DeleteImageAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Storage is down."));
+
+        await CreateService(db, storage: storage, moderation: ImageChecks(ModerationDecision.Block)).ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        VerifyDesignFileDeleted(storage, () => Times.Exactly(2));
+        var logs = await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync();
+        logs.Should().Contain(l => l.EventType == "design_file_not_deleted" && l.Message.Contains("design-images/"));
+        logs.Should().Contain(l => l.EventType == "generation_blocked");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenBlockedAfterAFailedUpload_ReportsTheBlockAndStillDeletes()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Storage is down."));
+
+        await CreateService(db, storage: storage, moderation: ImageChecks(ModerationDecision.Block), keepUploadSetup: true)
+            .ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        VerifyDesignFileDeleted(storage, Times.Once);
+        var logs = await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync();
+        logs.Should().Contain(l => l.EventType == "generation_blocked");
+        logs.Should().NotContain(l => l.EventType == "upload_failed");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenTheUploadFailsAfterAPassedCheck_LogsItAndSavesNoRow()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var storage = new Mock<IPublicImageService>();
+        storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Storage is down."));
+
+        await CreateService(db, storage: storage, moderation: ImageChecks(ModerationDecision.Allow), keepUploadSetup: true)
+            .ProcessBatchJobAsync(jobId);
+
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+        VerifyDesignFileDeleted(storage, Times.Never);
+        (await db.BatchJobLogs.Where(l => l.BatchJobId == jobId).ToListAsync()).Should().Contain(l => l.EventType == "upload_failed");
+    }
+
+    [TestMethod]
+    public async Task ProcessBatchJobAsync_WhenCancelledDuringTheCheck_DeletesTheUploadedFile()
+    {
+        await using var db = CreateContext();
+        var jobId = Seed(db, productCount: 1, existingUsage: 0);
+        var storage = new Mock<IPublicImageService>();
+        using var cancel = new CancellationTokenSource();
+        var moderation = ImageCheckAnswering(_ =>
+        {
+            cancel.Cancel();
+            return Task.FromException<ModerationVerdict>(new OperationCanceledException(cancel.Token));
+        });
+
+        try
+        {
+            await CreateService(db, storage: storage, moderation: moderation).ProcessBatchJobAsync(jobId, cancel.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The worker treats this as the job being stopped.
+        }
+
+        VerifyDesignFileDeleted(storage, Times.Once);
+        db.ChangeTracker.Clear();
+        (await db.DesignImages.CountAsync()).Should().Be(0);
+    }
+
     [TestMethod]
     public async Task ProcessBatchJobAsync_ForAJobFromBeforeApprovalExisted_KeepsTheOldBehavior()
     {
@@ -1683,7 +2072,9 @@ public sealed class DesignGenerationProcessingTests
         Mock<IApiKeyCredentials>? credentials = null,
         IDesignTextCheckQueue? textCheckQueue = null,
         ISystemApiKeyPool? systemKeys = null,
-        IContentModerationService? moderation = null)
+        IContentModerationService? moderation = null,
+        bool keepUploadSetup = false,
+        IDesignJobNotifier? notifier = null)
     {
         var currentUser = new Mock<ICurrentUser>();
         currentUser.SetupGet(x => x.IsAuthenticated).Returns(true);
@@ -1706,8 +2097,9 @@ public sealed class DesignGenerationProcessingTests
             provider.SetupGet(x => x.Provider).Returns(ImageGenerationProviders.Gemini);
 
         storage ??= new Mock<IPublicImageService>();
-        storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((UploadFileDto _, string key, CancellationToken _) => new PublicImageUploadResult($"https://img.example/{key}.png", 1024, 768));
+        if (!keepUploadSetup)
+            storage.Setup(x => x.UploadImageWithMetadataAsync(It.IsAny<UploadFileDto>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((UploadFileDto _, string key, CancellationToken _) => new PublicImageUploadResult($"https://img.example/{key}.png", 1024, 768));
 
         return new DesignGenerationService(
             currentUser.Object,
@@ -1719,7 +2111,7 @@ public sealed class DesignGenerationProcessingTests
             new BatchJobClaims(db, new FakeTimeProvider(UtcNow)), db,
             new FakeTimeProvider(UtcNow), new StartGenerationValidator(),
             Microsoft.Extensions.Options.Options.Create(new DesignGenerationSettings(maxConcurrentImages)),
-            new AllowAllEntitlements(), textCheckQueue, moderation: moderation, systemKeys: systemKeys);
+            new AllowAllEntitlements(), textCheckQueue, moderation: moderation, systemKeys: systemKeys, notifier: notifier);
     }
 
     // ---- The platform's own Ideogram keys ----
