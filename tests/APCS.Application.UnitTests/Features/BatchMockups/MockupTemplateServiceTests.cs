@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.BatchMockups;
 [TestClass]
 public sealed class MockupTemplateServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task ListAsync_WhenProductTypeGiven_ReturnsOnlyMatchingActive()
     {
@@ -2323,7 +2325,7 @@ public sealed class MockupTemplateServiceTests
 
         var result = await CreateService(userId, templates: templates, batches: batches, rows: MockRows())
             .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([teeId],
-                TemplatePlacements: new Dictionary<Guid, MockupTemplatePlacementDto> { [teeId] = placement }));
+                TemplatePlacements: new Dictionary<Guid, MockupTemplatePlacementDto> { [teeId] = placement }), cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.TemplatePlacements![teeId].Should().Be(placement);
@@ -2346,10 +2348,10 @@ public sealed class MockupTemplateServiceTests
             TemplatePlacements: new Dictionary<Guid, MockupTemplatePlacementDto> { [teeId] = new(x, y, 200, 200) });
 
         // Printify's print area is (500, 500) 400 x 400.
-        (await Service().ApplyAsync(batchId, At(800, 800))).IsFailure.Should().BeTrue();
+        (await Service().ApplyAsync(batchId, At(800, 800), cancellationToken: TestContext.CancellationToken)).IsFailure.Should().BeTrue();
         batch.Config.Should().NotContain(MockupRules.TemplatePlacementsConfigKey);
 
-        (await Service().ApplyAsync(batchId, At(550, 550))).IsSuccess.Should().BeTrue();
+        (await Service().ApplyAsync(batchId, At(550, 550), cancellationToken: TestContext.CancellationToken)).IsSuccess.Should().BeTrue();
     }
 
     [TestMethod]
@@ -2371,7 +2373,7 @@ public sealed class MockupTemplateServiceTests
 
         var result = await CreateService(userId, templates: TemplateRepository(RecolorableTemplate(templateId)), batches: batches,
                 rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo<MockupImage>(), compositor: compositor)
-            .GenerateAllAsync(batchJobId);
+            .GenerateAllAsync(batchJobId, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         positions.Should().ContainSingle().Which.Should().Be(new MockupPosition(100, 200, 300, 400));
@@ -2393,11 +2395,11 @@ public sealed class MockupTemplateServiceTests
             batches: MockBatches(job), rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image),
             mockupImages: MockRepo<MockupImage>(), compositor: ColorAwareCompositor());
 
-        var past = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(800, 800, 200, 200))));
+        var past = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(800, 800, 200, 200))), cancellationToken: TestContext.CancellationToken);
         past.Error.Message.Should().Contain("Printify print area");
         job.Config.Should().NotContain("mockupOverrides");
 
-        var inside = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(550, 600, 200, 150))));
+        var inside = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(550, 600, 200, 150))), cancellationToken: TestContext.CancellationToken);
         inside.IsSuccess.Should().BeTrue();
     }
 

@@ -21,6 +21,8 @@ namespace APCS.Api.UnitTests.Controllers;
 [TestClass]
 public sealed class ModelPhotosControllerTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private readonly Mock<IModelPhotoService> _service = new();
     private readonly Mock<IModelPhotoGenerationService> _generation = new();
 
@@ -169,12 +171,12 @@ public sealed class ModelPhotosControllerTests
         context.Response.Body = new MemoryStream();
 
         var running = Seller().GenerateStream(StreamRequest).ExecuteResultAsync(new ActionContext { HttpContext = context });
-        await drawn.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        await Task.Delay(50);
+        await drawn.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken: TestContext.CancellationToken);
+        await Task.Delay(50, cancellationToken: TestContext.CancellationToken);
 
         running.IsCompleted.Should().BeFalse("the save still uses this request's services");
         save.SetResult();
-        await running.WaitAsync(TimeSpan.FromSeconds(10));
+        await running.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken: TestContext.CancellationToken);
     }
 
     [TestMethod]

@@ -22,6 +22,8 @@ namespace APCS.Application.UnitTests.Features.Shops;
 [TestClass]
 public sealed class PrintifyServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private readonly Guid userId = Guid.NewGuid();
     private readonly Guid productId = Guid.NewGuid();
     private readonly Mock<ICurrentUser> current = new();
@@ -512,7 +514,7 @@ public sealed class PrintifyServiceTests
         var back = BackSideShown();
         back.BatchJobProduct!.BatchJob.Config = back.BatchJobProduct.BatchJob.Config.Replace("\"x\":200", "\"x\":450");
 
-        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id, PrintMockupSides = true });
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = mockup.Id, PrintMockupSides = true }, cancellationToken: TestContext.CancellationToken);
 
         result.Value.Warnings.Should().ContainSingle(warning => warning.Contains("outside Printify's print area on the back"));
     }

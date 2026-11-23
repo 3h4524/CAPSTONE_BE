@@ -20,6 +20,8 @@ namespace APCS.Application.UnitTests.Features.BatchMockups;
 [TestClass]
 public sealed class ModelPhotoGenerationServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly Guid Seller = Guid.NewGuid();
     private static readonly byte[] Png = [0x89, 0x50, 0x4E, 0x47, 1, 2, 3];
 
@@ -299,7 +301,7 @@ public sealed class ModelPhotoGenerationServiceTests
         {
             steps.Add($"shown {link}");
             return Task.CompletedTask;
-        });
+        }, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.AiGenerated.Should().BeTrue();
@@ -339,7 +341,7 @@ public sealed class ModelPhotoGenerationServiceTests
         linked.Setup(x => x.DownloadLinkAsync(It.Is<ImageGenerationResult>(r => r.ImageUrl == Link), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4", 0.03m));
 
-        var result = await Service().GenerateAsync(AdultFemale, system: false);
+        var result = await Service().GenerateAsync(AdultFemale, system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         _maps.Verify(x => x.ToJpegAsync(Png, It.IsAny<CancellationToken>()), Times.Once);
@@ -355,7 +357,7 @@ public sealed class ModelPhotoGenerationServiceTests
         linked.Setup(x => x.DownloadLinkAsync(It.IsAny<ImageGenerationResult>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(ImageGenerationResult.Failed("gone", "ideogram-4"));
 
-        var result = await Service().GenerateAsync(AdultFemale, system: false);
+        var result = await Service().GenerateAsync(AdultFemale, system: false, cancellationToken: TestContext.CancellationToken);
 
         result.Error.Code.Should().Be("ModelPhotoNotSaved");
         _modelPhotos.Verify(x => x.CreateAsync(It.IsAny<SaveModelPhotoRequestDto>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -373,7 +375,7 @@ public sealed class ModelPhotoGenerationServiceTests
         {
             shown = true;
             return Task.CompletedTask;
-        });
+        }, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         shown.Should().BeFalse("there is no link to show");

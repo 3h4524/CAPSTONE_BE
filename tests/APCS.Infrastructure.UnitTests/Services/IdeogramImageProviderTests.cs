@@ -12,6 +12,8 @@ namespace APCS.Infrastructure.UnitTests.Services;
 [TestClass]
 public sealed class IdeogramImageProviderTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private const string ImageUrl = "https://ideogram.ai/api/images/ephemeral/abc.png?exp=1";
     private const string FreshImageUrl = "https://ideogram.ai/api/images/ephemeral/abc.png?exp=2";
     private const string GenerationUrl = "https://api.ideogram.ai/v2/generations/g1";
@@ -58,7 +60,7 @@ public sealed class IdeogramImageProviderTests
     {
         var provider = Provider(Answer);
 
-        var result = await provider.GenerateLinkAsync("key", "A person.", "3:4");
+        var result = await provider.GenerateLinkAsync("key", "A person.", "3:4", cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         result.ImageBytes.Should().BeNull();
@@ -72,7 +74,7 @@ public sealed class IdeogramImageProviderTests
     {
         var provider = Provider(Answer);
 
-        var result = await provider.GenerateLinkAsync("key", "A fox.", "1:1", transparentBackground: true, enrichPrompt: true);
+        var result = await provider.GenerateLinkAsync("key", "A fox.", "1:1", transparentBackground: true, enrichPrompt: true, cancellationToken: TestContext.CancellationToken);
 
         result.ImageUrl.Should().Be(ImageUrl);
         result.ModelUsed.Should().Be("ideogram-4-transparent");
@@ -85,7 +87,7 @@ public sealed class IdeogramImageProviderTests
     {
         var provider = Provider(Answer);
 
-        var result = await provider.DownloadLinkAsync(ImageGenerationResult.Linked(ImageUrl, "ideogram-4", 0.03m));
+        var result = await provider.DownloadLinkAsync(ImageGenerationResult.Linked(ImageUrl, "ideogram-4", 0.03m), cancellationToken: TestContext.CancellationToken);
 
         result.ImageBytes.Should().Equal(Image);
         result.EstimatedCostUsd.Should().Be(0.03m);

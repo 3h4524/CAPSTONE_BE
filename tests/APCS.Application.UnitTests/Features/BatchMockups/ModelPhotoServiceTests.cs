@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.BatchMockups;
 [TestClass]
 public sealed class ModelPhotoServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly Guid Seller = Guid.NewGuid();
     private static readonly byte[] JpegBytes = [0xFF, 0xD8, 0xFF, 0xE0];
     private static readonly byte[] SelectionBytes = [0x89, 0x50, 0x4E, 0x47, 7, 7];
@@ -426,7 +428,7 @@ public sealed class ModelPhotoServiceTests
         _settings.PrintWithoutAi = false;
         _maps.SetupGet(x => x.IsAvailable).Returns(false);
 
-        var result = await Service().CreateAsync(Request(selection: false), system: false);
+        var result = await Service().CreateAsync(Request(selection: false), system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         var stored = _rows.Should().ContainSingle().Subject;
@@ -446,7 +448,7 @@ public sealed class ModelPhotoServiceTests
     {
         _settings.PrintWithoutAi = false;
 
-        var result = await Service().CreateAsync(Request(selection: false) with { X = 0, Y = 0, Width = 5000, Height = 5000 }, system: false);
+        var result = await Service().CreateAsync(Request(selection: false) with { X = 0, Y = 0, Width = 5000, Height = 5000 }, system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
     }
@@ -458,7 +460,7 @@ public sealed class ModelPhotoServiceTests
         var owned = AddModelPhoto(Seller);
         var oldPhoto = owned.BaseImageUrl;
 
-        var result = await Service().UpdateAsync(owned.Id, Request(selection: false), system: false);
+        var result = await Service().UpdateAsync(owned.Id, Request(selection: false), system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         owned.BaseImageUrl.Should().NotBe(oldPhoto);
@@ -474,7 +476,7 @@ public sealed class ModelPhotoServiceTests
         var owned = AddModelPhoto(Seller);
         var area = owned.PrintAreaConfig;
 
-        var result = await Service().UpdateAsync(owned.Id, Request(photo: false, selection: false) with { Name = "Renamed" }, system: false);
+        var result = await Service().UpdateAsync(owned.Id, Request(photo: false, selection: false) with { Name = "Renamed" }, system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         owned.Name.Should().Be("Renamed");
@@ -488,7 +490,7 @@ public sealed class ModelPhotoServiceTests
         _settings.PrintWithoutAi = false;
         var photo = new UploadFileDto("model.jpg", "image/jpeg", JpegBytes.Length, new MemoryStream(JpegBytes));
 
-        var result = await Service().PreviewAsync(photo);
+        var result = await Service().PreviewAsync(photo, cancellationToken: TestContext.CancellationToken);
 
         result.Error.Code.Should().Be("BatchMockups.PrintWithoutAiOff");
         _maps.Verify(x => x.PreviewModelPhotoAsync(It.IsAny<byte[]>(), It.IsAny<CancellationToken>()), Times.Never);
@@ -504,7 +506,7 @@ public sealed class ModelPhotoServiceTests
         _images.Setup(x => x.UploadJpegFromUrlAsync(Linked().ImageUrl, It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((string _, string key, CancellationToken _) => new PublicImageUploadResult($"https://res.cloudinary.com/demo/image/upload/v1/{key}.jpg", 1728, 2304));
 
-        var result = await Service().CreateFromLinkAsync(Linked(), system: false);
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         var stored = _rows.Should().ContainSingle().Subject;
@@ -523,7 +525,7 @@ public sealed class ModelPhotoServiceTests
         _images.Setup(x => x.UploadJpegFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("Cloudinary could not fetch it."));
 
-        var result = await Service().CreateFromLinkAsync(Linked(), system: false);
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
 
         result.Error.Code.Should().Be(MockupErrors.PhotoLinkNotStoredCode);
         _rows.Should().BeEmpty();
@@ -532,7 +534,7 @@ public sealed class ModelPhotoServiceTests
     [TestMethod]
     public async Task CreateFromLinkAsync_WithPrintingWithoutAiOn_IsLeftToTheFullSave()
     {
-        var result = await Service().CreateFromLinkAsync(Linked(), system: false);
+        var result = await Service().CreateFromLinkAsync(Linked(), system: false, cancellationToken: TestContext.CancellationToken);
 
         result.Error.Code.Should().Be(MockupErrors.PhotoLinkNotStoredCode);
         _images.Verify(x => x.UploadJpegFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
