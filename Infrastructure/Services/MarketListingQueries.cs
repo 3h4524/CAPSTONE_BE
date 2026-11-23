@@ -2,6 +2,8 @@ using APCS.Application.Abstractions.Commerce;
 using APCS.Application.Features.Commerce;
 using APCS.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace APCS.Infrastructure.Services;
 
@@ -32,7 +34,12 @@ public sealed class MarketListingQueries(AppDbContext dbContext) : IMarketListin
     {
         // A slimmed payload has no "title", so a snapshot is slimmed once. The fields kept are
         // MarketSnapshotRetention.KeptPayloadFields; jsonb_strip_nulls drops the ones a listing never had.
-        var cutoff = DateTime.SpecifyKind(observedBefore, DateTimeKind.Unspecified);
+        // observed_at is UTC without a zone. Raw SQL has no column mapping, so the parameter names its type:
+        // a plain DateTime is sent as timestamptz, which refuses an unspecified kind.
+        var cutoff = new NpgsqlParameter("cutoff", NpgsqlDbType.Timestamp)
+        {
+            Value = DateTime.SpecifyKind(observedBefore, DateTimeKind.Unspecified)
+        };
         return dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             UPDATE market_listing_snapshots s
             SET raw_payload = jsonb_strip_nulls(jsonb_build_object(
