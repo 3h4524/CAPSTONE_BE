@@ -55,27 +55,31 @@ public sealed class PrintifyMockupMatcher(
                 && mockup.ApprovedRevision == mockup.MetadataRevision && mockup.MockupTemplate != null && mockup.MockupTemplate.UserId == null)
             .OrderBy(mockup => mockup.CreatedAt)
             .ToListAsync(cancellationToken);
-        // A back or sleeve photo is a template of its own, kept with its garment's front: the front says which garment
-        // and colors Printify makes, and the sides are printed on it as extra print areas.
-        approved = approved.Where(mockup => !BatchMockups.Common.MockupRules.IsOtherView(mockup.MockupTemplate!)).ToList();
         if (approved.Count == 0)
             return Result.Success<PrintifyMockupMatch?>(null);
 
         var warnings = new List<string>();
-        // One listing is one Printify product: the template most mock-ups show, the first one used on a tie.
-        var template = approved.GroupBy(mockup => mockup.MockupTemplateId)
-            .OrderByDescending(group => group.Count())
-            .First().First().MockupTemplate!;
-        if (approved.Select(mockup => mockup.MockupTemplateId).Distinct().Count() > 1)
-            warnings.Add($"The mock-ups show several products; Printify makes {template.Name}, the one most of them show.");
+        // A back or sleeve photo is a template of its own, kept with its garment's front: it is that garment, so it counts
+        // as its front's template, also when only that side was approved (it is then printed on its own side).
+        static Guid GarmentOf(MockupImage mockup) =>
+            BatchMockups.Common.MockupRules.MainTemplateId(mockup.MockupTemplate!.PrintAreaConfig) ?? mockup.MockupTemplate.Id;
+        // One listing is one Printify product: the garment most mock-ups show, the first one used on a tie.
+        var shown = approved.GroupBy(GarmentOf).OrderByDescending(group => group.Count()).First().ToArray();
+        var garmentId = GarmentOf(shown[0]);
+        var front = shown.FirstOrDefault(mockup => mockup.MockupTemplate!.Id == garmentId)?.MockupTemplate;
+        var several = approved.Select(GarmentOf).Distinct().Count() > 1;
 
-        var link = (await links.GetAsync([template.Id], cancellationToken)).GetValueOrDefault(template.Id);
+        var link = (await links.GetAsync([garmentId], cancellationToken)).GetValueOrDefault(garmentId);
         long blueprintId;
         string blueprintTitle;
         if (link is not null)
             (blueprintId, blueprintTitle) = (link.BlueprintId, link.BlueprintTitle);
+        else if (front is null)
+            return Result.Failure<PrintifyMockupMatch?>(Error.Validation(
+                $"Only another side of the garment is approved ({shown[0].MockupTemplate!.Name}), and its template is not linked to a Printify product. Link the template on the admin templates page, or approve its front mock-up."));
         else
         {
+            var template = front;
             var found = await printify.SearchBlueprintsAsync(template.Name, cancellationToken);
             if (found.IsFailure)
                 return Result.Failure<PrintifyMockupMatch?>(found.Error);
@@ -86,9 +90,13 @@ public sealed class PrintifyMockupMatcher(
             (blueprintId, blueprintTitle) = (blueprint.Id, blueprint.Title);
         }
 
+        var templateName = front?.Name ?? blueprintTitle;
+        if (several)
+            warnings.Add($"The mock-ups show several products; Printify makes {templateName}, the one most of them show.");
+
         // A mock-up left in its photo's own color names none: the template's color is that photo's.
-        var hexes = approved.Where(mockup => mockup.MockupTemplateId == template.Id)
-            .Select(mockup => mockup.GarmentColor ?? template.GarmentColor)
+        var hexes = shown
+            .Select(mockup => mockup.GarmentColor ?? mockup.MockupTemplate!.GarmentColor)
             .OfType<string>()
             .Select(hex => hex.Trim().ToUpperInvariant())
             .Distinct()
@@ -155,7 +163,7 @@ public sealed class PrintifyMockupMatcher(
 
         var setup = new PrintifyProductSetup(blueprintId, blueprintTitle, offer.Provider.Id, offer.Provider.Title, offer.Colors, sizes,
             config.Position ?? "front");
-        return Result.Success<PrintifyMockupMatch?>(new PrintifyMockupMatch(setup, template.Name, warnings));
+        return Result.Success<PrintifyMockupMatch?>(new PrintifyMockupMatch(setup, templateName, warnings));
     }
 
     private sealed record Offer(PrintifyProviderDto Provider, PrintifyCatalogDto Catalog, string[] Colors, int Order);

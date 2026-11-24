@@ -124,6 +124,9 @@ public sealed class VideoMediaController(IMockupAssetService mockups, IVideoArti
     public async Task<IActionResult> Update(Guid id, MockupMetadataRequest request, CancellationToken ct) => (await mockups.UpdateAsync(id, request, ct)).ToActionResult(this);
     [HttpPost("mockup-assets/{id:guid}/review")]
     public async Task<IActionResult> Review(Guid id, MockupReviewRequest request, CancellationToken ct) => (await mockups.ReviewAsync(id, request, ct)).ToActionResult(this);
+    [HttpPost("products/{productId:guid}/mockup-assets/review-design")]
+    public async Task<IActionResult> ReviewDesign(Guid productId, MockupDesignReviewRequest request, CancellationToken ct) =>
+        (await mockups.ReviewDesignAsync(productId, request, ct)).ToActionResult(this);
     [HttpGet("promo-videos/{id:guid}/download")]
     public async Task<IActionResult> Download(Guid id, CancellationToken ct) => (await media.DownloadAsync(id, false, ct)).ToActionResult(this);
     [HttpGet("video-exports/{id:guid}/download")]

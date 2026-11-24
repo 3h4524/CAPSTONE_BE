@@ -212,7 +212,7 @@ public sealed class WorkflowPublishService(
                 matchWarnings = matched.Warnings;
             }
             else if (config.BlueprintId is not > 0)
-                return Outcome.Fail("Push to Printify: the approved mock-ups use your own templates, so the Printify product cannot be read from them. "
+                return Outcome.Fail("Push to Printify: none of the approved mock-ups uses a Printify template, so the Printify product cannot be read from them. "
                     + "Choose the product, provider, colors and sizes on Push to Printify, then retry this step.");
         }
         if (config.Problem() is { } problem)

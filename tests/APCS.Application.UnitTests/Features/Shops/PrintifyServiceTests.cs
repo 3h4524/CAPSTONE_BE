@@ -502,6 +502,41 @@ public sealed class PrintifyServiceTests
     }
 
     [TestMethod]
+    public async Task CreateProductAsync_OnlyTheBackApproved_PrintsItOnTheBack()
+    {
+        var service = Create();
+        printify.Setup(x => x.GetVariantsAsync("token", 6, 99, It.IsAny<CancellationToken>())).ReturnsAsync(
+        [
+            new PrintifyCatalogVariant(101, "White / S", "White", "S", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+            new PrintifyCatalogVariant(102, "White / M", "White", "M", [new("front", 4500, 5100), new("back", 4500, 5100)]),
+        ]);
+        ShownOnTemplate(box: null);
+        var back = BackSideShown();
+        mockup.ApprovalStatus = "pending";
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true, Position = "front" });
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
+            product.Position == "back" && product.MorePlacements == null && product.X == 0.5 && product.Y == 0.25),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task CreateProductAsync_OnlyTheBackApproved_AndAProviderThatDoesNotPrintIt_IsRefused()
+    {
+        var service = Create();
+        ShownOnTemplate(box: null);
+        var back = BackSideShown();
+        mockup.ApprovalStatus = "pending";
+
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true });
+
+        result.Error.Message.Should().Contain("show only the back");
+        printify.Verify(x => x.CreateProductAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<PrintifyNewProduct>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task CreateProductAsync_ABackPlacedPastThePrintArea_SaysItWasMovedIn()
     {
         var service = Create();

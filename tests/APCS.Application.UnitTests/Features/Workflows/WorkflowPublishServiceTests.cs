@@ -548,7 +548,7 @@ public sealed class WorkflowPublishServiceTests
         await service.ProcessAsync(Step("publish-printify").Id, default);
 
         Step("publish-printify").Status.Should().Be("failed");
-        Step("publish-printify").ErrorMessage.Should().Contain("your own templates");
+        Step("publish-printify").ErrorMessage.Should().Contain("none of the approved mock-ups uses a Printify template");
         printify.Verify(x => x.CreateProductAsync(It.IsAny<Guid>(), It.IsAny<CreatePrintifyProductRequestDto>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
