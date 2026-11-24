@@ -43,6 +43,12 @@ public sealed class ListingContentService(
 
     internal const string ListingModel = "gemini-3.5-flash-lite";
 
+    /// <summary>
+    /// Asked when <see cref="ListingModel"/> is overloaded (503): another model, since Google's demand spikes hit one model
+    /// at a time and asking the same one again within seconds rarely helps.
+    /// </summary>
+    internal const string ListingFallbackModel = "gemini-3.5-flash";
+
     public async Task<Result<ListingContentResponseDto>> GetOrGenerateAsync(
         Guid productId,
         CancellationToken cancellationToken = default,
@@ -152,7 +158,7 @@ public sealed class ListingContentService(
         try
         {
             var request = new GeminiTextGenerationRequest(prompt, ResponseSchema: ListingPromptBuilder.ResponseSchema(),
-                Model: ListingModel, FallbackModel: ListingModel);
+                Model: ListingModel, FallbackModel: ListingFallbackModel);
             generated = observer is null
                 ? await generator.GenerateAsync(request, cancellationToken)
                 : await generator.GenerateStreamingAsync(request, new ListingTextStream(observer), cancellationToken);
