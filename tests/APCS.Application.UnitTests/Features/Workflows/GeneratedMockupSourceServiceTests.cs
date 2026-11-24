@@ -192,10 +192,10 @@ public sealed class GeneratedMockupSourceServiceTests
         var running = 0;
         var peak = 0;
         _fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Returns(async (string _, string key, CancellationToken _) =>
+            .Returns(async (string _, string key, CancellationToken ct) =>
             {
                 lock (gate) peak = Math.Max(peak, ++running);
-                await Task.Delay(50);
+                await Task.Delay(50, ct);
                 lock (gate) running--;
                 return Stored with { StorageKey = key };
             });

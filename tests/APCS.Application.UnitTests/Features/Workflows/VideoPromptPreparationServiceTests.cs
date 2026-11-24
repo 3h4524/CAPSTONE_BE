@@ -528,10 +528,10 @@ public sealed class VideoPromptPreparationServiceTests
         var peak = 0;
         var generator = new Mock<IGeminiTextGenerationProvider>();
         generator.Setup(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()))
-            .Returns(async (GeminiTextGenerationRequest request, CancellationToken _) =>
+            .Returns(async (GeminiTextGenerationRequest request, CancellationToken ct) =>
             {
                 lock (gate) peak = Math.Max(peak, ++running);
-                await Task.Delay(40);
+                await Task.Delay(40, ct);
                 lock (gate) running--;
                 // Each scene's opening names its own frame, so a scene given another's answer would show.
                 var frame = request.Images is null ? null : System.Text.Encoding.UTF8.GetString(request.Images[0].Bytes);
