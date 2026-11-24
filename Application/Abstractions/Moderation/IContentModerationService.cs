@@ -19,6 +19,12 @@ public interface IContentModerationService
         CancellationToken cancellationToken = default,
         bool blocklistOnly = false);
 
+    /// <summary>
+    /// Whether <see cref="CheckImageAsync"/> would really look at an image now: false while the Gemini check is switched
+    /// off or has no key, so a caller need not fetch an image only to have it waved through.
+    /// </summary>
+    Task<bool> ChecksImagesAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Checks one image a provider returned.</summary>
     Task<ModerationVerdict> CheckImageAsync(
         byte[] imageBytes,

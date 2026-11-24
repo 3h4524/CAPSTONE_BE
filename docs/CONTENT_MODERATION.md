@@ -40,7 +40,7 @@ Text verdicts are cached for `Moderation:CacheMinutes`, keyed by the policy vers
 | Before a design job asks the provider for images | All of the seller's text behind the product's prompt, in full |
 | After planning an AI video | Every AI shot prompt, after the Gemini rewrite |
 | Before an AI scene is sent to MiniMax or Veo | That scene's prompt. A block fails the scene; nothing is sent or billed |
-| After a design or keyframe image is generated | The image |
+| After a design or keyframe image is generated | The image. A design is uploaded while it is checked, its row is written only after both finish, and a blocked file is deleted from storage |
 
 ## When the check is unavailable
 

@@ -1,5 +1,9 @@
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Threading.Channels;
 using APCS.Api.Contracts.BatchMockups;
 using APCS.Api.Extensions;
+using APCS.Application.Abstractions.Caching;
 using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Request;
@@ -14,8 +18,14 @@ namespace APCS.Api.Controllers;
 [ApiController]
 [Route("api/model-photos")]
 [Authorize(Roles = AuthConstants.UserRole)]
-public sealed class ModelPhotosController(IModelPhotoService service, IModelPhotoGenerationService generation) : ControllerBase
+public sealed class ModelPhotosController(IModelPhotoService service, IModelPhotoGenerationService generation,
+    ILogger<ModelPhotosController>? logger = null) : ControllerBase
 {
+    /// <summary>What the app offers for model photos.</summary>
+    [HttpGet("options")]
+    [ProducesResponseType(typeof(ModelPhotoOptionsDto), StatusCodes.Status200OK)]
+    public IActionResult Options() => Ok(service.GetOptions());
+
     /// <summary>The model photos the seller can use: the shared library and their own, narrowed to who is in them.</summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<MockupTemplateResponseDto>), StatusCodes.Status200OK)]
@@ -29,6 +39,13 @@ public sealed class ModelPhotosController(IModelPhotoService service, IModelPhot
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Generate([FromBody] GenerateModelPhotoRequestDto request, CancellationToken cancellationToken) =>
         (await generation.GenerateAsync(request, system: false, cancellationToken)).ToActionResult(this);
+
+    /// <summary>The same as a stream of events: the photo as soon as Ideogram has drawn it, then the saved model photo.</summary>
+    [HttpPost("generate/stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public IActionResult GenerateStream([FromBody] GenerateModelPhotoRequestDto request) =>
+        ModelPhotoEndpoints.GenerationStream(generation, request, system: false, logger);
 
     /// <summary>Finds the person on a photo that is not saved yet, for selecting the garment on it.</summary>
     [HttpPost("preview")]
@@ -65,8 +82,14 @@ public sealed class ModelPhotosController(IModelPhotoService service, IModelPhot
 [ApiController]
 [Route("api/admin/model-photos")]
 [Authorize(Roles = "Admin,Super Admin")]
-public sealed class AdminModelPhotosController(IModelPhotoService service, IModelPhotoGenerationService generation) : ControllerBase
+public sealed class AdminModelPhotosController(IModelPhotoService service, IModelPhotoGenerationService generation,
+    ILogger<AdminModelPhotosController>? logger = null) : ControllerBase
 {
+    /// <summary>What the app offers for model photos.</summary>
+    [HttpGet("options")]
+    [ProducesResponseType(typeof(ModelPhotoOptionsDto), StatusCodes.Status200OK)]
+    public IActionResult Options() => Ok(service.GetOptions());
+
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<MockupTemplateResponseDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> List([FromQuery] ModelPhotoQuery query, CancellationToken cancellationToken) =>
@@ -79,6 +102,13 @@ public sealed class AdminModelPhotosController(IModelPhotoService service, IMode
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Generate([FromBody] GenerateModelPhotoRequestDto request, CancellationToken cancellationToken) =>
         (await generation.GenerateAsync(request, system: true, cancellationToken)).ToActionResult(this);
+
+    /// <summary>The same as a stream of events: the photo as soon as Ideogram has drawn it, then the saved model photo.</summary>
+    [HttpPost("generate/stream")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public IActionResult GenerateStream([FromBody] GenerateModelPhotoRequestDto request) =>
+        ModelPhotoEndpoints.GenerationStream(generation, request, system: true, logger);
 
     [HttpPost("preview")]
     [Consumes("multipart/form-data")]
@@ -121,6 +151,61 @@ public sealed class ModelPhotoQuery
 
 internal static class ModelPhotoEndpoints
 {
+    private static readonly JsonSerializerOptions EventJson = new(JsonSerializerDefaults.Web);
+
+    public static IActionResult GenerationStream(IModelPhotoGenerationService generation, GenerateModelPhotoRequestDto request, bool system, ILogger? logger) =>
+        new ServerSentEventsResult(GenerationEventsAsync(generation, request, system, logger));
+
+    // started, then preview (the link to the drawn photo), then saved or failed. The request stays open until the work is
+    // done even if the person leaves, because the services it uses live as long as the request.
+    private static async IAsyncEnumerable<EventStreamEntry> GenerationEventsAsync(IModelPhotoGenerationService generation,
+        GenerateModelPhotoRequestDto request, bool system, ILogger? logger, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var number = 0;
+        var events = Channel.CreateUnbounded<EventStreamEntry>();
+        EventStreamEntry Entry(string type, object data) => new($"{++number}-0", type, JsonSerializer.Serialize(data, EventJson));
+
+        async Task RunAsync()
+        {
+            try
+            {
+                var result = await generation.GenerateAsync(request, system, link =>
+                {
+                    events.Writer.TryWrite(Entry("preview", new { url = link }));
+                    return Task.CompletedTask;
+                }, cancellationToken);
+                events.Writer.TryWrite(result.IsSuccess
+                    ? Entry("saved", result.Value)
+                    : Entry("failed", new { code = result.Error.Code, message = result.Error.Message }));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The person left before the photo was drawn: nobody is listening.
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "A model photo could not be made");
+                events.Writer.TryWrite(Entry("failed", new { code = "ModelPhotoGenerationFailed", message = "The photo could not be made. Try again." }));
+            }
+            finally
+            {
+                events.Writer.TryComplete();
+            }
+        }
+
+        yield return Entry("started", new { });
+        var work = RunAsync();
+        try
+        {
+            await foreach (var entry in events.Reader.ReadAllAsync(cancellationToken))
+                yield return entry;
+        }
+        finally
+        {
+            await work;
+        }
+    }
+
     public static async Task<IActionResult> PreviewAsync(ControllerBase controller, IModelPhotoService service, IFormFile? photo, CancellationToken cancellationToken)
     {
         var upload = photo.ToUploadFileDto();

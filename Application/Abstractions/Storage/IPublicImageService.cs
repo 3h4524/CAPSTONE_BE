@@ -27,7 +27,28 @@ public interface IPublicImageService
         UploadFileDto file,
         string storageKey,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores the image at <paramref name="sourceUrl"/> as it is, keeping its format and transparency. The storage
+    /// provider fetches it from there itself, so the file does not pass through this server.
+    /// </summary>
+    Task<PublicImageUploadResult> UploadImageFromUrlAsync(
+        string sourceUrl,
+        string storageKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores the image at <paramref name="sourceUrl"/> as a public JPEG. The storage provider fetches it from there
+    /// itself, so the file does not pass through this server.
+    /// </summary>
+    Task<PublicImageUploadResult> UploadJpegFromUrlAsync(
+        string sourceUrl,
+        string storageKey,
+        CancellationToken cancellationToken = default);
 }
 
-/// <summary>The delivery URL of a stored image plus its measured pixel dimensions.</summary>
-public sealed record PublicImageUploadResult(string Url, int WidthPx, int HeightPx);
+/// <summary>
+/// The delivery URL of a stored image plus its measured pixel dimensions. An image stored from a URL also reports its
+/// size and format, which this server did not see.
+/// </summary>
+public sealed record PublicImageUploadResult(string Url, int WidthPx, int HeightPx, long? SizeBytes = null, string? Format = null);

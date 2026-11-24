@@ -13,5 +13,8 @@ public interface IDesignTextCheckQueue
     ValueTask<DesignTextCheckRequest> DequeueAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>A saved design to check: its image as uploaded, and the phrase it should print (null for no words).</summary>
-public sealed record DesignTextCheckRequest(Guid DesignImageId, byte[] Image, string? Phrase);
+/// <summary>
+/// A saved design to check, and the phrase it should print (null for no words). <paramref name="Image"/> is its file when
+/// the job already has it; otherwise the check reads the stored file by <paramref name="StorageKey"/>, in the background.
+/// </summary>
+public sealed record DesignTextCheckRequest(Guid DesignImageId, byte[]? Image, string? Phrase, string? StorageKey = null);

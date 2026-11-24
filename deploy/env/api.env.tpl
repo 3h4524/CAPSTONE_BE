@@ -96,6 +96,9 @@ VideoPromptPreparation__Enabled=false
 # above. Set it to false to render inside Generate Video again, as before.
 Video__DeferredRender__Enabled=true
 
+# Putting a mock-up on a model photo without AI. Off, a model photo is only stored and is dressed with AI.
+ModelPhotos__PrintWithoutAi=false
+
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
 VideoQuality__AutoEvaluate=false

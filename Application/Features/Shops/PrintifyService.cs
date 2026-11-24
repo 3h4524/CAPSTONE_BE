@@ -360,6 +360,8 @@ public sealed class PrintifyService(
             var sideWidth = sideAreas.Max(area => area!.Width);
             var sidePlacement = await MockupPlacementAsync(productId, sideMockupId, design, sideWidth, sideAreas.Max(area => area!.Height), cancellationToken);
             morePlacements.Add(new PrintifyPlacement(sidePosition, sidePlacement.Scale, sidePlacement.X, sidePlacement.Y, sidePlacement.Angle));
+            if (sidePlacement.Adjusted)
+                sideWarnings.Add($"The mock-up places the design partly outside Printify's print area on the {SideLabel(view)}, so it is printed smaller or moved inside it. Check the preview on Printify.");
             printWidth = Math.Max(printWidth, sidePlacement.PrintedWidthPx(sideWidth));
         }
 
@@ -646,6 +648,11 @@ public sealed class PrintifyService(
         if (shown is null || BatchMockups.Common.MockupRules.PrintifyFrameOf(shown.Area) is not { } frame
             || BatchMockups.Common.MockupRules.ParsePrintLayout(shown.Area)?.Main is not { } placed)
             return fitted;
+
+        // Where the job puts the design on this template, when the seller moved it for the run.
+        if (shown.Job is not null)
+            placed = BatchMockups.Common.MockupRules.WithPlacement(new BatchMockups.Common.MockupRules.MockupPrintLayout(BatchMockups.Common.MockupRules.ViewFront, [placed]),
+                BatchMockups.Common.MockupRules.ReadTemplatePlacements(shown.Job).GetValueOrDefault(shown.TemplateId)).Main;
 
         // The seller's own box for this mock-up: same design, template and garment color.
         var color = shown.GarmentColor?.TrimStart('#');

@@ -4,7 +4,7 @@ using APCS.Application.Abstractions.BackgroundJobs;
 namespace APCS.Infrastructure.BackgroundServices;
 
 /// <summary>
-/// A bounded, single-process queue of designs waiting for the OCR check of their text. Each holds its image in memory,
+/// A bounded, single-process queue of designs waiting for the OCR check of their text. One may hold its image in memory,
 /// so the queue has a cap: past it, a design is not checked rather than piling up memory.
 /// </summary>
 public sealed class DesignTextCheckQueueChannel : IDesignTextCheckQueue
