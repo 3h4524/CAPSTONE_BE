@@ -53,8 +53,12 @@ jobs:
             echo "fe_ref=$FE_REF" >> "$GITHUB_OUTPUT"
             echo "triggered_by=Manual ($ACTOR)" >> "$GITHUB_OUTPUT"
           elif [ "$REF_TYPE" = "tag" ]; then
+            LATEST_FE_TAG=$(git ls-remote --tags --sort='-version:refname' https://github.com/3h4524/CAPSTONE_FE.git 'v*' | head -n 1 | sed 's/.*refs\/tags\///' | sed 's/\^{}//')
+            if [ -z "$LATEST_FE_TAG" ]; then
+              LATEST_FE_TAG="production"
+            fi
             echo "be_ref=$REF_NAME" >> "$GITHUB_OUTPUT"
-            echo "fe_ref=main" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=$LATEST_FE_TAG" >> "$GITHUB_OUTPUT"
             echo "triggered_by=Release tag ($REF_NAME)" >> "$GITHUB_OUTPUT"
           else
             echo "be_ref=$REF_NAME" >> "$GITHUB_OUTPUT"
