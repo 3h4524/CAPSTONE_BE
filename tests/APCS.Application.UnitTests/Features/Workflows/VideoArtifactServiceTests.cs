@@ -32,6 +32,27 @@ public sealed class VideoArtifactServiceTests
     }
 
     [TestMethod]
+    public async Task ListAsync_RenderedVideo_KeepsItsScenePreview()
+    {
+        var fixture = new WorkflowTestData();
+        var run = WorkflowRunServiceTests.PrepareReview(fixture);
+        var video = fixture.VideoRows.Single();
+        var board = new VideoStoryboardPlanner().Plan(fixture.ProductRows.Single(), fixture.AssetRows, new()).Value;
+        video.ConfigSnapshot = WorkflowJson.Write(new { config = new GenerateVideoConfig(), storyboard = board }); video.QaResult = "{}";
+        video.Status = DeferredRender.VideoCompleted;
+        fixture.SceneRows.Single().SceneConfig = WorkflowJson.Write(board.Scenes[0]);
+        var asset = fixture.AssetRows.Single();
+        fixture.Storage.Setup(x => x.SignRead(asset.StorageKey, "image", asset.StorageVersion, false)).Returns("https://example.invalid/mockup");
+
+        var result = await fixture.ArtifactService.ListAsync(run.Id, default);
+
+        var preview = result.Value.Single().Preview;
+        preview.Should().NotBeNull();
+        preview!.Storyboard.Scenes.Should().HaveCount(board.Scenes.Count);
+        preview.Sources[asset.Id].Url.Should().Be("https://example.invalid/mockup");
+    }
+
+    [TestMethod]
     public async Task ListAsync_ForeignRun_DoesNotIssuePreviewUrls()
     {
         var fixture = new WorkflowTestData();

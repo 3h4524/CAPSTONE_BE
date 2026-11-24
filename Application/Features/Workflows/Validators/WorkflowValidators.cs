@@ -91,14 +91,6 @@ public sealed class GenerateVideoConfigValidator : AbstractValidator<GenerateVid
             .WithMessage("Overall video duration must equal the sum of AI scene durations.");
         RuleFor(x => x).Must(x => x.Mode != "ai_shot" || x.AiScenes is not { Count: > 0 } || x.AiShotOptions == null)
             .WithMessage("Use either the scene-based AI settings or legacy AI Shot settings, not both.");
-        RuleFor(x => x.SharedMockupId).Must(id => id is Guid value && value != Guid.Empty)
-            .When(x => x.Template == "product_on_model_pack")
-            .WithMessage("Choose one approved shared mockup for the Product on Model pack.");
-        RuleFor(x => x).Must(x => x.Template != "product_on_model_pack" || x.Mode == "ai_shot" &&
-            x.AiScenes is { Count: 3 } && x.AiScenes.All(scene => scene.Mode == "ai" &&
-                scene.StartFrameMode == "studio" && scene.StudioFrameId is Guid frame && frame != Guid.Empty &&
-                scene.MockupId == x.SharedMockupId))
-            .WithMessage("Product on Model needs three AI scenes with current reviewed start frames from the shared mockup.");
         RuleFor(x => x).Must(x => x.AssetSelection != "manual" || x.SelectedMockupIds is { Count: > 0 }).WithMessage("Select mockups for manual asset selection.");
         RuleFor(x => x.StandardOptions).Must(x => x is null ||
             new[] { "varied", "gentle", "contain_gentle", "static", "pan", "zoom", "zoom_out", "pan_left", "pan_up", "pan_down",

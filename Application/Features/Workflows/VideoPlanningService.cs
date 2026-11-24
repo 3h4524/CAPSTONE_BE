@@ -26,7 +26,7 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
     GenerateVideoConfigValidator validator, WorkflowCapabilityRegistry capabilities,
     VideoStoryboardPlanner planner, IVideoExperienceContextService? experiences = null,
     IVideoPromptPreparationService? promptPreparation = null, IRunTargetConfigResolver? targetResolver = null,
-    ICultureAccessor? cultureAccessor = null) : IVideoPlanningService
+    ICultureAccessor? cultureAccessor = null, Abstractions.Storage.IGarmentLocator? garmentLocator = null) : IVideoPlanningService
 {
     public async Task<Result<Storyboard>> PreviewAsync(Guid productId, PreviewStoryboardRequest request, CancellationToken ct)
     {
@@ -86,7 +86,8 @@ public sealed class VideoPlanningService(ICurrentUser user, IRepository<Product>
             ? null
             : await experiences.RetrieveForScenesAsync(user.UserId!.Value, product, request.Config, ct);
         var sources = selected.DistinctBy(x => x.Id).ToArray();
-        var planned = planner.Plan(product, sources, request.Config, aiTemplates, experienceMap);
+        var garments = await AiOpeningCrop.LocateGarmentsAsync(garmentLocator, product, request.Config, sources, ct);
+        var planned = planner.Plan(product, sources, request.Config, aiTemplates, experienceMap, garments);
         if (planned.IsFailure) return planned;
         var prepared = promptPreparation is null
             ? planned.Value

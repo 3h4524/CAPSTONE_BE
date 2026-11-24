@@ -96,7 +96,29 @@ public static class AiVideoPromptCompiler
     private const string FabricDetailGuardrail = "Detail continuity and camera-path constraint: follow only the same product detail established by the opening crop. The camera arcs around the model toward frame-right with small amplitude at slow speed, keeping approximately the same height, distance, focal length and detail scale. Use a stabilized shallow curve with gentle starts and stops; shorten it to keep the visible detail within the frame and stop before passing behind the shoulder or revealing the back. No push-in, zoom, pull-back, full orbit or focus pull. Allow natural perspective and foreshortening while keeping the existing detail in focus. Do not switch to another detail, invent stitching or material features, or reconstruct hidden, cropped-out or unreadable print and lettering. Existing artwork stays attached to the same surface with its content and placement unchanged. The model keeps the opening body orientation unless an explicit P1 action plan requires otherwise; P1 takes precedence over default body actions. Retain realistic product motion and the source lighting and setting.";
     private const string BrandFocusGuardrail = "Brand visibility constraint: keep the design area visible in the opening image within the frame and in focus during a shallow, slow push-in from the source viewing direction, without orbiting or turning it into a macro texture shot. Preserve existing artwork, logo geometry, lettering, colors and placement on the same product surface, allowing natural folds and perspective. Do not invent branding, complete hidden design areas, repair or transcribe unreadable lettering, or flatten or redraw the product to face the lens. If no branding is visible, retain the existing silhouette, colors and construction as the focus. The explicit P1 action plan takes precedence over default body actions; preserve source lighting and setting.";
     private const string BrandFocusPerformanceGuardrail = "The model gently lifts their gaze upward, then follows with a small, relaxed lift of the chin and settles looking slightly above the lens. Keep this one natural upward-looking action within a comfortable range, without tilting the head far back, walking or turning the torso. The torso keeps its opening orientation and the hands keep their original placement. Keep the head and face in frame when already visible, together with the existing design; do not push into a logo-only crop or invent a face outside the opening image.";
-    private const string MiniMaxH3FirstFrame = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
+    /// <summary>
+    /// Cinematic Product Showcase for a garment mock-up opened directly (no studio keyframe): the camera stays still while
+    /// the garment ripples in a breeze and turns slowly from its front to its back. Written out in full, without setting
+    /// placeholders, and in short single-action sentences with an explicit timeline, so the Lite model follows it.
+    /// {0} is the garment noun ("shirt", "hoodie").
+    /// </summary>
+    private const string GarmentTurnShowcasePrompt = """
+        One continuous studio product shot develops from the approved opening image. The camera is locked off for the entire shot: it does not move, zoom, pan, tilt or reframe, and the plain studio backdrop stays exactly the same.
+
+        The {0} floats upright in the same place, as if worn by an invisible mannequin, with its centre fixed in the middle of the frame. Two motions start in the first frame and continue smoothly until the last frame.
+
+        Motion 1, wind ripple: a gentle, steady breeze blows from the left side of the frame. Soft waves travel slowly across the fabric from left to right. The hem and the sleeve ends flutter lightly, and the whole {0} sways a little from side to side. The movement is smooth and even, never jerky, and the {0} keeps its shape and size.
+
+        Motion 2, slow turn: the {0} turns slowly around its own vertical centre line, like a product on a display turntable, at one even speed. The left side of the {0} comes toward the camera and the right side moves away. During the first third of the shot, the front turns to a three-quarter view. During the middle third, the {0} reaches a side view and the front graphic turns out of sight. During the final third, the back of the {0} faces the camera and the turn eases gently to a stop.
+
+        The back of the {0} is plain fabric in the same color as the front, with a simple back neckline and no print, logo or text. The front graphic stays printed on the front only and keeps its exact shape, colors and letters while it is visible; it is never copied, mirrored or moved onto the back.
+
+        Soft studio lighting stays constant, and soft natural shadows follow the fabric folds. No cuts, no second {0}, no hanger, no person and no hands.
+        """;
+    private const string GarmentTurnSourceGuardrail = "Source constraint for the turn: the approved image shows the front of the {0}. Keep that front, its graphic and its colors exactly as shown while they face the camera. The side and back that the turn reveals are plain fabric with the same color and construction (the same sleeves, hem and neckline), with no print, logo, label or text, and they never repeat or mirror the front graphic.";
+    private const string GarmentTurnGuardrail = "Turn and wind constraint: the camera stays locked off, and all visible motion belongs to the {0}. The turn is one smooth half rotation that ends with the back facing the camera; it does not reverse, wobble, speed up or keep spinning. The wind ripple stays soft and continuous and never folds the front graphic out of shape while it faces the camera. The turn changes only the viewing angle: the {0} keeps its real shape, size and proportions, stays centred, and does not drift, grow, shrink or leave the frame. No morphing, melting, duplicate garment, visible mannequin, hanger, person or hands.";
+
+    private const string MiniMaxH3FirstFrame ="For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.";
     private const string MiniMaxH3NaturalMotionPrompt = "Create one continuous {{DURATION}}-second product-on-model advertisement from the approved source image. {{PRODUCT_CONTEXT}} {{NATURAL_MOTION}} The camera performs {{CAMERA_MOVEMENT}}, starting immediately and continuing smoothly throughout the shot. Retain {{CAMERA_ANGLE}} and the opening composition, allowing only a small change in framing. Keep the model's head and product artwork in frame when visible in the opening image. {{LIGHTING}} Preserve the source setting and natural shadows.";
     private const string MiniMaxH3ProfileTrackingPrompt = "One continuous {{DURATION}}-second product-on-model shot develops from the approved opening image. {{PRODUCT_CONTEXT}} {{PROFILE_MOTION}} The camera begins at {{CAMERA_ANGLE}} and arcs around the model toward the right-hand side of the opening image with small amplitude at slow speed. Spread a short, shallow arc of about 30-40 degrees in total across the entire shot, never more than 40 degrees from the opening viewing direction. The movement starts gently, glides at an unhurried, even pace, then eases softly to a stop at the end, with stable gimbal-like motion and no shake, abrupt acceleration or whip movement. Visible but restrained background parallax establishes that the camera is actually moving. The final view is slightly more side-on, remaining within the front three-quarter to side-profile range; stop at the side-profile boundary without passing behind the shoulder or revealing the back. If the opening image is already close to profile, shorten the arc to stay on the front-facing side of that boundary. Camera height and distance remain approximately constant, with the model centered at approximately the same size and the product in focus. The front artwork becomes naturally foreshortened as the angle changes; its content and placement remain unchanged. {{LIGHTING}} Preserve the source setting and natural shadows.";
     private const string ProfileOrbitGuardrail = "Camera-path and design-visibility constraint: use a slow, smooth, shallow arc toward frame-right, about 30-40 degrees across the whole shot and never more than 40 degrees from the opening view. Shorten the path when needed to stop at the side-profile boundary. Do not travel behind the model or reveal the back. Keep the movement stabilized and unhurried, with gentle starts and stops rather than a fast sweep, running-camera bounce or whip pan. Do not turn the model merely to keep facing the camera; an explicitly selected action plan still takes precedence for the person's actions. Allow natural foreshortening of the front design as the angle changes. Do not twist or redraw the product to keep that design facing the lens. Never copy the front graphic onto the back or add artwork, lettering, logos or unsupported construction details to newly revealed surfaces.";
@@ -283,7 +305,13 @@ public static class AiVideoPromptCompiler
         var rewriteBrandFocus = useH3Format && settings.CameraMovement == "push_in" && template.Code == "lifestyle_in_use" &&
             subtemplate?.Code == "brand_focus" && basePrompt == BuiltIns["lifestyle_in_use"].Subtemplates!
                 .Single(item => item.Code == "brand_focus").BasePrompt;
-        var prompt = (rewriteNaturalMotion ? MiniMaxH3NaturalMotionPrompt
+        // A garment mock-up opened directly: the code-owned showcase prompt is replaced by a complete wind-and-turn shot,
+        // whose own rules stand in for the settings line and the rules that would keep the garment still (see GarmentNoun).
+        var garmentNoun = GarmentNoun(productType);
+        var rewriteGarmentTurn = template.Code == "cinematic_product_showcase" && !stableSingleImage && garmentNoun is not null &&
+            basePrompt == BuiltIns["cinematic_product_showcase"].BasePrompt;
+        var prompt = (rewriteGarmentTurn ? GarmentTurnShowcasePrompt.Replace("{0}", garmentNoun, StringComparison.Ordinal)
+            : rewriteNaturalMotion ? MiniMaxH3NaturalMotionPrompt
             : rewriteProfileTracking ? MiniMaxH3ProfileTrackingPrompt
             : rewriteFabricDetail ? MiniMaxH3FabricDetailPrompt
             : rewriteBrandFocus ? MiniMaxH3BrandFocusPrompt : basePrompt)
@@ -321,7 +349,8 @@ public static class AiVideoPromptCompiler
             productContextPrompt = $"The shot features the same {productType} from the opening image. Its design, colors, fit and proportions remain consistent during the shallow change in viewpoint. Preserve artwork where visible, allowing natural perspective and foreshortening.";
         if (rewriteFabricDetail || rewriteBrandFocus)
             productContextPrompt = $"The same {productType} remains on the same model as in the opening image, with its visible design, colors, construction and proportions preserved.";
-        var sceneGuidance = isProductOnModel ? null : SceneGuidance(template, productType, stableSingleImage);
+        // The wind-and-turn shot says itself how the fabric, background and light behave.
+        var sceneGuidance = isProductOnModel || rewriteGarmentTurn ? null : SceneGuidance(template, productType, stableSingleImage);
         var personGuidance = template.RequiresLifestyle && !isProductOnModel
             ? "Keep any person already visible in the source recognizable and let them move naturally. Do not introduce additional people."
             : null;
@@ -331,7 +360,9 @@ public static class AiVideoPromptCompiler
         if (rewriteProfileTracking)
             commonPrompt = commonPrompt.Replace("perspective and brief occlusion.",
                 "perspective and natural occlusion as surfaces turn out of view.", StringComparison.Ordinal);
-        var selectedControls = isProductOnModel
+        // The wind-and-turn shot fixes its own camera and motion, so the settings line ("subject motion none; keep the
+        // product still", a push-in) would only contradict it.
+        var selectedControls = isProductOnModel || rewriteGarmentTurn
             ? null
             : stableSingleImage && template.Code == "cinematic_product_showcase"
             ? $"Selected scene controls: framing {Framing(settings.Framing)}; {CameraAngle(settings.CameraAngle)}; required camera movement {cameraMovement}; motion intensity {MotionIntensity(settings.MotionIntensity)}; {Lighting(settings.Lighting)}. The product itself remains still while the camera performs the selected movement."
@@ -340,8 +371,14 @@ public static class AiVideoPromptCompiler
             ? null
             : $"Shared direction for all scenes: {sharedInstructions.Trim()}";
         var custom = string.IsNullOrWhiteSpace(settings.ExtraInstructions) ? null : settings.ExtraInstructions.Trim();
-        var sourceGuardrail = isProductOnModel ? null : SourceGuardrail(productContext, stableSingleImage);
-        var templateGuardrail = isProductOnModel ? null : TemplateGuardrail(template.Code, settings, stableSingleImage);
+        // A mock-up shows only the front, so the usual "do not invent a different product side" and "camera movement is
+        // mandatory, product still" rules give way to rules for the plain back and the one smooth half turn.
+        var sourceGuardrail = isProductOnModel ? null
+            : rewriteGarmentTurn ? GarmentTurnSourceGuardrail.Replace("{0}", garmentNoun, StringComparison.Ordinal)
+            : SourceGuardrail(productContext, stableSingleImage);
+        var templateGuardrail = isProductOnModel ? null
+            : rewriteGarmentTurn ? GarmentTurnGuardrail.Replace("{0}", garmentNoun, StringComparison.Ordinal)
+            : TemplateGuardrail(template.Code, settings, stableSingleImage);
         var parts = new List<AiPromptPart>();
         var contextMarker = "{{PRODUCT_CONTEXT}}";
         var contextPosition = hasOpeningProductContext ? prompt.IndexOf(contextMarker, StringComparison.Ordinal) : -1;
@@ -584,6 +621,14 @@ public static class AiVideoPromptCompiler
         };
         return string.Join(" ", new[] { product, templateGuidance }.Where(value => !string.IsNullOrWhiteSpace(value)));
     }
+
+    /// <summary>The word a garment is called in the wind-and-turn showcase, or null for a product that is not worn.</summary>
+    private static string? GarmentNoun(string productType) => productType switch
+    {
+        "T-shirt" => "shirt",
+        "hoodie" => "hoodie",
+        _ => null
+    };
 
     private static string NormalizeProductType(string productType) => productType.Trim().ToLowerInvariant() switch
     {

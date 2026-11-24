@@ -417,6 +417,7 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
         services.AddSingleton<IClothesSegmenter, SegFormerClothesSegmenter>();
+        services.AddScoped<IGarmentLocator, SegFormerGarmentLocator>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();

@@ -21,7 +21,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     Microsoft.Extensions.Options.IOptions<AiClipPhaseSettings>? clipPhase = null,
     Microsoft.Extensions.Options.IOptions<DeferredRenderSettings>? deferredRender = null,
     Features.Entitlements.IPlanEntitlementService? entitlements = null,
-    ILogger<WorkflowRuntime>? logger = null)
+    ILogger<WorkflowRuntime>? logger = null,
+    Abstractions.Storage.IGarmentLocator? garmentLocator = null)
 {
     /// <summary>Generate Video ends once the scenes are ready, and the final video is rendered later, when a step needs it.</summary>
     public bool RendersOnDemand => deferredRender?.Value.Enabled == true;
@@ -190,7 +191,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var experienceMap = experiences is null
             ? null
             : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
-        var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap);
+        var garments = await AiOpeningCrop.LocateGarmentsAsync(garmentLocator, product, config, approved, ct);
+        var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap, garments);
         if (planned.IsFailure) return planned;
         var prepared = promptPreparation is null
             ? planned.Value

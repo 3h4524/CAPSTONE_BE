@@ -45,7 +45,9 @@ public sealed class VideoArtifactService(ICurrentUser user, IRepository<Workflow
                 video.ThumbnailStorageKey != null ? storage.SignRead(video.ThumbnailStorageKey, "image", video.ThumbnailStorageVersion) : null,
                 JsonSerializer.Deserialize<JsonElement>(video.QaResult), (await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct)).OrderBy(x => x.SceneOrder).Select(x => WorkflowJson.Read<ScenePlan>(x.SceneConfig)).ToArray(),
                 output.Format, width, height, aspectRatio, config, mockupConfig.ArtworkGroupKey, mockupConfig.MockupIds,
-                video.Status is DeferredRender.VideoReady or DeferredRender.VideoRendering ? await PreviewAsync(video, board, clipPayload, ct) : null));
+                // A rendered video keeps it too, so each of its scenes can still be shown on its own (the canvas previews them).
+                video.Status is DeferredRender.VideoReady or DeferredRender.VideoRendering or DeferredRender.VideoCompleted
+                    ? await PreviewAsync(video, board, clipPayload, ct) : null));
         }
         return Result.Success<IReadOnlyList<VideoResponse>>(result);
     }

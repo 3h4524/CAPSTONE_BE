@@ -100,7 +100,8 @@ public sealed class ListingContentServiceTests
         result.Value.Tags.Should().HaveCount(13);
         result.Value.Tags.Select(tag => tag.Value).Should().NotContain("vintage camping adventure");
         generator.Verify(x => x.GenerateAsync(It.Is<GeminiTextGenerationRequest>(request => request.ResponseSchema != null
-            && request.Model == ListingContentService.ListingModel && request.FallbackModel == ListingContentService.ListingModel), It.IsAny<CancellationToken>()), Times.Once);
+            && request.Model == ListingContentService.ListingModel && request.FallbackModel == ListingContentService.ListingFallbackModel
+            && request.FallbackModel != request.Model), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private void Answer(string text) =>
