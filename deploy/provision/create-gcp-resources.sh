@@ -122,6 +122,12 @@ exists gcloud secrets describe sonar-token "${p[@]}" \
   || gcloud secrets create sonar-token --replication-policy automatic "${p[@]}"
 gcloud secrets add-iam-policy-binding sonar-token --member "serviceAccount:$DEPLOYER_SA" \
   --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
+exists gcloud secrets describe test-reports-ingest-key "${p[@]}" \
+  || gcloud secrets create test-reports-ingest-key --replication-policy automatic "${p[@]}"
+gcloud secrets add-iam-policy-binding test-reports-ingest-key --member "serviceAccount:$DEPLOYER_SA" \
+  --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
+gcloud secrets add-iam-policy-binding test-reports-ingest-key --member "serviceAccount:$VM_SA" \
+  --role roles/secretmanager.secretAccessor "${p[@]}" > /dev/null
 
 exists gcloud iam workload-identity-pools describe github --location global "${p[@]}" \
   || gcloud iam workload-identity-pools create github --location global --display-name "GitHub Actions" "${p[@]}"

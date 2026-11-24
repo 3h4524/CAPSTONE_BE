@@ -16,7 +16,8 @@ PROD_EXTERNAL="$(secret apcs-prod-external)"
 OPS_AUTH="$(secret apcs-ops-auth)"
 DEV_SECRETS="$(secret apcs-dev-secrets)"
 DEV_MIGRATOR_PASSWORD="$(secret apcs-dev-migrator-password)"
-export PROD_SECRETS PROD_EXTERNAL OPS_AUTH DEV_SECRETS DEV_MIGRATOR_PASSWORD
+TEST_REPORTS_INGEST_KEY="$(secret test-reports-ingest-key)"
+export PROD_SECRETS PROD_EXTERNAL OPS_AUTH DEV_SECRETS DEV_MIGRATOR_PASSWORD TEST_REPORTS_INGEST_KEY
 
 mkdir -p "$env_dir"
 chmod 700 "$env_dir"
@@ -41,6 +42,7 @@ values.update(json.loads(os.environ["PROD_SECRETS"]))
 values.update(json.loads(os.environ["OPS_AUTH"]))
 values.update(json.loads(os.environ["DEV_SECRETS"]))
 values["DEV_MIGRATOR_PASSWORD"] = os.environ["DEV_MIGRATOR_PASSWORD"].strip()
+values["TEST_REPORTS_INGEST_KEY"] = os.environ["TEST_REPORTS_INGEST_KEY"].strip()
 
 placeholder = re.compile(r"\$\{([A-Z0-9_]+)\}")
 missing = set()

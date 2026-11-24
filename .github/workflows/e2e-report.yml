@@ -19,6 +19,11 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  WIF_PROVIDER: projects/1035893227434/locations/global/workloadIdentityPools/github/providers/github-actions
+  DEPLOYER_SA: apcs-deployer@apcs-prod.iam.gserviceaccount.com
 
 jobs:
   e2e:
@@ -55,6 +60,26 @@ jobs:
         with:
           path: CAPSTONE_BE
           ref: ${{ steps.refs.outputs.be_ref }}
+
+      - name: Load deployment settings
+        run: grep -vE '^\s*(#|$)' CAPSTONE_BE/deploy/env/common.env >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        id: gcp_auth
+        continue-on-error: true
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Read Secret Manager keys
+        id: secrets
+        if: steps.gcp_auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/get-secretmanager-secrets@2b5f97c5a4b9c105e64646762ad4fc3f5128e6f5 # v2
+        with:
+          secrets: |-
+            ingest_key:${{ env.GCP_PROJECT }}/test-reports-ingest-key
 
       - name: Checkout Frontend
         uses: actions/checkout@v4
@@ -108,8 +133,8 @@ jobs:
         if: always()
         shell: bash
         env:
-          INGEST_URL: ${{ secrets.APCS_API_URL }}
-          INGEST_KEY: ${{ secrets.TEST_REPORTS_INGEST_KEY }}
+          INGEST_URL: ${{ env.APP_DOMAIN != '' && format('https://{0}', env.APP_DOMAIN) || secrets.APCS_API_URL }}
+          INGEST_KEY: ${{ steps.secrets.outputs.ingest_key || secrets.TEST_REPORTS_INGEST_KEY }}
           REPORT_PATH: ${{ github.workspace }}/CAPSTONE_FE/test-results/report/report.json
           TRIGGERED_BY: ${{ steps.refs.outputs.triggered_by }}
           BRANCH_NAME: ${{ steps.refs.outputs.be_ref }}
@@ -159,15 +184,15 @@ jobs:
               f"- **Commit:** `{commit}`",
           ]
 
-          if not ingest_url:
+          if not ingest_url or not ingest_key:
               markdown.extend([
                   "",
-                  "> ℹ️ **Notice:** Remote ingestion to Admin Dashboard was skipped because secret `APCS_API_URL` is not configured. To enable live sync with the Admin panel, set `APCS_API_URL` and `TEST_REPORTS_INGEST_KEY` in GitHub repository secrets."
+                  "> ℹ️ **Notice:** Remote ingestion to Admin Dashboard was skipped because the ingest target or Secret Manager key `test-reports-ingest-key` is not configured or unavailable."
               ])
           else:
               markdown.extend([
                   "",
-                  f"> 📡 **Admin Dashboard Sync:** Target `{ingest_url}`"
+                  f"> 📡 **Admin Dashboard Sync:** Ingesting report to `{ingest_url}`..."
               ])
 
           if summary_file:
@@ -177,7 +202,7 @@ jobs:
               except Exception as ex:
                   print(f"Failed to write GITHUB_STEP_SUMMARY: {ex}")
 
-          if ingest_url and report_data:
+          if ingest_url and ingest_key and report_data:
               target_endpoint = f"{ingest_url}/api/admin/test-reports/ingest"
               try:
                   payload = {
@@ -187,9 +212,10 @@ jobs:
                       "triggeredBy": triggered_by,
                       "report": report_data
                   }
-                  headers = {"Content-Type": "application/json"}
-                  if ingest_key:
-                      headers["X-CI-Key"] = ingest_key
+                  headers = {
+                      "Content-Type": "application/json",
+                      "X-CI-Key": ingest_key
+                  }
 
                   req = urllib.request.Request(
                       target_endpoint,
@@ -201,8 +227,8 @@ jobs:
                       print(f"Report successfully ingested to {target_endpoint} (HTTP {resp.status})")
               except Exception as ex:
                   print(f"Failed to ingest report to {target_endpoint}: {ex}")
-          elif not ingest_url:
-              print("APCS_API_URL secret is not configured; skipping remote ingest.")
+          elif not ingest_url or not ingest_key:
+              print("Ingest URL or Secret Manager key is not configured; skipping remote ingest.")
           EOF
 
       - name: Upload Test Report Artifacts
