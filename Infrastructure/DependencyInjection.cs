@@ -311,6 +311,11 @@ public static class DependencyInjection
         // The API makes the AI scenes of render jobs before the media worker gets them; off, the worker makes them itself.
         services.AddOptions<APCS.Application.Features.Workflows.AiClipPhaseSettings>()
             .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiClipPhaseSettings.SectionName));
+        // MiniMax calls back when an AI scene finishes; off (no public URL or secret), the scenes are only asked about.
+        services.AddOptions<APCS.Application.Features.Workflows.AiVideoCallbackSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiVideoCallbackSettings.SectionName));
+        services.AddOptions<APCS.Application.Features.Workflows.DeferredRenderSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.DeferredRenderSettings.SectionName));
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AiClipPhaseWorker>();
         services.AddOptions<APCS.Application.Features.BatchMockups.ModelPhotoSettings>()
             .Bind(configuration.GetSection(APCS.Application.Features.BatchMockups.ModelPhotoSettings.SectionName));

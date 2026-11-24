@@ -41,6 +41,12 @@ public sealed class AiClipPhaseSettings
     /// <summary>A scene is first asked about this long after it was submitted: the provider takes minutes.</summary>
     public int FirstPollDelaySeconds { get; set; } = 30;
 
+    /// <summary>
+    /// How often a scene submitted with a callback URL is asked about. The provider calls back when it is done, so this only
+    /// catches a call that never came (the provider failing to send it, the API restarting meanwhile).
+    /// </summary>
+    public int CallbackPollIntervalSeconds { get; set; } = 60;
+
     /// <summary>A scene that has no clip this long after it was submitted is given up.</summary>
     public int SceneTimeoutMinutes { get; set; } = 25;
 
@@ -52,5 +58,6 @@ public sealed class AiClipPhaseSettings
 
     public TimeSpan PollInterval => TimeSpan.FromSeconds(Math.Max(1, PollIntervalSeconds));
     public TimeSpan FirstPollDelay => TimeSpan.FromSeconds(Math.Max(0, FirstPollDelaySeconds));
+    public TimeSpan CallbackPollInterval => TimeSpan.FromSeconds(Math.Max(1, CallbackPollIntervalSeconds));
     public TimeSpan SceneTimeout => TimeSpan.FromMinutes(Math.Max(1, SceneTimeoutMinutes));
 }

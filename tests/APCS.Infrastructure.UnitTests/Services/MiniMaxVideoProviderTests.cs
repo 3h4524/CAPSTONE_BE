@@ -50,6 +50,37 @@ public sealed class MiniMaxVideoProviderTests
     }
 
     [TestMethod]
+    public async Task StartAsync_WithACallbackUrl_AsksMiniMaxToCallBackThere()
+    {
+        var png = Png(1200, 1200);
+        var provider = Provider(request => request.RequestUri!.Host == "signed.example"
+            ? Bytes(png)
+            : Json(HttpStatusCode.OK, """{"task_id":"task_123"}"""));
+        const string callback = "https://shop.example/api/webhooks/minimax/abc/0/sig";
+
+        await provider.StartAsync("mini-key", "https://signed.example/source.png", "Move naturally.", "9:16", 6, true,
+            new Region(0, 0, 1, 1), callback, default);
+
+        using var body = JsonDocument.Parse(requests.Single(x => x.Method == HttpMethod.Post).Body);
+        body.RootElement.GetProperty("callback_url").GetString().Should().Be(callback);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WithoutACallbackUrl_SendsNone()
+    {
+        var png = Png(1200, 1200);
+        var provider = Provider(request => request.RequestUri!.Host == "signed.example"
+            ? Bytes(png)
+            : Json(HttpStatusCode.OK, """{"task_id":"task_123"}"""));
+
+        await provider.StartAsync("mini-key", "https://signed.example/source.png", "Move naturally.", "9:16", 6, true,
+            new Region(0, 0, 1, 1), default);
+
+        using var body = JsonDocument.Parse(requests.Single(x => x.Method == HttpMethod.Post).Body);
+        body.RootElement.TryGetProperty("callback_url", out _).Should().BeFalse();
+    }
+
+    [TestMethod]
     [DataRow(3, "9:16", "Move naturally.")]
     [DataRow(8, "21:9", "Move naturally.")]
     [DataRow(8, "9:16", "")]

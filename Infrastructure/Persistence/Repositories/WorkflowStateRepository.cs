@@ -65,6 +65,18 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
             ORDER BY r.created_at, r.id LIMIT 1 FOR UPDATE OF r SKIP LOCKED
             """).FirstOrDefaultAsync(ct);
 
+    public Task<WorkflowRun?> ClaimStalledGroupRunAsync(DateTime untouchedSince, string preparingStage, string writingStage, CancellationToken ct) =>
+        db.WorkflowRuns.FromSqlInterpolated($"""
+            SELECT r.* FROM public.workflow_runs r
+            WHERE r.run_group_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM public.workflow_node_runs n
+                  WHERE n.workflow_run_id = r.id AND n.status = 'running' AND n.updated_at < {untouchedSince}
+                    AND ((r.status = 'running' AND n.node_type = 'generate-video' AND n.stage = {preparingStage})
+                      OR (r.status IN ('running', 'waiting_for_review', 'waiting_for_input')
+                          AND n.node_type = 'generate-listing' AND n.stage = {writingStage})))
+            ORDER BY r.created_at, r.id LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+            """).FirstOrDefaultAsync(ct);
+
     public async Task<LeaseRenewal?> RenewLeaseAsync(Guid jobId, Guid leaseToken, string stage, int progress, DateTime now, DateTime leaseUntil,
         int stepThreshold, CancellationToken ct)
     {
@@ -74,7 +86,8 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
             SET progress = GREATEST(j.progress, {progress}), stage = {stage}, heartbeat_at = {now}, lease_expires_at = {leaseUntil}
             FROM previous p
             WHERE j.id = p.id AND j.status = 'leased' AND j.lease_token = {leaseToken} AND j.lease_expires_at > {now}
-              AND EXISTS (SELECT 1 FROM public.workflow_runs r WHERE r.id = j.workflow_run_id AND r.status = 'running')
+              AND EXISTS (SELECT 1 FROM public.workflow_runs r WHERE r.id = j.workflow_run_id
+                  AND (r.status = 'running' OR j.kind = 'render' AND r.status IN ('waiting_for_review', 'queued')))
             RETURNING j.workflow_run_id AS "RunId", j.workflow_node_run_id AS "NodeRunId",
               (SELECT r.run_group_id FROM public.workflow_runs r WHERE r.id = j.workflow_run_id) AS "RunGroupId",
               p.stage AS "PreviousStage", p.progress AS "PreviousProgress", j.progress AS "Progress",
@@ -82,17 +95,36 @@ public sealed class WorkflowStateRepository(AppDbContext db) : IWorkflowStateRep
             """).ToListAsync(ct);
         if (renewed.SingleOrDefault() is not { } row) return null;
         var writeStep = row.PreviousStage != stage || row.Progress - row.PreviousProgress >= stepThreshold;
+        var targetNode = row.NodeRunId;
+        var nodeType = row.NodeType;
+        if (writeStep && row.NodeType == "generate-video")
+        {
+            // With the final render deferred, Generate Video is done already: the progress belongs to the step waiting for the file.
+            var generateStatus = await db.WorkflowNodeRuns.Where(node => node.Id == row.NodeRunId).Select(node => node.Status).SingleAsync(ct);
+            if (generateStatus != "running")
+            {
+                var waiting = (await db.WorkflowNodeRuns.AsNoTracking()
+                    .Where(node => node.WorkflowRunId == row.RunId && node.Status == "running"
+                        && (node.NodeType == "export-zip" || node.NodeType == "publish-etsy"))
+                    .Select(node => new { node.Id, node.NodeType, node.OutputSnapshot }).ToListAsync(ct))
+                    .FirstOrDefault(node => node.OutputSnapshot.Contains("\"awaitingRender\":true", StringComparison.Ordinal));
+                if (waiting is null) writeStep = false;
+                else { targetNode = waiting.Id; nodeType = waiting.NodeType; }
+            }
+        }
         if (writeStep)
-            await db.WorkflowNodeRuns.Where(node => node.Id == row.NodeRunId)
+            await db.WorkflowNodeRuns.Where(node => node.Id == targetNode)
                 .ExecuteUpdateAsync(set => set.SetProperty(node => node.Progress, row.Progress).SetProperty(node => node.Stage, stage), ct);
-        return new(row.RunId, row.RunGroupId, stage, row.Progress, writeStep, row.NodeType);
+        return new(row.RunId, row.RunGroupId, stage, row.Progress, writeStep, nodeType);
     }
 
     private sealed record RenewedRow(Guid RunId, Guid NodeRunId, Guid? RunGroupId, string? PreviousStage, int PreviousProgress, int Progress, string NodeType);
 
     public async Task<IReadOnlyList<FailedMediaJob>> FindFailedJobsOfRunningRunsAsync(int limit, CancellationToken ct) =>
         await db.MediaJobs.AsNoTracking()
-            .Where(job => job.Status == "failed" && (job.Kind == "render" || job.Kind == "export_zip") && job.WorkflowRun.Status == "running")
+            .Where(job => job.Status == "failed" && (job.Kind == "render" || job.Kind == "export_zip") && job.WorkflowRun.Status == "running"
+                // A render whose Generate Video step already ended is the final render of a video that waits for a step to need it.
+                && !(job.Kind == "render" && job.WorkflowNodeRun.Status == "succeeded"))
             .OrderBy(job => job.UpdatedAt)
             .Select(job => new FailedMediaJob(job.WorkflowRunId, job.WorkflowNodeRunId, job.ErrorMessage))
             .Take(limit)

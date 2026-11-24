@@ -258,7 +258,7 @@ public sealed class SellerDashboardService(
             await WorkflowTargetsAsync(listingReviews, DashboardLinks.BatchFilters.Completed, cancellationToken), "/workflows");
 
         var videoReviews = await VideoRowsAsync(ownVideos
-            .Where(video => video.Status == VideoCompleted && video.ApprovalStatus == PendingApproval), cancellationToken);
+            .Where(video => (video.Status == VideoCompleted || video.Status == "ready" || video.Status == "rendering") && video.ApprovalStatus == PendingApproval), cancellationToken);
         Add(ActionItemTypes.VideoReview, ActionItemSeverities.Warning, videoReviews.Count, videoReviews.Min(video => video.At),
             await WorkflowTargetsAsync(videoReviews, null, cancellationToken), "/workflows");
 

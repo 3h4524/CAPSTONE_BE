@@ -16,6 +16,12 @@ public sealed class VideoPromptPreparationOptions
     public const string SectionName = "VideoPromptPreparation";
     public bool Enabled { get; set; } = true;
     public int TimeoutSeconds { get; set; } = 45;
+
+    /// <summary>
+    /// Scenes prepared at the same time. Each scene's two Gemini calls follow one another, but scenes do not depend on
+    /// each other, so a video waits about as long as its slowest scene instead of all of them in turn.
+    /// </summary>
+    public int MaxParallelScenes { get; set; } = 3;
 }
 
 public interface IVideoPromptPreparationService
@@ -117,7 +123,8 @@ public sealed class VideoPromptPreparationService(IGeminiTextGenerationProvider 
         if (!options.Value.Enabled || storyboard.AiShots is not { Count: > 0 }) return storyboard;
         var scenes = storyboard.Scenes.ToArray();
         var shots = storyboard.AiShots.ToArray();
-        var changed = false;
+        var aspectRatio = VideoOutputFormats.AiSourceAspect(storyboard.OutputFormat);
+        var work = new List<(int Index, int SceneIndex, MockupImage Source, AiPromptTrace Draft)>();
         for (var index = 0; index < shots.Length; index++)
         {
             var shot = shots[index];
@@ -130,32 +137,32 @@ public sealed class VideoPromptPreparationService(IGeminiTextGenerationProvider 
             if (source is null || source.ApprovalStatus != "approved" || source.ApprovedRevision != source.MetadataRevision ||
                 source.MetadataRevision != scene.SourceRevision || source.ContentHash != shot.SourceHash)
                 continue;
-            var key = $"video-prompt:{ownerId:N}:" + WorkflowJson.Hash(WorkflowJson.Write(new
+            work.Add((index, sceneIndex, source, draft));
+        }
+
+        // Scenes do not depend on each other: they are prepared side by side, within the limit, and applied in order.
+        var results = new AiPromptTrace[work.Count];
+        using var gate = new SemaphoreSlim(Math.Clamp(options.Value.MaxParallelScenes, 1, 8));
+        await Task.WhenAll(work.Select(async (item, position) =>
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
             {
-                Version, source.Id, source.MetadataRevision, source.ContentHash, source.StorageKey, source.StorageVersion,
-                shot.SourceCrop, AspectRatio = VideoOutputFormats.AiSourceAspect(storyboard.OutputFormat), shot.DurationSeconds, shot.ModelKey, Draft = draft
-            }));
-            var prepared = await ReadCacheAsync(key, cancellationToken);
-            if (prepared is null)
-            {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.Value.TimeoutSeconds, 5, 120)));
-                try
-                {
-                    prepared = await PrepareSceneAsync(source, VideoOutputFormats.AiSourceAspect(storyboard.OutputFormat), shot, draft, timeout.Token);
-                }
-                catch (Exception) when (!cancellationToken.IsCancellationRequested)
-                {
-                    // No video request was made. Never replace a valid deterministic draft with a partial rewrite.
-                    prepared = draft with
-                    {
-                        Warnings = draft.Warnings.Concat(["Image-grounded preparation was unavailable or invalid; the deterministic H3 prompt was retained."]).ToArray(),
-                        Preparation = new("fallback", Version)
-                    };
-                    logger.LogWarning("H3 prompt preparation fell back for scene {SceneOrder}", shot.SceneOrder);
-                }
-                await WriteCacheAsync(key, prepared, cancellationToken);
+                results[position] = await PrepareOrReadAsync(ownerId, shots[item.Index], item.Source, item.Draft, aspectRatio, cancellationToken);
             }
+            finally
+            {
+                gate.Release();
+            }
+        }));
+
+        var changed = false;
+        for (var position = 0; position < work.Count; position++)
+        {
+            var (index, sceneIndex, _, _) = work[position];
+            var shot = shots[index];
+            var scene = scenes[sceneIndex];
+            var prepared = results[position];
             scenes[sceneIndex] = scene with { CompiledPrompt = prepared.FinalPrompt, AiPromptTrace = prepared };
             if (prepared.FinalPrompt != shot.Prompt)
             {
@@ -174,6 +181,37 @@ public sealed class VideoPromptPreparationService(IGeminiTextGenerationProvider 
                 ? WorkflowJson.Hash(WorkflowJson.Write(new { storyboard.Fingerprint, Version, Prompts = shots.Select(shot => shot.Prompt).ToArray() }))
                 : storyboard.Fingerprint
         };
+    }
+
+    /// <summary>One scene's prompt: the one kept for the same frame and draft, or prepared now (the draft when that fails).</summary>
+    private async Task<AiPromptTrace> PrepareOrReadAsync(Guid ownerId, AiShotPlan shot, MockupImage source, AiPromptTrace draft,
+        string aspectRatio, CancellationToken cancellationToken)
+    {
+        var key = $"video-prompt:{ownerId:N}:" + WorkflowJson.Hash(WorkflowJson.Write(new
+        {
+            Version, source.Id, source.MetadataRevision, source.ContentHash, source.StorageKey, source.StorageVersion,
+            shot.SourceCrop, AspectRatio = aspectRatio, shot.DurationSeconds, shot.ModelKey, Draft = draft
+        }));
+        var prepared = await ReadCacheAsync(key, cancellationToken);
+        if (prepared is not null) return prepared;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.Value.TimeoutSeconds, 5, 120)));
+        try
+        {
+            prepared = await PrepareSceneAsync(source, aspectRatio, shot, draft, timeout.Token);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // No video request was made. Never replace a valid deterministic draft with a partial rewrite.
+            prepared = draft with
+            {
+                Warnings = draft.Warnings.Concat(["Image-grounded preparation was unavailable or invalid; the deterministic H3 prompt was retained."]).ToArray(),
+                Preparation = new("fallback", Version)
+            };
+            logger.LogWarning("H3 prompt preparation fell back for scene {SceneOrder}", shot.SceneOrder);
+        }
+        await WriteCacheAsync(key, prepared, cancellationToken);
+        return prepared;
     }
 
     private async Task<AiPromptTrace> PrepareSceneAsync(MockupImage source, string aspectRatio, AiShotPlan shot,

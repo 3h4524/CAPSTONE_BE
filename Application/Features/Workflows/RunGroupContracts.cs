@@ -62,12 +62,30 @@ public sealed record RunGroupProgress(int Total, int Queued, int Running, int Wa
 /// Where the design's Push to Printify step is, apart from the video beside it. Null before the design has a run, or
 /// for a workflow without that step.
 /// </param>
+/// <param name="ModelPhoto">
+/// Where the design's model photo is while the run waits at Mockup Approval, for a design whose scenes show a person
+/// (<see cref="ModelPhotoStates"/>). Null when the design needs none, and once the videos have started.
+/// </param>
 public sealed record RunGroupTargetResponse(string Key, Guid ProductId, string ProductName, string ProductType, string ArtworkGroupKey,
     string DesignLabel, string? PreviewUrl, int MockupCount, int ApprovedCount, int PendingCount, bool Selected, bool HasOverride,
     IReadOnlyList<RunGroupScenePreview> Scenes, IReadOnlyList<string> Warnings, string? ResolveError,
     Guid? RunId, string? RunStatus, string? CurrentStep, string? Stage, int Progress, string? RunError,
     GenerateVideoConfig? Config = null, bool HasOwnConfig = false, string? VideoStatus = null, RunGroupStepResponse? Printify = null,
-    RunGroupStepResponse? GenerateVideo = null, RunGroupStepResponse? ReviewVideo = null, RunGroupStepResponse? ExportZip = null);
+    RunGroupStepResponse? GenerateVideo = null, RunGroupStepResponse? ReviewVideo = null, RunGroupStepResponse? ExportZip = null,
+    string? ModelPhoto = null);
+
+/// <summary>The states of <see cref="RunGroupTargetResponse.ModelPhoto"/>.</summary>
+public static class ModelPhotoStates
+{
+    /// <summary>The design has a model photo; it is among its mock-ups, to review like the others.</summary>
+    public const string Ready = "ready";
+
+    /// <summary>The run is being made ready in the background and the design's photo is not there yet.</summary>
+    public const string Pending = "pending";
+
+    /// <summary>The design has none and nothing is making it: the next Continue tries again.</summary>
+    public const string Missing = "missing";
+}
 
 /// <summary>One step of a design's run: its status (<c>pending</c>, <c>running</c>, <c>succeeded</c>, <c>failed</c>...), stage, progress and error.</summary>
 public sealed record RunGroupStepResponse(string Status, string? Stage, int Progress, string? Error, IReadOnlyList<string>? Warnings = null);

@@ -33,7 +33,13 @@ if (-not [string]::IsNullOrWhiteSpace($aiSceneConcurrency)) {
 foreach ($name in "AI_SHOT_FIRST_POLL_SECONDS", "AI_SHOT_POLL_SECONDS", "AI_SHOT_TIMEOUT_MINUTES") {
     if (-not [string]::IsNullOrWhiteSpace($settings[$name])) { Set-Item -Path "Env:$name" -Value $settings[$name] }
 }
-$env:CHROME_EXECUTABLE = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+# Remotion's own Chrome Headless Shell draws video frames far faster than a full Chrome (about 30 s against 47 s
+# for the same 300 frames in a measured render), so it is used here, as Start-VideoDev.ps1 does.
+$headlessShell = Join-Path $workerDir "node_modules\.remotion\chrome-headless-shell\win64\chrome-headless-shell-win64\chrome-headless-shell.exe"
+if (-not (Test-Path -LiteralPath $headlessShell)) {
+    throw "Chrome Headless Shell is missing: $headlessShell. Run 'npm run browser' in $workerDir first."
+}
+$env:CHROME_EXECUTABLE = $headlessShell
 $env:FFMPEG_PATH = (
     Resolve-Path -LiteralPath (
         Join-Path $workerDir "node_modules\ffmpeg-static\ffmpeg.exe"

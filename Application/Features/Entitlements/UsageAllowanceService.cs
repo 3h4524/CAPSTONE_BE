@@ -44,6 +44,7 @@ public sealed class UsageAllowanceService(
     private const string FailedRun = "failed";
     private const string StoppedRun = "cancelled";
     private const string FailedVideo = "failed";
+    private const string ReadyVideo = "ready";
 
     /// <inheritdoc />
     public async Task<UsageAllowanceSummary> GetAsync(
@@ -174,9 +175,10 @@ public sealed class UsageAllowanceService(
             mockup => mockup.Product.UserId == userId && mockup.SourceType == MockupSources.Generated
                 && mockup.CreatedAt >= window.From && mockup.CreatedAt < window.To,
             cancellationToken),
-        // A video that failed (or whose run was stopped before it was made) is not counted.
+        // A video that failed (or whose run was stopped before it was made) is not counted, nor is one that is only ready to be shown:
+        // it counts once its file is made (or being made) in the background, so previewing and editing cost nothing.
         UsageAllowances.Videos => videos.Query().CountAsync(
-            video => video.Product.UserId == userId && video.Mode == StandardVideo && video.Status != FailedVideo
+            video => video.Product.UserId == userId && video.Mode == StandardVideo && video.Status != FailedVideo && video.Status != ReadyVideo
                 && video.CreatedAt >= window.From && video.CreatedAt < window.To,
             cancellationToken),
         UsageAllowances.Listings => usageRecords.Query().CountAsync(

@@ -1,13 +1,14 @@
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { exportPayloadSchema, renderPayloadSchema, workerJobSchema } from "./contracts";
 import type { RenderProps, WorkerJob } from "./contracts";
 import { ApiError, failureCode } from "./failures";
 import { createZip, downloadAssets, pngSource, uploadFile } from "./media-files";
-import { RemotionVideoRenderer } from "./renderer";
+import { readExportSceneConcurrency } from "./concurrency";
+import { RemotionVideoRenderer, renderConcurrency } from "./renderer";
 import { packageBatchExport, type ExportProduct } from "./batch-export";
 import { runMediaStream } from "./media-stream";
 import { followAiShot, readAiShotPollingSettings } from "./ai-shot-polling";
@@ -17,6 +18,8 @@ const key = process.env.MEDIA_WORKER_API_KEY ?? "";
 if (key.length < 32 || key.length > 256) throw new Error("Set MEDIA_WORKER_API_KEY (32–256 characters)");
 if (baseUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "host.docker.internal", "api"].includes(baseUrl.hostname)) throw new Error("Worker requires HTTPS outside a local/container network");
 const renderer = new RemotionVideoRenderer();
+// Bundle the composition now, so the first job does not wait for it.
+void renderer.prewarm();
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort()); process.once("SIGTERM", () => shutdown.abort());
 // Submit one paid AI video request at a time by default. Some accounts/models become unstable when
@@ -25,6 +28,9 @@ const configuredAiConcurrency = Number(process.env.AI_SCENE_CONCURRENCY ?? "1");
 const aiSceneConcurrency = Number.isInteger(configuredAiConcurrency) && configuredAiConcurrency >= 1
   ? Math.min(configuredAiConcurrency, 4)
   : 1;
+// Scenes of one export rendered at the same time (EXPORT_SCENE_CONCURRENCY): by default what fits in the host's cores, so a
+// small host keeps rendering them one after another.
+const exportSceneConcurrency = readExportSceneConcurrency(process.env.EXPORT_SCENE_CONCURRENCY, cpus().length, renderConcurrency);
 // How often a scene still being generated is asked about: the provider takes minutes, so asking every few seconds
 // only adds load on the API and the database.
 const aiShotPolling = readAiShotPollingSettings(process.env);
@@ -80,6 +86,18 @@ async function execute(job: WorkerJob) {
   let settled = false;
   let heartbeatRunning = false;
   let consecutiveHeartbeatFailures = 0;
+  // Seconds each stage took, written once when a render completes so a slow job shows where its time went.
+  const timings: Record<string, number> = {};
+  const seconds = (since: number) => Math.round((performance.now() - since) / 100) / 10;
+  // From the claim to the API accepting the result: what the job cost beyond its own steps shows as the difference.
+  const jobStarted = performance.now();
+  /** Reports the result; `complete` is how long the API took to accept it (it also moves the run on, and may queue the next job). */
+  const complete = async (body: unknown) => {
+    const started = performance.now();
+    await api(`${job.id}/complete`, body, signal);
+    timings.complete = seconds(started);
+    timings.total = seconds(jobStarted);
+  };
   const heartbeat = setInterval(() => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
@@ -97,7 +115,9 @@ async function execute(job: WorkerJob) {
   }, 15_000);
   try {
     stage = "Generating Assets"; progress = 10;
+    const downloadStarted = performance.now();
     const assets = await downloadAssets(job, directory, signal);
+    timings.download = seconds(downloadStarted);
     if (job.kind === "render") {
       const payload = renderPayloadSchema.parse(job.payload);
       const sources: RenderProps["sources"] = {};
@@ -146,6 +166,7 @@ async function execute(job: WorkerJob) {
         await api(`${job.id}/ai-shots/${shot.sceneOrder}/stored`, { ...request, ...result }, signal);
         clips[shot.sceneOrder] = file;
       };
+      const shotsStarted = performance.now();
       await Promise.all(Array.from({ length: Math.min(aiSceneConcurrency, aiShots.length) }, async () => {
         while (true) {
           if (stopScheduling) return;
@@ -165,14 +186,21 @@ async function execute(job: WorkerJob) {
         }
       }));
       if (sceneErrors.length > 0) throw sceneErrors[0];
+      if (aiShots.length > 0) timings.aiShots = seconds(shotsStarted);
       duringAiShot = false;
       stage = "Rendering";
       const result = await renderer.render({ storyboard: payload.storyboard, sources, clips, music }, directory, signal, p => { progress = Math.max(progress, p); if (p >= 85) stage = "Technical QA"; });
       stage = "Uploading"; progress = 90;
       if (!job.uploads.video || !job.uploads.thumbnail) throw new Error("Missing upload grants");
-      const video = await uploadFile(job.uploads.video, result.video, signal);
-      const thumbnail = await uploadFile(job.uploads.thumbnail, result.thumbnail, signal);
-      await api(`${job.id}/complete`, { leaseToken: job.leaseToken, ...video, thumbnailStorageKey: thumbnail.storageKey, thumbnailStorageVersion: thumbnail.storageVersion, qa: result.qa }, signal);
+      const uploadStarted = performance.now();
+      const [video, thumbnail] = await Promise.all([
+        uploadFile(job.uploads.video, result.video, signal),
+        uploadFile(job.uploads.thumbnail, result.thumbnail, signal)
+      ]);
+      timings.upload = seconds(uploadStarted);
+      await complete({ leaseToken: job.leaseToken, ...video, thumbnailStorageKey: thumbnail.storageKey, thumbnailStorageVersion: thumbnail.storageVersion, qa: result.qa });
+      Object.assign(timings, result.timings);
+      process.stdout.write(`Media job ${job.id} timings (s): ${Object.entries(timings).map(([name, value]) => `${name}=${value}`).join(" ")}.\n`);
     } else {
       const payload = exportPayloadSchema.parse(job.payload);
       // Model photo images: a mock-up put on a person. The single-ZIP fallback below packs them beside the video's
@@ -222,17 +250,20 @@ async function execute(job: WorkerJob) {
               clipFingerprint: item.clipFingerprint, clipVersion: item.clipStorageVersion,
               clipFile: item.clipStorageKey ? assets.get(`scene-clips/${item.sceneOrder}.mp4`)?.file : null }))
           } : null;
+          // The package has the final video only when the API asked for it; otherwise it carries the video of every scene alone.
+          const wantsFinal = Boolean(payload.videoStorageKey);
           const mainVideo = assets.get("video.mp4"), thumbnail = assets.get("thumbnail.png");
-          if (!mainVideo || !thumbnail) throw new Error("The approved video or thumbnail is missing");
-          videos.push({ id: videoId, version: manifest.version, file: mainVideo.file,
-            storageVersion: payload.videoStorageVersion ?? manifest.fingerprint, thumbnailFile: thumbnail.file,
-            thumbnailVersion: payload.thumbnailStorageVersion ?? manifest.fingerprint,
+          if (wantsFinal && (!mainVideo || !thumbnail)) throw new Error("The approved video or thumbnail is missing");
+          if (!wantsFinal && !scenesReady) throw new Error("Scene sources are unavailable, so there is no video to package");
+          videos.push({ id: videoId, version: manifest.version, storageVersion: payload.videoStorageVersion ?? manifest.fingerprint,
+            file: wantsFinal ? mainVideo!.file : undefined, thumbnailFile: wantsFinal ? thumbnail!.file : undefined,
+            thumbnailVersion: wantsFinal ? payload.thumbnailStorageVersion ?? manifest.fingerprint : undefined,
             includeScenes: scenesReady, sceneWarning: scenesReady ? undefined : "Scene clips are unavailable for this video version; the final video is included.",
             storyboard, snapshot: sceneSource });
         }
         const packages = await packageBatchExport(directory, [{ id: manifest.productId, name: payload.productName,
           type: payload.productType ?? "product", images: outputImages, listing: payload.listing ?? null, guide: payload.etsyGuide ?? null,
-          videos }], renderer, 400 * 1024 * 1024, signal);
+          videos }], renderer, 400 * 1024 * 1024, signal, { sceneConcurrency: exportSceneConcurrency, timings });
         if (packages.length !== 1) throw new Error("Expected one ZIP package for this product");
         zip = packages[0]!;
       } else {
@@ -242,11 +273,18 @@ async function execute(job: WorkerJob) {
           if (!source) throw new Error("Missing ZIP source");
           pngSource(source.data, scene.sourceHash);
         }
+        const zipStarted = performance.now();
         await createZip(zip, assets, manifest, signal);
+        timings.zip = seconds(zipStarted);
       }
       stage = "Uploading"; progress = 90;
+      const uploadStarted = performance.now();
       const output = await uploadLocalPackage(job, zip, signal);
-      await api(`${job.id}/complete`, { leaseToken: job.leaseToken, storageKey: output.key, storageVersion: output.sha256, outputBytes: output.bytes }, signal);
+      timings.upload = seconds(uploadStarted);
+      await complete({ leaseToken: job.leaseToken, storageKey: output.key, storageVersion: output.sha256, outputBytes: output.bytes });
+      // Where an export's time went, as a render's is written: its video's render is not here, it is a job of its own.
+      const megabytes = Math.round(output.bytes / 104_857.6) / 10;
+      process.stdout.write(`Media job ${job.id} export timings (s): ${Object.entries(timings).map(([name, value]) => `${name}=${value}`).join(" ")} sceneConcurrency=${exportSceneConcurrency} zipMB=${megabytes}.\n`);
     }
     settled = true;
     process.stdout.write(`Media job ${job.id} completed.\n`);

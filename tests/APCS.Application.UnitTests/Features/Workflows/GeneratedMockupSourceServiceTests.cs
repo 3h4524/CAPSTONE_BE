@@ -184,6 +184,31 @@ public sealed class GeneratedMockupSourceServiceTests
     }
 
     [TestMethod]
+    public async Task ImportAsync_SeveralMockups_UploadsThemSideBySideWithinTheLimit()
+    {
+        var product = _fixture.AddProduct();
+        var mockups = Enumerable.Range(0, GeneratedMockupSourceService.UploadConcurrency + 3).Select(_ => AddComposited(product, Guid.NewGuid())).ToArray();
+        var gate = new object();
+        var running = 0;
+        var peak = 0;
+        _fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, string key, CancellationToken ct) =>
+            {
+                lock (gate) peak = Math.Max(peak, ++running);
+                await Task.Delay(50, ct);
+                lock (gate) running--;
+                return Stored with { StorageKey = key };
+            });
+
+        var result = await _service.ImportAsync(product.Id, default);
+
+        result.Value.ImportedCount.Should().Be(mockups.Length);
+        mockups.Should().OnlyContain(x => x.ContentHash == Stored.Hash);
+        // Waiting for each upload in turn is what made Mockup Approval slow; more than the limit would flood the image host.
+        peak.Should().BeGreaterThan(1).And.BeLessThanOrEqualTo(GeneratedMockupSourceService.UploadConcurrency);
+    }
+
+    [TestMethod]
     public async Task ImportAsync_ForeignOrDeletedProduct_ImportsNothing()
     {
         var foreign = _fixture.AddProduct(); foreign.UserId = Guid.NewGuid();

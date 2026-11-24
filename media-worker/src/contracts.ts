@@ -39,7 +39,10 @@ export const storyboardSchema = z.object({ template: z.enum(["product_showcase",
     if (board.outputDurationFrames != null && (board.outputDurationFrames < 150 || board.outputDurationFrames > 450))
       context.addIssue({ code: "custom", path: ["outputDurationFrames"], message: "New videos must contain 150–450 frames." });
     board.scenes.forEach((scene, index) => {
-      if (scene.durationFrames > 450 || scene.trimStartFrames + scene.trimEndFrames >= scene.durationFrames)
+      // `durationFrames` is the scene's length in the video, after it was trimmed (the planner writes the source length minus
+      // both trims), and `trimStartFrames` is only where an AI clip starts playing. So a cut that leaves 2 seconds of a
+      // 6-second clip has trims longer than the scene itself, and is a valid cut; only a scene with nothing left is not.
+      if (scene.durationFrames < 1 || scene.durationFrames > 450)
         context.addIssue({ code: "custom", path: ["scenes", index], message: "A new video scene has an invalid duration or trim." });
     });
   })
@@ -48,7 +51,7 @@ export const uploadSchema = z.object({ url: z.string().url(), fields: z.record(z
 export const workerJobSchema = z.object({ id: z.string().uuid(), leaseToken: z.string().uuid(), kind: z.enum(["render", "export_zip"]), payload: z.unknown(), assets: z.array(z.object({ mockupId: z.string().uuid(), url: z.string().url(), fileName: z.string() })).max(100), uploads: z.record(z.string(), uploadSchema) });
 export const renderPayloadSchema = z.object({ videoId: z.string().uuid(), storyboard: storyboardSchema, aiShotStates: z.array(z.object({ sceneOrder: z.number().int(), fingerprint: z.string(), status: z.string() })).optional() });
 const modelPhotosSchema = z.array(z.object({ mockupId: z.string().uuid(), sourceHash: z.string().length(64), source: z.string().regex(/^model-photos\/[a-f0-9-]{36}\.png$/) }).strict()).max(8).optional();
-const videoManifestSchema = z.object({ schemaVersion: z.literal(1), productId: z.string().uuid(), videoId: z.string().uuid(), version: z.number().int(), mode: z.enum(["standard", "ai_shot"]), fingerprint: z.string(), approvedRevision: z.number(), video: z.literal("video.mp4"), thumbnail: z.literal("thumbnail.png"), scenes: z.array(z.object({ order: z.number(), mockupId: z.string().uuid(), sourceRevision: z.number(), sourceHash: z.string().length(64), generationStrategy: z.enum(["standard", "ai_shot"]), source: z.string() })), modelPhotos: modelPhotosSchema }).strict();
+const videoManifestSchema = z.object({ schemaVersion: z.literal(1), productId: z.string().uuid(), videoId: z.string().uuid(), version: z.number().int(), mode: z.enum(["standard", "ai_shot"]), fingerprint: z.string(), approvedRevision: z.number(), video: z.literal("video.mp4").nullish(), thumbnail: z.literal("thumbnail.png").nullish(), scenes: z.array(z.object({ order: z.number(), mockupId: z.string().uuid(), sourceRevision: z.number(), sourceHash: z.string().length(64), generationStrategy: z.enum(["standard", "ai_shot"]), source: z.string() })), modelPhotos: modelPhotosSchema }).strict();
 /** A product whose video the seller rejected at review: packaged with its other files, without a video. */
 const productManifestSchema = z.object({ schemaVersion: z.literal(1), productId: z.string().uuid(), videoId: z.null(), scenes: z.array(z.never()).max(0), modelPhotos: modelPhotosSchema }).strict();
 export const exportPayloadSchema = z.object({ exportId: z.string().uuid(), videoId: z.string().uuid().nullish(), videoStorageKey: z.string().nullish(), videoStorageVersion: z.string().nullish(), thumbnailStorageKey: z.string().nullish(), thumbnailStorageVersion: z.string().nullish(), manifest: z.union([videoManifestSchema, productManifestSchema]),
@@ -65,5 +68,9 @@ export type Scene = z.infer<typeof sceneSchema>;
 export type WorkerJob = z.infer<typeof workerJobSchema>;
 export type Upload = z.infer<typeof uploadSchema>;
 export type RenderProps = { storyboard: Storyboard; sources: Record<string, { url: string; width: number; height: number }>; clips?: Record<number, string>; music?: string };
-export type SceneRenderProps = RenderProps & { sceneOrder: number; finalVideo?: string };
+/**
+ * One scene of a video on its own, for Export ZIP. It has no sound: the music belongs to the whole video. `finalVideo` is the
+ * final video's file when the package carries it, which a scene with no transition into it is cut from.
+ */
+export type SceneRenderProps = Omit<RenderProps, "music"> & { sceneOrder: number; finalVideo?: string };
 export interface MediaQa { codec: string; pixelFormat: string; width: number; height: number; fps: number; durationSeconds: number; bytes: number; hasAudio: boolean; fullDecode: boolean }

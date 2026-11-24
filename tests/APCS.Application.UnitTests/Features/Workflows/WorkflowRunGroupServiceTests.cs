@@ -536,6 +536,69 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
+    public async Task GetAsync_ManualApprovalWhileTheModelPhotosAreMade_ShowsThemPendingThenReadyOneByOne()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig());
+
+        var started = (await data.Service.StartAsync(workflow.Id, new(4, "manual-photos"), default)).Value;
+
+        // The mock-ups are there to review at once; the design's card stands in for the photo that is still being made.
+        started.Preparing.Should().BeTrue();
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Pending);
+        started.Targets[0].MockupCount.Should().Be(2);
+
+        await data.Service.PrepareAsync(started.Id, autoApprove: false, default);
+
+        var made = (await data.Service.GetAsync(started.Id, default)).Value;
+        made.Preparing.Should().BeFalse();
+        made.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Ready);
+        made.Targets[0].MockupCount.Should().Be(3);
+        made.Status.Should().Be("waiting_for_targets");
+        // Told when the photo was made, so the card is swapped without waiting for the rest of the run.
+        data.Notifier.Verify(x => x.GroupChangedAsync(started.Id, It.IsAny<CancellationToken>()), Times.AtLeast(2));
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ModelPhotoNothingIsMaking_IsMissingSoContinueTriesAgain()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.AddSystemModel();
+        data.Lifestyle
+            .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupResponse>(Error.Failure("Ideogram.Busy", "Ideogram is busy.")));
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "busy-photo"), default)).Value;
+
+        started.Preparing.Should().BeFalse();
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Missing);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ScenesWithoutAPerson_HaveNoModelPhotoToWaitFor()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "no-person"), default)).Value;
+
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_WhileTheBackgroundIsMakingTheModelPhotos_DoesNotAskTheImageProviderAgain()
+    {
+        var data = new RunGroupTestData(background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "double"), default)).Value;
+
+        await data.Service.ConfirmAsync(started.Id, new(started.Revision), default);
+
+        // A second attempt for a photo the worker is making would be paid twice.
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
     public async Task PrepareAsync_GroupCancelledMeanwhile_MakesNothing()
     {
         var data = new RunGroupTestData(previewApproved: false, background: true);
@@ -591,6 +654,130 @@ public sealed class WorkflowRunGroupServiceTests
         run.Status.Should().Be("running");
         data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
         (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeFalse();
+    }
+
+    private static WorkflowNodeRun Step(RunGroupTestData data, WorkflowRun run, string type) =>
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == type);
+
+    private static WorkflowNodeRun AddPrintifyStep(RunGroupTestData data, WorkflowRun run)
+    {
+        var step = new WorkflowNodeRun { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "printify", NodeType = "publish-printify",
+            Status = "pending", Attempt = 1, InputSnapshot = "{}", OutputSnapshot = "{}", CreatedAt = WorkflowTestData.Now.UtcDateTime,
+            UpdatedAt = WorkflowTestData.Now.UtcDateTime };
+        data.Base.NodeRows.Add(step);
+        return step;
+    }
+
+    /// <summary>A confirmed group with AI scenes: one child run, queued for the planner.</summary>
+    private static async Task<(RunGroupTestData Data, WorkflowRun Run)> QueuedAiRunAsync()
+    {
+        var data = new RunGroupTestData();
+        data.QuotesCost(3.20m);
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "ai"), default)).Value;
+        (await data.Service.ConfirmAsync(group.Id, new(group.Revision), default)).IsSuccess.Should().BeTrue();
+        return (data, data.Base.RunRows.Single());
+    }
+
+    [TestMethod]
+    public async Task PlannerClaimNextAsync_AiScenes_ShowsTheVideoWorkingAtOnceAndLeavesThePromptsForLater()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var printify = AddPrintifyStep(data, run);
+
+        var claim = await data.GroupPlanner.ClaimNextAsync(_ => { }, default);
+
+        claim.Should().Be(new GroupRunClaim(run.Id, WorkflowTestData.Owner, PreparesPrompts: true, WritesListing: false));
+        // No longer grey on the canvas: the run and its video step are working, while nothing has asked Gemini yet.
+        run.Status.Should().Be("running");
+        var generate = Step(data, run, "generate-video");
+        (generate.Status, generate.Stage).Should().Be(("running", WorkflowRuntime.PreparingPromptsStage));
+        data.Base.JobRows.Should().NotContain(job => job.WorkflowRunId == run.Id);
+        // Push to Printify does not wait for the video.
+        printify.Status.Should().Be("running");
+        (await data.GroupPlanner.ClaimNextAsync(_ => { }, default)).Should().BeNull("a run being prepared is not taken twice");
+    }
+
+    [TestMethod]
+    public async Task PlannerPreparePromptsAsync_PromptsWritten_KeepsThemAndSendsTheClips()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+
+        await data.GroupPlanner.PreparePromptsAsync(claim, _ => { }, default);
+
+        data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
+        var generate = Step(data, run, "generate-video");
+        generate.Stage.Should().NotBe(WorkflowRuntime.PreparingPromptsStage);
+        WorkflowJson.Read<VideoPointer>(generate.OutputSnapshot).VideoId.Should().NotBeEmpty();
+        run.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task PlannerPreparePromptsAsync_RunCancelledMeanwhile_SendsNothing()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+        run.Status = "cancelled";
+
+        await data.GroupPlanner.PreparePromptsAsync(claim, _ => { }, default);
+
+        data.Base.JobRows.Should().NotContain(job => job.WorkflowRunId == run.Id);
+        run.Status.Should().Be("cancelled");
+    }
+
+    [TestMethod]
+    public async Task PlannerClaimNextAsync_StandardScenes_QueuesTheRenderAtOnceAsBefore()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        var claim = await data.GroupPlanner.ClaimNextAsync(_ => { }, default);
+
+        claim!.PreparesPrompts.Should().BeFalse();
+        data.Base.JobRows.Should().ContainSingle(job => job.Kind == "render");
+    }
+
+    [TestMethod]
+    public async Task PlannerWriteListingAsync_RunWithAVideo_SendsTheVideoFirstAndHoldsPrintifyUntilTheListingIsWritten()
+    {
+        var data = new RunGroupTestData();
+        data.Base.ListingSucceeds();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        var run = data.Base.RunRows.Single();
+        var listing = data.Base.AddListingStep(run);
+        var printify = AddPrintifyStep(data, run);
+
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+
+        // The video went ahead; the listing waits its turn, and so does Printify, which takes its title and description.
+        claim.WritesListing.Should().BeTrue();
+        data.Base.JobRows.Should().ContainSingle(job => job.Kind == "render");
+        (listing.Status, listing.Stage).Should().Be(("running", WorkflowRuntime.WritingListingStage));
+        printify.Status.Should().Be("pending");
+        data.Base.ListingContent.Verify(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(),
+            It.IsAny<APCS.Application.Features.ListingContent.Common.IListingGenerationObserver?>()), Times.Never);
+
+        Guid? actingAs = null;
+        await data.GroupPlanner.WriteListingAsync(claim, owner => actingAs = owner, default);
+
+        actingAs.Should().Be(WorkflowTestData.Owner);
+        listing.Status.Should().Be("succeeded");
+        printify.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task PlannerAdvanceNextAsync_AiScenesAndAListing_DoesEveryPartInOneGo()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        data.Base.ListingSucceeds();
+        data.Base.AddListingStep(run);
+
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeTrue();
+
+        data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
+        Step(data, run, "generate-listing").Status.Should().Be("succeeded");
     }
 
     [TestMethod]

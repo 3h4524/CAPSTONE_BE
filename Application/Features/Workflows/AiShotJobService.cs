@@ -30,13 +30,21 @@ public interface IAiShotJobService
     Task<Result<AiShotProgressResponse>> PollClipAsync(Guid jobId, int sceneOrder, CancellationToken ct);
     /// <summary>Downloads a finished scene of a <c>generating_clips</c> job and keeps it in private storage.</summary>
     Task<Result> StoreClipAsync(Guid jobId, int sceneOrder, CancellationToken ct);
+
+    /// <summary>
+    /// The provider called back to say this operation of a <c>generating_clips</c> job finished: the scene is asked about on
+    /// the next pass instead of waiting its turn. True when a scene being made matched; a call about an operation the scene
+    /// no longer waits on (made again since, already ready) changes nothing.
+    /// </summary>
+    Task<Result<bool>> AnnounceClipAsync(Guid jobId, int sceneOrder, string operationName, CancellationToken ct);
 }
 
 public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<MockupImage> assets,
     IAiVideoCredentialResolver videoCredentials, IWorkflowStateRepository state, IUnitOfWork uow,
     IMediaStorage storage, IVeoVideoProvider provider, TimeProvider time,
     IAiVideoGenerationStrategyFactory? providerFactory = null, ILogger<AiShotJobService>? logger = null,
-    ISceneVideoNotifier? sceneNotifier = null, ISystemApiKeyPool? systemKeys = null) : IAiShotJobService
+    ISceneVideoNotifier? sceneNotifier = null, ISystemApiKeyPool? systemKeys = null,
+    AiVideoCallbackUrls? callbacks = null) : IAiShotJobService
 {
     /// <summary>How often one scene is sent again without asking, and only after its provider said the dropped clip was free.</summary>
     public const int MaximumResubmissions = 1;
@@ -114,14 +122,18 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         // The compiled prompt is not checked again here: it is the platform's template and rules around the seller's own
         // scene text, which was checked when the workflow was saved and when the storyboard was planned.
 
+        // Only the clips the API makes itself are called back about: a worker holding a lease follows its own scenes.
+        var callbackUrl = token is null ? callbacks?.For(jobId, sceneOrder) : null;
         string operation;
         try
         {
             var source = (await assets.GetByIdAsync(shot.MockupId, ct))!;
-            operation = await ProviderFor(shot).StartAsync(key, storage.SignRead(source.StorageKey, "image", source.StorageVersion),
-                shot.Prompt, ReadAspect(job.Payload, shot), shot.DurationSeconds,
-                shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment",
-                shot.SourceCrop, ct);
+            var sourceUrl = storage.SignRead(source.StorageKey, "image", source.StorageVersion);
+            var aspect = ReadAspect(job.Payload, shot);
+            var people = shot.Preset is "lifestyle_motion" or "product_in_use" or "lifestyle_in_use" or "creator_pov_ugc" or "everyday_story_moment";
+            operation = callbackUrl is null
+                ? await ProviderFor(shot).StartAsync(key, sourceUrl, shot.Prompt, aspect, shot.DurationSeconds, people, shot.SourceCrop, ct)
+                : await ProviderFor(shot).StartAsync(key, sourceUrl, shot.Prompt, aspect, shot.DurationSeconds, people, shot.SourceCrop, callbackUrl, ct);
         }
         // Every provider HTTP error below means it made no operation: nothing is being generated or billed, so
         // only a request whose outcome is really unknown (no answer, or an answer that cannot be read) is uncertain.
@@ -189,7 +201,8 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
             if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
             (job, var payload, var item) = loaded.Value;
             Replace(job, payload, item with { OperationName = operation, Status = "polling", KeyId = lease?.KeyId,
-                SubmittedAt = time.GetUtcNow().UtcDateTime, NextAttemptAt = null });
+                SubmittedAt = time.GetUtcNow().UtcDateTime, NextAttemptAt = null,
+                Callback = callbackUrl is not null, AnnouncedAt = null, PolledAt = null });
             await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
             if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         }
@@ -214,7 +227,13 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
         try { result = await ProviderFor(shot).PollAsync(await KeyAsync(job.UserId, shot.ProviderKey, ct, item.KeyId), item.OperationName, ct); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { return Result.Failure<AiShotProgressResponse>(Error.Failure("AiVideoProviderUnavailable", "Could not check AI video progress. Retry the status check.")); }
-        if (!result.Done) return Result.Success(new AiShotProgressResponse("polling"));
+        if (!result.Done)
+        {
+            // A scene the provider calls back about is asked again only after a while: the time is kept with it. A callback
+            // that came too early (or was not the provider's) is spent, so it does not make every pass ask again.
+            if (token is null && (item.Callback || item.AnnouncedAt is not null)) await NotYetAsync(jobId, sceneOrder, item.OperationName, ct);
+            return Result.Success(new AiShotProgressResponse("polling"));
+        }
         await using var tx = await uow.BeginTransactionAsync(ct);
         loaded = await LoadAsync(jobId, sceneOrder, token, ct);
         if (loaded == null) return Result.Failure<AiShotProgressResponse>(LeaseError());
@@ -346,6 +365,36 @@ public sealed class AiShotJobService(IRepository<MediaJob> jobs, IRepository<Moc
     /// <summary>How long a scene the provider could not take for now waits, by how often that has happened.</summary>
     private static TimeSpan BusyDelay(int attempt) => TimeSpan.FromSeconds(70 * attempt);
     private static TimeSpan NotSubmittedDelay(int attempt) => TimeSpan.FromSeconds(5 * attempt);
+
+    public async Task<Result<bool>> AnnounceClipAsync(Guid jobId, int sceneOrder, string operationName, CancellationToken ct)
+    {
+        await using var tx = await uow.BeginTransactionAsync(ct);
+        var loaded = await LoadAsync(jobId, sceneOrder, null, ct);
+        if (loaded == null) return Result.Success(false);
+        var (job, payload, item) = loaded.Value;
+        // Only the operation the scene waits on now: a call about one made before a retry or a re-render is old news.
+        if (item.Status != "polling" || !string.Equals(item.OperationName, operationName, StringComparison.Ordinal))
+            return Result.Success(false);
+        if (item.AnnouncedAt is null)
+        {
+            // Saving the job wakes the background pass that asks about it (MediaJobQueuedInterceptor).
+            Replace(job, payload, item with { AnnouncedAt = time.GetUtcNow().UtcDateTime });
+            await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        }
+        return Result.Success(true);
+    }
+
+    /// <summary>A scene with a callback was asked about and is still being made: when, so it is not asked again too soon.</summary>
+    private async Task NotYetAsync(Guid jobId, int sceneOrder, string operationName, CancellationToken ct)
+    {
+        await using var tx = await uow.BeginTransactionAsync(ct);
+        var loaded = await LoadAsync(jobId, sceneOrder, null, ct);
+        if (loaded == null) return;
+        var (job, payload, item) = loaded.Value;
+        if (item.Status != "polling" || item.OperationName != operationName) return;
+        Replace(job, payload, item with { PolledAt = time.GetUtcNow().UtcDateTime, AnnouncedAt = null });
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+    }
 
     /// <param name="retryAfter">Counts this as one more time the provider could not take the scene, and says when it is sent again.</param>
     private async Task MarkAsync(Guid jobId, int sceneOrder, Guid? token, string status, string? failure, CancellationToken ct,

@@ -255,7 +255,13 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 continue;
             }
             var generated = await lifestyle.GenerateForVideoAsync(target.Product.Id, garment.Id, model.Id, ct);
-            if (generated.IsSuccess) made++;
+            if (generated.IsSuccess)
+            {
+                made++;
+                // Told as each photo is made, not once at the end: the design's card swaps its placeholder for the photo
+                // and the seller can review it while the next design's photo is still being made.
+                if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
+            }
             else problems.Add($"{Label(target)}: its model photo could not be made. {generated.Error.Message}");
         }
         return (made, problems);
@@ -486,8 +492,10 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     {
         // A model photo that could not be made when the run started is tried again here. With Mockup Approval on auto it
         // is approved at once, so Continue goes on; in manual mode it waits for the seller's review like the others.
+        // Not while the background worker is still making them: Continue is open to the designs whose photos are done,
+        // and a second attempt at the others would pay the image provider twice for the same photo.
         if (await groups.GetByIdAsync(groupId, ct) is { Status: "waiting_for_targets" } waiting && waiting.UserId == user.UserId
-            && waiting.Revision == request.ExpectedRevision)
+            && waiting.Revision == request.ExpectedRevision && startQueue?.IsPending(groupId) != true)
         {
             var (made, _) = await MakeModelPhotosAsync(waiting, ct);
             if (made > 0 && MockupAutoApproval.IsAuto(WorkflowJson.Read<WorkflowDefinition>(waiting.DefinitionSnapshot)))
@@ -579,9 +587,11 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         // A job of a cancelled run is no longer leased or claimed: the worker's next heartbeat finds the run cancelled.
         foreach (var run in changed)
         {
-            foreach (var job in await mediaJobs.FindAsync(x => x.WorkflowRunId == run.Id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus), ct))
+            foreach (var job in await mediaJobs.FindAsync(x => x.WorkflowRunId == run.Id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus || x.Status == DeferredRender.JobStatus), ct))
             { job.Status = "cancelled"; job.LeaseToken = null; }
-            if (videos is not null) await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct);
+            if (videos is not null)
+                await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct,
+                    (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video" && x.Status == "succeeded", ct)).Any());
         }
         group.Status = "cancelled"; group.CompletedAt = now; group.Revision++; group.UpdatedAt = now;
         await uow.SaveChangesAsync(ct);
@@ -620,7 +630,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             if (run is not { Status: "waiting_for_review" }) return Result.Failure<RunGroupResponse>(Stale());
             var review = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "review-video", ct)).Single();
             var video = await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(review.OutputSnapshot).VideoId, ct);
-            if (video is { Status: "completed", ApprovalStatus: "approved" or "rejected" }) decided.Add((run, review));
+            if (video is { ApprovalStatus: "approved" or "rejected" } && DeferredRender.CanBeReviewed(video)) decided.Add((run, review));
             else undecided++;
         }
         if (decided.Count == 0 && undecided == 0) return Result.Failure<RunGroupResponse>(NothingToReview());
@@ -805,6 +815,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             ? (await SharedConfigAsync(group, ct)).Config
             : VideoConfigOf(WorkflowJson.Read<WorkflowDefinition>(group.DefinitionSnapshot));
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
+        var preparing = waiting && group.ErrorMessage is null && startQueue?.IsPending(group.Id) == true;
 
         var rows = new List<RunGroupTargetResponse>(targets.Count);
         foreach (var target in targets)
@@ -829,6 +840,10 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             var childSteps = child is null ? [] : stepsByRun.GetValueOrDefault(child.Id) ?? [];
             var current = child is null ? null : CurrentStep(childSteps);
             var printifyStep = childSteps.FirstOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep);
+            // Only a design whose scenes show a person has a model photo to wait for; the others never show a placeholder.
+            var modelPhoto = waiting && config is not null && PersonModelPhotos.Needs(ConfigFor(config, picked, target.Product.Id))
+                ? PersonModelPhotos.Has(target.Mockups) ? ModelPhotoStates.Ready : preparing ? ModelPhotoStates.Pending : ModelPhotoStates.Missing
+                : null;
             rows.Add(new(target.Key, target.Product.Id, target.Product.Name, target.Product.ProductType, target.ArtworkGroupKey,
                 target.DesignLabel, cover is null ? null : Preview(cover), target.Mockups.Count, target.Approved.Count,
                 target.Mockups.Count(x => x.ApprovalStatus == "pending"), waiting ? target.Approved.Count > 0 : child is not null,
@@ -837,14 +852,14 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 picked?.Config is not null, child is null ? null : VideoStatusOf(child, childSteps),
                 printifyStep is null ? null : new RunGroupStepResponse(printifyStep.Status, printifyStep.Stage, printifyStep.Progress, printifyStep.ErrorMessage,
                     PublishNodeState.WarningsIn(printifyStep.OutputSnapshot)),
-                StepOf(childSteps, "generate-video"), StepOf(childSteps, "review-video"), StepOf(childSteps, "export-zip")));
+                StepOf(childSteps, "generate-video"), StepOf(childSteps, "review-video"), StepOf(childSteps, "export-zip"), modelPhoto));
         }
         var progress = new RunGroupProgress(children.Count, children.Count(x => x.Status == "queued"), children.Count(x => x.Status == "running"),
             children.Count(x => x.Status == "waiting_for_review"), children.Count(x => x.Status == "completed"),
             children.Count(x => x.Status == "failed"), children.Count(x => x.Status == "cancelled"), children.Count(x => x.Status == "waiting_for_input"));
         return new(group.Id, group.WorkflowId, group.BatchId, group.BatchJobId, StatusOf(group, children), group.Revision,
             group.WorkflowRevision, group.CreatedAt, MaximumTargets, rows.Count(x => x.Selected), progress, rows, group.ErrorMessage,
-            waiting && group.ErrorMessage is null && startQueue?.IsPending(group.Id) == true);
+            preparing);
     }
 
     /// <summary>

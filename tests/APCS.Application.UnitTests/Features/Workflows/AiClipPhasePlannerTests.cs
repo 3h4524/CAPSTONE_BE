@@ -25,6 +25,37 @@ public sealed class AiClipPhasePlannerTests
     private static IEnumerable<int> Submits(AiClipPlan plan, AiClipJob job) =>
         plan.Work.Where(w => w.JobId == job.JobId && w.Action == AiClipAction.Submit).Select(w => w.SceneOrder);
 
+    private static IEnumerable<int> Polls(AiClipPlan plan, AiClipJob job) =>
+        plan.Work.Where(w => w.JobId == job.JobId && w.Action == AiClipAction.Poll).Select(w => w.SceneOrder);
+
+    [TestMethod]
+    public void Plan_SceneThatCallsBack_IsNotAskedAboutAtTheUsualPace()
+    {
+        // Past the first delay that a scene without a callback waits, but well within the callback's safety interval.
+        var job = Job(Ann, Scene(0, "polling", submittedAt: Now.AddSeconds(-45)) with { Callback = true });
+
+        Polls(Plan(job), job).Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public void Plan_SceneThatCallsBackButStaysQuiet_IsAskedAboutAfterTheSafetyInterval()
+    {
+        var job = Job(Ann,
+            Scene(0, "polling", submittedAt: Now.AddMinutes(-2)) with { Callback = true, PolledAt = Now.AddSeconds(-61) },
+            Scene(1, "polling", submittedAt: Now.AddMinutes(-2)) with { Callback = true, PolledAt = Now.AddSeconds(-20) });
+
+        Polls(Plan(job), job).Should().Equal(0);
+    }
+
+    [TestMethod]
+    public void Plan_SceneTheProviderSaysIsFinished_IsAskedAboutAtOnce()
+    {
+        // Seconds after it was submitted: the call says it finished, so it is not left to wait its turn.
+        var job = Job(Ann, Scene(0, "polling", submittedAt: Now.AddSeconds(-5)) with { Callback = true, AnnouncedAt = Now });
+
+        Polls(Plan(job), job).Should().Equal(0);
+    }
+
     [TestMethod]
     public void Plan_NothingToLookAfter_DoesNothing()
     {

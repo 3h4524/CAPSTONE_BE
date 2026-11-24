@@ -46,3 +46,21 @@ test("ZIP refuses path traversal and sensitive manifest fields before creating a
   await assert.rejects(createZip("unused.zip", new Map([["../secret", { file: "unused", data: Buffer.alloc(0) }]]), manifest, AbortSignal.timeout(5000)), /Unsafe ZIP/);
   await assert.rejects(createZip("unused.zip", new Map(), { ...manifest, signedUrl: "secret" }, AbortSignal.timeout(5000)));
 });
+test("ZIP stores its media as they are and still compresses the manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apcs-zip-store-"));
+  try {
+    const source = join(directory, "source"); await writeFile(source, "A".repeat(20_000));
+    const zipFile = join(directory, "package.zip");
+    await createZip(zipFile, new Map([["video.mp4", { file: source, data: Buffer.from("x") }]]), manifest, AbortSignal.timeout(5000));
+    const zip = await readFile(zipFile);
+    const methods = new Map<string, number>();
+    for (let offset = 0; offset < zip.length - 46; offset++) {
+      if (zip.readUInt32LE(offset) !== 0x02014b50) continue;
+      methods.set(zip.subarray(offset + 46, offset + 46 + zip.readUInt16LE(offset + 28)).toString(), zip.readUInt16LE(offset + 10));
+    }
+    // Method 0 is stored, 8 is deflated. Repetitive bytes would shrink a lot if the media were deflated.
+    assert.equal(methods.get("video.mp4"), 0);
+    assert.equal(methods.get("manifest.json"), 8);
+    assert.ok(zip.length > 20_000, "the media is written as it is");
+  } finally { if (resolve(directory).startsWith(resolve(tmpdir()) + sep)) await rm(directory, { recursive: true, force: true }); }
+});

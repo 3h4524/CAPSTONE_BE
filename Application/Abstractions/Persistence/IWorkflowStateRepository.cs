@@ -45,6 +45,15 @@ public interface IWorkflowStateRepository
     Task<WorkflowRun?> ClaimQueuedGroupRunAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// Locks a running child run whose AI scene prompts or listing were being written outside a transaction and that
+    /// nobody has touched since <paramref name="untouchedSince"/> (the API stopped half way), skipping runs another
+    /// planner holds, or returns null. <paramref name="preparingStage"/> and <paramref name="writingStage"/> are the
+    /// stages those steps show meanwhile.
+    /// </summary>
+    Task<WorkflowRun?> ClaimStalledGroupRunAsync(DateTime untouchedSince, string preparingStage, string writingStage,
+        CancellationToken cancellationToken) => Task.FromResult<WorkflowRun?>(null);
+
+    /// <summary>
     /// Renews a worker's lease and records its progress in one statement, locking only the job: the lease token proves
     /// the job is still the worker's, and the run must still be running. The step shown on the canvas is written only
     /// when the stage changes or the progress moves by <paramref name="stepThreshold"/> or more. Null when the lease is

@@ -501,6 +501,61 @@ public sealed class VideoPromptPreparationServiceTests
         result.AiShots!.Single().Prompt.Should().Be(trace.FinalPrompt);
     }
 
+    [TestMethod]
+    public async Task PrepareAsync_SeveralScenes_PreparesThemSideBySideWithinTheLimitAndKeepsTheirOrder()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct("tshirt");
+        var sources = Enumerable.Range(0, 3).Select(index =>
+        {
+            var source = fixture.AddAsset(product, "Lifestyle");
+            source.StorageKey = $"private/mockup-{index}";
+            return source;
+        }).ToArray();
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 15, AiScenes: sources.Select(source =>
+            new AiVideoSceneOptions(MockupId: source.Id, TemplateCode: "lifestyle_in_use", SubtemplateCode: "natural_motion",
+                DurationSeconds: 5, RightsConfirmed: true, AiVideoModelKey: AiVideoModel.ModelKey)).ToArray());
+        var board = new VideoStoryboardPlanner().Plan(product, sources, config).Value;
+        board.AiShots.Should().HaveCount(3);
+        foreach (var source in sources)
+            fixture.Storage.Setup(storage => storage.SignRead(source.StorageKey, "image", source.StorageVersion, false))
+                .Returns($"https://private.test/{source.Id}");
+        var frames = new Mock<IVideoFirstFramePreparer>();
+        frames.Setup(frame => frame.PrepareAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string url, string _, Region? _, CancellationToken _) => System.Text.Encoding.UTF8.GetBytes(url));
+        var gate = new object();
+        var running = 0;
+        var peak = 0;
+        var generator = new Mock<IGeminiTextGenerationProvider>();
+        generator.Setup(x => x.GenerateAsync(It.IsAny<GeminiTextGenerationRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(async (GeminiTextGenerationRequest request, CancellationToken ct) =>
+            {
+                lock (gate) peak = Math.Max(peak, ++running);
+                await Task.Delay(40, ct);
+                lock (gate) running--;
+                // Each scene's opening names its own frame, so a scene given another's answer would show.
+                var frame = request.Images is null ? null : System.Text.Encoding.UTF8.GetString(request.Images[0].Bytes);
+                return request.Images is not null
+                    ? new GeminiTextGenerationResult(JsonSerializer.Serialize(new { openingDescription = $"{Opening} Frame {frame![^36..]}.", uncertainties = Array.Empty<string>() }), "vision-model", 10, 20, null)
+                    : new GeminiTextGenerationResult(JsonSerializer.Serialize(new { continuationDescription = Continuation }), "editor-model", 20, 30, null);
+            });
+        var cache = new Mock<ICacheService>();
+        var settings = new VideoPromptPreparationOptions { MaxParallelScenes = 2 };
+        var service = new VideoPromptPreparationService(generator.Object, frames.Object, fixture.Storage.Object, cache.Object,
+            Options.Create(settings), NullLogger<VideoPromptPreparationService>.Instance);
+
+        var result = await service.PrepareAsync(WorkflowTestData.Owner, board, sources, default);
+
+        peak.Should().Be(2, "scenes are prepared side by side, never more than the limit");
+        for (var index = 0; index < 3; index++)
+        {
+            var shot = result.AiShots![index];
+            shot.MockupId.Should().Be(sources[index].Id);
+            shot.Prompt.Should().Contain($"Frame {sources[index].Id}.");
+            result.Scenes.Single(scene => scene.SceneOrder == shot.SceneOrder).AiPromptTrace!.Preparation!.Status.Should().Be("prepared");
+        }
+    }
+
     private static void AssertFallback(Storyboard original, Storyboard actual)
     {
         actual.AiShots.Should().BeEquivalentTo(original.AiShots);
