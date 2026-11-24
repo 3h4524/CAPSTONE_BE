@@ -357,9 +357,10 @@ public sealed class WorkflowRunGroupServiceTests
     {
         var data = new RunGroupTestData();
         var group = await data.StartAsync();
-        var pack = data.AiConfig() with { Template = "product_on_model_pack" };
+        // The legacy single-shot settings (no scene list) name one product's image.
+        var legacy = data.AiConfig() with { AiScenes = null };
 
-        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), pack), default);
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), legacy), default);
 
         result.IsFailure.Should().BeTrue();
         data.GroupRows.Single().TargetOverrides.Should().Be("{}");
@@ -1140,7 +1141,8 @@ public sealed class WorkflowRunGroupServiceTests
         var data = new RunGroupTestData();
         var workflow = data.AddWorkflow(data.SharedConfig() with
         {
-            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = data.SharedConfig() with { Template = "product_on_model_pack" } }
+            // The legacy single-shot AI settings (no scene list) name one product's image.
+            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = data.SharedConfig() with { Mode = "ai_shot", AiScenes = null } }
         });
 
         var result = await data.Service.StartAsync(workflow.Id, new(4, "pack"), default);

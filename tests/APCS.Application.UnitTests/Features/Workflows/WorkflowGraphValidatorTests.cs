@@ -301,7 +301,7 @@ public sealed class WorkflowGraphValidatorTests
 
         WorkflowGraphValidator.SupportsBatchVideos(ai).Should().BeTrue();
         WorkflowGraphValidator.SupportsBatchVideos(ai with { AiScenes = null }).Should().BeFalse();
-        WorkflowGraphValidator.SupportsBatchVideos(ai with { Template = "product_on_model_pack" }).Should().BeFalse();
+        WorkflowGraphValidator.SupportsBatchVideos(ai with { Template = "product_on_model_pack" }).Should().BeTrue();
         WorkflowGraphValidator.SupportsBatchVideos(new GenerateVideoConfig()).Should().BeTrue();
     }
 

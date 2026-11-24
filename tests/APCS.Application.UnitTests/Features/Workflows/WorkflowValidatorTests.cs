@@ -246,26 +246,22 @@ public sealed class WorkflowValidatorTests
     }
 
     [TestMethod]
-    public void VideoConfig_ProductOnModelPack_RequiresThreeStudioFramesFromTheSharedMockup()
+    public void VideoConfig_ProductOnModelPack_IsAnOrdinarySceneList()
     {
-        var sharedMockupId = Guid.NewGuid();
+        // The pack's scenes start from the model photo directly: no shared mock-up or prepared start frames.
         var scenes = new[] { "natural_motion", "brand_focus", "fabric_detail" }
             .Select(code => new AiVideoSceneOptions(
-                MockupId: sharedMockupId, TemplateCode: "lifestyle_in_use", SubtemplateCode: code,
-                DurationSeconds: 4, RightsConfirmed: true, Mode: "ai", StartFrameMode: "studio",
-                StudioLayout: AiStudioFrameIdentity.None, StudioFrameId: Guid.NewGuid()))
+                MockupId: Guid.NewGuid(), TemplateCode: "lifestyle_in_use", SubtemplateCode: code,
+                DurationSeconds: 4, RightsConfirmed: true, Mode: "ai", StartFrameMode: "direct"))
             .ToArray();
-        var valid = new GenerateVideoConfig(Mode: "ai_shot", Template: "product_on_model_pack", TemplateVersion: 2,
-            DurationSeconds: 12, SharedMockupId: sharedMockupId, AiScenes: scenes);
+        var config = new GenerateVideoConfig(Mode: "ai_shot", Template: "product_on_model_pack", TemplateVersion: 2,
+            DurationSeconds: 12, AiScenes: scenes);
 
-        new GenerateVideoConfigValidator().Validate(valid).IsValid.Should().BeTrue();
-        new GenerateVideoConfigValidator().Validate(valid with { SharedMockupId = null })
-            .Errors.Should().Contain(error => error.ErrorMessage.Contains("shared mockup"));
-        new GenerateVideoConfigValidator().Validate(valid with
+        new GenerateVideoConfigValidator().Validate(config).Errors.Should().BeEmpty();
+        new GenerateVideoConfigValidator().Validate(config with
         {
-            AiScenes = scenes.Take(2).ToArray(),
-            DurationSeconds = 8,
-        }).Errors.Should().Contain(error => error.ErrorMessage.Contains("three AI scenes"));
+            AiScenes = [.. scenes.Take(2), new AiVideoSceneOptions(MockupId: Guid.NewGuid(), Mode: "standard", DurationSeconds: 4)],
+        }).Errors.Should().BeEmpty();
     }
 
     [TestMethod]

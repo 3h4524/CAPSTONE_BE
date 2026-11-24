@@ -150,11 +150,11 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
 
     /// <summary>
     /// Whether one scene list can make the video of every design. AI scenes are billed per clip, so the run confirms
-    /// their total cost once for the whole group; the pack template is left out because it renders one product's
-    /// shared mock-up and character.
+    /// their total cost once for the whole group. The Product on Model pack is an ordinary scene list: its scenes with a
+    /// person start from each design's own model photo.
     /// </summary>
     public static bool SupportsBatchVideos(GenerateVideoConfig config) =>
-        config.Template != "product_on_model_pack" && config.Mode switch
+        config.Mode switch
         {
             "standard" => config.AiScenes is null || config.AiScenes.All(scene => scene.Mode == "standard"),
             // The legacy single-shot settings name one product's mock-up, so only a scene list maps to every design.
