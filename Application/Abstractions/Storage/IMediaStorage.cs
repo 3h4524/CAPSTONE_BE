@@ -2,7 +2,11 @@ using APCS.Application.Features.Workflows;
 
 namespace APCS.Application.Abstractions.Storage;
 
-public sealed record StoredMockup(string StorageKey, string Version, string Hash, int Width, int Height);
+/// <param name="StoreTime">How long the image host took to take the image in (and render it, for a composite URL).</param>
+/// <param name="ReadBackTime">How long reading the stored file back for its hash took.</param>
+/// <param name="Bytes">The size of the stored file.</param>
+public sealed record StoredMockup(string StorageKey, string Version, string Hash, int Width, int Height,
+    TimeSpan? StoreTime = null, TimeSpan? ReadBackTime = null, long? Bytes = null);
 public interface IMediaStorage
 {
     Task<StoredMockup> UploadMockupAsync(Stream content, string fileName, string storageKey, CancellationToken cancellationToken);
