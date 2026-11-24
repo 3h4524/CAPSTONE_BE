@@ -302,10 +302,15 @@ public sealed class TestReportService : ITestReportService
             else
             {
                 var summary = PlaywrightReportParser.Parse(rawReport);
+                var isFailed = summary.FailedTests > 0 || summary.TotalTests == 0;
+                var status = isFailed
+                    ? (summary.TotalTests == 0 ? TestReportStatuses.Error : TestReportStatuses.Failed)
+                    : TestReportStatuses.Passed;
+
                 finished = run with
                 {
                     FinishedAtUtc = _timeProvider.GetUtcNow().UtcDateTime,
-                    Status = summary.FailedTests > 0 ? TestReportStatuses.Failed : TestReportStatuses.Passed,
+                    Status = status,
                     DurationMs = summary.DurationMs,
                     Branch = result.Branch,
                     CommitSha = result.CommitSha,
@@ -318,6 +323,7 @@ public sealed class TestReportService : ITestReportService
                     UnexpectedFailedTests = summary.FailedTests - summary.KnownIssueTests,
                     FileCount = summary.Files.Count,
                     SuiteCount = summary.Files.Sum(file => file.Specs.Count),
+                    FailureSummary = isFailed ? Summarize(result) : null,
                 };
             }
         }

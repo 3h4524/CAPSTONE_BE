@@ -199,7 +199,10 @@ public sealed class OpportunityService(
     private async Task RankForUserAsync(Guid userId, CancellationToken cancellationToken)
     {
         var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
-        var snapshot = profile is null ? new SellerResearchProfileSnapshot([], [], [], []) : ToSnapshot(profile);
+        if (profile is null || !IsConfiguredProfile(profile))
+            return;
+
+        var snapshot = ToSnapshot(profile);
         // Demo opportunities (is_synthetic) link to listings that do not exist, so sellers are only
         // ranked against opportunities collected from the real marketplace.
         var activeRows = await opportunities.FindAsync(x => x.Status == "active" && !x.IsSynthetic, cancellationToken);
@@ -307,7 +310,13 @@ public sealed class OpportunityService(
     {
         var userId = RequireUserId();
         limit = Math.Clamp(limit, 1, 100);
-        var query = Ranked(userId);
+        // A ranking is seller-specific. Never expose rows left over from an older
+        // profile (or from a previous demo run) before the seller has a profile.
+        var profile = (await profiles.FindAsync(x => x.UserId == userId, cancellationToken)).SingleOrDefault();
+        if (profile is null || !IsConfiguredProfile(profile))
+            return [];
+
+        var query = Ranked(userId).Where(x => x.LastEvaluatedAt >= profile.UpdatedAt);
         var full = await IsFullAsync(userId, cancellationToken);
         if (!full)
         {
@@ -465,6 +474,15 @@ public sealed class OpportunityService(
     private static SellerResearchProfileSnapshot ToSnapshot(SellerResearchProfile profile) =>
         new(Read(profile.PreferredCategories), Read(profile.PreferredKeywords), Read(profile.PreferredCategories),
             Read(profile.ExcludedCategories), profile.MinimumPrice, profile.MaximumPrice);
+
+    private static bool IsConfiguredProfile(SellerResearchProfile profile) =>
+        !string.IsNullOrWhiteSpace(profile.ShopGoal)
+        || Read(profile.TargetAudiences).Count > 0
+        || Read(profile.PreferredCategories).Count > 0
+        || Read(profile.ExcludedCategories).Count > 0
+        || Read(profile.PreferredKeywords).Count > 0
+        || profile.MinimumPrice is not null
+        || profile.MaximumPrice is not null;
 
     private static SellerResearchProfileResponse MapProfile(SellerResearchProfile profile) =>
         new(profile.UserId, profile.ShopGoal, Read(profile.TargetAudiences), Read(profile.PreferredCategories),

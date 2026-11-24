@@ -46,7 +46,14 @@ public sealed class AdminTestReportsController(
     public async Task<IActionResult> GetRun(string runId, CancellationToken cancellationToken)
     {
         var result = await testReportService.GetAsync(runId, cancellationToken);
-        return result.IsSuccess ? Ok(result.Value) : BadRequest(result.Error);
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        return result.Error.Type == ErrorType.NotFound
+            ? NotFound(result.Error)
+            : BadRequest(result.Error);
     }
 
     /// <summary>
@@ -106,7 +113,14 @@ public sealed class AdminTestReportsController(
     public async Task<IActionResult> DeleteRun(string runId, CancellationToken cancellationToken)
     {
         var result = await testReportService.DeleteRunAsync(runId, cancellationToken);
-        return result.IsSuccess ? NoContent() : BadRequest(result.Error);
+        if (result.IsSuccess)
+        {
+            return NoContent();
+        }
+
+        return result.Error.Type == ErrorType.NotFound
+            ? NotFound(result.Error)
+            : BadRequest(result.Error);
     }
 
     private bool IsAuthorizedForIngest(string? ciKey)

@@ -610,6 +610,15 @@ public sealed class E2EOrchestrator(E2EOptions options)
             environment["PWDEBUG"] = pwdebug;
         }
 
+        foreach (var name in new[] { "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY", "PATH", "HOME", "USER" })
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                environment[name] = value;
+            }
+        }
+
         return environment;
     }
 
@@ -686,8 +695,13 @@ public sealed class E2EOrchestrator(E2EOptions options)
 
     private async Task<E2EOutcome> RunPlaywrightAsync(int apiPort, CancellationToken cancellationToken)
     {
+        var extraArgs = Environment.GetEnvironmentVariable("PLAYWRIGHT_ARGS");
+        var command = string.IsNullOrWhiteSpace(extraArgs)
+            ? "pnpm test:e2e"
+            : $"pnpm test:e2e {extraArgs}";
+
         var launched = ProcessLauncher.StartScript(
-            "pnpm test:e2e",
+            command,
             options.FrontendRoot,
             PlaywrightEnvironment(apiPort),
             Path.Combine(options.RunDirectory, "playwright.log"),
