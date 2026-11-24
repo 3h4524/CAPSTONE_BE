@@ -86,6 +86,15 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
             startInfo.Environment.Remove("PWDEBUG");
         }
 
+        foreach (var name in new[] { "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY", "PATH", "HOME", "USER" })
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                startInfo.Environment[name] = value;
+            }
+        }
+
         if (isWindows)
         {
             startInfo.ArgumentList.Add("/d");
