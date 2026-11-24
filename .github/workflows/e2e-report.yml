@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch to run E2E test suite against (BE & FE)"
+        description: "Backend branch to test"
         required: true
-        default: "main"
+        default: "merge-version-sc4"
+        type: string
+      fe_branch:
+        description: "Frontend branch to test (optional, defaults to matching mc version)"
+        required: false
+        default: "merge-version-mc4"
         type: string
   push:
     tags:
@@ -27,8 +32,13 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "be_ref=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
-            echo "fe_ref=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            BE_REF="${{ inputs.branch }}"
+            FE_REF="${{ inputs.fe_branch }}"
+            if [ -z "$FE_REF" ]; then
+              FE_REF=$(echo "$BE_REF" | sed 's/-sc/-mc/')
+            fi
+            echo "be_ref=$BE_REF" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=$FE_REF" >> "$GITHUB_OUTPUT"
             echo "triggered_by=Manual (${{ github.actor }})" >> "$GITHUB_OUTPUT"
           else
             echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
