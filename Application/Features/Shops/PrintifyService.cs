@@ -328,7 +328,16 @@ public sealed class PrintifyService(
         var selected = variants.Where(variant => chosen.Contains(variant.Id)).ToArray();
         if (selected.Length != chosen.Count)
             return Result.Failure<PrintifyProductDto>(Error.Validation("Some chosen colors or sizes are not made by this provider any more; choose them again."));
-        var position = request.Position
+        var sides = request.PlacementMockupId is { } shownId
+            ? await MockupSidesAsync(productId, shownId, request.PrintMockupSides, cancellationToken)
+            : new MockupSides(null, []);
+        // Mock-ups of only the back (or a sleeve) of the garment are printed there, not on its front.
+        var shownSide = sides.PrimaryView is { } shownView && shownView != BatchMockups.Common.MockupRules.ViewFront ? shownView : null;
+        var shownPosition = shownSide is null ? null : PrintifyPositionOf(shownSide);
+        if (shownSide is not null && (shownPosition is null || selected.Any(variant => variant.Placeholders.All(area => area.Position != shownPosition))))
+            return Result.Failure<PrintifyProductDto>(Error.Validation(
+                $"The approved mock-ups show only the {SideLabel(shownSide)}, which this provider does not print. Approve the front mock-up, or choose another provider."));
+        var position = shownPosition ?? request.Position
             ?? (selected.All(variant => variant.Placeholders.Any(area => area.Position == "front")) ? "front" : selected[0].Placeholders.FirstOrDefault()?.Position);
         if (position is null || selected.Any(variant => variant.Placeholders.All(area => area.Position != position)))
             return Result.Failure<PrintifyProductDto>(Error.Validation("Not every chosen variant can be printed in that area; choose another print area or fewer variants."));
@@ -337,9 +346,6 @@ public sealed class PrintifyService(
         var areas = selected.SelectMany(variant => variant.Placeholders).Where(area => area.Position == position).ToArray();
         var areaWidth = areas.Max(area => area.Width);
         var areaHeight = areas.Max(area => area.Height);
-        var sides = request.PlacementMockupId is { } shownId
-            ? await MockupSidesAsync(productId, shownId, request.PrintMockupSides, cancellationToken)
-            : new MockupSides(null, []);
         var placement = sides.FrontId is { } frontId
             ? await MockupPlacementAsync(productId, frontId, design, areaWidth, areaHeight, cancellationToken)
             : new PrintPlacement(request.X, request.Y, request.Scale);
@@ -925,7 +931,32 @@ public sealed class PrintifyService(
     }
 
     /// <summary>The front mock-up a print follows, and an approved mock-up of each other side of its garment, by side.</summary>
-    internal sealed record MockupSides(Guid? FrontId, IReadOnlyList<(string View, Guid MockupId)> Others);
+    /// <param name="FrontId">The mock-up the main print follows: the garment's front, or the side shown when only sides are approved.</param>
+    /// <param name="PrimaryView">The side that mock-up shows; null when it is not a template's photo.</param>
+    internal sealed record MockupSides(Guid? FrontId, IReadOnlyList<(string View, Guid MockupId)> Others, string? PrimaryView = null);
+
+    /// <summary>
+    /// Only other sides of the garment are approved, not its front: the one shown is printed on its own Printify area
+    /// instead of the front, with each other approved side beside it.
+    /// </summary>
+    private static MockupSides OtherSidesOnly(IReadOnlyList<MockupImage> approved, MockupImage shown, Guid mainId, bool withSides)
+    {
+        var view = BatchMockups.Common.MockupRules.ParseView(shown.MockupTemplate!.PrintAreaConfig);
+        if (!withSides)
+            return new MockupSides(shown.Id, [], view);
+        var others = new List<(string, Guid)>();
+        foreach (var other in BatchMockups.Common.MockupRules.OtherViews.Where(item => item != view))
+        {
+            var onSide = approved.Where(mockup => mockup.MockupTemplate is not null
+                && BatchMockups.Common.MockupRules.MainTemplateId(mockup.MockupTemplate.PrintAreaConfig) == mainId
+                && BatchMockups.Common.MockupRules.ParseView(mockup.MockupTemplate.PrintAreaConfig) == other).ToArray();
+            var side = onSide.FirstOrDefault(mockup => string.Equals(mockup.GarmentColor, shown.GarmentColor, StringComparison.OrdinalIgnoreCase))
+                ?? onSide.FirstOrDefault();
+            if (side is not null)
+                others.Add((other, side.Id));
+        }
+        return new MockupSides(shown.Id, others, view);
+    }
 
     /// <summary>Printify's print area for a side of an APCS template, or null for a side Printify has no area for.</summary>
     internal static string? PrintifyPositionOf(string view) => view switch
@@ -961,8 +992,10 @@ public sealed class PrintifyService(
             return new MockupSides(shownId, []);
         var mainId = BatchMockups.Common.MockupRules.MainTemplateId(shown.MockupTemplate!.PrintAreaConfig) ?? shown.MockupTemplate.Id;
         var front = shown.MockupTemplateId == mainId ? shown : approved.FirstOrDefault(mockup => mockup.MockupTemplateId == mainId);
-        if (front is null || !withSides)
-            return new MockupSides(front?.Id ?? shownId, []);
+        if (front is null)
+            return OtherSidesOnly(approved, shown, mainId, withSides);
+        if (!withSides)
+            return new MockupSides(front.Id, []);
 
         var others = new List<(string, Guid)>();
         var views = BatchMockups.Common.MockupRules.ViewTemplateIds(front.MockupTemplate!.PrintAreaConfig);

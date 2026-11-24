@@ -182,6 +182,11 @@ public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, strin
 public sealed record VideoRunSummaryResponse(Guid Id, string Status, DateTimeOffset CreatedAt, int VideoCount, int LatestVersion);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
+/// <summary>Approves or rejects every color and side of one design's mock-ups at once.</summary>
+/// <param name="ArtworkGroupKey">The design's artwork group, as the mock-ups carry it.</param>
+/// <summary>Approves or rejects a design's composites as one product; approving leaves out the mock-ups of
+/// <paramref name="LeftOut"/> (the colors the seller does not sell), which are rejected.</summary>
+public sealed record MockupDesignReviewRequest(string ArtworkGroupKey, bool Approved, IReadOnlyList<Guid>? LeftOut = null);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings,
     Guid? MockupTemplateId = null, Guid? DesignImageId = null);
 public sealed record AiStudioFrameReferenceInput(byte[] Bytes, string MimeType);

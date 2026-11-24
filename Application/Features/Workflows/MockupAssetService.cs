@@ -16,6 +16,8 @@ public interface IMockupAssetService
     Task<Result<MockupResponse>> UploadAsync(Guid productId, Stream content, string name, long length, CancellationToken ct);
     Task<Result<MockupResponse>> UpdateAsync(Guid id, MockupMetadataRequest request, CancellationToken ct);
     Task<Result<MockupResponse>> ReviewAsync(Guid id, MockupReviewRequest request, CancellationToken ct);
+    /// <summary>Approves or rejects a design's mock-ups as one product; returns the product's mock-ups.</summary>
+    Task<Result<IReadOnlyList<MockupResponse>>> ReviewDesignAsync(Guid productId, MockupDesignReviewRequest request, CancellationToken ct);
 }
 
 public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> products, IRepository<MockupImage> assets,
@@ -89,6 +91,35 @@ public sealed class MockupAssetService(ICurrentUser user, IRepository<Product> p
         entity.ApprovalStatus = request.Approved ? "approved" : "rejected"; entity.ApprovedRevision = request.Approved ? entity.MetadataRevision : null;
         entity.ApprovedBy = request.Approved ? user.UserId : null; entity.ApprovedAt = request.Approved ? time.GetUtcNow().UtcDateTime : null;
         await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct); return Result.Success(Map(entity));
+    }
+    public async Task<Result<IReadOnlyList<MockupResponse>>> ReviewDesignAsync(Guid productId, MockupDesignReviewRequest request, CancellationToken ct)
+    {
+        if (!await OwnsAsync(productId, ct)) return Result.Failure<IReadOnlyList<MockupResponse>>(Missing());
+        if (string.IsNullOrWhiteSpace(request.ArtworkGroupKey))
+            return Result.Failure<IReadOnlyList<MockupResponse>>(Error.Validation("Choose the design whose mock-ups to review."));
+        // Every color and side of the design goes on, or not, as one product: which ones it has is chosen on Apply
+        // mock-up. Only the composites of its templates are reviewed so; AI images and uploaded photos keep their own.
+        var made = await assets.FindAsync(x => x.ProductId == productId && x.DeletedAt == null
+            && x.SourceType == MockupSources.Generated && x.ContentHash != null, ct);
+        var design = MockupSources.Current(made)
+            .Where(x => (x.ArtworkGroupKey ?? productId.ToString()) == request.ArtworkGroupKey).ToArray();
+        if (design.Length == 0)
+            return Result.Failure<IReadOnlyList<MockupResponse>>(Error.NotFound("MockupNotFound", "This design has no mock-ups to review."));
+        // A color the seller does not sell is left out with every side of it; the product keeps at least one.
+        var leftOut = request.Approved && request.LeftOut is { } ids ? ids.ToHashSet() : [];
+        if (design.All(x => leftOut.Contains(x.Id)))
+            return Result.Failure<IReadOnlyList<MockupResponse>>(Error.Validation("Keep at least one color, or skip the product."));
+        var now = time.GetUtcNow().UtcDateTime;
+        foreach (var entity in design)
+        {
+            var approved = request.Approved && !leftOut.Contains(entity.Id);
+            entity.ApprovalStatus = approved ? "approved" : "rejected";
+            entity.ApprovedRevision = approved ? entity.MetadataRevision : null;
+            entity.ApprovedBy = approved ? user.UserId : null;
+            entity.ApprovedAt = approved ? now : null;
+        }
+        await uow.SaveChangesAsync(ct);
+        return await ListAsync(productId, ct);
     }
     private async Task<bool> OwnsAsync(Guid id, CancellationToken ct) => await products.GetByIdAsync(id, ct) is { DeletedAt: null } p && p.UserId == user.UserId;
     private MockupResponse Map(MockupImage x) => new(x.Id, x.ProductId, x.SourceType, x.Role, x.ArtworkGroupKey, x.VariantKey, x.MetadataRevision,

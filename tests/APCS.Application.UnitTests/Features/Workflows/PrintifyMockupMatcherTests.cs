@@ -146,6 +146,40 @@ public sealed class PrintifyMockupMatcherTests
         result.Value.Warnings.Should().ContainSingle(warning => warning.Contains("several products"));
     }
 
+    private static MockupTemplate BackOf(MockupTemplate front)
+    {
+        var back = Template($"{front.Name} · Back");
+        back.PrintAreaConfig = $$"""{"view":"back","mainTemplateId":"{{front.Id}}"}""";
+        return back;
+    }
+
+    [TestMethod]
+    public async Task MatchAsync_OnlyTheBackApproved_IsStillTheGarmentItsFrontIsLinkedTo()
+    {
+        links.Setup(x => x.GetAsync(It.IsAny<IReadOnlyCollection<Guid>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<Guid, TemplatePrintifyLink> { [tee.Id] = new(tee.Id, 12, "Bella Canvas 3001", null, null, null, ["M", "L"]) });
+        var back = BackOf(tee);
+        Mockup(back, "#000000");
+        Mockup(back, "#1F2A44", 1);
+
+        var result = await Create().MatchAsync(productId, Mockups, default);
+
+        result.Value!.Setup.BlueprintId.Should().Be(12);
+        result.Value.Setup.Colors.Should().Equal("Black", "Navy");
+        result.Value.TemplateName.Should().Be("Bella Canvas 3001");
+        printify.Verify(x => x.SearchBlueprintsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task MatchAsync_OnlyTheBackOfATemplateNotLinked_SaysToLinkItOrApproveTheFront()
+    {
+        Mockup(BackOf(tee), "#000000");
+
+        var result = await Create().MatchAsync(productId, Mockups, default);
+
+        result.Error.Message.Should().Contain("not linked to a Printify product");
+    }
+
     [TestMethod]
     public async Task MatchAsync_MockupsOfTheGarmentsOtherSides_AreNotAnotherProduct()
     {
