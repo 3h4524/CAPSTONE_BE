@@ -25,5 +25,14 @@ public interface ITestReportRunner
     /// </summary>
     /// <param name="runId">The run the suite belongs to.</param>
     /// <param name="cancellationToken">Stops the run.</param>
-    Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default);
+    Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default)
+        => RunAsync(runId, null, cancellationToken);
+
+    /// <summary>
+    /// Runs the test suite once with an explicit execution mode.
+    /// </summary>
+    /// <param name="runId">The run the suite belongs to.</param>
+    /// <param name="mode">The execution mode: headless, headed, or debug.</param>
+    /// <param name="cancellationToken">Stops the run.</param>
+    Task<TestReportRunnerResult> RunAsync(string runId, string? mode, CancellationToken cancellationToken = default);
 }

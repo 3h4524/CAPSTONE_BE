@@ -604,6 +604,12 @@ public sealed class E2EOrchestrator(E2EOptions options)
             environment["E2E_HEADED"] = headed;
         }
 
+        var pwdebug = Environment.GetEnvironmentVariable("PWDEBUG");
+        if (!string.IsNullOrWhiteSpace(pwdebug))
+        {
+            environment["PWDEBUG"] = pwdebug;
+        }
+
         return environment;
     }
 

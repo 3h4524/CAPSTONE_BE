@@ -31,7 +31,7 @@ public interface ITestReportService
     /// <summary>
     /// Starts a test run and returns it right away, while it is still going.
     /// </summary>
-    Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default);
+    Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, string? mode = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Ingests a completed run produced by an external pipeline such as CI/CD.
@@ -148,7 +148,7 @@ public sealed class TestReportService : ITestReportService
     }
 
     /// <inheritdoc />
-    public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default)
+    public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, string? mode = null, CancellationToken cancellationToken = default)
     {
         TestReportRunDto run;
         lock (_runLock)
@@ -186,7 +186,7 @@ public sealed class TestReportService : ITestReportService
             throw;
         }
 
-        _ = RunInBackgroundAsync(run);
+        _ = RunInBackgroundAsync(run, mode);
         await PublishRunChangedAsync(run.RunId, run.Status, cancellationToken);
         return Result.Success(run);
     }
@@ -277,14 +277,14 @@ public sealed class TestReportService : ITestReportService
         return Result.Success(true);
     }
 
-    private async Task RunInBackgroundAsync(TestReportRunDto run)
+    private async Task RunInBackgroundAsync(TestReportRunDto run, string? mode = null)
     {
         TestReportRunDto finished;
         string? rawReport = null;
 
         try
         {
-            var result = await _runner.RunAsync(run.RunId, CancellationToken.None);
+            var result = await _runner.RunAsync(run.RunId, mode, CancellationToken.None);
             rawReport = result.RawReport;
 
             if (rawReport is null)
