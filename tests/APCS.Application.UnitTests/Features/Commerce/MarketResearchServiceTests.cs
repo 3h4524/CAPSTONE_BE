@@ -12,7 +12,7 @@ using Moq;
 namespace APCS.Application.UnitTests.Features.Commerce;
 
 [TestClass]
-public sealed class MarketResearchServiceTests
+public sealed class MarketResearchServiceTests(TestContext testContext)
 {
     private const string Niche = "cat shirt";
     private readonly List<MarketListingSnapshot> snapshotRows = [];
@@ -21,6 +21,8 @@ public sealed class MarketResearchServiceTests
     private readonly List<MarketQueryObservation> observationRows = [];
     private readonly Mock<ICommerceMarketDataConnector> connector = new();
     private readonly Mock<IMarketListingQueries> listingQueries = new();
+    private readonly HashSet<MarketOpportunity> unsavedOpportunities = [];
+    private readonly List<MarketOpportunity> updatedBeforeInsert = [];
 
     private MarketResearchService Create()
     {
@@ -41,7 +43,19 @@ public sealed class MarketResearchServiceTests
         opportunities.Setup(x => x.FindAsync(It.IsAny<Expression<Func<MarketOpportunity, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Expression<Func<MarketOpportunity, bool>> predicate, CancellationToken _) => opportunityRows.Where(predicate.Compile()).ToList());
         opportunities.Setup(x => x.AddAsync(It.IsAny<MarketOpportunity>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
-            .Callback((MarketOpportunity row, bool _, CancellationToken _) => opportunityRows.Add(row));
+            .Callback((MarketOpportunity row, bool _, CancellationToken _) =>
+            {
+                opportunityRows.Add(row);
+                unsavedOpportunities.Add(row);
+            });
+        // As EF would: updating a row that still waits for its insert fails when it is saved.
+        opportunities.Setup(x => x.UpdateAsync(It.IsAny<MarketOpportunity>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .Callback((MarketOpportunity row, bool _, CancellationToken _) =>
+            {
+                if (unsavedOpportunities.Contains(row)) updatedBeforeInsert.Add(row);
+            });
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(x => x.SaveChangesAsync(It.IsAny<CancellationToken>())).Callback(unsavedOpportunities.Clear);
 
         var evidence = new Mock<IRepository<MarketOpportunityEvidence>>();
         evidence.Setup(x => x.Query()).Returns(() => evidenceRows.AsQueryable().BuildMock());
@@ -60,7 +74,7 @@ public sealed class MarketResearchServiceTests
             .ReturnsAsync((Expression<Func<MarketQueryObservation, bool>> predicate, CancellationToken _) => observationRows.Where(predicate.Compile()).ToList());
 
         return new MarketResearchService(factory.Object, rag.Object, snapshots.Object, opportunities.Object, evidence.Object,
-            observations.Object, Mock.Of<IUnitOfWork>(), listingQueries.Object);
+            observations.Object, unitOfWork.Object, listingQueries.Object);
     }
 
     private static CommerceMarketListing Listing(string id, string title, int favorites, int views, string seller, params string[] tags) =>
@@ -154,6 +168,23 @@ public sealed class MarketResearchServiceTests
 
         listingQueries.Verify(x => x.CompactSupersededSnapshotsAsync(DateTime.UtcNow.Date.AddDays(-MarketSnapshotRetention.FullTextDays),
             MarketSnapshotRetention.BatchSize, It.IsAny<CancellationToken>()), Times.Exactly(2), "a short batch means nothing is left");
+    }
+
+    [TestMethod]
+    [DataRow(1, DisplayName = "The second listing is out of the top picks")]
+    [DataRow(2, DisplayName = "The second listing is a top pick too")]
+    public async Task RetrieveAndIngestAsync_AListingShowingAConceptOpenedInTheSameRun_DoesNotUpdateItBeforeItsInsert(int topN)
+    {
+        Collect(
+            Listing("hot-1", "Space cat galaxy shirt", favorites: 900, views: 3000, seller: "shop-2"),
+            Listing("hot-2", "Space cat galaxy shirt", favorites: 800, views: 2500, seller: "shop-3"));
+
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], MinimumViralScore: 0, TopN: topN),
+            testContext.CancellationToken);
+
+        updatedBeforeInsert.Should().BeEmpty();
+        opportunityRows.Should().ContainSingle();
+        evidenceRows.Should().HaveCount(2, "both listings back the new opportunity");
     }
 
     private static readonly string[] GrumpyTags = ["grumpy cat", "coffee lover", "monday mood", "sarcastic tee"];
