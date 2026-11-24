@@ -1140,6 +1140,42 @@ public sealed class VideoStoryboardPlannerTests
         EndingState: "the product remains in the same hand and stays recognizable");
 
     // A keyframe is made for one scene template; the scenes here use the default one.
+    [TestMethod]
+    public void Plan_FabricDetailWithLocatedGarment_OpensOnCropInVideoRatio()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct("tshirt");
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var garments = new Dictionary<Guid, Region> { [source.Id] = new(0.1, 0.3, 0.8, 0.4) };
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5, AiScenes:
+            [new(MockupId: source.Id, TemplateCode: "lifestyle_in_use", SubtemplateCode: "fabric_detail", RightsConfirmed: true)]);
+
+        var result = _planner.Plan(product, [source], config, garments: garments);
+
+        result.IsSuccess.Should().BeTrue();
+        var crop = result.Value.Scenes.Single().SourceCrop;
+        crop.Should().NotBeNull();
+        result.Value.AiShots!.Single().SourceCrop.Should().Be(crop);
+        var aspect = VideoOutputFormats.AiSourceAspect(config.OutputFormat).Split(':').Select(double.Parse).ToArray();
+        (crop!.Width * source.MockupWidthPx / (crop.Height * source.MockupHeightPx)).Should().BeApproximately(aspect[0] / aspect[1], 0.002);
+    }
+
+    [TestMethod]
+    public void Plan_NaturalMotionWithLocatedGarment_OpensOnWholeImage()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct("tshirt");
+        var source = fixture.AddAsset(product, "Lifestyle");
+        var garments = new Dictionary<Guid, Region> { [source.Id] = new(0.1, 0.3, 0.8, 0.4) };
+        var config = new GenerateVideoConfig(Mode: "ai_shot", DurationSeconds: 5, AiScenes:
+            [new(MockupId: source.Id, TemplateCode: "lifestyle_in_use", SubtemplateCode: "natural_motion", RightsConfirmed: true)]);
+
+        var result = _planner.Plan(product, [source], config, garments: garments);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Scenes.Single().SourceCrop.Should().BeNull();
+    }
+
     private static MockupImage CreateStudioFrame(MockupImage source, string layout = AiStudioFrameIdentity.HangingWindow,
         string templateCode = "cinematic_product_showcase")
     {

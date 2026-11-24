@@ -40,7 +40,8 @@ public sealed class VideoStoryboardPlanner
 
     public Result<Storyboard> Plan(Product product, IReadOnlyList<MockupImage> assets, GenerateVideoConfig config,
         IReadOnlyList<VideoTemplate>? aiVideoTemplates = null,
-        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences = null)
+        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences = null,
+        IReadOnlyDictionary<Guid, Region>? garments = null)
     {
         if (!AiVideoModel.IsSupported(config.AiVideoModelKey)) return Result.Failure<Storyboard>(Error.Validation("Choose a supported AI video option."));
         if (!ProductTypes.Contains(product.ProductType.ToLowerInvariant())) return Result.Failure<Storyboard>(Error.Validation("Unsupported product type."));
@@ -62,7 +63,7 @@ public sealed class VideoStoryboardPlanner
         // Standard scene has a source image; its initial blank scene is a UI draft
         // and must not prevent the approved mockups from continuing automatically.
         if (hasSceneTimeline)
-            return PlanAiScenes(product, eligible, config, aiVideoTemplates, experiences);
+            return PlanAiScenes(product, eligible, config, aiVideoTemplates, experiences, garments);
         var templateVersion = config.TemplateVersion ?? 1;
         var output = VideoOutputFormats.Resolve(config.OutputFormat);
         var template = config.Mode == "ai_shot" && config.AiShotOptions?.Coverage == "full_video"
@@ -129,7 +130,8 @@ public sealed class VideoStoryboardPlanner
 
     private Result<Storyboard> PlanAiScenes(Product product, IReadOnlyList<MockupImage> eligible, GenerateVideoConfig config,
         IReadOnlyList<VideoTemplate>? aiVideoTemplates,
-        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences)
+        IReadOnlyDictionary<int, IReadOnlyList<VideoPromptExperience>>? experiences,
+        IReadOnlyDictionary<Guid, Region>? garments)
     {
         var requestedScenes = config.AiScenes!;
         if (requestedScenes.Count is < 1 or > 4)
@@ -255,9 +257,14 @@ public sealed class VideoStoryboardPlanner
             var regions = WorkflowJson.Read<MockupRegions>(source.Regions);
             var detailRegions = new[] { regions.Detail, regions.Artwork }.Where(region => region != null).Cast<Region>().ToArray();
             var useStudioFrame = startFrameMode == "studio";
-            var sourceCrop = definition.RequiresDetail && !useStudioFrame
-                ? detailRegions.FirstOrDefault(region => Math.Min(region.Width * source.MockupWidthPx, region.Height * source.MockupHeightPx) >= 512)
-                : null;
+            // Fabric Detail and Brand Focus open closer than the approved image: on a crop of it around the garment.
+            var sourceCrop = useStudioFrame ? null
+                : definition.RequiresDetail
+                    ? detailRegions.FirstOrDefault(region => Math.Min(region.Width * source.MockupWidthPx, region.Height * source.MockupHeightPx) >= AiOpeningCrop.MinimumSidePx)
+                    : AiOpeningCrop.PlannerApplies(definition, settings, useStudioFrame) && garments?.GetValueOrDefault(source.Id) is { } garment
+                        ? AiOpeningCrop.For(settings.SubtemplateCode, garment, source.MockupWidthPx, source.MockupHeightPx,
+                            VideoOutputFormats.AiSourceAspect(config.OutputFormat, AiVideoModel.ProviderKey))
+                        : null;
 
             MockupImage? studioFrame = null;
             MockupImage? studioSource = null;
