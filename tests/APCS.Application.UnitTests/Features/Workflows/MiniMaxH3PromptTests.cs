@@ -149,6 +149,57 @@ public sealed class MiniMaxH3PromptTests
     }
 
     [TestMethod]
+    [DataRow("tshirt", "shirt", AiVideoModel.LiteModelKey)]
+    [DataRow("hoodie", "hoodie", AiVideoModel.ModelKey)]
+    public void CompileTrace_GarmentShowcase_TurnsInTheWindWithALockedCameraAndNoConflictingRules(string productType, string noun, string modelKey)
+    {
+        var template = AiVideoPromptCompiler.Resolve("cinematic_product_showcase")!;
+
+        // The template's own defaults (a push-in, subject motion none) are what a new scene carries.
+        var trace = AiVideoPromptCompiler.CompileTrace(template, template.Defaults, new(productType, "Hero"), 6, modelKey: modelKey);
+
+        var prompt = trace.FinalPrompt;
+        prompt.Should().StartWith(FirstFrame);
+        prompt.Should().NotContain("{{").And.NotContain("{0}");
+        prompt.Should().Contain("The camera is locked off for the entire shot")
+            .And.Contain("Motion 1, wind ripple")
+            .And.Contain($"Motion 2, slow turn: the {noun} turns slowly around its own vertical centre line")
+            .And.Contain($"During the final third, the back of the {noun} faces the camera")
+            .And.Contain($"The back of the {noun} is plain fabric");
+        // The rules that would keep the product still, invent no other side, or push the camera in are left out.
+        prompt.Should().NotContain("keep the product still")
+            .And.NotContain("do not invent a different product side")
+            .And.NotContain("selected camera movement is mandatory")
+            .And.NotContain("Selected scene controls")
+            .And.NotContain("background and lighting may develop");
+        trace.Parts.Single(part => part.Key == "source_guardrails").Content.Should().Contain("never repeat or mirror the front graphic");
+        trace.Parts.Single(part => part.Key == "template_guardrails").Content.Should().Contain("one smooth half rotation");
+        trace.Parts.Single(part => part.Key == "product_guardrails").Content.Should().Contain("artwork");
+    }
+
+    [TestMethod]
+    public void CompileTrace_ShowcaseOfAProductNotWorn_KeepsTheCameraMoveShowcase()
+    {
+        var template = AiVideoPromptCompiler.Resolve("cinematic_product_showcase")!;
+
+        var trace = AiVideoPromptCompiler.CompileTrace(template, template.Defaults, new("mug", "Hero"), 6, modelKey: AiVideoModel.LiteModelKey);
+
+        trace.FinalPrompt.Should().Contain("premium e-commerce hero shot").And.Contain("Selected scene controls")
+            .And.NotContain("wind ripple");
+    }
+
+    [TestMethod]
+    public void CompileTrace_GarmentShowcaseWithTheSellersOwnPrompt_KeepsTheirWording()
+    {
+        var template = AiVideoPromptCompiler.Resolve("cinematic_product_showcase")!;
+
+        var trace = AiVideoPromptCompiler.CompileTrace(template, template.Defaults with { CustomPrompt = "Slowly orbit the shirt." },
+            new("tshirt", "Hero"), 6, modelKey: AiVideoModel.LiteModelKey);
+
+        trace.FinalPrompt.Should().Contain("Slowly orbit the shirt.").And.NotContain("wind ripple");
+    }
+
+    [TestMethod]
     [DataRow(VeoVideoModel.ModelKey)]
     public void CompileTrace_OtherModel_RetainsTheUnformattedDraft(string modelKey)
     {
