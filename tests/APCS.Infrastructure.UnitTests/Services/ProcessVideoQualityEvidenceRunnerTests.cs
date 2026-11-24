@@ -64,7 +64,7 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
         var runner = CreateRunner(new VideoQualityOptions
         {
             Enabled = true,
-            PythonExecutable = PowerShellExecutable(),
+            PythonExecutable = PythonExecutable(),
             PaddleOcrScriptPath = WriteAdapter("{\"status\":\"completed\",\"score\":0.8}"),
         }, new BytesHandler());
 
@@ -82,7 +82,7 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
         var runner = CreateRunner(new VideoQualityOptions
         {
             Enabled = true,
-            PythonExecutable = PowerShellExecutable(),
+            PythonExecutable = PythonExecutable(),
             PaddleOcrScriptPath = WriteAdapter("{\"status\":\"uncertain\"}"),
         }, new BytesHandler());
 
@@ -98,7 +98,7 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
         var runner = CreateRunner(new VideoQualityOptions
         {
             Enabled = true,
-            PythonExecutable = PowerShellExecutable(),
+            PythonExecutable = PythonExecutable(),
             PaddleOcrScriptPath = WriteAdapter("{\"status\":\"failed\"}"),
         }, new BytesHandler());
 
@@ -130,7 +130,7 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
         var runner = CreateRunner(new VideoQualityOptions
         {
             Enabled = true,
-            PythonExecutable = PowerShellExecutable(),
+            PythonExecutable = PythonExecutable(),
             PaddleOcrScriptPath = WriteAdapter("not-json"),
         }, new BytesHandler());
 
@@ -143,12 +143,12 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
     [TestMethod]
     public async Task EvaluateAsync_WhenAdapterExitsNonZero_ReturnsFailedWithExitCode()
     {
-        var script = Path.Combine(_root, "fails.ps1");
-        File.WriteAllText(script, "exit 7", Encoding.UTF8);
+        var script = Path.Combine(_root, "fails.py");
+        File.WriteAllText(script, "import sys; sys.exit(7)", Encoding.UTF8);
         var runner = CreateRunner(new VideoQualityOptions
         {
             Enabled = true,
-            PythonExecutable = PowerShellExecutable(),
+            PythonExecutable = PythonExecutable(),
             PaddleOcrScriptPath = script,
         }, new BytesHandler());
 
@@ -166,18 +166,19 @@ public sealed class ProcessVideoQualityEvidenceRunnerTests
 
     private string WriteAdapter(string output)
     {
-        var script = Path.Combine(_root, $"adapter-{Guid.NewGuid():N}.ps1");
-        var escapedOutput = output.Replace("'", "''");
+        var script = Path.Combine(_root, $"adapter-{Guid.NewGuid():N}.py");
+        var escapedOutput = output.Replace("\\", "\\\\").Replace("\"", "\\\"");
         File.WriteAllText(script, $$"""
-            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ToolArguments)
-            $outputIndex = [Array]::IndexOf($ToolArguments, "--output")
-            [System.IO.File]::WriteAllText($ToolArguments[$outputIndex + 1], '{{escapedOutput}}')
+            import sys
+            output_idx = sys.argv.index("--output")
+            with open(sys.argv[output_idx + 1], "w", encoding="utf-8") as f:
+                f.write("{{escapedOutput}}")
             """, Encoding.UTF8);
         return script;
     }
 
-    private static string PowerShellExecutable() =>
-        OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh";
+    private static string PythonExecutable() =>
+        OperatingSystem.IsWindows() ? "python" : "python3";
 
     private static string ToolStatus(VideoQualityEvidenceResult result, string name)
     {
