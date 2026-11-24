@@ -12,7 +12,7 @@ using Moq;
 namespace APCS.Application.UnitTests.Features.Commerce;
 
 [TestClass]
-public sealed class MarketResearchServiceTests
+public sealed class MarketResearchServiceTests(TestContext testContext)
 {
     private const string Niche = "cat shirt";
     private readonly List<MarketListingSnapshot> snapshotRows = [];
@@ -179,7 +179,8 @@ public sealed class MarketResearchServiceTests
             Listing("hot-1", "Space cat galaxy shirt", favorites: 900, views: 3000, seller: "shop-2"),
             Listing("hot-2", "Space cat galaxy shirt", favorites: 800, views: 2500, seller: "shop-3"));
 
-        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], MinimumViralScore: 0, TopN: topN));
+        await Create().RetrieveAndIngestAsync(new MarketResearchRequest(CommercePlatform.Etsy, [Niche], MinimumViralScore: 0, TopN: topN),
+            testContext.CancellationToken);
 
         updatedBeforeInsert.Should().BeEmpty();
         opportunityRows.Should().ContainSingle();

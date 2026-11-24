@@ -7,7 +7,7 @@ using Pgvector.EntityFrameworkCore;
 namespace APCS.Infrastructure.IntegrationTests;
 
 [TestClass]
-public sealed class MarketListingQueriesTests
+public sealed class MarketListingQueriesTests(TestContext testContext)
 {
     [TestMethod]
     [DataRow(DateTimeKind.Unspecified)]
@@ -25,14 +25,15 @@ public sealed class MarketListingQueriesTests
 
         var options = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString, o => o.UseVector()).Options;
         await using var db = new AppDbContext(options);
-        await using var transaction = await db.Database.BeginTransactionAsync();
+        await using var transaction = await db.Database.BeginTransactionAsync(testContext.CancellationToken);
         try
         {
             // Session-local table shadows the unqualified mapping. No public rows are written.
             await db.Database.ExecuteSqlRawAsync(
-                "CREATE TEMP TABLE market_listing_snapshots (LIKE public.market_listing_snapshots INCLUDING ALL) ON COMMIT DROP");
+                "CREATE TEMP TABLE market_listing_snapshots (LIKE public.market_listing_snapshots INCLUDING ALL) ON COMMIT DROP",
+                testContext.CancellationToken);
             // The column holds UTC without a zone, so the session's zone must not move the cutoff.
-            await db.Database.ExecuteSqlRawAsync("SET LOCAL TIME ZONE 'Asia/Ho_Chi_Minh'");
+            await db.Database.ExecuteSqlRawAsync("SET LOCAL TIME ZONE 'Asia/Ho_Chi_Minh'", testContext.CancellationToken);
 
             var cutoff = new DateTime(2026, 11, 15, 0, 0, 0, DateTimeKind.Unspecified);
             var superseded = Snapshot("superseded", cutoff.AddSeconds(-1));
@@ -44,13 +45,14 @@ public sealed class MarketListingQueriesTests
                 atCutoff, Snapshot("at-cutoff", cutoff.AddDays(2)),
                 afterCutoff, Snapshot("after-cutoff", cutoff.AddDays(2)),
                 latest);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(testContext.CancellationToken);
 
             var changed = await new MarketListingQueries(db)
-                .CompactSupersededSnapshotsAsync(DateTime.SpecifyKind(cutoff, kind), 100);
+                .CompactSupersededSnapshotsAsync(DateTime.SpecifyKind(cutoff, kind), 100, testContext.CancellationToken);
 
             db.ChangeTracker.Clear();
-            var descriptions = await db.MarketListingSnapshots.ToDictionaryAsync(row => row.Id, row => row.Description);
+            var descriptions = await db.MarketListingSnapshots.ToDictionaryAsync(row => row.Id, row => row.Description,
+                testContext.CancellationToken);
             Assert.AreEqual(1, changed);
             Assert.IsNull(descriptions[superseded.Id]);
             Assert.IsNotNull(descriptions[atCutoff.Id]);
@@ -59,7 +61,7 @@ public sealed class MarketListingQueriesTests
         }
         finally
         {
-            await transaction.RollbackAsync();
+            await transaction.RollbackAsync(testContext.CancellationToken);
         }
     }
 
