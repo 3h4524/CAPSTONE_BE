@@ -398,7 +398,7 @@ public sealed class DeferredRenderTests
     }
 
     [TestMethod]
-    public async Task ListAsync_RenderedVideo_PlaysFromItsFileAndCarriesNoPreviewData()
+    public async Task ListAsync_RenderedVideo_PlaysFromItsFileAndKeepsItsScenePreview()
     {
         var fixture = ReadyFixture();
         fixture.VideoRows.Single().Status = "completed";
@@ -408,8 +408,9 @@ public sealed class DeferredRenderTests
 
         var result = await fixture.ArtifactService.ListAsync(fixture.RunRows.Single().Id, default);
 
-        result.Value.Single().Preview.Should().BeNull();
+        // The file is what plays; the scene data stays so each scene can still be shown on its own.
         result.Value.Single().PreviewUrl.Should().NotBeNull();
+        result.Value.Single().Preview.Should().NotBeNull();
     }
 
     // ---- failure and stopping ----
