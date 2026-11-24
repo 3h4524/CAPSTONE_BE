@@ -326,6 +326,8 @@ public static class DependencyInjection
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupStartQueue, APCS.Infrastructure.BackgroundServices.RunGroupStartQueue>();
+        // A run group's mock-ups and model photos are made side by side, each in a scope of its own acting as the owner.
+        services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IOwnerScopes, APCS.Infrastructure.BackgroundServices.OwnerScopes>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupStartWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();

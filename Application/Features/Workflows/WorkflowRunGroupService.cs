@@ -9,6 +9,7 @@ using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.Entitlements;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace APCS.Application.Features.Workflows;
 
@@ -39,10 +40,17 @@ public interface IWorkflowRunGroupService
     Task<Result<RunGroupResponse>> ResumeAsync(Guid groupId, RunGroupRevisionRequest request, CancellationToken ct);
 
     /// <summary>
-    /// What a started group still needs before its videos: the model photos of its scenes with a person, then, when
-    /// Mockup Approval is automatic, the start of the videos. Run in the background as the group's owner.
+    /// What a started group still needs before its videos: its products' mock-ups stored as video sources and, at the
+    /// same time, the model photos of its scenes with a person; then, when Mockup Approval is automatic, the start of the
+    /// videos. Run in the background as the group's owner.
     /// </summary>
     Task PrepareAsync(Guid groupId, bool autoApprove, CancellationToken ct);
+
+    /// <summary>
+    /// The last step of <see cref="PrepareAsync"/>, run in a scope of its own once the mock-ups are stored and the model
+    /// photos made: in auto mode approves the mock-ups and starts the videos, otherwise keeps why the group waits.
+    /// </summary>
+    Task FinishPreparingAsync(Guid groupId, bool autoApprove, IReadOnlyList<string> problems, CancellationToken ct);
 }
 
 /// <summary>
@@ -64,10 +72,20 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     Validators.GenerateVideoConfigValidator? videoValidator = null, IAiShotQuoteService? quotes = null,
     ILifestyleMockupService? lifestyle = null, IRepository<MockupTemplate>? mockupTemplates = null,
     IRunGroupStartQueue? startQueue = null, IRepository<PromoVideo>? videos = null,
-    IContentModerationService? moderation = null) : IWorkflowRunGroupService
+    IContentModerationService? moderation = null, IGeneratedMockupSourceService? generatedMockups = null,
+    IOwnerScopes? ownerScopes = null) : IWorkflowRunGroupService
 {
     /// <summary>Videos one group makes at most.</summary>
     public const int MaximumTargets = 10;
+
+    /// <summary>Products whose mock-ups are stored at the same time (each stores up to twelve at once itself).</summary>
+    public const int StoreConcurrency = 3;
+
+    /// <summary>
+    /// Model photos made at the same time. Two groups prepared at once ask Ideogram for eight, within the ten one key
+    /// may have in flight.
+    /// </summary>
+    public const int ModelPhotoConcurrency = 4;
 
     private static readonly string[] FinishedRun = ["completed", "failed", "cancelled"];
 
@@ -131,14 +149,16 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
         var auto = MockupAutoApproval.IsAuto(definition);
         // The seller saw what the Run costs, model photos and AI clips included, before pressing Run: nothing paid after
-        // it waits for a second confirmation. A model photo takes seconds at Ideogram and starting the videos plans each
-        // design's storyboard, so both are done in the background and Run answers at once.
+        // it waits for a second confirmation. Storing the mock-ups takes Cloudinary seconds for each, a model photo takes
+        // seconds at Ideogram and starting the videos plans each design's storyboard, so all of it is done in the
+        // background and Run answers at once; the mock-ups appear at Mockup Approval as they are stored.
         var needsPhotos = config is not null && NeedsModelPhotos(config);
-        if (startQueue is not null && (auto || needsPhotos))
+        if (startQueue is not null)
         {
             startQueue.Enqueue(new(group.Id, userId, auto));
             return Result.Success(await MapAsync(group, ct));
         }
+        await StoreMockupsAsync(group, ct);
         var photoProblems = needsPhotos ? (await MakeModelPhotosAsync(group, ct)).Problems : [];
         if (auto) return Result.Success(await AutoConfirmAsync(group, photoProblems, ct));
         if (photoProblems.Count > 0) await SaveNoticeAsync(group, string.Join(" ", photoProblems), ct);
@@ -163,9 +183,21 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         if (group is null || group.Status != "waiting_for_targets") return;
         try
         {
-            var photoProblems = (await MakeModelPhotosAsync(group, ct)).Problems;
-            if (autoApprove) await AutoConfirmAsync(group, photoProblems, ct);
-            else if (photoProblems.Count > 0) await SaveNoticeAsync(group, string.Join(" ", photoProblems), ct);
+            if (ownerScopes is null)
+            {
+                await StoreMockupsAsync(group, ct);
+                await FinishPreparingAsync(group, autoApprove, (await MakeModelPhotosAsync(group, ct)).Problems, ct);
+            }
+            else
+            {
+                var problems = await PrepareSideBySideAsync(group, ownerScopes, ct);
+                // Finished in a fresh scope: this one still holds the mock-ups as they were before they were stored.
+                await ownerScopes.RunAsync(group.UserId, async services =>
+                {
+                    await services.GetRequiredService<IWorkflowRunGroupService>().FinishPreparingAsync(groupId, autoApprove, problems, ct);
+                    return true;
+                });
+            }
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
@@ -178,6 +210,61 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             startQueue?.Done(groupId);
             if (notifier != null) await notifier.GroupChangedAsync(groupId, ct);
         }
+    }
+
+    public async Task FinishPreparingAsync(Guid groupId, bool autoApprove, IReadOnlyList<string> problems, CancellationToken ct)
+    {
+        var group = await groups.GetByIdAsync(groupId, ct);
+        if (group is null || group.UserId != user.UserId) return;
+        await FinishPreparingAsync(group, autoApprove, problems, ct);
+    }
+
+    private async Task FinishPreparingAsync(WorkflowRunGroup group, bool autoApprove, IReadOnlyList<string> problems, CancellationToken ct)
+    {
+        // A run the seller cancelled meanwhile has nothing left to start.
+        if (group.Status != "waiting_for_targets") return;
+        if (autoApprove) await AutoConfirmAsync(group, problems, ct);
+        else if (problems.Count > 0) await SaveNoticeAsync(group, string.Join(" ", problems), ct);
+    }
+
+    /// <summary>
+    /// Stores the mock-ups and makes the model photos at the same time: both wait on other services (Cloudinary,
+    /// Ideogram), so each product's mock-ups and each design's photo get a scope of their own and run side by side. A
+    /// photo is made from its design's composite link, so it does not wait for the mock-ups to be stored. The seller's
+    /// screen is told as each product's mock-ups are stored and as each photo is made. Returns why photos could not be made.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> PrepareSideBySideAsync(WorkflowRunGroup group, IOwnerScopes scopes, CancellationToken ct)
+    {
+        var plan = await PlanModelPhotosAsync(group, includeUnstored: true, ct);
+        var productIds = await ScopeAsync(group, ct);
+
+        var storing = Parallel.ForEachAsync(productIds, new ParallelOptions { MaxDegreeOfParallelism = StoreConcurrency, CancellationToken = ct },
+            async (productId, token) =>
+            {
+                await scopes.RunAsync(group.UserId, services => services.GetRequiredService<IGeneratedMockupSourceService>().ImportAsync(productId, token));
+                if (notifier != null) await notifier.GroupChangedAsync(group.Id, token);
+            });
+        var failed = new string?[plan.Photos.Count];
+        var dressing = Parallel.ForEachAsync(Enumerable.Range(0, plan.Photos.Count),
+            new ParallelOptions { MaxDegreeOfParallelism = ModelPhotoConcurrency, CancellationToken = ct },
+            async (index, token) =>
+            {
+                var photo = plan.Photos[index];
+                var generated = await scopes.RunAsync(group.UserId, services => services.GetRequiredService<ILifestyleMockupService>()
+                    .GenerateForVideoAsync(photo.ProductId, photo.GarmentId, photo.ModelId, token));
+                if (generated.IsFailure) failed[index] = PhotoProblem(photo, generated.Error);
+                else if (notifier != null) await notifier.GroupChangedAsync(group.Id, token);
+            });
+        await Task.WhenAll(storing, dressing);
+        return [.. plan.Problems, .. failed.OfType<string>()];
+    }
+
+    /// <summary>Stores the composited mock-ups of the group's products as video sources, one product after another.</summary>
+    private async Task StoreMockupsAsync(WorkflowRunGroup group, CancellationToken ct)
+    {
+        if (generatedMockups is null) return;
+        foreach (var productId in await ScopeAsync(group, ct))
+            await generatedMockups.ImportAsync(productId, ct);
     }
 
     /// <summary>
@@ -230,16 +317,51 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     /// </summary>
     private async Task<(int Made, IReadOnlyList<string> Problems)> MakeModelPhotosAsync(WorkflowRunGroup group, CancellationToken ct)
     {
-        if (lifestyle is null || mockupTemplates is null) return (0, []);
-        if ((await SharedConfigAsync(group, ct)).Config is not { } shared) return (0, []);
+        var plan = await PlanModelPhotosAsync(group, includeUnstored: false, ct);
+        var made = 0;
+        var problems = plan.Problems.ToList();
+        foreach (var photo in plan.Photos)
+        {
+            var generated = await lifestyle!.GenerateForVideoAsync(photo.ProductId, photo.GarmentId, photo.ModelId, ct);
+            if (generated.IsSuccess)
+            {
+                made++;
+                // Told as each photo is made, not once at the end: the design's card swaps its placeholder for the photo
+                // and the seller can review it while the next design's photo is still being made.
+                if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
+            }
+            else problems.Add(PhotoProblem(photo, generated.Error));
+        }
+        return (made, problems);
+    }
+
+    /// <summary>A model photo to make: the design's mock-up the system's model is dressed in.</summary>
+    private sealed record PlannedPhoto(Guid ProductId, Guid GarmentId, Guid ModelId, string DesignName);
+
+    private sealed record ModelPhotoPlan(IReadOnlyList<PlannedPhoto> Photos, IReadOnlyList<string> Problems)
+    {
+        public static readonly ModelPhotoPlan None = new([], []);
+    }
+
+    private static string PhotoProblem(PlannedPhoto photo, Error error) => $"{photo.DesignName}: its model photo could not be made. {error.Message}";
+
+    /// <summary>
+    /// The model photos the group's designs still need (scenes with a person, no photo yet), and why the others cannot
+    /// have one. <paramref name="includeUnstored"/> also takes a design whose mock-ups are composited but not stored yet:
+    /// its photo is made from the composite link, while the mock-ups are being stored.
+    /// </summary>
+    private async Task<ModelPhotoPlan> PlanModelPhotosAsync(WorkflowRunGroup group, bool includeUnstored, CancellationToken ct)
+    {
+        if (lifestyle is null || mockupTemplates is null) return ModelPhotoPlan.None;
+        if ((await SharedConfigAsync(group, ct)).Config is not { } shared) return ModelPhotoPlan.None;
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
-        var needing = (await TargetsAsync(group, ct))
+        var needing = (await TargetsAsync(group, includeUnstored, ct))
             .Where(target => PersonModelPhotos.Needs(ConfigFor(shared, overrides.GetValueOrDefault(target.Key), target.Product.Id)) && !PersonModelPhotos.Has(target.Mockups))
             .ToArray();
-        if (needing.Length == 0) return (0, []);
+        if (needing.Length == 0) return ModelPhotoPlan.None;
 
         var models = await mockupTemplates.FindAsync(x => x.UserId == null && x.Kind == MockupRules.ModelKind && x.IsActive == true, ct);
-        var made = 0;
+        var photos = new List<PlannedPhoto>();
         var problems = new List<string>();
         foreach (var target in needing)
         {
@@ -248,23 +370,18 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
                 problems.Add($"{Label(target)}: there is no system model photo for {target.Product.ProductType} to put the design on.");
                 continue;
             }
+            // A stored mock-up when the design has one: storing drops a composite that is already stored, so its link is
+            // only used while nothing of the design is stored yet.
+            var wearable = target.Mockups.Any(x => x.ContentHash != null) ? target.Mockups.Where(x => x.ContentHash != null) : target.Mockups;
             // One paid attempt per start, from the main mock-up: a failure is tried again on the next Continue, not here.
-            if (PersonModelPhotos.Garments(target.Mockups).FirstOrDefault() is not { } garment)
+            if (PersonModelPhotos.Garments(wearable).FirstOrDefault() is not { } garment)
             {
                 problems.Add($"{Label(target)}: it has no mock-up to put on a model photo.");
                 continue;
             }
-            var generated = await lifestyle.GenerateForVideoAsync(target.Product.Id, garment.Id, model.Id, ct);
-            if (generated.IsSuccess)
-            {
-                made++;
-                // Told as each photo is made, not once at the end: the design's card swaps its placeholder for the photo
-                // and the seller can review it while the next design's photo is still being made.
-                if (notifier != null) await notifier.GroupChangedAsync(group.Id, ct);
-            }
-            else problems.Add($"{Label(target)}: its model photo could not be made. {generated.Error.Message}");
+            photos.Add(new(target.Product.Id, garment.Id, model.Id, Label(target)));
         }
-        return (made, problems);
+        return new(photos, problems);
     }
 
     public async Task<Result<RunGroupResponse>> GetAsync(Guid groupId, CancellationToken ct)
@@ -763,13 +880,17 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     }
 
     /// <summary>Every design of the group's products with at least one mock-up stored as a video source.</summary>
-    private async Task<IReadOnlyList<Target>> TargetsAsync(WorkflowRunGroup group, CancellationToken ct)
+    private Task<IReadOnlyList<Target>> TargetsAsync(WorkflowRunGroup group, CancellationToken ct) => TargetsAsync(group, includeUnstored: false, ct);
+
+    /// <param name="includeUnstored">Also counts the composited mock-ups not stored yet (only their link exists).</param>
+    private async Task<IReadOnlyList<Target>> TargetsAsync(WorkflowRunGroup group, bool includeUnstored, CancellationToken ct)
     {
         var scope = (await ScopeAsync(group, ct)).ToArray();
         if (scope.Length == 0) return [];
         var owned = (await products.FindAsync(x => scope.Contains(x.Id) && x.UserId == group.UserId && x.DeletedAt == null, ct)).ToDictionary(x => x.Id);
         // A composite made again after its template changed is listed instead of the one it replaces.
-        var stored = MockupSources.Current(await assets.FindAsync(x => scope.Contains(x.ProductId) && x.DeletedAt == null && x.ContentHash != null, ct));
+        var stored = MockupSources.Current(await assets.FindAsync(x => scope.Contains(x.ProductId) && x.DeletedAt == null
+            && (x.ContentHash != null || (includeUnstored && x.SourceType == MockupSources.Generated && x.MockupImageUrl != null)), ct));
         var groupedAssets = stored.Where(x => owned.ContainsKey(x.ProductId))
             .GroupBy(x => (x.ProductId, Key: x.ArtworkGroupKey ?? x.ProductId.ToString())).ToArray();
         var designIds = groupedAssets.Select(x => Guid.TryParse(x.Key.Key, out var id) ? id : Guid.Empty).Where(id => id != Guid.Empty).Distinct().ToArray();
