@@ -36,7 +36,10 @@ public sealed class IdeogramReadySignalsTests
         ready.Watch("g1");
         ready.Ready("g1");
 
-        await ready.WaitAsync("g1", Long, TestContext.CancellationToken).WaitAsync(Soon, TestContext.CancellationToken);
+        var waiting = ready.WaitAsync("g1", Long, TestContext.CancellationToken);
+        await waiting.WaitAsync(Soon, TestContext.CancellationToken);
+
+        waiting.IsCompletedSuccessfully.Should().BeTrue();
     }
 
     [TestMethod]

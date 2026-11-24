@@ -25,7 +25,7 @@ public sealed class IdeogramWebhookControllerTests
     [TestMethod]
     public async Task Receive_WakesTheGenerationNamedInTheHeader()
     {
-        var action = await Controller("{}", "xtdZiqPwRxqY1Y7NExFmzB").Receive(TestContext.CancellationToken);
+        var action = await Controller("{}").Receive("xtdZiqPwRxqY1Y7NExFmzB", TestContext.CancellationToken);
 
         action.Should().BeOfType<OkResult>();
         signals.Verify(x => x.Ready("xtdZiqPwRxqY1Y7NExFmzB"), Times.Once);
@@ -34,7 +34,7 @@ public sealed class IdeogramWebhookControllerTests
     [TestMethod]
     public async Task Receive_WithoutTheHeader_TakesTheGenerationFromTheBody()
     {
-        await Controller("""{"generation_id":"g-1_a","created":"2026-11-24T12:00:00Z","data":[]}""").Receive(TestContext.CancellationToken);
+        await Controller("""{"generation_id":"g-1_a","created":"2026-11-24T12:00:00Z","data":[]}""").Receive(null, TestContext.CancellationToken);
 
         signals.Verify(x => x.Ready("g-1_a"), Times.Once);
     }
@@ -46,17 +46,16 @@ public sealed class IdeogramWebhookControllerTests
     [DataRow("""{"generation_id":42}""")]
     public async Task Receive_WithoutAGenerationId_AnswersOkAndWakesNothing(string body)
     {
-        var action = await Controller(body).Receive(TestContext.CancellationToken);
+        var action = await Controller(body).Receive(null, TestContext.CancellationToken);
 
         action.Should().BeOfType<OkResult>();
         signals.Verify(x => x.Ready(It.IsAny<string>()), Times.Never);
     }
 
-    private IdeogramWebhookController Controller(string body, string? generationId = null)
+    private IdeogramWebhookController Controller(string body)
     {
         var context = new DefaultHttpContext();
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(body));
-        if (generationId is not null) context.Request.Headers[IdeogramWebhookController.GenerationIdHeader] = generationId;
         return new(signals.Object) { ControllerContext = new ControllerContext { HttpContext = context } };
     }
 }

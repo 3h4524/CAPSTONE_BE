@@ -31,9 +31,8 @@ public sealed class IdeogramWebhookController(IImageReadySignals signals) : Cont
     [HttpPost]
     [RequestSizeLimit(MaximumBodyBytes)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<IActionResult> Receive(CancellationToken cancellationToken)
+    public async Task<IActionResult> Receive([FromHeader(Name = GenerationIdHeader)] string? generationId, CancellationToken cancellationToken)
     {
-        var generationId = Request.Headers[GenerationIdHeader].ToString();
         if (!IsGenerationId(generationId)) generationId = await GenerationIdInBodyAsync(cancellationToken);
         if (IsGenerationId(generationId)) signals.Ready(generationId);
         return Ok();
@@ -56,6 +55,6 @@ public sealed class IdeogramWebhookController(IImageReadySignals signals) : Cont
     }
 
     // Ideogram's ids are URL-safe base64.
-    private static bool IsGenerationId(string value) =>
-        value.Length is > 0 and <= 128 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+    private static bool IsGenerationId([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] string? value) =>
+        value is { Length: > 0 and <= 128 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 }
