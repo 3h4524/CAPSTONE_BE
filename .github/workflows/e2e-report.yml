@@ -16,6 +16,8 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - feat/ci-e2e-report-ingest
 
 permissions:
   contents: read
@@ -40,10 +42,14 @@ jobs:
             echo "be_ref=$BE_REF" >> "$GITHUB_OUTPUT"
             echo "fe_ref=$FE_REF" >> "$GITHUB_OUTPUT"
             echo "triggered_by=Manual (${{ github.actor }})" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "fe_ref=main" >> "$GITHUB_OUTPUT"
             echo "triggered_by=Release tag (${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+          else
+            echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=merge-version-mc4" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Branch push (${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout Backend
