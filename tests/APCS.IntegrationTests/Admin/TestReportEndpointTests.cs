@@ -161,6 +161,52 @@ public sealed class TestReportEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    [TestMethod]
+    public async Task Ingest_WithAnAdminSession_CreatesAndSavesRun()
+    {
+        using var client = await AdminClientAsync();
+        using var doc = JsonDocument.Parse(ReportJson);
+
+        var payload = new TestReportIngestDto
+        {
+            RunId = "run-ci-ingest-1",
+            Branch = "feat/ci-e2e-report-ingest",
+            CommitSha = "feedbee",
+            TriggeredBy = "GitHub Actions",
+            Report = doc.RootElement,
+        };
+
+        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("runId").GetString().Should().Be("run-ci-ingest-1");
+        body.GetProperty("status").GetString().Should().Be("passed");
+        body.GetProperty("totalTests").GetInt32().Should().Be(1);
+
+        using var fetched = await client.GetAsync($"{Route}/run-ci-ingest-1");
+        fetched.StatusCode.Should().Be(HttpStatusCode.OK);
+        var fetchedBody = await fetched.Content.ReadFromJsonAsync<JsonElement>();
+        fetchedBody.GetProperty("run").GetProperty("commitSha").GetString().Should().Be("feedbee");
+    }
+
+    [TestMethod]
+    public async Task Ingest_WithoutASessionOrKey_IsUnauthorized()
+    {
+        using var client = TestAccount.CreateAnonymousClient(_host);
+        using var doc = JsonDocument.Parse(ReportJson);
+
+        var payload = new TestReportIngestDto
+        {
+            RunId = "run-ci-ingest-anon",
+            Report = doc.RootElement,
+        };
+
+        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     private static async Task StoreRunAsync()
     {
         using var scope = _host.Factory.Services.CreateScope();

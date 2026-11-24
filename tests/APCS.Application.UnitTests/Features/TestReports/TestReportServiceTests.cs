@@ -301,6 +301,55 @@ public sealed class TestReportServiceTests
         _store.Verify(store => store.DeleteRunAsync("run-1", It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [TestMethod]
+    public async Task IngestRunAsync_WithValidReport_ParsesAndSavesRun()
+    {
+        _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(ReportJson);
+        var request = new TestReportIngestDto
+        {
+            RunId = "run-ci-123",
+            Branch = "main",
+            CommitSha = "abcdef1",
+            TriggeredBy = "GitHub Actions",
+            Report = doc.RootElement,
+        };
+
+        var result = await _sut.IngestRunAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RunId.Should().Be("run-ci-123");
+        result.Value.Status.Should().Be("passed");
+        result.Value.TotalTests.Should().Be(1);
+        result.Value.PassedTests.Should().Be(1);
+        result.Value.Branch.Should().Be("main");
+        result.Value.CommitSha.Should().Be("abcdef1");
+        result.Value.TriggeredBy.Should().Be("GitHub Actions");
+
+        _store.Verify(
+            store => store.SaveRunAsync(
+                It.Is<TestReportRunDto>(r => r.RunId == "run-ci-123" && r.Status == "passed"),
+                It.IsNotNull<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task IngestRunAsync_WithEmptyReport_ReturnsValidationFailure()
+    {
+        var request = new TestReportIngestDto
+        {
+            Report = default,
+        };
+
+        var result = await _sut.IngestRunAsync(request);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(ErrorType.Validation);
+    }
+
     private static async Task WaitForTheRunToFinish()
     {
         for (var attempt = 0; attempt < 100; attempt++)

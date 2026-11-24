@@ -1,0 +1,159 @@
+name: E2E Automation Suite & Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to run E2E test suite against (BE & FE)"
+        required: true
+        default: "main"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Run E2E and ingest report
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve target refs
+        id: refs
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "be_ref=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=${{ inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Manual (${{ github.actor }})" >> "$GITHUB_OUTPUT"
+          else
+            echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=main" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Release tag (${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          path: CAPSTONE_BE
+          ref: ${{ steps.refs.outputs.be_ref }}
+
+      - name: Checkout Frontend
+        uses: actions/checkout@v4
+        with:
+          repository: 3h4524/CAPSTONE_FE
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          path: CAPSTONE_FE
+          ref: ${{ steps.refs.outputs.fe_ref }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: CAPSTONE_FE/pnpm-lock.yaml
+
+      - name: Install Frontend dependencies
+        working-directory: CAPSTONE_FE
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: CAPSTONE_FE
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E Test Suite
+        id: test_run
+        continue-on-error: true
+        working-directory: CAPSTONE_BE
+        run: |
+          E2E_FE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_FE" \
+          E2E_BE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_BE" \
+          E2E_ORCHESTRATION_COMMAND=test \
+          dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj --nologo
+
+      - name: Ingest Test Report to Admin Dashboard
+        if: always()
+        shell: bash
+        env:
+          INGEST_URL: ${{ secrets.APCS_API_URL }}
+          INGEST_KEY: ${{ secrets.TEST_REPORTS_INGEST_KEY }}
+          REPORT_PATH: ${{ github.workspace }}/CAPSTONE_FE/test-results/report/report.json
+          TRIGGERED_BY: ${{ steps.refs.outputs.triggered_by }}
+          BRANCH_NAME: ${{ steps.refs.outputs.be_ref }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$INGEST_URL" ]; then
+            echo "APCS_API_URL secret is not configured; skipping remote ingest."
+            exit 0
+          fi
+
+          if [ ! -f "$REPORT_PATH" ]; then
+            echo "Playwright report was not found at $REPORT_PATH; skipping ingest."
+            exit 0
+          fi
+
+          python3 - << 'EOF'
+          import json, os, sys, urllib.request
+
+          report_path = os.environ.get("REPORT_PATH")
+          ingest_url = os.environ.get("INGEST_URL", "").rstrip("/") + "/api/admin/test-reports/ingest"
+          ingest_key = os.environ.get("INGEST_KEY", "")
+          branch = os.environ.get("BRANCH_NAME", "")
+          commit = os.environ.get("COMMIT_SHA", "")[:7]
+          triggered_by = os.environ.get("TRIGGERED_BY", "CI/CD")
+
+          try:
+              with open(report_path, "r", encoding="utf-8") as f:
+                  report_data = json.load(f)
+
+              payload = {
+                  "runId": f"ci-{os.environ.get('GITHUB_RUN_ID', 'manual')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                  "branch": branch,
+                  "commitSha": commit,
+                  "triggeredBy": triggered_by,
+                  "report": report_data
+              }
+
+              headers = {
+                  "Content-Type": "application/json",
+              }
+              if ingest_key:
+                  headers["X-CI-Key"] = ingest_key
+
+              req = urllib.request.Request(
+                  ingest_url,
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers=headers,
+                  method="POST"
+              )
+
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  print(f"Report successfully ingested to {ingest_url} (HTTP {resp.status})")
+          except Exception as ex:
+              print(f"Failed to ingest report to {ingest_url}: {ex}")
+          EOF
+
+      - name: Assert Test Succeeded
+        if: steps.test_run.outcome != 'success'
+        run: |
+          echo "E2E tests failed. Report was ingested to admin dashboard."
+          exit 1
