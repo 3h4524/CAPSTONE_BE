@@ -102,9 +102,9 @@ jobs:
           E2E_FE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_FE" \
           E2E_BE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_BE" \
           E2E_ORCHESTRATION_COMMAND=test \
-          dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj --nologo
+          dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj --nologo --property:WarningLevel=0
 
-      - name: Ingest Test Report to Admin Dashboard
+      - name: Process Test Report & Ingest
         if: always()
         shell: bash
         env:
@@ -114,57 +114,107 @@ jobs:
           TRIGGERED_BY: ${{ steps.refs.outputs.triggered_by }}
           BRANCH_NAME: ${{ steps.refs.outputs.be_ref }}
           COMMIT_SHA: ${{ github.sha }}
+          SUITE_OUTCOME: ${{ steps.test_run.outcome }}
         run: |
-          if [ -z "$INGEST_URL" ]; then
-            echo "APCS_API_URL secret is not configured; skipping remote ingest."
-            exit 0
-          fi
-
-          if [ ! -f "$REPORT_PATH" ]; then
-            echo "Playwright report was not found at $REPORT_PATH; skipping ingest."
-            exit 0
-          fi
-
           python3 - << 'EOF'
           import json, os, sys, urllib.request
 
-          report_path = os.environ.get("REPORT_PATH")
-          ingest_url = os.environ.get("INGEST_URL", "").rstrip("/") + "/api/admin/test-reports/ingest"
+          report_path = os.environ.get("REPORT_PATH", "")
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          ingest_url = os.environ.get("INGEST_URL", "").rstrip("/")
           ingest_key = os.environ.get("INGEST_KEY", "")
           branch = os.environ.get("BRANCH_NAME", "")
           commit = os.environ.get("COMMIT_SHA", "")[:7]
           triggered_by = os.environ.get("TRIGGERED_BY", "CI/CD")
+          suite_outcome = os.environ.get("SUITE_OUTCOME", "success")
 
-          try:
-              with open(report_path, "r", encoding="utf-8") as f:
-                  report_data = json.load(f)
+          stats = {}
+          report_data = None
+          if os.path.isfile(report_path):
+              try:
+                  with open(report_path, "r", encoding="utf-8") as f:
+                      report_data = json.load(f)
+                      stats = report_data.get("stats", {})
+              except Exception as ex:
+                  print(f"Failed to read report file: {ex}")
 
-              payload = {
-                  "runId": f"ci-{os.environ.get('GITHUB_RUN_ID', 'manual')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
-                  "branch": branch,
-                  "commitSha": commit,
-                  "triggeredBy": triggered_by,
-                  "report": report_data
-              }
+          passed = stats.get("expected", 0)
+          failed = stats.get("unexpected", 0)
+          flaky = stats.get("flaky", 0)
+          skipped = stats.get("skipped", 0)
+          duration_ms = stats.get("duration", 0)
+          duration_sec = round(duration_ms / 1000.0, 1)
 
-              headers = {
-                  "Content-Type": "application/json",
-              }
-              if ingest_key:
-                  headers["X-CI-Key"] = ingest_key
+          status_badge = "✅ Passed" if suite_outcome == "success" and failed == 0 else "❌ Failed"
 
-              req = urllib.request.Request(
-                  ingest_url,
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers=headers,
-                  method="POST"
-              )
+          markdown = [
+              f"## {status_badge} — E2E Automation Test Results",
+              "",
+              "| Status | Total | Passed | Failed | Flaky | Skipped | Duration |",
+              "| :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+              f"| **{status_badge}** | {passed + failed + skipped} | {passed} | {failed} | {flaky} | {skipped} | {duration_sec}s |",
+              "",
+              f"- **Triggered By:** `{triggered_by}`",
+              f"- **Backend Branch:** `{branch}`",
+              f"- **Commit:** `{commit}`",
+          ]
 
-              with urllib.request.urlopen(req, timeout=30) as resp:
-                  print(f"Report successfully ingested to {ingest_url} (HTTP {resp.status})")
-          except Exception as ex:
-              print(f"Failed to ingest report to {ingest_url}: {ex}")
+          if not ingest_url:
+              markdown.extend([
+                  "",
+                  "> ℹ️ **Notice:** Remote ingestion to Admin Dashboard was skipped because secret `APCS_API_URL` is not configured. To enable live sync with the Admin panel, set `APCS_API_URL` and `TEST_REPORTS_INGEST_KEY` in GitHub repository secrets."
+              ])
+          else:
+              markdown.extend([
+                  "",
+                  f"> 📡 **Admin Dashboard Sync:** Target `{ingest_url}`"
+              ])
+
+          if summary_file:
+              try:
+                  with open(summary_file, "a", encoding="utf-8") as f:
+                      f.write("\n".join(markdown) + "\n")
+              except Exception as ex:
+                  print(f"Failed to write GITHUB_STEP_SUMMARY: {ex}")
+
+          if ingest_url and report_data:
+              target_endpoint = f"{ingest_url}/api/admin/test-reports/ingest"
+              try:
+                  payload = {
+                      "runId": f"ci-{os.environ.get('GITHUB_RUN_ID', 'manual')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                      "branch": branch,
+                      "commitSha": commit,
+                      "triggeredBy": triggered_by,
+                      "report": report_data
+                  }
+                  headers = {"Content-Type": "application/json"}
+                  if ingest_key:
+                      headers["X-CI-Key"] = ingest_key
+
+                  req = urllib.request.Request(
+                      target_endpoint,
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers=headers,
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      print(f"Report successfully ingested to {target_endpoint} (HTTP {resp.status})")
+              except Exception as ex:
+                  print(f"Failed to ingest report to {target_endpoint}: {ex}")
+          elif not ingest_url:
+              print("APCS_API_URL secret is not configured; skipping remote ingest.")
           EOF
+
+      - name: Upload Test Report Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-report
+          path: |
+            ${{ github.workspace }}/CAPSTONE_FE/test-results/report/report.json
+            ${{ github.workspace }}/CAPSTONE_FE/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Assert Test Succeeded
         if: steps.test_run.outcome != 'success'
