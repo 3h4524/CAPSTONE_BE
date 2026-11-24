@@ -16,8 +16,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - feat/ci-e2e-report-ingest
 
 permissions:
   contents: read
