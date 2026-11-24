@@ -288,7 +288,7 @@ public sealed class TestReportServiceTests
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        var started = await _sut.StartRunAsync("admin@apcs.test", "headed");
+        var started = await _sut.StartRunAsync("admin@apcs.test", "headed", TestContext.CancellationToken);
 
         started.IsSuccess.Should().BeTrue();
         await WaitForTheRunToFinish();
