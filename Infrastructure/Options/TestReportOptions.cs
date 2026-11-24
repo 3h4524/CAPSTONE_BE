@@ -34,4 +34,9 @@ public sealed class TestReportOptions
     /// Gets or sets how long a run may take before it is stopped.
     /// </summary>
     public int TimeoutMinutes { get; set; } = 90;
+
+    /// <summary>
+    /// Gets or sets the shared secret key accepted by the ingest endpoint for automated CI runs.
+    /// </summary>
+    public string IngestApiKey { get; set; } = string.Empty;
 }

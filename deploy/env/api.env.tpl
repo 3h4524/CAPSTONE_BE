@@ -69,6 +69,8 @@ Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
 Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 
+TestReports__IngestApiKey=${TEST_REPORTS_INGEST_KEY}
+
 # The platform Ideogram and MiniMax keys are kept by an Admin at /admin/system-api-keys (in the database), not here.
 
 # The API makes the AI scenes of a render job before the media worker gets it (docs/VIDEO_WORKFLOWS.md, "AI scenes made by the API").

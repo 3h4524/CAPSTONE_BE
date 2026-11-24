@@ -1,0 +1,249 @@
+name: E2E Automation Suite & Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Backend branch to test"
+        required: true
+        default: "merge-version-sc4"
+        type: string
+      fe_branch:
+        description: "Frontend branch to test (optional, defaults to matching mc version)"
+        required: false
+        default: "merge-version-mc4"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  WIF_PROVIDER: projects/1035893227434/locations/global/workloadIdentityPools/github/providers/github-actions
+  DEPLOYER_SA: apcs-deployer@apcs-prod.iam.gserviceaccount.com
+
+jobs:
+  e2e:
+    name: Run E2E and ingest report
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve target refs
+        id: refs
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BE_REF="${{ inputs.branch }}"
+            FE_REF="${{ inputs.fe_branch }}"
+            if [ -z "$FE_REF" ]; then
+              FE_REF=$(echo "$BE_REF" | sed 's/-sc/-mc/')
+            fi
+            echo "be_ref=$BE_REF" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=$FE_REF" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Manual (${{ github.actor }})" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=main" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Release tag (${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+          else
+            echo "be_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "fe_ref=merge-version-mc4" >> "$GITHUB_OUTPUT"
+            echo "triggered_by=Branch push (${{ github.ref_name }})" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          path: CAPSTONE_BE
+          ref: ${{ steps.refs.outputs.be_ref }}
+
+      - name: Load deployment settings
+        run: grep -vE '^\s*(#|$)' CAPSTONE_BE/deploy/env/common.env >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        id: gcp_auth
+        continue-on-error: true
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Read Secret Manager keys
+        id: secrets
+        if: steps.gcp_auth.outcome == 'success'
+        continue-on-error: true
+        uses: google-github-actions/get-secretmanager-secrets@2b5f97c5a4b9c105e64646762ad4fc3f5128e6f5 # v2
+        with:
+          secrets: |-
+            ingest_key:${{ env.GCP_PROJECT }}/test-reports-ingest-key
+
+      - name: Checkout Frontend
+        uses: actions/checkout@v4
+        with:
+          repository: 3h4524/CAPSTONE_FE
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          path: CAPSTONE_FE
+          ref: ${{ steps.refs.outputs.fe_ref }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: CAPSTONE_FE/pnpm-lock.yaml
+
+      - name: Install Frontend dependencies
+        working-directory: CAPSTONE_FE
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: CAPSTONE_FE
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E Test Suite
+        id: test_run
+        continue-on-error: true
+        working-directory: CAPSTONE_BE
+        run: |
+          E2E_FE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_FE" \
+          E2E_BE_ROOT="$GITHUB_WORKSPACE/CAPSTONE_BE" \
+          E2E_ORCHESTRATION_COMMAND=test \
+          dotnet test tests/APCS.E2E.Automation/APCS.E2E.Automation.csproj --nologo --property:WarningLevel=0
+
+      - name: Process Test Report & Ingest
+        if: always()
+        shell: bash
+        env:
+          INGEST_URL: ${{ env.APP_DOMAIN != '' && format('https://{0}', env.APP_DOMAIN) || secrets.APCS_API_URL }}
+          INGEST_KEY: ${{ steps.secrets.outputs.ingest_key || secrets.TEST_REPORTS_INGEST_KEY }}
+          REPORT_PATH: ${{ github.workspace }}/CAPSTONE_FE/test-results/report/report.json
+          TRIGGERED_BY: ${{ steps.refs.outputs.triggered_by }}
+          BRANCH_NAME: ${{ steps.refs.outputs.be_ref }}
+          COMMIT_SHA: ${{ github.sha }}
+          SUITE_OUTCOME: ${{ steps.test_run.outcome }}
+        run: |
+          python3 - << 'EOF'
+          import json, os, sys, urllib.request
+
+          report_path = os.environ.get("REPORT_PATH", "")
+          summary_file = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          ingest_url = os.environ.get("INGEST_URL", "").rstrip("/")
+          ingest_key = os.environ.get("INGEST_KEY", "")
+          branch = os.environ.get("BRANCH_NAME", "")
+          commit = os.environ.get("COMMIT_SHA", "")[:7]
+          triggered_by = os.environ.get("TRIGGERED_BY", "CI/CD")
+          suite_outcome = os.environ.get("SUITE_OUTCOME", "success")
+
+          stats = {}
+          report_data = None
+          if os.path.isfile(report_path):
+              try:
+                  with open(report_path, "r", encoding="utf-8") as f:
+                      report_data = json.load(f)
+                      stats = report_data.get("stats", {})
+              except Exception as ex:
+                  print(f"Failed to read report file: {ex}")
+
+          passed = stats.get("expected", 0)
+          failed = stats.get("unexpected", 0)
+          flaky = stats.get("flaky", 0)
+          skipped = stats.get("skipped", 0)
+          duration_ms = stats.get("duration", 0)
+          duration_sec = round(duration_ms / 1000.0, 1)
+
+          status_badge = "✅ Passed" if suite_outcome == "success" and failed == 0 else "❌ Failed"
+
+          markdown = [
+              f"## {status_badge} — E2E Automation Test Results",
+              "",
+              "| Status | Total | Passed | Failed | Flaky | Skipped | Duration |",
+              "| :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+              f"| **{status_badge}** | {passed + failed + skipped} | {passed} | {failed} | {flaky} | {skipped} | {duration_sec}s |",
+              "",
+              f"- **Triggered By:** `{triggered_by}`",
+              f"- **Backend Branch:** `{branch}`",
+              f"- **Commit:** `{commit}`",
+          ]
+
+          if not ingest_url or not ingest_key:
+              markdown.extend([
+                  "",
+                  "> ℹ️ **Notice:** Remote ingestion to Admin Dashboard was skipped because the ingest target or Secret Manager key `test-reports-ingest-key` is not configured or unavailable."
+              ])
+          else:
+              markdown.extend([
+                  "",
+                  f"> 📡 **Admin Dashboard Sync:** Ingesting report to `{ingest_url}`..."
+              ])
+
+          if summary_file:
+              try:
+                  with open(summary_file, "a", encoding="utf-8") as f:
+                      f.write("\n".join(markdown) + "\n")
+              except Exception as ex:
+                  print(f"Failed to write GITHUB_STEP_SUMMARY: {ex}")
+
+          if ingest_url and ingest_key and report_data:
+              target_endpoint = f"{ingest_url}/api/admin/test-reports/ingest"
+              try:
+                  payload = {
+                      "runId": f"ci-{os.environ.get('GITHUB_RUN_ID', 'manual')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
+                      "branch": branch,
+                      "commitSha": commit,
+                      "triggeredBy": triggered_by,
+                      "report": report_data
+                  }
+                  headers = {
+                      "Content-Type": "application/json",
+                      "X-CI-Key": ingest_key
+                  }
+
+                  req = urllib.request.Request(
+                      target_endpoint,
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers=headers,
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      print(f"Report successfully ingested to {target_endpoint} (HTTP {resp.status})")
+              except Exception as ex:
+                  print(f"Failed to ingest report to {target_endpoint}: {ex}")
+          elif not ingest_url or not ingest_key:
+              print("Ingest URL or Secret Manager key is not configured; skipping remote ingest.")
+          EOF
+
+      - name: Upload Test Report Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-e2e-report
+          path: |
+            ${{ github.workspace }}/CAPSTONE_FE/test-results/report/report.json
+            ${{ github.workspace }}/CAPSTONE_FE/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Assert Test Succeeded
+        if: steps.test_run.outcome != 'success'
+        run: |
+          echo "E2E tests failed. Report was ingested to admin dashboard."
+          exit 1
