@@ -106,7 +106,10 @@ public static class WorkflowNodeCatalog
             new("tone", "select", "Tone", [new("friendly", "Friendly"), new("professional", "Professional"), new("playful", "Playful")]),
             new("includeSeoScore", "switch", "SEO score")
         ]),
-        new("export-zip", "Export ZIP", "Packages the final assets into a ZIP file.", Order("export-zip"), []),
+        new("export-zip", "Export ZIP", "Packages the final assets into a ZIP file: the video of every scene, and the final video unless its option is off.", Order("export-zip"),
+        [
+            new("includeFinalVideo", "switch", "Render the final video (turn off for a faster export that has each scene's video only)")
+        ]),
         new("publish-printify", "Push to Printify", "Creates the product on Printify, which publishes it to Etsy and prints each order.", Order("publish-printify"),
         [
             new("targetProfit", "number", "Profit per item (USD)", Min: 0, Max: 500),

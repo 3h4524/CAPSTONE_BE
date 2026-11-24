@@ -86,6 +86,8 @@ public sealed class WorkflowPublishService(
             || !Works(snapshot.NodeType, snapshot.RunStatus))
             return null;
 
+        // The step is waiting for the final video to be rendered: the run starts it once the file exists.
+        if (IsWaitingForRender(snapshot.OutputSnapshot)) return null;
         var current = ReadState(snapshot.OutputSnapshot);
         Outcome outcome;
         try
@@ -343,6 +345,12 @@ public sealed class WorkflowPublishService(
         var listing = result.Value;
         return Outcome.Done(new PublishNodeState("done", EtsyListingId: listing.ListingId, EtsyUrl: listing.EditUrl,
             MediaAttached: listing.ImagesUploaded + (listing.VideoUploaded ? 1 : 0) + listing.FilesUploaded, Warnings: listing.Warnings));
+    }
+
+    private static bool IsWaitingForRender(string json)
+    {
+        try { return WorkflowJson.Read<AwaitingRenderState>(json).AwaitingRender; }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     private static PublishNodeState ReadState(string json)

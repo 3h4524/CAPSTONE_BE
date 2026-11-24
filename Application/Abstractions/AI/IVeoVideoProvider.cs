@@ -32,6 +32,11 @@ public interface IVeoVideoProvider
     Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
         int durationSeconds, bool people, Region? sourceCrop, CancellationToken ct) =>
         StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, ct);
+    /// <param name="callbackUrl">Where the provider calls back when the operation changes state. A provider that cannot call
+    /// back ignores it, and the operation is then followed by asking about it only.</param>
+    Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
+        int durationSeconds, bool people, Region? sourceCrop, string? callbackUrl, CancellationToken ct) =>
+        StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, sourceCrop, ct);
     Task<VeoOperationResult> PollAsync(string apiKey, string operationName, CancellationToken ct);
     Task<byte[]> DownloadAsync(string apiKey, string videoUri, CancellationToken ct);
 }

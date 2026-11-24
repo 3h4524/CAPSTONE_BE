@@ -24,10 +24,20 @@ public static class VideoAutoApproval
         definition.Nodes.SingleOrDefault(node => node.Type == "review-video") is { } review &&
         string.Equals(WorkflowJson.Config<ReviewVideoConfig>(review).Mode, AutoMode, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Approves <paramref name="video"/> when it is finished, still undecided and listable; false leaves it as it is.</summary>
+    /// <summary>
+    /// Approves <paramref name="video"/> when it is finished (or, with the final render deferred, when its scenes are ready and its
+    /// plan can be listed), still undecided and listable; false leaves it as it is.
+    /// </summary>
     public static bool Approve(PromoVideo video, Guid userId, DateTime now)
     {
-        if (video.Status != "completed" || video.ApprovalStatus != "pending" || !PassesRequiredChecks(video.QaResult)) return false;
+        if (video.ApprovalStatus != "pending") return false;
+        var passes = video.Status switch
+        {
+            DeferredRender.VideoCompleted => PassesRequiredChecks(video.QaResult),
+            DeferredRender.VideoReady => PlannedPassesRequiredChecks(video.ConfigSnapshot),
+            _ => false
+        };
+        if (!passes) return false;
         video.ApprovalStatus = "approved";
         video.ReviewRevision++;
         video.ApprovedBy = userId;
@@ -43,6 +53,23 @@ public static class VideoAutoApproval
         {
             var saved = WorkflowJson.Read<SavedQa>(qaResult);
             return saved.Technical?.FullDecode == true && saved.EtsyCompliance is { } etsy && etsy.Status != "fail";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Etsy's required checks against the storyboard saved with the video, for a video that has no file yet.</summary>
+    internal static bool PlannedPassesRequiredChecks(string? configSnapshot)
+    {
+        if (string.IsNullOrWhiteSpace(configSnapshot)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(configSnapshot);
+            if (!document.RootElement.TryGetProperty("storyboard", out var element)) return false;
+            var board = element.Deserialize<Storyboard>(WorkflowJson.Options);
+            return board is not null && EtsyVideoCompliance.EvaluatePlanned(board).Status != "fail";
         }
         catch (JsonException)
         {

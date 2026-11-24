@@ -7,6 +7,7 @@ using APCS.Application.Features.BatchMockups.Common;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace APCS.Application.UnitTests.Features.Workflows;
@@ -492,9 +493,10 @@ public sealed class AiShotJobServiceTests
     }
 
     // The API makes the clips of a job in generating_clips itself: no worker holds a lease on it.
-    private AiShotJobService ClipPhaseService(AiShotJobState? state = null, ISceneVideoNotifier? notifier = null)
+    private AiShotJobService ClipPhaseService(AiShotJobState? state = null, ISceneVideoNotifier? notifier = null,
+        AiVideoCallbackUrls? callbacks = null)
     {
-        var service = Service(state, notifier: notifier);
+        var service = Service(state, notifier: notifier, callbacks: callbacks);
         job.Status = AiClipPhase.JobStatus;
         job.LeaseToken = null;
         job.LeaseExpiresAt = null;
@@ -514,6 +516,99 @@ public sealed class AiShotJobServiceTests
         State().OperationName.Should().Be(Operation);
         State().SubmittedAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime);
         State().NextAttemptAt.Should().BeNull();
+    }
+
+    private static AiVideoCallbackUrls Callbacks() =>
+        new(Options.Create(new AiVideoCallbackSettings { BaseUrl = "https://shop.example", Secret = "test-secret" }));
+
+    [TestMethod]
+    public async Task StartClipAsync_CallbacksOn_AsksTheProviderToCallBackAtTheScenesSignedUrl()
+    {
+        var callbacks = Callbacks();
+        var service = ClipPhaseService(callbacks: callbacks);
+        string? sentTo = null;
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+                It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, string, int, bool, Region?, string?, CancellationToken>((_, _, _, _, _, _, _, url, _) => sentTo = url)
+            .ReturnsAsync(Operation);
+
+        (await service.StartClipAsync(job.Id, 0, default)).Value.Status.Should().Be("polling");
+
+        sentTo.Should().Be(callbacks.For(job.Id, 0)).And.StartWith($"https://shop.example/api/webhooks/minimax/{job.Id:N}/0/");
+        State().Callback.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_WorkerHoldingALease_IsNeverCalledBackAbout()
+    {
+        var service = Service(callbacks: Callbacks());
+        provider.Setup(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+                It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Operation);
+
+        (await service.StartAsync(job.Id, 0, Lease(), default)).IsSuccess.Should().BeTrue();
+
+        provider.Verify(x => x.StartAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(),
+            It.IsAny<bool>(), It.IsAny<Region?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        State().Callback.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task PollClipAsync_SceneThatCallsBackStillBeingMade_RemembersWhenItWasAskedAndSpendsTheCall()
+    {
+        var announced = fixture.Time.GetUtcNow().UtcDateTime.AddSeconds(-3);
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, Status: "polling", Callback: true, AnnouncedAt: announced));
+        provider.Setup(x => x.PollAsync("plain-key", Operation, It.IsAny<CancellationToken>())).ReturnsAsync(new VeoOperationResult(false, null, null));
+
+        (await service.PollClipAsync(job.Id, 0, default)).Value.Status.Should().Be("polling");
+
+        State().PolledAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime);
+        State().AnnouncedAt.Should().BeNull("a call that came too early must not make every pass ask again");
+    }
+
+    [TestMethod]
+    public async Task PollClipAsync_SceneWithoutACallbackStillBeingMade_WritesNothing()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
+        provider.Setup(x => x.PollAsync("plain-key", Operation, It.IsAny<CancellationToken>())).ReturnsAsync(new VeoOperationResult(false, null, null));
+
+        await service.PollClipAsync(job.Id, 0, default);
+
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task AnnounceClipAsync_OperationTheSceneWaitsOn_MarksItToBeAskedAboutAtOnce()
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, Status: "polling", Callback: true));
+
+        (await service.AnnounceClipAsync(job.Id, 0, Operation, default)).Value.Should().BeTrue();
+
+        State().AnnouncedAt.Should().Be(fixture.Time.GetUtcNow().UtcDateTime);
+        provider.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    [DataRow("polling", "another-operation")]
+    [DataRow("ready", Operation)]
+    [DataRow("stored", Operation)]
+    public async Task AnnounceClipAsync_OperationTheSceneNoLongerWaitsOn_ChangesNothing(string status, string operation)
+    {
+        var service = ClipPhaseService(new AiShotJobState(0, "fingerprint", Operation, Status: status, Callback: true));
+
+        (await service.AnnounceClipAsync(job.Id, 0, operation, default)).Value.Should().BeFalse();
+
+        State().AnnouncedAt.Should().BeNull();
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task AnnounceClipAsync_JobLeasedToAWorker_ChangesNothing()
+    {
+        var service = Service(new AiShotJobState(0, "fingerprint", Operation, Status: "polling"));
+
+        (await service.AnnounceClipAsync(job.Id, 0, Operation, default)).Value.Should().BeFalse();
+        State().AnnouncedAt.Should().BeNull();
     }
 
     [TestMethod]
@@ -669,7 +764,7 @@ public sealed class AiShotJobServiceTests
     private AiShotJobService Service(AiShotJobState? state = null, bool connected = true,
         string providerKey = VeoVideoModel.ProviderKey, string modelKey = VeoVideoModel.ModelKey,
         string model = "veo", IAiVideoGenerationStrategyFactory? providerFactory = null, ISceneVideoNotifier? notifier = null,
-        ISystemApiKeyPool? systemKeys = null)
+        ISystemApiKeyPool? systemKeys = null, AiVideoCallbackUrls? callbacks = null)
     {
         var product = fixture.AddProduct();
         var run = fixture.AddRun(product);
@@ -688,6 +783,6 @@ public sealed class AiShotJobServiceTests
         fixture.Storage.Setup(x => x.SignRead(source.StorageKey, "image", source.StorageVersion, false)).Returns("https://signed.example/source");
         return new(fixture.Jobs.Object, fixture.Assets.Object, videoCredentials.Object, fixture.State.Object,
             fixture.Unit.Object, fixture.Storage.Object, provider.Object, fixture.Time, providerFactory, sceneNotifier: notifier,
-            systemKeys: systemKeys);
+            systemKeys: systemKeys, callbacks: callbacks);
     }
 }

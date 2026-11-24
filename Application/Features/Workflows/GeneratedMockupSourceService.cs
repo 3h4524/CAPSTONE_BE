@@ -31,6 +31,12 @@ public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<
     /// <summary>Each import is one upload, so a single request stays bounded; the rest follow on the next call.</summary>
     public const int MaximumPerCall = 24;
 
+    /// <summary>
+    /// Uploads in flight at once. Each one is a render, a store and a read-back at the image host, so it waits on the
+    /// network rather than on this process; a few side by side bring the wait of a product down to about one upload's.
+    /// </summary>
+    public const int UploadConcurrency = 4;
+
     public async Task<Result<ImportGeneratedMockupsResponse>> ImportAsync(Guid productId, CancellationToken ct)
     {
         if (await products.GetByIdAsync(productId, ct) is not { DeletedAt: null } product || product.UserId != user.UserId)
@@ -48,6 +54,7 @@ public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<
         var imported = 0;
         var failed = 0;
         var duplicates = 0;
+        var toStore = new List<MockupImage>(waiting.Length);
         foreach (var mockup in waiting)
         {
             if (!present.Add(SameMockup(mockup)))
@@ -61,24 +68,47 @@ public sealed class GeneratedMockupSourceService(ICurrentUser user, IRepository<
                 failed++;
                 continue;
             }
+            toStore.Add(mockup);
+        }
+
+        // Only the uploads run side by side: they talk to the image host and never touch the database context, which is
+        // not safe to share between threads. What each one returned is written to its row below, one at a time.
+        var stored = new StoredMockup?[toStore.Count];
+        using var gate = new SemaphoreSlim(UploadConcurrency);
+        await Task.WhenAll(toStore.Select(async (mockup, index) =>
+        {
+            await gate.WaitAsync(ct);
             try
             {
-                var saved = await storage.UploadMockupFromUrlAsync(mockup.MockupImageUrl!, $"mockups/{user.UserId}/{productId}/{mockup.Id}", ct);
-                mockup.StorageKey = saved.StorageKey;
-                mockup.StorageVersion = saved.Version;
-                mockup.ContentHash = saved.Hash;
-                mockup.MockupWidthPx = saved.Width;
-                mockup.MockupHeightPx = saved.Height;
-                // Rows composited before these columns existed have neither.
-                mockup.ArtworkGroupKey ??= mockup.DesignImageId is { } designImageId ? MockupSources.ArtworkGroupKey(designImageId) : productId.ToString();
-                mockup.VariantKey ??= mockup.GarmentColor;
-                imported++;
+                stored[index] = await storage.UploadMockupFromUrlAsync(mockup.MockupImageUrl!, $"mockups/{user.UserId}/{productId}/{mockup.Id}", ct);
             }
             catch (Exception error) when (error is InvalidOperationException or HttpRequestException)
             {
-                failed++;
                 logger.LogWarning(error, "Could not store mock-up {MockupId} as a video source", mockup.Id);
             }
+            finally
+            {
+                gate.Release();
+            }
+        }));
+
+        for (var index = 0; index < toStore.Count; index++)
+        {
+            if (stored[index] is not { } saved)
+            {
+                failed++;
+                continue;
+            }
+            var mockup = toStore[index];
+            mockup.StorageKey = saved.StorageKey;
+            mockup.StorageVersion = saved.Version;
+            mockup.ContentHash = saved.Hash;
+            mockup.MockupWidthPx = saved.Width;
+            mockup.MockupHeightPx = saved.Height;
+            // Rows composited before these columns existed have neither.
+            mockup.ArtworkGroupKey ??= mockup.DesignImageId is { } designImageId ? MockupSources.ArtworkGroupKey(designImageId) : productId.ToString();
+            mockup.VariantKey ??= mockup.GarmentColor;
+            imported++;
         }
         if (imported > 0 || duplicates > 0) await uow.SaveChangesAsync(ct);
 

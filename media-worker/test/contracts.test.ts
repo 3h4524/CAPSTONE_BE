@@ -60,6 +60,20 @@ test("AI Shot storyboard accepts a mixed 6-second clip and a full 15-second over
   const legacyVeo = { ...mixed, aiShots: [{ ...ai, model: "veo-3.1-lite-generate-preview", providerKey: undefined, modelKey: undefined, resolution: undefined, pricePerSecondUsd: undefined }] };
   assert.equal(storyboardSchema.safeParse(legacyVeo).success, true);
 });
+test("a new video accepts a scene cut down to a part of its clip, and refuses one with nothing left", () => {
+  // Policy 2 (new videos): `durationFrames` is the length after the cut, so a 6-second clip cut to 2 seconds has 60 + 60 frames
+  // trimmed, more than the 60 that remain, and is a valid cut that must not be refused.
+  const base = fixtureBoard("tshirt", fixtureImage(), 10);
+  const board = (scene: Record<string, unknown>) => ({ ...base, durationPolicyVersion: 2, durationSeconds: 5, outputDurationFrames: 150,
+    scenes: [{ ...base.scenes[0]!, durationFrames: 90 }, { ...base.scenes[1]!, durationFrames: 60, ...scene }] });
+  assert.equal(storyboardSchema.safeParse(board({})).success, true);
+  assert.equal(storyboardSchema.safeParse(board({ trimStartFrames: 60, trimEndFrames: 60 })).success, true);
+  assert.equal(storyboardSchema.safeParse(board({ trimStartFrames: 120, trimEndFrames: 0 })).success, true);
+  const nothingLeft = storyboardSchema.safeParse({ ...board({}), outputDurationFrames: 90, scenes: [{ ...base.scenes[0]!, durationFrames: 90 }, { ...base.scenes[1]!, durationFrames: 0 }] });
+  assert.equal(nothingLeft.success, false);
+  const tooLong = storyboardSchema.safeParse({ ...board({}), outputDurationFrames: 540, scenes: [{ ...base.scenes[0]!, durationFrames: 90 }, { ...base.scenes[1]!, durationFrames: 451 }] });
+  assert.equal(tooLong.success, false);
+});
 test("transitioned storyboards overlay boundaries without changing output frames", () => {
   const base = fixtureBoard("tshirt", fixtureImage(), 12);
   const fourScenes = Array.from({ length: 4 }, (_, i) => ({ ...base.scenes[0]!, sceneOrder: i, durationFrames: 90, transition: i ? "whip_pan" as const : "none" as const, transitionFrames: i ? 12 : 0 }));
@@ -86,4 +100,11 @@ test("a product whose video was rejected is packaged without one, and the payloa
   assert.equal(exportPayloadSchema.safeParse(payload).success, true);
   assert.equal(exportPayloadSchema.safeParse({ ...payload, videoId: productId }).success, false);
   assert.equal(exportPayloadSchema.safeParse({ ...payload, manifest: { ...manifest, scenes: [{ order: 0 }] } }).success, false);
+});
+test("an export without the final video names the video in its manifest and leaves its file out", () => {
+  const id = "fdc00975-356a-4340-857f-a1fa2c273241";
+  const manifest = { schemaVersion: 1, productId: id, videoId: id, version: 1, mode: "standard", fingerprint: "a".repeat(64), approvedRevision: 2, video: null, thumbnail: null, scenes: [] };
+  const payload = { exportId: id, videoId: id, videoStorageKey: null, videoStorageVersion: null, thumbnailStorageKey: null, thumbnailStorageVersion: null, manifest };
+  assert.equal(exportPayloadSchema.safeParse(payload).success, true);
+  assert.equal(exportPayloadSchema.safeParse({ ...payload, manifest: { ...manifest, video: "other.mp4" } }).success, false);
 });

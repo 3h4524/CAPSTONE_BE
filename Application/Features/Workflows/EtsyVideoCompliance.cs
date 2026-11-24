@@ -26,5 +26,19 @@ public static class EtsyVideoCompliance
         return new(status, checks);
     }
 
+    /// <summary>
+    /// What <see cref="Evaluate"/> says about the video the storyboard will render, before any file exists: the size, length and
+    /// sound are the plan's, and the file is taken to decode and to fit the size limit. The real file is checked again when it is made.
+    /// </summary>
+    public static EtsyComplianceResult EvaluatePlanned(Storyboard board)
+    {
+        var output = VideoOutputFormats.Resolve(board.OutputFormat);
+        var width = board.Width > 0 ? board.Width : output.Width;
+        var height = board.Height > 0 ? board.Height : output.Height;
+        var seconds = (board.OutputDurationFrames ?? board.DurationSeconds * 30) / 30d;
+        var plannedQa = new MediaQa("h264", "yuv420p", width, height, 30, seconds, Bytes: 1, board.VideoEdit?.Music is { Muted: false }, FullDecode: true);
+        return Evaluate(plannedQa, board.AspectRatio, "mp4");
+    }
+
     private static bool IsSupportedFormat(string format) => format.Trim().ToLowerInvariant() is "mp4" or "mov" or "flv" or "aac" or "avi" or "3gp" or "mpeg";
 }

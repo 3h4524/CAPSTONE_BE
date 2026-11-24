@@ -133,6 +133,7 @@ public sealed class AiClipPhaseService(IWorkflowStateRepository state, IUnitOfWo
         WorkflowRun? run;
         MediaJob job;
         int progress;
+        var endedHere = false;
         await using (var tx = await uow.BeginTransactionAsync(ct))
         {
             var held = await LockAsync(jobId, ct);
@@ -148,14 +149,26 @@ public sealed class AiClipPhaseService(IWorkflowStateRepository state, IUnitOfWo
             progress = done ? AiClipPhase.DoneProgress : Math.Max(job.Progress, AiClipPhase.StartProgress + (int)Math.Round(20d * stored / Math.Max(1, scenes.Count)));
             if (!done && progress == job.Progress) return;
             job.Progress = progress; job.Stage = AiClipPhase.Stage; job.UpdatedAt = now;
-            if (done) { job.Status = "queued"; job.AvailableAt = now; }
+            // With the final render deferred, the clips are all that Generate Video waited for: the job stays put until a step needs the
+            // video, and the step is done. Otherwise the media worker gets the job now, to render it.
+            endedHere = done && runtime.RendersOnDemand;
+            if (done) { job.Status = endedHere ? DeferredRender.JobStatus : "queued"; job.AvailableAt = now; }
             var node = await nodes.GetByIdAsync(job.WorkflowNodeRunId, ct);
             if (node is not null) { node.Progress = progress; node.Stage = AiClipPhase.Stage; }
+            if (endedHere && node is not null)
+            {
+                await runtime.FinishGenerateWithClipsAsync(run!, node, ct);
+                if (node.Status == "succeeded") await runtime.AdvanceAsync(run!, ct);
+            }
             await uow.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
         }
         if (sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
-        if (runNotifier != null) await runNotifier.ProgressAsync(job.WorkflowRunId, run!.RunGroupId, AiClipPhase.Stage, progress, ct, "generate-video");
+        if (runNotifier != null)
+        {
+            if (endedHere) await runNotifier.RunChangedAsync(run!, ct);
+            else await runNotifier.ProgressAsync(job.WorkflowRunId, run!.RunGroupId, AiClipPhase.Stage, progress, ct, "generate-video");
+        }
     }
 
     private async Task FailAsync(Guid jobId, string code, CancellationToken ct)

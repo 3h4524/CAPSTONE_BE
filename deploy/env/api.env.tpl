@@ -77,6 +77,25 @@ AiVideo__ClipPhase__Enabled=true
 AiVideo__ClipPhase__MaxInFlight=3
 AiVideo__ClipPhase__MaxInFlightPerUser=2
 
+# MiniMax calls back at https://${APP_DOMAIN}/api/webhooks/minimax/... when an AI scene finishes, so its clip is fetched at once.
+# The URL of each scene is signed (HMAC over "ai-scene:<job>:<scene>", so it never doubles as a token) with the JWT signing key,
+# which is already long and random; rotating it voids the URLs of scenes being made, which are then found by the status check.
+# With either value empty the scenes are only asked about, every 10 s after the first 30 s. With callbacks on, a scene is asked
+# about every CallbackPollIntervalSeconds only, in case a call never came.
+AiVideo__Callback__BaseUrl=https://${APP_DOMAIN}
+AiVideo__Callback__Secret=${JWT_SIGNING_KEY}
+# AiVideo__ClipPhase__CallbackPollIntervalSeconds=60
+
+# Before an AI scene is sent to MiniMax, Gemini describes its opening frame and rewrites the scene's prompt from that (two calls
+# for each scene, which is most of the time Generate Video stays at 2-15%). On by default. Set it to false to send the prompt the
+# template builds instead, which is faster but not grounded in the actual image.
+VideoPromptPreparation__Enabled=false
+
+# Generate Video ends once the video's scenes are ready, and the final video is rendered in the background only when a step needs
+# the file (Publish to Etsy with a video, or Export ZIP with its final-video option). On by default, and it needs the AI clip phase
+# above. Set it to false to render inside Generate Video again, as before.
+Video__DeferredRender__Enabled=true
+
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false
 VideoQuality__AutoEvaluate=false

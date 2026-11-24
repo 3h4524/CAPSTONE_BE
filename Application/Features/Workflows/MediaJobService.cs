@@ -4,6 +4,7 @@ using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Workflows;
 
@@ -24,7 +25,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     IRepository<MusicTrack>? musicTracks = null, IVideoQualityJobService? qualityJobs = null,
     ILocalExportStore? localExports = null, IRepository<DesignImage>? designImages = null,
     ISceneVideoNotifier? sceneNotifier = null, IMediaLeaseRecovery? leaseRecovery = null,
-    IWorkflowRunNotifier? runNotifier = null) : IMediaJobService
+    IWorkflowRunNotifier? runNotifier = null, ILogger<MediaJobService>? logger = null) : IMediaJobService
 {
     public async Task<Result<WorkerJob?>> ClaimAsync(CancellationToken ct)
         => await ClaimCoreAsync(null, null, ct);
@@ -37,6 +38,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         if (claimed.IsFailure) return Result.Failure<MediaStreamClaimResponse>(claimed.Error);
         if (claimed.Value is not null) return Result.Success(new MediaStreamClaimResponse("claimed", claimed.Value));
         var status = await state.GetMediaClaimStatusAsync(jobId, queueVersion, time.GetUtcNow().UtcDateTime, ct);
+        // "not_due" makes the worker wait 5 s before it asks again, so it is worth seeing when it happens.
+        logger?.LogInformation("Media job {JobId} was not handed to the worker: {Status}.", jobId, status);
         return Result.Success(new MediaStreamClaimResponse(status, null));
     }
 
@@ -53,6 +56,8 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             : await state.ClaimAsync(time.GetUtcNow().UtcDateTime, token, ct);
         if (job == null) { await tx.CommitAsync(ct); return Result.Success<WorkerJob?>(null); }
         await tx.CommitAsync(ct);
+        logger?.LogInformation("Media job {JobId} ({Kind}) handed to the worker {Seconds:0.0} s after it was queued (attempt {Attempt}).",
+            job.Id, job.Kind, (time.GetUtcNow().UtcDateTime - job.AvailableAt).TotalSeconds, job.Attempt);
         var workerAssets = new List<WorkerAsset>();
         var uploads = new Dictionary<string, UploadGrant>();
         if (job.Kind == "render")
@@ -78,10 +83,10 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             }
             if (payload.Storyboard.VideoEdit?.Music is { } music)
             {
-                var track = musicTracks is null ? null : await musicTracks.GetByIdAsync(music.TrackId, ct);
-                if (track is not { IsAvailable: true, RoyaltyFree: true, DeletedAt: null } || string.IsNullOrWhiteSpace(track.LicenseType) || string.IsNullOrWhiteSpace(track.AudioUrl))
+                var trackAsset = await MusicAssetAsync(music.TrackId, ct);
+                if (trackAsset is null)
                 { await FailAsync(job.Id, new(token, "Selected music track is no longer available. Choose another track."), ct); return Result.Success<WorkerJob?>(null); }
-                workerAssets.Add(new(Guid.Empty, track.AudioUrl, $"music/{track.Id}.mp3"));
+                workerAssets.Add(trackAsset);
             }
             uploads["video"] = storage.CreateUploadGrant(OutputKey(job, token, "video"), "video");
             uploads["thumbnail"] = storage.CreateUploadGrant(OutputKey(job, token, "thumbnail"), "image");
@@ -150,13 +155,22 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
                     workerAssets.Add(new(asset.Id, storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), $"model-photos/{asset.Id}.png"));
                 }
             }
-            if (video is not null)
+            // The video of each scene in the package has no sound (the music belongs to the whole video), so no music track is sent.
+            if (video is not null && payload.VideoStorageKey is not null && payload.ThumbnailStorageKey is not null)
             {
-                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey!, "video", payload.VideoStorageVersion), "video.mp4"));
-                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey!, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
+                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.VideoStorageKey, "video", payload.VideoStorageVersion), "video.mp4"));
+                workerAssets.Add(new(Guid.Empty, storage.SignRead(payload.ThumbnailStorageKey, "image", payload.ThumbnailStorageVersion), "thumbnail.png"));
             }
         }
         return Result.Success<WorkerJob?>(new(job.Id, token, job.Kind, JsonSerializer.Deserialize<JsonElement>(job.Payload), workerAssets, uploads));
+    }
+    /// <summary>The worker's copy of an available, royalty-free music track; null when the track cannot be used any more.</summary>
+    private async Task<WorkerAsset?> MusicAssetAsync(Guid trackId, CancellationToken ct)
+    {
+        var track = musicTracks is null ? null : await musicTracks.GetByIdAsync(trackId, ct);
+        if (track is not { IsAvailable: true, RoyaltyFree: true, DeletedAt: null } || string.IsNullOrWhiteSpace(track.LicenseType) || string.IsNullOrWhiteSpace(track.AudioUrl))
+            return null;
+        return new(Guid.Empty, track.AudioUrl, $"music/{track.Id}.mp3");
     }
     public async Task<Result<LocalExportFile>> UploadExportAsync(Guid id, Guid leaseToken, Stream content, CancellationToken ct)
     {
@@ -203,6 +217,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
     public const int ProgressStep = 5;
     public async Task<Result> CompleteAsync(Guid id, JobCompletion request, CancellationToken ct)
     {
+        var accepting = System.Diagnostics.Stopwatch.StartNew();
         await using var tx = await uow.BeginTransactionAsync(ct);
         var unlocked = await jobs.GetByIdAsync(id, ct);
         if (unlocked == null) return Result.Failure(LeaseError());
@@ -254,28 +269,16 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
             var video = (await videos.GetByIdAsync(payload.VideoId, ct))!;
             if (ReadConfigSnapshot(video.ConfigSnapshot) is { } snapshot)
             {
-                var sceneSources = payload.Storyboard.Scenes.Select(scene =>
-                {
-                    var source = sourceAssets[scene.MockupId];
-                    var shot = aiPayload?.Storyboard.AiShots?.SingleOrDefault(item => item.SceneOrder == scene.SceneOrder);
-                    var clip = shot is null ? null : aiPayload!.AiShotStates.SingleOrDefault(item =>
-                        item.SceneOrder == shot.SceneOrder && item.Fingerprint == shot.Fingerprint && item.Status == "stored");
-                    return new VideoSceneExportSource(scene.SceneOrder, scene.MockupId, scene.SourceRevision, scene.SourceHash,
-                        source.StorageKey, source.StorageVersion, shot?.Fingerprint, clip?.StorageKey, clip?.StorageVersion);
-                }).ToArray();
                 snapshot["storyboard"] = JsonSerializer.SerializeToNode(payload.Storyboard, WorkflowJson.Options);
-                snapshot["exportSources"] = JsonSerializer.SerializeToNode(new VideoExportSourceSnapshot(1, video.Id,
-                    payload.Storyboard.Fingerprint, sceneSources), WorkflowJson.Options);
+                snapshot["exportSources"] = JsonSerializer.SerializeToNode(
+                    VideoExportSources.Build(video.Id, payload.Storyboard, aiPayload, sourceAssets), WorkflowJson.Options);
                 video.ConfigSnapshot = snapshot.ToJsonString(WorkflowJson.Options);
             }
             video.MusicTrackId = payload.Storyboard.VideoEdit?.Music?.TrackId;
             video.Status = "completed"; video.StorageProvider = "cloudinary"; video.StorageKey = expected; video.StorageVersion = request.StorageVersion;
             video.ThumbnailStorageKey = thumb; video.ThumbnailStorageVersion = request.ThumbnailStorageVersion;
-            video.QaResult = WorkflowJson.Write(new
-            {
-                technical = request.Qa,
-                etsyCompliance = EtsyVideoCompliance.Evaluate(request.Qa!, payload.Storyboard.AspectRatio, "mp4")
-            });
+            // Merged, not replaced: the quality evaluation of the scenes may have been saved here while the video waited.
+            video.QaResult = MergeQa(video.QaResult, request.Qa!, EtsyVideoCompliance.Evaluate(request.Qa!, payload.Storyboard.AspectRatio, "mp4"));
             video.FileSizeMb = request.Qa!.Bytes / (1024m * 1024m); video.UpdatedAt = time.GetUtcNow().UtcDateTime;
             queueAutomaticQuality = payload.Storyboard.Mode == "ai_shot";
             qualityVideoId = video.Id;
@@ -304,10 +307,24 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         await uow.SaveChangesAsync(ct);
         if (queueAutomaticQuality && qualityJobs is not null)
             await qualityJobs.QueueAsync(job.WorkflowRunId, qualityVideoId, null, ct);
-        await runtime.AdvanceAsync(run, ct); await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        // A render finished for a batch still waiting for Continue leaves its run alone: the planner takes it from there.
+        if (run.Status == "running") await runtime.AdvanceAsync(run, ct);
+        await uow.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         if (job.Kind == "render" && sceneNotifier != null) await sceneNotifier.ChangedAsync(job.WorkflowRunId, ct);
         if (runNotifier != null) await runNotifier.RunChangedAsync(run, ct);
+        // Accepting includes moving the run on, which is where the next job (an export after its video's render) is queued.
+        logger?.LogInformation("Media job {JobId} ({Kind}) completed {Seconds:0.0} s after it was queued; accepting it took {Accepting:0.0} s.",
+            job.Id, job.Kind, (time.GetUtcNow().UtcDateTime - job.AvailableAt).TotalSeconds, accepting.Elapsed.TotalSeconds);
         return Result.Success();
+    }
+    private static string MergeQa(string? existing, MediaQa technical, EtsyComplianceResult etsyCompliance)
+    {
+        JsonObject saved;
+        try { saved = existing is null ? new JsonObject() : JsonNode.Parse(existing) as JsonObject ?? new JsonObject(); }
+        catch (JsonException) { saved = new JsonObject(); }
+        saved["technical"] = JsonSerializer.SerializeToNode(technical, WorkflowJson.Options);
+        saved["etsyCompliance"] = JsonSerializer.SerializeToNode(etsyCompliance, WorkflowJson.Options);
+        return saved.ToJsonString(WorkflowJson.Options);
     }
     private static JsonObject? ReadConfigSnapshot(string? value)
     {
@@ -340,7 +357,7 @@ public sealed class MediaJobService(IRepository<MediaJob> jobs, IRepository<Work
         return Result.Success();
     }
     private bool ValidLease(MediaJob? job, Guid token, WorkflowRun? run) => job is { Status: "leased" } && job.LeaseToken == token &&
-        job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run?.Status == "running";
+        job.LeaseExpiresAt > time.GetUtcNow().UtcDateTime && run is not null && MediaJobRunRules.Works(job.Kind, run.Status);
     private static Error LeaseError() => Error.Conflict("LeaseLost", "Job lease expired or run was cancelled.");
     private static string OutputKey(MediaJob job, Guid token, string suffix) => $"workflow-media/{job.UserId}/{job.WorkflowRunId}/{job.Id}/{token}/{suffix}";
     public static bool ValidQa(MediaQa? qa, double duration, int width = 1080, int height = 1920, bool expectAudio = false) => qa != null && qa.Codec == "h264" && qa.PixelFormat == "yuv420p" &&

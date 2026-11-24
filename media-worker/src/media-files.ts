@@ -7,25 +7,49 @@ import type { Upload, WorkerJob } from "./contracts";
 import { exportPayloadSchema } from "./contracts";
 import { SourceDownloadError } from "./failures";
 
+/** Files fetched from Cloudinary at the same time; a job has a handful, mostly large images, so more would only add memory. */
+const downloadConcurrency = 4;
+
+async function downloadAsset(asset: WorkerJob["assets"][number], index: number, directory: string, signal: AbortSignal) {
+  const url = new URL(asset.url);
+  if (url.protocol !== "https:" || !["api.cloudinary.com", "res.cloudinary.com"].includes(url.hostname)) throw new Error("Untrusted media host");
+  const response = await fetch(url, { signal });
+  if (!response.ok || !response.body) throw new SourceDownloadError(asset.fileName, response.status);
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for await (const chunk of response.body) {
+    length += chunk.length;
+    if (length > 100 * 1024 * 1024) throw new Error("Media download exceeds limit");
+    chunks.push(chunk);
+  }
+  const data = Buffer.concat(chunks);
+  const file = join(directory, `asset-${index}`);
+  await writeFile(file, data);
+  return { file, data };
+}
+
 export async function downloadAssets(job: WorkerJob, directory: string, signal: AbortSignal) {
-  const downloaded = new Map<string, { file: string; data: Buffer }>();
-  for (const [index, asset] of job.assets.entries()) {
+  // Fail on an untrusted host before anything is fetched, as the sequential download did for the first asset.
+  for (const asset of job.assets) {
     const url = new URL(asset.url);
     if (url.protocol !== "https:" || !["api.cloudinary.com", "res.cloudinary.com"].includes(url.hostname)) throw new Error("Untrusted media host");
-    const response = await fetch(url, { signal });
-    if (!response.ok || !response.body) throw new SourceDownloadError(asset.fileName, response.status);
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    for await (const chunk of response.body) {
-      length += chunk.length;
-      if (length > 100 * 1024 * 1024) throw new Error("Media download exceeds limit");
-      chunks.push(chunk);
-    }
-    const data = Buffer.concat(chunks);
-    const file = join(directory, `asset-${index}`);
-    await writeFile(file, data);
-    downloaded.set(asset.fileName, { file, data });
   }
+  const results = new Array<{ file: string; data: Buffer }>(job.assets.length);
+  // The first failure stops the downloads still running instead of letting them finish for nothing.
+  const stop = new AbortController();
+  const lanes = AbortSignal.any([signal, stop.signal]);
+  let next = 0;
+  const lane = async () => {
+    while (next < job.assets.length) {
+      const index = next++;
+      results[index] = await downloadAsset(job.assets[index]!, index, directory, lanes);
+    }
+  };
+  try { await Promise.all(Array.from({ length: Math.min(downloadConcurrency, job.assets.length) }, lane)); }
+  catch (error) { stop.abort(); throw error; }
+  // Entered in the job's order whatever finished first: a ZIP is written in the order of this map.
+  const downloaded = new Map<string, { file: string; data: Buffer }>();
+  for (const [index, asset] of job.assets.entries()) downloaded.set(asset.fileName, results[index]!);
   return downloaded;
 }
 export function pngSource(data: Buffer, hash: string) {
@@ -78,7 +102,10 @@ export async function createZip(file: string, assets: Map<string, { file: string
     await new Promise<void>((resolve, reject) => {
       output.on("close", resolve); output.on("error", reject); zip.on("error", reject); zip.pipe(output);
       for (const [name, asset] of assets) {
-        zip.file(asset.file, { name });
+        // The files are an MP4 and PNGs, which are compressed already: deflating them only costs CPU. The manifest is text.
+        // archiver reads `store` on an entry, though its typings do not list it.
+        const entry = { name, store: true };
+        zip.file(asset.file, entry);
       }
       zip.append(JSON.stringify(safeManifest, null, 2), { name: "manifest.json" });
       void zip.finalize().catch(reject);
