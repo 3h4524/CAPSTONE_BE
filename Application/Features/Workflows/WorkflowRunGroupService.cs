@@ -374,12 +374,13 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             // only used while nothing of the design is stored yet.
             var wearable = target.Mockups.Any(x => x.ContentHash != null) ? target.Mockups.Where(x => x.ContentHash != null) : target.Mockups;
             // One paid attempt per start, from the main mock-up: a failure is tried again on the next Continue, not here.
-            if (PersonModelPhotos.Garments(wearable).FirstOrDefault() is not { } garment)
+            var garments = PersonModelPhotos.Garments(wearable);
+            if (garments.Count == 0)
             {
                 problems.Add($"{Label(target)}: it has no mock-up to put on a model photo.");
                 continue;
             }
-            photos.Add(new(target.Product.Id, garment.Id, model.Id, Label(target)));
+            photos.Add(new(target.Product.Id, garments[0].Id, model.Id, Label(target)));
         }
         return new(photos, problems);
     }
