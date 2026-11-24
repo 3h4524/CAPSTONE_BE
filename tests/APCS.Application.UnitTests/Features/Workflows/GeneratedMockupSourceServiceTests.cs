@@ -17,6 +17,8 @@ public sealed class GeneratedMockupSourceServiceTests
     private readonly WorkflowTestData _fixture = new();
     private readonly GeneratedMockupSourceService _service;
 
+    public TestContext TestContext { get; set; } = null!;
+
     public GeneratedMockupSourceServiceTests()
     {
         var current = new Mock<ICurrentUser>();
@@ -151,6 +153,71 @@ public sealed class GeneratedMockupSourceServiceTests
         fine.ContentHash.Should().Be(Stored.Hash);
         // The one that failed has no stored file, so it is not offered as a source.
         result.Value.Mockups.Select(x => x.Id).Should().Equal(fine.Id);
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_UploadFailsForAPassingReason_TriesItOnceMoreAndStoresIt()
+    {
+        var product = _fixture.AddProduct();
+        var mockup = AddComposited(product, Guid.NewGuid());
+        var attempts = 0;
+        _fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string _, string key, CancellationToken _) => ++attempts == 1
+                ? Task.FromException<StoredMockup>(new HttpRequestException("Cloudinary could not store the image: busy"))
+                : Task.FromResult(Stored with { StorageKey = key }));
+
+        var result = await ImportWhileTimePasses(product.Id);
+
+        attempts.Should().Be(2);
+        result.ImportedCount.Should().Be(1);
+        result.FailedCount.Should().Be(0);
+        mockup.ContentHash.Should().Be(Stored.Hash);
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_UploadTimesOutTwice_GivesUpOnThatMockupOnly()
+    {
+        var product = _fixture.AddProduct();
+        var slow = AddComposited(product, Guid.NewGuid());
+        var fine = AddComposited(product, Guid.NewGuid());
+        _fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.Is<string>(key => key.EndsWith(slow.Id.ToString())), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout."));
+
+        var result = await ImportWhileTimePasses(product.Id);
+
+        _fixture.Storage.Verify(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.Is<string>(key => key.EndsWith(slow.Id.ToString())), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        result.ImportedCount.Should().Be(1);
+        result.FailedCount.Should().Be(1);
+        slow.ContentHash.Should().BeNull();
+        fine.ContentHash.Should().Be(Stored.Hash);
+    }
+
+    [TestMethod]
+    public async Task ImportAsync_ImageTheHostRefused_IsNotTriedAgain()
+    {
+        var product = _fixture.AddProduct();
+        AddComposited(product, Guid.NewGuid());
+        _fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Invalid image or image exceeds 32 megapixels."));
+
+        var result = await _service.ImportAsync(product.Id, TestContext.CancellationToken);
+
+        result.Value.FailedCount.Should().Be(1);
+        _fixture.Storage.Verify(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // The retry waits on the fake clock, so it is moved on until the import is done.
+    private async Task<ImportGeneratedMockupsResponse> ImportWhileTimePasses(Guid productId)
+    {
+        var import = _service.ImportAsync(productId, TestContext.CancellationToken);
+        for (var step = 0; step < 100 && !import.IsCompleted; step++)
+        {
+            _fixture.Time.Advance(TimeSpan.FromSeconds(1));
+            await Task.Delay(10, TestContext.CancellationToken);
+        }
+        var result = await import;
+        result.IsSuccess.Should().BeTrue();
+        return result.Value;
     }
 
     [TestMethod]

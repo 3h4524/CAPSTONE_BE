@@ -102,7 +102,7 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         if (!MockupAssetService.IsStaticImage(personBytes)) return Result.Failure<MockupResponse>(Error.Validation("Use a static JPEG, PNG or WebP image."));
 
         var (userId, product, garment) = found.Value;
-        return await DressAsync(userId, product, garment, personBytes, group: false, ideogram, ct);
+        return await DressAsync(userId, product, garment, _ => Task.FromResult(personBytes), group: false, ideogram, ct);
     }
 
     public Task<Result<MockupResponse>> GenerateFromModelPhotoAsync(Guid productId, Guid garmentMockupId, Guid modelPhotoId, CancellationToken ct) =>
@@ -122,15 +122,9 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
             && item.Kind == MockupRules.ModelKind && (item.UserId == null || item.UserId == userId), ct);
         if (model is null) return Result.Failure<MockupResponse>(MockupErrors.ModelPhotoNotFound());
 
-        byte[] personBytes;
-        try { personBytes = await maps.DownloadAsync(model.BaseImageUrl, ct); }
-        catch (Exception error) when (error is HttpRequestException or InvalidOperationException)
-        {
-            logger.LogWarning(error, "Could not read model photo {ModelPhotoId} for a lifestyle image", model.Id);
-            return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Could not read the model photo. Try again."));
-        }
-
-        return await DressAsync(userId, product, garment, personBytes, group: model.People == ModelPeople.Group, provider, ct);
+        // Read alongside the mock-up and the design, once the plan and the key have been checked.
+        return await DressAsync(userId, product, garment, token => maps.DownloadAsync(model.BaseImageUrl, token),
+            group: model.People == ModelPeople.Group, provider, ct);
     }
 
     // The Seller's own product, and a mock-up of it that can be worn, when the Seller's plan includes lifestyle images.
@@ -148,9 +142,10 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         return Result.Success((userId, product, garment));
     }
 
-    private async Task<Result<MockupResponse>> DressAsync(Guid userId, Product product, MockupImage garment, byte[] personBytes, bool group,
-        IImageGenerationProvider? images, CancellationToken ct)
+    private async Task<Result<MockupResponse>> DressAsync(Guid userId, Product product, MockupImage garment,
+        Func<CancellationToken, Task<byte[]>> readPerson, bool group, IImageGenerationProvider? images, CancellationToken ct)
     {
+        var started = time.GetTimestamp();
         var productId = product.Id;
         if (images is null) return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Lifestyle images are not available."));
         var name = images.Provider == ImageGenerationProviders.Gemini ? "Gemini" : "Ideogram";
@@ -176,24 +171,33 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
         // An uploaded mock-up has no design: its own print is all there is to copy.
         var design = garment.DesignImageId is Guid designId && await designs.GetByIdAsync(designId, ct) is { DeletedAt: null } found ? found : null;
 
+        var inputs = await ReadInputsAsync(readPerson, garment, design, ct);
+        if (inputs.IsFailure) return Result.Failure<MockupResponse>(inputs.Error);
+        var readTime = time.GetElapsedTime(started);
+
+        // Ideogram keeps the result behind a link, which storage fetches itself; another provider sends the file back.
+        var linked = images as IImageLinkProvider;
+        List<ImageReference> sent = [new(inputs.Value.Person, MimeType(inputs.Value.Person)), new(inputs.Value.Garment, MimeType(inputs.Value.Garment))];
+        if (inputs.Value.Design is { } artwork) sent.Add(new(artwork, "image/png"));
+        var prompt = Prompt(design is not null, design is null ? null : product.DesiredDesignText, group);
+        Task<ImageGenerationResult> Compose(string apiKey) => linked is not null
+            ? linked.ComposeLinkAsync(apiKey, prompt, sent, ct)
+            : images.ComposeAsync(apiKey, prompt, sent, ct);
+
+        var composeStarted = time.GetTimestamp();
         ImageGenerationResult generated;
         try
         {
-            var garmentBytes = garment.ContentHash != null
-                ? await storage.ReadImageAsync(garment.StorageKey, garment.StorageVersion, ct)
-                : await storage.ReadCompositeAsync(garment.MockupImageUrl!, ct);
-            List<ImageReference> sent = [new(personBytes, MimeType(personBytes)), new(garmentBytes, MimeType(garmentBytes))];
-            if (design is not null) sent.Add(new(await storage.ReadPublicImageAsync(design.StorageKey, ct), "image/png"));
-            var prompt = Prompt(design is not null, design is null ? null : product.DesiredDesignText, group);
             generated = platform
-                ? await systemKeys!.GenerateImageAsync(images.Provider, ownKey, apiKey => images.ComposeAsync(apiKey, prompt, sent, ct), ct)
-                : await images.ComposeAsync(ownKey!, prompt, sent, ct);
+                ? await systemKeys!.GenerateImageAsync(images.Provider, ownKey, Compose, ct)
+                : await Compose(ownKey!);
         }
         catch (Exception error) when (error is HttpRequestException or InvalidOperationException)
         {
             logger.LogWarning(error, "Could not read mock-up {MockupId} for a lifestyle image", garment.Id);
             return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Could not read the product mock-up. Try again."));
         }
+        var composeTime = time.GetElapsedTime(composeStarted);
         if (!generated.IsSuccess)
         {
             logger.LogWarning("Lifestyle image for product {ProductId} was not generated: {Reason}", productId, generated.ErrorMessage);
@@ -207,15 +211,19 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
 
         var id = Guid.NewGuid();
         var now = time.GetUtcNow().UtcDateTime;
-        using var content = new MemoryStream(generated.ImageBytes!);
-        StoredMockup saved;
-        try { saved = await storage.UploadMockupAsync(content, $"{id}.png", $"mockups/{userId}/{productId}/{id}", ct); }
-        catch (InvalidOperationException) { return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Could not store the generated image. Try again.")); }
+        var storeStarted = time.GetTimestamp();
+        if (await StoreAsync(generated, linked, $"{id}.png", $"mockups/{userId}/{productId}/{id}", ct) is not { } saved)
+            return Result.Failure<MockupResponse>(Error.Failure("LifestyleGenerationFailed", "Could not store the generated image. Try again."));
+        var storeTime = time.GetElapsedTime(storeStarted);
+        logger.LogInformation(
+            "Lifestyle image {MockupId}: reading {ReadSeconds:0.0}s, {Provider} {ComposeSeconds:0.0}s, storing {StoreSeconds:0.0}s (from its link: {FromLink})",
+            id, readTime.TotalSeconds, images.Provider, composeTime.TotalSeconds, storeTime.TotalSeconds, generated.ImageUrl is not null);
 
         await usage.AddAsync(new ApiUsageRecord
         {
             Id = Guid.NewGuid(), UserId = userId, ProductId = productId, Provider = images.Provider, Feature = UsageFeatures.Mockup,
-            ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now
+            ModelName = generated.ModelUsed, RequestUnits = 1, CostUsd = generated.EstimatedCostUsd, Status = "success", CreatedAt = now,
+            LatencyMs = (int)composeTime.TotalMilliseconds
         }, cancellationToken: ct);
         await assets.AddAsync(new MockupImage
         {
@@ -223,12 +231,78 @@ public sealed class LifestyleMockupService(ICurrentUser user, IRepository<Produc
             StorageVersion = saved.Version, ContentHash = saved.Hash, MockupWidthPx = saved.Width, MockupHeightPx = saved.Height,
             Role = "Lifestyle", ArtworkGroupKey = garment.ArtworkGroupKey ?? productId.ToString(), VariantKey = garment.VariantKey,
             MetadataRevision = MockupSources.FirstRevision, ApprovalStatus = "pending", Regions = WorkflowJson.Write(new MockupRegions()),
-            IsFinal = false, CreatedAt = now
+            IsFinal = false, CreatedAt = now,
+            // The whole wait, from the request to the stored image; the provider's own part is the usage record's latency.
+            GenerationTimeSeconds = Math.Round((decimal)time.GetElapsedTime(started).TotalSeconds, 1)
         }, cancellationToken: ct);
         await uow.SaveChangesAsync(ct);
 
         var listed = await mockups.ListAsync(productId, ct);
         return listed.IsFailure ? Result.Failure<MockupResponse>(listed.Error) : Result.Success(listed.Value.Single(x => x.Id == id));
+    }
+
+    private sealed record DressInputs(byte[] Person, byte[] Garment, byte[]? Design);
+
+    // The person photo, the mock-up and the design are separate downloads, so they are read side by side.
+    private async Task<Result<DressInputs>> ReadInputsAsync(Func<CancellationToken, Task<byte[]>> readPerson, MockupImage garment,
+        DesignImage? design, CancellationToken ct)
+    {
+        async Task<byte[]> PersonAsync() => await readPerson(ct);
+        async Task<byte[]> GarmentAsync() => garment.ContentHash != null
+            ? await storage.ReadImageAsync(garment.StorageKey, garment.StorageVersion, ct)
+            : await storage.ReadCompositeAsync(garment.MockupImageUrl!, ct);
+        async Task<byte[]?> DesignAsync() => design is null ? null : await storage.ReadPublicImageAsync(design.StorageKey, ct);
+
+        var person = PersonAsync();
+        var garmentBytes = GarmentAsync();
+        var artwork = DesignAsync();
+        try
+        {
+            Task[] reading = [person, garmentBytes, artwork];
+            await Task.WhenAll(reading);
+        }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException)
+        {
+            if (person.IsFaulted)
+            {
+                logger.LogWarning(error, "Could not read the person photo for a lifestyle image of mock-up {MockupId}", garment.Id);
+                return Result.Failure<DressInputs>(Error.Failure("LifestyleGenerationFailed", "Could not read the model photo. Try again."));
+            }
+            logger.LogWarning(error, "Could not read mock-up {MockupId} for a lifestyle image", garment.Id);
+            return Result.Failure<DressInputs>(Error.Failure("LifestyleGenerationFailed", "Could not read the product mock-up. Try again."));
+        }
+        return Result.Success(new DressInputs(await person, await garmentBytes, await artwork));
+    }
+
+    // Straight from the provider's link when it has one, so the image never passes through this server; the file is
+    // sent instead when storage cannot fetch the link. Null when it could not be stored either way.
+    private async Task<StoredMockup?> StoreAsync(ImageGenerationResult generated, IImageLinkProvider? linked, string fileName,
+        string storageKey, CancellationToken ct)
+    {
+        var image = generated;
+        if (generated.ImageUrl is { } link && linked is not null)
+        {
+            try
+            {
+                return await storage.UploadMockupFromUrlAsync(link, storageKey, ct);
+            }
+            catch (Exception error) when (error is InvalidOperationException or HttpRequestException)
+            {
+                logger.LogWarning(error, "Could not store lifestyle image {StorageKey} from its link; sending the file instead", storageKey);
+            }
+            image = await linked.DownloadLinkAsync(generated, ct);
+            if (!image.IsSuccess) return null;
+        }
+
+        using var content = new MemoryStream(image.ImageBytes!);
+        try
+        {
+            return await storage.UploadMockupAsync(content, fileName, storageKey, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     // Whether the Seller's plan has their images made on the platform's keys, and the platform has keys for the provider.

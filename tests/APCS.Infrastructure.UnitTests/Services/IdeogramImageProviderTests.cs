@@ -412,6 +412,21 @@ public sealed class IdeogramImageProviderTests
     }
 
     [TestMethod]
+    public async Task ComposeLinkAsync_StopsAtTheLink_WithoutDownloadingTheEditedImage()
+    {
+        var provider = Provider(Answer);
+
+        var result = await provider.ComposeLinkAsync("key", "Dress the person.",
+            [new ImageReference([1], "image/jpeg"), new ImageReference([2], "image/png")], cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        result.ImageBytes.Should().BeNull();
+        result.ImageUrl.Should().Be(ImageUrl);
+        result.ModelUsed.Should().Be("ideogram-4-5");
+        sent.Should().NotContain(request => request.RequestUri!.AbsoluteUri == ImageUrl);
+    }
+
+    [TestMethod]
     public async Task ComposeAsync_WithoutAnImageToEdit_SendsNothing()
     {
         var provider = Provider(Answer);
@@ -420,6 +435,68 @@ public sealed class IdeogramImageProviderTests
 
         result.IsSuccess.Should().BeFalse();
         sent.Should().BeEmpty();
+    }
+
+    private const string Webhook = "https://podivo.io.vn/api/webhooks/ideogram";
+
+    [TestMethod]
+    public async Task GenerateAsync_WithAPublicAddress_AsksIdeogramToCallWhenTheImageIsReady()
+    {
+        var provider = Provider(Answer, new IdeogramOptions { WebhookBaseUrl = "https://podivo.io.vn/" });
+
+        await provider.GenerateAsync("key", "A fox.", "1:1", cancellationToken: TestContext.CancellationToken);
+
+        using var request = JsonDocument.Parse(body);
+        request.RootElement.GetProperty("webhook_url").GetString().Should().Be(Webhook);
+        request.RootElement.GetProperty("async").GetBoolean().Should().BeTrue();
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow("http://localhost:5000")]
+    [DataRow("https://localhost:5001")]
+    [DataRow("podivo.io.vn")]
+    public async Task GenerateAsync_WithoutAPublicHttpsAddress_SendsNoWebhook(string? address)
+    {
+        var provider = Provider(Answer, new IdeogramOptions { WebhookBaseUrl = address });
+
+        await provider.GenerateAsync("key", "A fox.", "1:1", cancellationToken: TestContext.CancellationToken);
+
+        using var request = JsonDocument.Parse(body);
+        request.RootElement.TryGetProperty("webhook_url", out _).Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ComposeAsync_WithAPublicAddress_SendsTheWebhookInTheForm()
+    {
+        var provider = Provider(Answer, new IdeogramOptions { WebhookBaseUrl = "https://podivo.io.vn" });
+
+        await provider.ComposeAsync("key", "Dress the person.", [new ImageReference([1], "image/jpeg"), new ImageReference([2], "image/png")],
+            TestContext.CancellationToken);
+
+        Field(body.Replace("\"", ""), "webhook_url").Should().Be(Webhook);
+    }
+
+    [TestMethod]
+    public async Task GenerateAsync_IdeogramCallsWhileTheImageIsAskedAbout_AsksAgainWithoutWaitingThePollInterval()
+    {
+        var ready = new IdeogramReadySignals();
+        var polls = 0;
+        var provider = Provider(request =>
+        {
+            if (request.RequestUri!.AbsoluteUri != GenerationUrl) return Answer(request);
+            if (++polls > 1) return Json(HttpStatusCode.OK, Completed);
+            ready.Ready("g1");
+            return Json(HttpStatusCode.OK, Pending);
+        }, ready: ready, pollInterval: TimeSpan.FromMinutes(5));
+
+        var result = await provider.GenerateAsync("key", "A fox.", "1:1", cancellationToken: TestContext.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(30), TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        polls.Should().Be(2);
+        ready.Ready("g1").Should().BeFalse("the generation is no longer waited for");
     }
 
     private static int CountOf(string text, string part) => text.Replace("\"", "").Split(part).Length - 1;
@@ -454,7 +531,8 @@ public sealed class IdeogramImageProviderTests
             Content = new ByteArrayContent(Image) { Headers = { ContentType = new("image/png") } }
         };
 
-    private IdeogramImageProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send, IdeogramOptions? settings = null)
+    private IdeogramImageProvider Provider(Func<HttpRequestMessage, HttpResponseMessage> send, IdeogramOptions? settings = null,
+        IdeogramReadySignals? ready = null, TimeSpan? pollInterval = null)
     {
         var clients = new Mock<IHttpClientFactory>();
         clients.Setup(x => x.CreateClient("Ideogram")).Returns(() => new HttpClient(new Handler(async request =>
@@ -466,8 +544,8 @@ public sealed class IdeogramImageProviderTests
         })));
         settings ??= new IdeogramOptions();
         settings.RetryBaseDelay = TimeSpan.Zero;
-        settings.PollInterval = TimeSpan.Zero;
-        return new IdeogramImageProvider(clients.Object, Microsoft.Extensions.Options.Options.Create(settings));
+        settings.PollInterval = pollInterval ?? TimeSpan.Zero;
+        return new IdeogramImageProvider(clients.Object, Microsoft.Extensions.Options.Options.Create(settings), ready);
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string content) =>

@@ -18,6 +18,16 @@ public interface IImageLinkProvider
         bool enrichPrompt = false,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Edits the first image guided by the others, as <see cref="IImageGenerationProvider.ComposeAsync"/>, and stops at
+    /// the result's link.
+    /// </summary>
+    Task<ImageGenerationResult> ComposeLinkAsync(
+        string apiKey,
+        string prompt,
+        IReadOnlyList<ImageReference> images,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Reads the image behind a link from <see cref="GenerateLinkAsync"/>, for when storage could not fetch it itself.</summary>
     Task<ImageGenerationResult> DownloadLinkAsync(
         ImageGenerationResult linked,

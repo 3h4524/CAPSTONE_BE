@@ -28,17 +28,24 @@ public sealed class CloudinaryMediaStorage(IOptions<CloudinaryOptions> options, 
         StoreMockupAsync(new FileDescription(sourceUrl), key, ct);
     private async Task<StoredMockup> StoreMockupAsync(FileDescription description, string key, CancellationToken ct)
     {
+        var started = time.GetTimestamp();
         var result = await Client.UploadAsync(new ImageUploadParams
         {
             File = description, PublicId = PublicId(key), Type = "authenticated", Overwrite = false,
             Format = "png", Transformation = new Transformation().Angle("auto").Flags("strip_profile")
         }, cancellationToken: ct);
+        var storeTime = time.GetElapsedTime(started);
+        // A busy or failing host (420 is Cloudinary's rate limit) is a passing failure the caller may try again.
+        if (result.Error != null && ((int)result.StatusCode is 420 or 429 or >= 500))
+            throw new HttpRequestException($"Cloudinary could not store the image: {result.Error.Message}", null, result.StatusCode);
         if (result.Error != null || result.Width <= 0 || result.Height <= 0 || (long)result.Width * result.Height > 32_000_000)
             throw new InvalidOperationException("Invalid image or image exceeds 32 megapixels.");
+        var readStarted = time.GetTimestamp();
         using var response = await clients.CreateClient("PrivateMedia").GetAsync(SignRead(key, "image"), ct);
         response.EnsureSuccessStatusCode();
         var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-        return new(key, result.Version, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Width, result.Height);
+        return new(key, result.Version, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Width, result.Height,
+            storeTime, time.GetElapsedTime(readStarted), bytes.LongLength);
     }
     public Task<byte[]> ReadImageAsync(string key, string? version, CancellationToken ct) =>
         clients.CreateClient("PrivateMedia").GetByteArrayAsync(SignRead(key, "image", version), ct);
