@@ -146,7 +146,7 @@ public sealed class PrintifyMockupMatcherTests
         result.Value.Warnings.Should().ContainSingle(warning => warning.Contains("several products"));
     }
 
-    private MockupTemplate BackOf(MockupTemplate front)
+    private static MockupTemplate BackOf(MockupTemplate front)
     {
         var back = Template($"{front.Name} · Back");
         back.PrintAreaConfig = $$"""{"view":"back","mainTemplateId":"{{front.Id}}"}""";

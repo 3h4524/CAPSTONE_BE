@@ -514,7 +514,7 @@ public sealed class PrintifyServiceTests
         var back = BackSideShown();
         mockup.ApprovalStatus = "pending";
 
-        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true, Position = "front" });
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true, Position = "front" }, cancellationToken: TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
         printify.Verify(x => x.CreateProductAsync("token", 777, It.Is<PrintifyNewProduct>(product =>
@@ -530,7 +530,7 @@ public sealed class PrintifyServiceTests
         var back = BackSideShown();
         mockup.ApprovalStatus = "pending";
 
-        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true });
+        var result = await service.CreateProductAsync(productId, CreateRequest() with { PlacementMockupId = back.Id, PrintMockupSides = true }, cancellationToken: TestContext.CancellationToken);
 
         result.Error.Message.Should().Contain("show only the back");
         printify.Verify(x => x.CreateProductAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<PrintifyNewProduct>(), It.IsAny<CancellationToken>()), Times.Never);
