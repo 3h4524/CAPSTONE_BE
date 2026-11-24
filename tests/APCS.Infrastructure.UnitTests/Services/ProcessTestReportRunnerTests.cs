@@ -102,6 +102,37 @@ public sealed class ProcessTestReportRunnerTests
         result.ExitCode.Should().Be(3);
     }
 
+    [TestMethod]
+    public async Task RunAsync_SetsHeadedEnvironmentVariable_WhenHeadedModeIsSpecified()
+    {
+        var runner = CreateRunner(ShellCommand("echo HEADED=%E2E_HEADED%", "echo HEADED=$E2E_HEADED"));
+
+        var result = await runner.RunAsync("run-1", "headed", CancellationToken.None);
+
+        result.Log.Should().Contain("HEADED=1");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_SetsDebugAndHeadedEnvironmentVariables_WhenDebugModeIsSpecified()
+    {
+        var runner = CreateRunner(ShellCommand("echo HEADED=%E2E_HEADED% DEBUG=%PWDEBUG%", "echo HEADED=$E2E_HEADED DEBUG=$PWDEBUG"));
+
+        var result = await runner.RunAsync("run-1", "debug", CancellationToken.None);
+
+        result.Log.Should().Contain("HEADED=1");
+        result.Log.Should().Contain("DEBUG=1");
+    }
+
+    [TestMethod]
+    public async Task RunAsync_SetsHeadlessEnvironmentVariable_WhenHeadlessModeIsSpecified()
+    {
+        var runner = CreateRunner(ShellCommand("echo HEADED=%E2E_HEADED%", "echo HEADED=$E2E_HEADED"));
+
+        var result = await runner.RunAsync("run-1", "headless", CancellationToken.None);
+
+        result.Log.Should().Contain("HEADED=0");
+    }
+
     private static string NoOpCommand() => ShellCommand("ver > nul", "true");
 
     private static string ShellCommand(string windows, string unix) =>

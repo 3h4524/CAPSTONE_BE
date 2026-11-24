@@ -37,7 +37,11 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
     }
 
     /// <inheritdoc />
-    public async Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default)
+    public Task<TestReportRunnerResult> RunAsync(string runId, CancellationToken cancellationToken = default)
+        => RunAsync(runId, null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<TestReportRunnerResult> RunAsync(string runId, string? mode, CancellationToken cancellationToken = default)
     {
         var branch = ReadGit("rev-parse --abbrev-ref HEAD");
         var commit = ReadGit("rev-parse --short HEAD");
@@ -47,13 +51,13 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
             File.Delete(_reportFile);
         }
 
-        var log = await RunCommandAsync(cancellationToken);
+        var log = await RunCommandAsync(mode, cancellationToken);
         var rawReport = File.Exists(_reportFile) ? await File.ReadAllTextAsync(_reportFile, cancellationToken) : null;
 
         return new TestReportRunnerResult(log.ExitCode, log.Output, rawReport, branch, commit);
     }
 
-    private async Task<(int ExitCode, string Output)> RunCommandAsync(CancellationToken cancellationToken)
+    private async Task<(int ExitCode, string Output)> RunCommandAsync(string? mode, CancellationToken cancellationToken)
     {
         var isWindows = OperatingSystem.IsWindows();
         var startInfo = new ProcessStartInfo
@@ -64,6 +68,23 @@ public sealed class ProcessTestReportRunner : ITestReportRunner
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+
+        var normalizedMode = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedMode is "headed")
+        {
+            startInfo.Environment["E2E_HEADED"] = "1";
+            startInfo.Environment.Remove("PWDEBUG");
+        }
+        else if (normalizedMode is "debug")
+        {
+            startInfo.Environment["E2E_HEADED"] = "1";
+            startInfo.Environment["PWDEBUG"] = "1";
+        }
+        else
+        {
+            startInfo.Environment["E2E_HEADED"] = "0";
+            startInfo.Environment.Remove("PWDEBUG");
+        }
 
         if (isWindows)
         {

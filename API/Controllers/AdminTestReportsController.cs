@@ -55,9 +55,11 @@ public sealed class AdminTestReportsController(
     [HttpPost("runs")]
     [ProducesResponseType(typeof(TestReportRunDto), StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> StartRun(CancellationToken cancellationToken)
+    public async Task<IActionResult> StartRun(
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] StartTestRunRequestDto? request,
+        CancellationToken cancellationToken)
     {
-        var result = await testReportService.StartRunAsync(CurrentUserEmail(), cancellationToken);
+        var result = await testReportService.StartRunAsync(CurrentUserEmail(), request?.Mode, cancellationToken);
         if (result.IsSuccess)
         {
             return Accepted(result.Value);
