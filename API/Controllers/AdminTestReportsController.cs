@@ -78,9 +78,10 @@ public sealed class AdminTestReportsController(
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> IngestRun(
         [FromBody] TestReportIngestDto request,
+        [FromHeader(Name = "X-CI-Key")] string? ciKey,
         CancellationToken cancellationToken)
     {
-        if (!IsAuthorizedForIngest())
+        if (!IsAuthorizedForIngest(ciKey))
         {
             return Unauthorized();
         }
@@ -106,7 +107,7 @@ public sealed class AdminTestReportsController(
         return result.IsSuccess ? NoContent() : BadRequest(result.Error);
     }
 
-    private bool IsAuthorizedForIngest()
+    private bool IsAuthorizedForIngest(string? ciKey)
     {
         if (User.IsInRole("Admin") || User.IsInRole("Super Admin"))
         {
@@ -114,8 +115,8 @@ public sealed class AdminTestReportsController(
         }
 
         if (!string.IsNullOrWhiteSpace(_options.IngestApiKey)
-            && Request.Headers.TryGetValue("X-CI-Key", out var headerKey)
-            && string.Equals(headerKey, _options.IngestApiKey, StringComparison.Ordinal))
+            && !string.IsNullOrWhiteSpace(ciKey)
+            && string.Equals(ciKey, _options.IngestApiKey, StringComparison.Ordinal))
         {
             return true;
         }

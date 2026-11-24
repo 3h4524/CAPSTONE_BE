@@ -27,6 +27,8 @@ namespace APCS.IntegrationTests.Admin;
 [TestClass]
 public sealed class TestReportEndpointTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private const string Route = "/api/admin/test-reports";
     private const string RunId = "run-integration-1";
 
@@ -103,10 +105,10 @@ public sealed class TestReportEndpointTests
         await StoreRunAsync();
 
         using var client = await AdminClientAsync();
-        using var response = await client.GetAsync(Route);
+        using var response = await client.GetAsync(Route, TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.CancellationToken);
         body.GetProperty("items")
             .EnumerateArray()
             .Select(item => item.GetProperty("runId").GetString())
@@ -119,10 +121,10 @@ public sealed class TestReportEndpointTests
         await StoreRunAsync();
 
         using var client = await AdminClientAsync();
-        using var response = await client.GetAsync($"{Route}/{RunId}");
+        using var response = await client.GetAsync($"{Route}/{RunId}", TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.CancellationToken);
         body.GetProperty("run").GetProperty("status").GetString().Should().Be("passed");
         var files = body.GetProperty("files").EnumerateArray().ToList();
         files.Should().HaveCount(1);
@@ -138,12 +140,12 @@ public sealed class TestReportEndpointTests
         await StoreRunAsync();
 
         using var client = await AdminClientAsync();
-        using var response = await client.DeleteAsync($"{Route}/{RunId}");
+        using var response = await client.DeleteAsync($"{Route}/{RunId}", TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        using var listed = await client.GetAsync(Route);
-        var body = await listed.Content.ReadFromJsonAsync<JsonElement>();
+        using var listed = await client.GetAsync(Route, TestContext.CancellationToken);
+        var body = await listed.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.CancellationToken);
         body.GetProperty("items")
             .EnumerateArray()
             .Select(item => item.GetProperty("runId").GetString())
@@ -156,7 +158,7 @@ public sealed class TestReportEndpointTests
         await StoreRunAsync();
 
         using var client = TestAccount.CreateAnonymousClient(_host);
-        using var response = await client.GetAsync($"{Route}/{RunId}");
+        using var response = await client.GetAsync($"{Route}/{RunId}", TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
@@ -176,17 +178,17 @@ public sealed class TestReportEndpointTests
             Report = doc.RootElement,
         };
 
-        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload);
+        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload, cancellationToken: TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.CancellationToken);
         body.GetProperty("runId").GetString().Should().Be("run-ci-ingest-1");
         body.GetProperty("status").GetString().Should().Be("passed");
         body.GetProperty("totalTests").GetInt32().Should().Be(1);
 
-        using var fetched = await client.GetAsync($"{Route}/run-ci-ingest-1");
+        using var fetched = await client.GetAsync($"{Route}/run-ci-ingest-1", TestContext.CancellationToken);
         fetched.StatusCode.Should().Be(HttpStatusCode.OK);
-        var fetchedBody = await fetched.Content.ReadFromJsonAsync<JsonElement>();
+        var fetchedBody = await fetched.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: TestContext.CancellationToken);
         fetchedBody.GetProperty("run").GetProperty("commitSha").GetString().Should().Be("feedbee");
     }
 
@@ -202,7 +204,7 @@ public sealed class TestReportEndpointTests
             Report = doc.RootElement,
         };
 
-        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload);
+        using var response = await client.PostAsJsonAsync($"{Route}/ingest", payload, cancellationToken: TestContext.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }

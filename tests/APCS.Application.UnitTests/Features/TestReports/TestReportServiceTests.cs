@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.TestReports;
 [TestClass]
 public sealed class TestReportServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private const string ReportJson = """
     {
       "config": {},
@@ -317,7 +319,7 @@ public sealed class TestReportServiceTests
             Report = doc.RootElement,
         };
 
-        var result = await _sut.IngestRunAsync(request);
+        var result = await _sut.IngestRunAsync(request, TestContext.CancellationToken);
 
         result.IsSuccess.Should().BeTrue();
         result.Value.RunId.Should().Be("run-ci-123");
@@ -344,7 +346,7 @@ public sealed class TestReportServiceTests
             Report = default,
         };
 
-        var result = await _sut.IngestRunAsync(request);
+        var result = await _sut.IngestRunAsync(request, TestContext.CancellationToken);
 
         result.IsFailure.Should().BeTrue();
         result.Error.Type.Should().Be(ErrorType.Validation);
