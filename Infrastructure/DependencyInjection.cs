@@ -122,6 +122,9 @@ public static class DependencyInjection
         // lifestyle mock-ups Ideogram (precise edit) and AI Studio frames Gemini.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
+        // One per process: the webhook call for an image wakes the request on this server that waits for it.
+        services.AddSingleton<IdeogramReadySignals>();
+        services.AddSingleton<IImageReadySignals>(provider => provider.GetRequiredService<IdeogramReadySignals>());
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });

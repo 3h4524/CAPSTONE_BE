@@ -1,3 +1,4 @@
+using APCS.Application.Abstractions.AI;
 using APCS.Common.Constants;
 
 namespace APCS.Infrastructure.Options;
@@ -74,6 +75,20 @@ public sealed class IdeogramOptions
 
     /// <summary>How often an image being made is asked about.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// This server's public HTTPS address (https://podivo.io.vn). Set, each image is sent with a webhook URL under it, and
+    /// Ideogram's call when the image is ready makes the server ask for it at once instead of at the next poll
+    /// (<see cref="PollInterval"/>). Polling goes on either way, since Ideogram may drop a call. Leave it empty where
+    /// Ideogram cannot reach the server (localhost): Ideogram refuses a private address.
+    /// </summary>
+    public string? WebhookBaseUrl { get; set; }
+
+    /// <summary>The webhook URL sent with each image, or null when <see cref="WebhookBaseUrl"/> is not a public HTTPS address.</summary>
+    public string? WebhookUrl =>
+        Uri.TryCreate(WebhookBaseUrl?.Trim(), UriKind.Absolute, out var site) && site.Scheme == Uri.UriSchemeHttps && !site.IsLoopback
+            ? $"{site.AbsoluteUri.TrimEnd('/')}/{IImageReadySignals.IdeogramWebhookPath}"
+            : null;
 
     /// <summary>How many times in a row asking about an image may fail (Ideogram busy or unreachable) before giving up on it.</summary>
     public int MaxPollFailures { get; set; } = 5;

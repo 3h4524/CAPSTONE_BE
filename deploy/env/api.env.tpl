@@ -88,6 +88,11 @@ AiVideo__Callback__BaseUrl=https://${APP_DOMAIN}
 AiVideo__Callback__Secret=${JWT_SIGNING_KEY}
 # AiVideo__ClipPhase__CallbackPollIntervalSeconds=60
 
+# Ideogram calls https://${APP_DOMAIN}/api/webhooks/ideogram when an image is ready, so the API asks for it at once instead of
+# at its next poll (every 2 s). The call only wakes the waiting request; the image is still read from Ideogram with the key.
+# Polling goes on regardless, in case a call never comes. Empty (as on localhost), images are only polled.
+Ideogram__WebhookBaseUrl=https://${APP_DOMAIN}
+
 # Before an AI scene is sent to MiniMax, Gemini describes its opening frame and rewrites the scene's prompt from that (two calls
 # for each scene, which is most of the time Generate Video stays at 2-15%). On by default. Set it to false to send the prompt the
 # template builds instead, which is faster but not grounded in the actual image.
