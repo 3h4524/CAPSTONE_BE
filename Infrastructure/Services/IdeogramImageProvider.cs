@@ -13,11 +13,13 @@ namespace APCS.Infrastructure.Services;
 /// </summary>
 /// <remarks>
 /// Each image is requested to run in the background: Ideogram accepts it at once with a generation id, which is asked
-/// about until the image is ready, and the finished image is then downloaded from the link it gives. An image is paid
+/// about until the image is ready (at once when Ideogram calls the webhook, see <see cref="IdeogramOptions.WebhookBaseUrl"/>),
+/// and the finished image is then downloaded from the link it gives. An image is paid
 /// for once it is made, so nothing here gives up on one that is still being made because a single call took long, and a
 /// download that fails is tried again with a fresh link from the same generation.
 /// </remarks>
-public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<IdeogramOptions> options) : IImageGenerationProvider
+public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<IdeogramOptions> options, IdeogramReadySignals? ready = null)
+    : IImageGenerationProvider, IImageLinkProvider
 {
     // The size Ideogram lists for each ratio the app offers, at 2K and at 1K. A ratio missing here is left for Ideogram to choose.
     private static readonly Dictionary<string, string> TwoKSizes = new(StringComparer.Ordinal)
@@ -50,7 +52,33 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
         string aspectRatio,
         bool transparentBackground = false,
         bool enrichPrompt = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        RequestAsync(apiKey, prompt, aspectRatio, transparentBackground, enrichPrompt, linkOnly: false, cancellationToken);
+
+    public Task<ImageGenerationResult> GenerateLinkAsync(
+        string apiKey,
+        string prompt,
+        string aspectRatio,
+        bool transparentBackground = false,
+        bool enrichPrompt = false,
+        CancellationToken cancellationToken = default) =>
+        RequestAsync(apiKey, prompt, aspectRatio, transparentBackground, enrichPrompt, linkOnly: true, cancellationToken);
+
+    public async Task<ImageGenerationResult> DownloadLinkAsync(ImageGenerationResult linked, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(linked.ImageUrl))
+            return ImageGenerationResult.Failed("Ideogram did not return an image.", linked.ModelUsed);
+
+        // The link is signed on its own, so no key is needed, and no generation is named to ask for a fresh one.
+        var download = await DownloadAsync(clients.CreateClient("Ideogram"), string.Empty, linked.ModelUsed, linked.ImageUrl, null, cancellationToken);
+        return download.Error is null
+            ? ImageGenerationResult.Success(download.Bytes!, download.MimeType!, linked.ModelUsed, linked.EstimatedCostUsd)
+            : ImageGenerationResult.Failed(download.Error, linked.ModelUsed);
+    }
+
+    private Task<ImageGenerationResult> RequestAsync(
+        string apiKey, string prompt, string aspectRatio, bool transparentBackground, bool enrichPrompt, bool linkOnly,
+        CancellationToken cancellationToken)
     {
         var settings = options.Value;
         var ratio = aspectRatio.Trim();
@@ -65,6 +93,7 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
             ["async"] = true,
             ["enable_copyright_detection"] = settings.CopyrightDetection,
         };
+        if (settings.WebhookUrl is { } webhook) body["webhook_url"] = webhook;
 
         // The two endpoints size an image differently: the transparent one by ratio and size tier, the other by exact size.
         string model;
@@ -82,7 +111,7 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
 
         var json = JsonSerializer.Serialize(body);
         return GenerateCoreAsync(apiKey, model, $"{settings.Endpoint.TrimEnd('/')}/{model}",
-            () => new StringContent(json, System.Text.Encoding.UTF8, "application/json"), settings.CostPerImageUsd, cancellationToken);
+            () => new StringContent(json, System.Text.Encoding.UTF8, "application/json"), settings.CostPerImageUsd, cancellationToken, linkOnly);
     }
 
     /// <summary>
@@ -93,7 +122,18 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
         string apiKey,
         string prompt,
         IReadOnlyList<ImageReference> images,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ComposeCoreAsync(apiKey, prompt, images, linkOnly: false, cancellationToken);
+
+    public Task<ImageGenerationResult> ComposeLinkAsync(
+        string apiKey,
+        string prompt,
+        IReadOnlyList<ImageReference> images,
+        CancellationToken cancellationToken = default) =>
+        ComposeCoreAsync(apiKey, prompt, images, linkOnly: true, cancellationToken);
+
+    private Task<ImageGenerationResult> ComposeCoreAsync(
+        string apiKey, string prompt, IReadOnlyList<ImageReference> images, bool linkOnly, CancellationToken cancellationToken)
     {
         var settings = options.Value;
         var model = settings.EditModel;
@@ -111,6 +151,7 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
                 { new StringContent("true"), "async" },
                 { new StringContent(settings.CopyrightDetection ? "true" : "false"), "enable_copyright_detection" },
             };
+            if (settings.WebhookUrl is { } webhook) form.Add(new StringContent(webhook), "webhook_url");
             for (var i = 0; i < images.Count; i++)
             {
                 var file = new ByteArrayContent(images[i].Bytes);
@@ -120,7 +161,7 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
             return form;
         }
 
-        return GenerateCoreAsync(apiKey, model, $"{settings.EditEndpoint.TrimEnd('/')}/{model}", Form, settings.EditCostPerImageUsd, cancellationToken);
+        return GenerateCoreAsync(apiKey, model, $"{settings.EditEndpoint.TrimEnd('/')}/{model}", Form, settings.EditCostPerImageUsd, cancellationToken, linkOnly);
     }
 
     private static string Extension(string mimeType) => mimeType switch
@@ -131,7 +172,8 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
     };
 
     private async Task<ImageGenerationResult> GenerateCoreAsync(
-        string apiKey, string model, string url, Func<HttpContent> content, decimal fallbackCost, CancellationToken cancellationToken)
+        string apiKey, string model, string url, Func<HttpContent> content, decimal fallbackCost, CancellationToken cancellationToken,
+        bool linkOnly = false)
     {
         var client = clients.CreateClient("Ideogram");
         var started = Stopwatch.GetTimestamp();
@@ -146,7 +188,17 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
             image = data[0];
         else
         {
-            var polled = await PollAsync(client, apiKey, model, accepted.GenerationId!, cancellationToken);
+            var generationId = accepted.GenerationId!;
+            ready?.Watch(generationId);
+            Polled polled;
+            try
+            {
+                polled = await PollAsync(client, apiKey, model, generationId, cancellationToken);
+            }
+            finally
+            {
+                ready?.Forget(generationId);
+            }
             if (polled.Failure is not null) return polled.Failure;
             image = polled.Image;
             costMicros = polled.CostMicros;
@@ -160,11 +212,19 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
                 ? "Generation blocked by Ideogram: the image failed its safety or copyright check (it may show a real brand or character)."
                 : "Generation blocked by Ideogram: the image failed its safety check.", model);
 
+        var cost = costMicros is long micros ? micros / 1_000_000m : fallbackCost;
+        if (linkOnly)
+            return ImageGenerationResult.Linked(image.Url!, model, cost) with
+            {
+                GenerateTime = generateTime,
+                Seed = image.Seed,
+                ProviderPrompt = image.Prompt
+            };
+
         var downloadStarted = Stopwatch.GetTimestamp();
         var download = await DownloadAsync(client, apiKey, model, image.Url, accepted.GenerationId, cancellationToken);
         if (download.Error is not null) return ImageGenerationResult.Failed(download.Error, model);
 
-        var cost = costMicros is long micros ? micros / 1_000_000m : fallbackCost;
         return ImageGenerationResult.Success(download.Bytes!, download.MimeType!, model, cost) with
         {
             GenerateTime = generateTime,
@@ -304,7 +364,9 @@ public sealed class IdeogramImageProvider(IHttpClientFactory clients, IOptions<I
 
             if (trouble is not null && ++failures > settings.MaxPollFailures)
                 return new(null, null, ImageGenerationResult.Failed(trouble, model));
-            await Task.Delay(wait ?? settings.PollInterval, cancellationToken);
+            // Ideogram's own wait after a busy answer is kept; otherwise its "ready" call ends the wait early.
+            if (wait is not null || ready is null) await Task.Delay(wait ?? settings.PollInterval, cancellationToken);
+            else await ready.WaitAsync(generationId, settings.PollInterval, cancellationToken);
         }
     }
 

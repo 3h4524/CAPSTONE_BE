@@ -30,6 +30,13 @@ public sealed class E2EOrchestrator(E2EOptions options)
     private static readonly HttpClient HealthClient = new() { Timeout = TimeSpan.FromSeconds(5) };
     private static readonly int[] ApiPortCandidates = [5191, 5192, 5193, 5194, 5195];
 
+    private static readonly string[] MigrationsOutsideTheModel =
+    [
+        "V202611081716__media_streams_and_workflow_run_indexes.sql",
+        "V202611092056__fix_media_outbox_utc_timestamps.sql",
+        "V202611171930__user_onboarding_progress.sql",
+    ];
+
     public async Task<E2EOutcome> RunAsync(CancellationToken cancellationToken = default)
     {
         return options.Command switch
@@ -48,6 +55,12 @@ public sealed class E2EOrchestrator(E2EOptions options)
         Directory.CreateDirectory(options.RunDirectory);
         await using var lockHandle = AcquireLock();
 
+        var apiHealthy = await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false);
+        if (!apiHealthy)
+        {
+            ReclaimStoppedRun();
+        }
+
         var reuseSink = IsPortOpen(options.SmtpPort);
         var smtpSink = reuseSink ? null : StartSmtpSink();
 
@@ -56,16 +69,16 @@ public sealed class E2EOrchestrator(E2EOptions options)
         LaunchedProcess? apiProcess = null;
         var apiPort = options.ApiPort;
 
-        if (await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false))
+        if (apiHealthy)
         {
             Console.WriteLine("[e2e] reusing the API that already serves this machine; its data is reset without a schema rebuild, so the run rows survive");
+            await ApplyMigrationsOutsideTheModelAsync(cancellationToken).ConfigureAwait(false);
             await TruncateApplicationDataAsync(cancellationToken).ConfigureAwait(false);
             await FlushRedisAsync(cancellationToken).ConfigureAwait(false);
             await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            ReclaimStoppedRun();
             await EnsureRoleAndDatabaseAsync(cancellationToken).ConfigureAwait(false);
             await ApplyModelSchemaAsync(cancellationToken).ConfigureAwait(false);
 
@@ -154,22 +167,28 @@ public sealed class E2EOrchestrator(E2EOptions options)
         Directory.CreateDirectory(options.RunDirectory);
         await using var lockHandle = AcquireLock();
 
+        var apiHealthy = await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false);
+        if (!apiHealthy)
+        {
+            ReclaimStoppedRun();
+        }
+
         var reuseSink = IsPortOpen(options.SmtpPort);
         var smtpSink = reuseSink ? null : StartSmtpSink();
 
         LaunchedProcess? apiProcess = null;
         var apiPort = options.ApiPort;
 
-        if (await IsApiHealthyAsync(cancellationToken).ConfigureAwait(false))
+        if (apiHealthy)
         {
             Console.WriteLine("[e2e] reusing the API that already serves this machine; its data is reset");
+            await ApplyMigrationsOutsideTheModelAsync(cancellationToken).ConfigureAwait(false);
             await TruncateApplicationDataAsync(cancellationToken).ConfigureAwait(false);
             await FlushRedisAsync(cancellationToken).ConfigureAwait(false);
             await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            ReclaimStoppedRun();
             await EnsureComposeUpAsync(cancellationToken).ConfigureAwait(false);
             await EnsureRoleAndDatabaseAsync(cancellationToken).ConfigureAwait(false);
             await ApplyModelSchemaAsync(cancellationToken).ConfigureAwait(false);
@@ -335,7 +354,22 @@ public sealed class E2EOrchestrator(E2EOptions options)
                 .Options);
 
         await context.Database.EnsureCreatedAsync(cancellationToken).ConfigureAwait(false);
+        await ApplyMigrationsOutsideTheModelAsync(cancellationToken).ConfigureAwait(false);
         await SeedCatalogAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ApplyMigrationsOutsideTheModelAsync(CancellationToken cancellationToken)
+    {
+        await using var dataSource = NpgsqlDataSource.Create(options.ApiDbConnectionString);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var migration in MigrationsOutsideTheModel)
+        {
+            var sql = await File.ReadAllTextAsync(
+                Path.Combine(options.RepositoryRoot, "migrations", migration),
+                cancellationToken).ConfigureAwait(false);
+            await new NpgsqlCommand(sql, connection).ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task SeedCatalogAsync(CancellationToken cancellationToken)
@@ -489,7 +523,9 @@ public sealed class E2EOrchestrator(E2EOptions options)
 
     private int ResolveFreeApiPort()
     {
-        var port = ApiPortCandidates.First(candidate => options.ApiPort == candidate || !IsPortOpen(candidate));
+        var port = IsPortOpen(options.ApiPort)
+            ? ApiPortCandidates.First(candidate => !IsPortOpen(candidate))
+            : options.ApiPort;
 
         if (port != options.ApiPort)
         {
@@ -566,6 +602,12 @@ public sealed class E2EOrchestrator(E2EOptions options)
         if (!string.IsNullOrWhiteSpace(headed))
         {
             environment["E2E_HEADED"] = headed;
+        }
+
+        var pwdebug = Environment.GetEnvironmentVariable("PWDEBUG");
+        if (!string.IsNullOrWhiteSpace(pwdebug))
+        {
+            environment["PWDEBUG"] = pwdebug;
         }
 
         return environment;

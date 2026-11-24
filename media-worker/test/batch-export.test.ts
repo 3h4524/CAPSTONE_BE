@@ -25,7 +25,8 @@ test("batch export renders scenes from the selected video snapshot and includes 
     videos: [{ id, version: 2, file: videoFile, storageVersion: "2", thumbnailFile: input, thumbnailVersion: "3", includeScenes: true, storyboard: board, snapshot }] };
     const rendered: number[] = [];
     const renderer: SceneRenderer = { async renderScene(props, target) {
-      rendered.push(props.sceneOrder); assert.equal(props.finalVideo, videoFile);
+      rendered.push(props.sceneOrder); assert.ok(!("music" in props), "a scene has no sound to take");
+      assert.equal(props.finalVideo, videoFile, "the final video, which a scene with no transition into it is cut from");
       const file = join(target, `scene-${props.sceneOrder}.mp4`); await writeFile(file, `scene ${props.sceneOrder}`); return { video: file };
     } };
     const parts = await packageBatchExport(directory, [product], renderer, 4 * 1024 * 1024, AbortSignal.timeout(10_000));
@@ -38,6 +39,37 @@ test("batch export renders scenes from the selected video snapshot and includes 
       assert.ok(zip.includes(Buffer.from(name)), name);
     product.videos[0]!.snapshot!.videoId = "51200975-356a-4340-857f-a1fa2c273241";
     await assert.rejects(packageBatchExport(directory, [product], renderer, 4 * 1024 * 1024, AbortSignal.timeout(10_000)), /Scene sources unavailable/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("batch export without the final video packages the video of every scene alone, without sound", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "apcs-batch-scenes-only-"));
+  try {
+    const id = "fdc00975-356a-4340-857f-a1fa2c273241";
+    const image = fixtureImage(); const base = fixtureBoard("tshirt", image, 6);
+    // Music on the video: the scenes still have none, so nothing is asked of a track.
+    const board = { ...base, videoEdit: { version: 1 as const, overlays: [], music: { trackId: "fdc00975-356a-4340-857f-a1fa2c273241", startFrame: 0,
+      sourceOffsetFrames: 0, volume: 1, fadeInFrames: 0, fadeOutFrames: 0, loop: false, muted: false } } };
+    const input = join(directory, "input.png");
+    await writeFile(input, image);
+    const snapshot = { videoId: id, storyboardFingerprint: board.fingerprint, scenes: board.scenes.map(scene => ({
+      sceneOrder: scene.sceneOrder, mockupId: scene.mockupId, sourceRevision: scene.sourceRevision,
+      sourceHash: scene.sourceHash, imageFile: input, imageVersion: "1",
+    })) };
+    const product: ExportProduct = { id, name: "Product", type: "tshirt", images: [{ id: "mockup-1", file: input, path: "mockup/mockup-01.png" }],
+      videos: [{ id, version: 2, storageVersion: "2", includeScenes: true, storyboard: board, snapshot }] };
+    const seen: string[][] = [];
+    const renderer: SceneRenderer = { async renderScene(props, target) {
+      seen.push(Object.keys(props).sort());
+      const file = join(target, `scene-${props.sceneOrder}.mp4`); await writeFile(file, `scene ${props.sceneOrder}`); return { video: file };
+    } };
+    const parts = await packageBatchExport(directory, [product], renderer, 4 * 1024 * 1024, AbortSignal.timeout(10_000));
+    assert.deepEqual(seen, [["clips", "sceneOrder", "sources", "storyboard"], ["clips", "sceneOrder", "sources", "storyboard"]]);
+    const zip = await readFile(parts[0]!);
+    const root = `Product__${id}`; const version = `v002__${id}`;
+    assert.ok(zip.includes(Buffer.from(`${root}/video/scenes/${version}/scene-01.mp4`)));
+    assert.ok(zip.includes(Buffer.from(`${root}/video/scenes/${version}/scene-02.mp4`)));
+    assert.ok(!zip.includes(Buffer.from(`${root}/video/final/`)), "there is no final video in this package");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

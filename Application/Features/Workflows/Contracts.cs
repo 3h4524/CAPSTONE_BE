@@ -182,6 +182,11 @@ public sealed record RunResponse(Guid Id, Guid WorkflowId, Guid ProductId, strin
 public sealed record VideoRunSummaryResponse(Guid Id, string Status, DateTimeOffset CreatedAt, int VideoCount, int LatestVersion);
 public sealed record MockupMetadataRequest(long ExpectedRevision, string Role, string ArtworkGroupKey, string? VariantKey, MockupRegions Regions);
 public sealed record MockupReviewRequest(long ExpectedRevision, bool Approved);
+/// <summary>Approves or rejects every color and side of one design's mock-ups at once.</summary>
+/// <param name="ArtworkGroupKey">The design's artwork group, as the mock-ups carry it.</param>
+/// <summary>Approves or rejects a design's composites as one product; approving leaves out the mock-ups of
+/// <paramref name="LeftOut"/> (the colors the seller does not sell), which are rejected.</summary>
+public sealed record MockupDesignReviewRequest(string ArtworkGroupKey, bool Approved, IReadOnlyList<Guid>? LeftOut = null);
 public sealed record MockupResponse(Guid Id, Guid ProductId, string SourceType, string Role, string? ArtworkGroupKey, string? VariantKey, long Revision, string ApprovalStatus, long? ApprovedRevision, int Width, int Height, MockupRegions Regions, string PreviewUrl, IReadOnlyList<string> Warnings,
     Guid? MockupTemplateId = null, Guid? DesignImageId = null);
 public sealed record AiStudioFrameReferenceInput(byte[] Bytes, string MimeType);
@@ -219,9 +224,17 @@ public sealed record Storyboard(string Template, int TemplateVersion, int Durati
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
     string Mode = "standard", int TransitionOverlapFrames = 0, IReadOnlyList<AiShotPlan>? AiShots = null, int? OutputDurationFrames = null,
     VideoEditConfig? VideoEdit = null, int DurationPolicyVersion = VideoDurationPolicy.CurrentVersion);
+/// <summary>An approved mock-up as the browser draws it into the video: a short-lived signed link and its size.</summary>
+public sealed record VideoPreviewSource(string Url, int Width, int Height);
+/// <summary>
+/// What the browser needs to play a video that has no file yet, with the same composition the media worker renders: the storyboard,
+/// each scene's mock-up by id, and the stored AI clip of each AI scene by scene order. The links are short-lived.
+/// </summary>
+public sealed record VideoPreviewData(Storyboard Storyboard, IReadOnlyDictionary<Guid, VideoPreviewSource> Sources, IReadOnlyDictionary<int, string> Clips);
+/// <param name="Preview">Present while the video has no file (<c>ready</c> or <c>rendering</c>): the seller plays it from its scenes.</param>
 public sealed record VideoResponse(Guid Id, Guid RunId, string Mode, string Template, int Version, long ReviewRevision, string Status, string ApprovalStatus, string? PreviewUrl, string? ThumbnailUrl, JsonElement Qa, IReadOnlyList<ScenePlan> Scenes,
     string OutputFormat = VideoOutputFormats.Default, int Width = 1080, int Height = 1920, string AspectRatio = "9:16",
-    GenerateVideoConfig? Config = null, string? ArtworkGroupKey = null, IReadOnlyList<Guid>? MockupIds = null);
+    GenerateVideoConfig? Config = null, string? ArtworkGroupKey = null, IReadOnlyList<Guid>? MockupIds = null, VideoPreviewData? Preview = null);
 public sealed record AiSceneVideoResponse(int SceneOrder, string Status, string? PreviewUrl, string? Failure);
 /// <summary>Evidence produced by the locally configured OCR and VBench tools for one scene.</summary>
 public sealed record VideoSceneEvaluationResponse(string Status, DateTimeOffset? EvaluatedAtUtc,
@@ -281,9 +294,15 @@ public sealed record VideoQualityJobPayload(Guid VideoId, int? SceneOrder = null
 /// <c>generating_clips</c> and gives a scene up this long after it, and asks about it only once it has had time to finish.</param>
 /// <param name="NextAttemptAt">When a scene the provider could not take for now (over quota, overloaded) is sent again.</param>
 /// <param name="BusyAttempts">How often the provider could not take the scene for now.</param>
+/// <param name="Callback">The scene was submitted with a callback URL (<see cref="AiVideoCallbackUrls"/>): the provider says
+/// when it is done, so it is only asked about now and then, in case that call never comes.</param>
+/// <param name="AnnouncedAt">When the provider called back to say the scene finished: it is asked about on the next pass,
+/// which is what is trusted, never the call itself.</param>
+/// <param name="PolledAt">When a scene with a callback was last asked about and was still being made.</param>
 public sealed record AiShotJobState(int SceneOrder, string Fingerprint, string? OperationName = null, string? DownloadUri = null,
     string? StorageKey = null, string? StorageVersion = null, string Status = "pending", string? Failure = null, int Resubmissions = 0,
-    string? KeyId = null, DateTime? SubmittedAt = null, DateTime? NextAttemptAt = null, int BusyAttempts = 0);
+    string? KeyId = null, DateTime? SubmittedAt = null, DateTime? NextAttemptAt = null, int BusyAttempts = 0,
+    bool Callback = false, DateTime? AnnouncedAt = null, DateTime? PolledAt = null);
 /// <param name="TargetSceneOrder">The one scene selected for an isolated generation or regeneration. Stored clips for the other scenes remain reusable.</param>
 public sealed record AiRenderJobPayload(Guid VideoId, Storyboard Storyboard, IReadOnlyList<AiShotJobState> AiShotStates,
     int? TargetSceneOrder = null);

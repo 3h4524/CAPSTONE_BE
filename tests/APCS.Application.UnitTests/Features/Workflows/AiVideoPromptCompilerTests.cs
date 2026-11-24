@@ -25,8 +25,9 @@ public sealed class AiVideoPromptCompilerTests
         prompt.Should().Contain("hero product view image is the primary reference");
         prompt.Should().Contain("garment color: #1F2A44");
         prompt.Should().Contain("background color: #FFFFFF");
-        prompt.Should().Contain("natural fabric movement and soft folds");
-        prompt.Should().Contain("background and lighting may develop naturally");
+        // A garment opened directly is shown turning in a breeze, its backdrop and light unchanged.
+        prompt.Should().Contain("Motion 1, wind ripple");
+        prompt.Should().NotContain("background and lighting may develop naturally");
         prompt.Should().NotContain("Shared direction for all scenes: Use a warm sunset studio background.");
         prompt.Should().NotContain("Keep the print easy to read.");
         storyboard.Scenes.Single().PromptVersion.Should().Be(5);
@@ -62,8 +63,8 @@ public sealed class AiVideoPromptCompilerTests
     }
 
     [TestMethod]
-    [DataRow("tshirt", "T-shirt", "fabric movement")]
-    [DataRow("hoodie", "hoodie", "fabric movement")]
+    [DataRow("tshirt", "T-shirt", "Soft waves travel slowly across the fabric")]
+    [DataRow("hoodie", "hoodie", "Soft waves travel slowly across the fabric")]
     [DataRow("mug", "mug", "rigid shape")]
     [DataRow("poster", "poster", "poster surface flat")]
     [DataRow("tote_bag", "tote bag", "bag body, straps and artwork")]

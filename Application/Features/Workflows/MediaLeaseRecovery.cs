@@ -45,7 +45,7 @@ public sealed class MediaLeaseRecovery(IWorkflowStateRepository state, IUnitOfWo
                 if (job is null || job.Status != "leased" || job.LeaseExpiresAt >= now) continue;
 
                 job.LeaseToken = null; job.LeaseExpiresAt = null; job.UpdatedAt = now;
-                if (run is null || run.Status != "running") job.Status = "cancelled";
+                if (run is null || !MediaJobRunRules.Works(job.Kind, run.Status)) job.Status = "cancelled";
                 else if (job.Attempt >= job.MaximumAttempts)
                 {
                     job.Status = "failed";

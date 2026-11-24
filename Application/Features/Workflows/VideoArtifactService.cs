@@ -16,7 +16,8 @@ public interface IVideoArtifactService
 }
 public sealed class VideoArtifactService(ICurrentUser user, IRepository<WorkflowRun> runs, IRepository<PromoVideo> videos,
     IRepository<PromoVideoScene> scenes, IRepository<ExportPackage> exports, IRepository<WorkflowNodeRun> nodes,
-    IRepository<MediaJob> jobs, IMediaStorage storage, TimeProvider time, ILocalExportStore? localExports = null) : IVideoArtifactService
+    IRepository<MediaJob> jobs, IMediaStorage storage, TimeProvider time, ILocalExportStore? localExports = null,
+    IRepository<MockupImage>? mockups = null) : IVideoArtifactService
 {
     public async Task<Result<IReadOnlyList<VideoResponse>>> ListAsync(Guid runId, CancellationToken ct)
     {
@@ -27,6 +28,7 @@ public sealed class VideoArtifactService(ICurrentUser user, IRepository<Workflow
         var mockupNode = definition.Nodes.SingleOrDefault(node => node.Type == "apply-mockup");
         var mockupConfig = mockupNode is null ? new MockupConfig() : WorkflowJson.Config<MockupConfig>(mockupNode);
         var result = new List<VideoResponse>();
+        var clipPayload = await RenderPayloadAsync(runId, ct);
         foreach (var video in (await videos.FindAsync(x => x.WorkflowRunId == runId, ct)).OrderByDescending(x => x.VersionNumber))
         {
             var snapshot = JsonSerializer.Deserialize<JsonElement>(video.ConfigSnapshot);
@@ -42,9 +44,47 @@ public sealed class VideoArtifactService(ICurrentUser user, IRepository<Workflow
                 video.ApprovalStatus, video.StorageKey != null ? storage.SignRead(video.StorageKey, "video", video.StorageVersion) : null,
                 video.ThumbnailStorageKey != null ? storage.SignRead(video.ThumbnailStorageKey, "image", video.ThumbnailStorageVersion) : null,
                 JsonSerializer.Deserialize<JsonElement>(video.QaResult), (await scenes.FindAsync(x => x.PromoVideoId == video.Id, ct)).OrderBy(x => x.SceneOrder).Select(x => WorkflowJson.Read<ScenePlan>(x.SceneConfig)).ToArray(),
-                output.Format, width, height, aspectRatio, config, mockupConfig.ArtworkGroupKey, mockupConfig.MockupIds));
+                output.Format, width, height, aspectRatio, config, mockupConfig.ArtworkGroupKey, mockupConfig.MockupIds,
+                // A rendered video keeps it too, so each of its scenes can still be shown on its own (the canvas previews them).
+                video.Status is DeferredRender.VideoReady or DeferredRender.VideoRendering or DeferredRender.VideoCompleted
+                    ? await PreviewAsync(video, board, clipPayload, ct) : null));
         }
         return Result.Success<IReadOnlyList<VideoResponse>>(result);
+    }
+
+    /// <summary>The links a browser needs to play a video from its scenes: its mock-ups, and the AI clips stored for it.</summary>
+    private async Task<VideoPreviewData?> PreviewAsync(PromoVideo video, Storyboard board, AiRenderJobPayload? clipPayload, CancellationToken ct)
+    {
+        if (mockups is null) return null;
+        var sources = new Dictionary<Guid, VideoPreviewSource>();
+        foreach (var id in board.Scenes.Select(scene => scene.MockupId).Distinct())
+        {
+            var asset = await mockups.GetByIdAsync(id, ct);
+            if (asset is null) return null;
+            sources[id] = new(storage.SignRead(asset.StorageKey, "image", asset.StorageVersion), asset.MockupWidthPx, asset.MockupHeightPx);
+        }
+        var clips = new Dictionary<int, string>();
+        if (clipPayload is { AiShotStates: not null } && clipPayload.VideoId == video.Id)
+        {
+            foreach (var shot in board.AiShots ?? [])
+            {
+                var state = clipPayload.AiShotStates.SingleOrDefault(x => x.SceneOrder == shot.SceneOrder && x.Fingerprint == shot.Fingerprint);
+                if (state is { Status: "stored", StorageKey: not null, StorageVersion: not null })
+                    clips[shot.SceneOrder] = storage.SignRead(state.StorageKey, "video", state.StorageVersion);
+            }
+        }
+        return new(board, sources, clips);
+    }
+
+    /// <summary>The render job of the run's video, which holds the AI clips stored for it; null for a standard video or an unreadable job.</summary>
+    private async Task<AiRenderJobPayload?> RenderPayloadAsync(Guid runId, CancellationToken ct)
+    {
+        var generate = (await nodes.FindAsync(x => x.WorkflowRunId == runId && x.NodeType == "generate-video", ct)).SingleOrDefault();
+        if (generate is null) return null;
+        var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id && x.Kind == "render", ct)).SingleOrDefault();
+        if (job is null) return null;
+        try { return WorkflowJson.Read<AiRenderJobPayload>(job.Payload); }
+        catch (JsonException) { return null; }
     }
     public async Task<Result<IReadOnlyList<AiSceneVideoResponse>>> ListSceneClipsAsync(Guid runId, CancellationToken ct)
     {

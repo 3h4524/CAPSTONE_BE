@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using APCS.Application.Abstractions;
@@ -30,7 +31,12 @@ public interface ITestReportService
     /// <summary>
     /// Starts a test run and returns it right away, while it is still going.
     /// </summary>
-    Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default);
+    Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, string? mode = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Ingests a completed run produced by an external pipeline such as CI/CD.
+    /// </summary>
+    Task<Result<TestReportRunDto>> IngestRunAsync(TestReportIngestDto request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Removes a run and its report.
@@ -142,7 +148,7 @@ public sealed class TestReportService : ITestReportService
     }
 
     /// <inheritdoc />
-    public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, CancellationToken cancellationToken = default)
+    public async Task<Result<TestReportRunDto>> StartRunAsync(string? triggeredBy, string? mode = null, CancellationToken cancellationToken = default)
     {
         TestReportRunDto run;
         lock (_runLock)
@@ -180,9 +186,79 @@ public sealed class TestReportService : ITestReportService
             throw;
         }
 
-        _ = RunInBackgroundAsync(run);
+        _ = RunInBackgroundAsync(run, mode);
         await PublishRunChangedAsync(run.RunId, run.Status, cancellationToken);
         return Result.Success(run);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TestReportRunDto>> IngestRunAsync(TestReportIngestDto request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var rawReport = ExtractRawReport(request.Report);
+        if (string.IsNullOrWhiteSpace(rawReport))
+        {
+            return Result.Failure<TestReportRunDto>(
+                Error.Validation("The raw test report is required."));
+        }
+
+        TestReportSummary summary;
+        try
+        {
+            summary = PlaywrightReportParser.Parse(rawReport);
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure<TestReportRunDto>(
+                Error.Validation($"The test report could not be parsed: {exception.Message}"));
+        }
+
+        var startedAt = summary.StartedAtUtc ?? _timeProvider.GetUtcNow().UtcDateTime;
+        var runId = string.IsNullOrWhiteSpace(request.RunId)
+            ? $"run-{startedAt:yyyyMMdd-HHmmss}"
+            : request.RunId.Trim();
+
+        var run = new TestReportRunDto
+        {
+            RunId = runId,
+            StartedAtUtc = startedAt,
+            FinishedAtUtc = startedAt.AddMilliseconds(summary.DurationMs),
+            DurationMs = summary.DurationMs,
+            Status = summary.FailedTests > 0 ? TestReportStatuses.Failed : TestReportStatuses.Passed,
+            Branch = request.Branch,
+            CommitSha = request.CommitSha,
+            TriggeredBy = string.IsNullOrWhiteSpace(request.TriggeredBy) ? "CI/CD" : request.TriggeredBy,
+            TotalTests = summary.TotalTests,
+            PassedTests = summary.PassedTests,
+            FailedTests = summary.FailedTests,
+            FlakyTests = summary.FlakyTests,
+            SkippedTests = summary.SkippedTests,
+            KnownIssueTests = summary.KnownIssueTests,
+            UnexpectedFailedTests = summary.FailedTests - summary.KnownIssueTests,
+            FileCount = summary.Files.Count,
+            SuiteCount = summary.Files.Sum(file => file.Specs.Count),
+            FailureSummary = request.FailureSummary,
+        };
+
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<ITestReportStore>();
+            await store.SaveRunAsync(run, rawReport, cancellationToken);
+        }
+
+        await PublishRunChangedAsync(run.RunId, run.Status, cancellationToken);
+        return Result.Success(run);
+    }
+
+    private static string? ExtractRawReport(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString(),
+            JsonValueKind.Object => element.GetRawText(),
+            _ => null,
+        };
     }
 
     /// <inheritdoc />
@@ -201,14 +277,14 @@ public sealed class TestReportService : ITestReportService
         return Result.Success(true);
     }
 
-    private async Task RunInBackgroundAsync(TestReportRunDto run)
+    private async Task RunInBackgroundAsync(TestReportRunDto run, string? mode = null)
     {
         TestReportRunDto finished;
         string? rawReport = null;
 
         try
         {
-            var result = await _runner.RunAsync(run.RunId, CancellationToken.None);
+            var result = await _runner.RunAsync(run.RunId, mode, CancellationToken.None);
             rawReport = result.RawReport;
 
             if (rawReport is null)

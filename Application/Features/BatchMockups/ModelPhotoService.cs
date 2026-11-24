@@ -10,16 +10,20 @@ using APCS.Domain.Entities;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace APCS.Application.Features.BatchMockups;
 
 /// <summary>
-/// Model photos: photos of a person wearing a plain, light garment, which an existing mock-up dresses (its design
-/// and garment color) without generative AI. They are mock-up templates of the 'model' kind, so compositing works
-/// as for any template; only their garment is the part of the person the seller selected.
+/// Model photos: photos of a person wearing a plain, light garment, which an existing mock-up dresses. They are
+/// mock-up templates of the 'model' kind. With <see cref="ModelPhotoSettings.PrintWithoutAi"/> on, compositing works as
+/// for any template, on the garment the seller selected; off, a photo is only stored, for dressing with AI.
 /// </summary>
 public interface IModelPhotoService
 {
+    /// <summary>What the app offers for model photos.</summary>
+    ModelPhotoOptionsDto GetOptions();
+
     /// <summary>
     /// The model photos a seller can use for a product type: the shared library and their own, narrowed to who is in
     /// them when <paramref name="filter"/> says.
@@ -38,6 +42,13 @@ public interface IModelPhotoService
     /// <summary>Saves a model photo; <paramref name="system"/> puts it in the shared library instead of the seller's own.</summary>
     Task<Result<MockupTemplateResponseDto>> CreateAsync(SaveModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Saves a model photo made with AI straight from the provider's link, which storage fetches itself. Only while
+    /// photos are stored without print maps, which would need the file here. A link storage could not read is reported
+    /// as <see cref="MockupErrors.PhotoLinkNotStoredCode"/>.
+    /// </summary>
+    Task<Result<MockupTemplateResponseDto>> CreateFromLinkAsync(ModelPhotoLinkDto photo, bool system, CancellationToken cancellationToken = default);
+
     /// <summary>Changes a model photo of the seller's own, or of the shared library when <paramref name="system"/>.</summary>
     Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, SaveModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default);
 
@@ -53,8 +64,13 @@ public sealed class ModelPhotoService(
     IMockupMapService mapService,
     IValidator<SaveModelPhotoRequestDto> validator,
     TimeProvider timeProvider,
-    ILogger<ModelPhotoService> logger) : IModelPhotoService
+    ILogger<ModelPhotoService> logger,
+    IOptions<ModelPhotoSettings> settings) : IModelPhotoService
 {
+    private bool PrintWithoutAi => settings.Value.PrintWithoutAi;
+
+    public ModelPhotoOptionsDto GetOptions() => new(PrintWithoutAi);
+
     public async Task<Result<IReadOnlyList<MockupTemplateResponseDto>>> ListAsync(string? productType, ModelPhotoFilter? filter = null, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
@@ -89,6 +105,8 @@ public sealed class ModelPhotoService(
     {
         if (currentUser.TryGetUserId() is not Guid)
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.Unauthenticated("preview"));
+        if (!PrintWithoutAi)
+            return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.PrintWithoutAiOff());
         if (!MockupImageValidators.IsSupportedImage(photo) || !MockupImageValidators.IsWithinSizeLimit(photo))
             return Result.Failure<GarmentMaskPreviewResponseDto>(MockupErrors.InvalidPreviewPhoto());
         if (!mapService.IsAvailable)
@@ -130,23 +148,23 @@ public sealed class ModelPhotoService(
             return Result.Failure<MockupTemplateResponseDto>(validation.ToValidationError());
         if (request.Photo is null)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.ModelPhotoRequired());
-        if (request.GarmentSelection is null && !request.FindGarment)
+        if (PrintWithoutAi && request.GarmentSelection is null && !request.FindGarment)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.GarmentSelectionRequired());
         if (await IsNameTakenAsync(request.Name, null, cancellationToken))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
-        if (!mapService.IsAvailable)
+        if (PrintWithoutAi && !mapService.IsAvailable)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.ProcessingUnavailable());
 
         var templateId = Guid.NewGuid();
         var storageKey = MockupRules.BaseImageKey(templateId);
         var photo = await ReadAllAsync(request.Photo.Content, cancellationToken);
-        var selection = await SelectionOfAsync(request, cancellationToken);
+        var selection = PrintWithoutAi ? await SelectionOfAsync(request, cancellationToken) : null;
         var position = PrintArea(request);
 
         // Checked before anything is stored, so a refused photo leaves nothing behind.
         var readable = MockupImageValidators.IsDirectlyReadable(photo);
         PreparedBasePhoto? prepared = null;
-        if (readable)
+        if (PrintWithoutAi && readable)
         {
             var analyzed = await PrepareAsync(photo, selection, SearchOf(request), cancellationToken);
             if (analyzed.IsFailure)
@@ -187,11 +205,11 @@ public sealed class ModelPhotoService(
             throw;
         }
 
-        if (!FitsWithin(position, uploaded.WidthPx, uploaded.HeightPx))
+        if (PrintWithoutAi && !FitsWithin(position, uploaded.WidthPx, uploaded.HeightPx))
             return await RefuseAsync(MockupErrors.InvalidPrintArea());
 
         // A format the analysis can't read is analyzed from the JPEG the CDN makes of it.
-        if (prepared is null)
+        if (PrintWithoutAi && prepared is null)
         {
             var analyzed = await PrepareStoredAsync(uploaded.Url, selection, SearchOf(request), cancellationToken);
             if (analyzed.IsFailure)
@@ -199,30 +217,13 @@ public sealed class ModelPhotoService(
             prepared = analyzed.Value;
             maps = UploadHelpersAsync(templateId, mapsKey, prepared, cancellationToken);
         }
-        if (await maps! is { } storeError)
+        if (maps is not null && await maps is { } storeError)
             return await RefuseAsync(storeError);
 
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        var template = new MockupTemplate
-        {
-            Id = templateId,
-            UserId = system ? null : userId,
-            Name = request.Name.Trim(),
-            ProductType = request.ProductType,
-            BaseImageUrl = uploaded.Url,
-            PrintAreaConfig = PrintAreaConfig(request, position),
-            OutputWidthPx = uploaded.WidthPx,
-            OutputHeightPx = uploaded.HeightPx,
-            IsSystemTemplate = system,
-            IsActive = true,
-            UsageCount = 0,
-            Kind = MockupRules.ModelKind,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-        // A photo saved without saying who is in it is taken as one person.
-        ModelPeople.Apply(template, request.Attributes ?? new ModelAttributesDto(ModelPeople.Single));
-        UseHelpers(template, mapsVersion);
+        var template = NewPhoto(templateId, system ? null : userId, request.Name, request.ProductType, uploaded,
+            PrintWithoutAi ? PrintAreaConfig(request, position) : ChestPrintArea(uploaded.WidthPx, uploaded.HeightPx), request.Attributes);
+        if (PrintWithoutAi)
+            UseHelpers(template, mapsVersion);
 
         try
         {
@@ -244,6 +245,76 @@ public sealed class ModelPhotoService(
         return Result.Success(Map(template, userId));
     }
 
+    public async Task<Result<MockupTemplateResponseDto>> CreateFromLinkAsync(ModelPhotoLinkDto photo, bool system, CancellationToken cancellationToken = default)
+    {
+        if (currentUser.TryGetUserId() is not Guid userId)
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.Unauthenticated("create"));
+        if (PrintWithoutAi)
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PhotoLinkNotStored());
+        if (await IsNameTakenAsync(photo.Name, null, cancellationToken))
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
+
+        var templateId = Guid.NewGuid();
+        var storageKey = MockupRules.BaseImageKey(templateId);
+        PublicImageUploadResult uploaded;
+        try
+        {
+            uploaded = await images.UploadJpegFromUrlAsync(photo.ImageUrl, storageKey, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(ex, "Could not store model photo {TemplateId} from its link.", templateId);
+            return Result.Failure<MockupTemplateResponseDto>(MockupErrors.PhotoLinkNotStored());
+        }
+
+        var template = NewPhoto(templateId, system ? null : userId, photo.Name, photo.ProductType, uploaded,
+            ChestPrintArea(uploaded.WidthPx, uploaded.HeightPx), photo.Attributes);
+        try
+        {
+            await templates.AddAsync(template, saveChange: true, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            await TryDeleteImageAsync(storageKey, cancellationToken);
+            if (await IsNameTakenAsync(photo.Name, null, cancellationToken))
+                return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
+            throw;
+        }
+        catch
+        {
+            await TryDeleteImageAsync(storageKey, cancellationToken);
+            throw;
+        }
+
+        return Result.Success(Map(template, userId));
+    }
+
+    // A photo saved without saying who is in it is taken as one person.
+    private MockupTemplate NewPhoto(Guid id, Guid? ownerId, string name, string productType, PublicImageUploadResult uploaded,
+        string printAreaConfig, ModelAttributesDto? attributes)
+    {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var template = new MockupTemplate
+        {
+            Id = id,
+            UserId = ownerId,
+            Name = name.Trim(),
+            ProductType = productType,
+            BaseImageUrl = uploaded.Url,
+            PrintAreaConfig = printAreaConfig,
+            OutputWidthPx = uploaded.WidthPx,
+            OutputHeightPx = uploaded.HeightPx,
+            IsSystemTemplate = ownerId is null,
+            IsActive = true,
+            UsageCount = 0,
+            Kind = MockupRules.ModelKind,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        ModelPeople.Apply(template, attributes ?? new ModelAttributesDto(ModelPeople.Single));
+        return template;
+    }
+
     public async Task<Result<MockupTemplateResponseDto>> UpdateAsync(Guid id, SaveModelPhotoRequestDto request, bool system, CancellationToken cancellationToken = default)
     {
         if (currentUser.TryGetUserId() is not Guid userId)
@@ -259,8 +330,8 @@ public sealed class ModelPhotoService(
         if (!CanChange(template, system, userId))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.ModelPhotoNotOwner());
         // The garment selected before was drawn on the old photo.
-        var newGarment = request.GarmentSelection is not null || request.FindGarment;
-        if (request.Photo is not null && !newGarment)
+        var newGarment = PrintWithoutAi && (request.GarmentSelection is not null || request.FindGarment);
+        if (PrintWithoutAi && request.Photo is not null && !newGarment)
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.GarmentSelectionRequired());
         if (await IsNameTakenAsync(request.Name, id, cancellationToken))
             return Result.Failure<MockupTemplateResponseDto>(MockupErrors.DuplicateName());
@@ -318,8 +389,18 @@ public sealed class ModelPhotoService(
                 prepared = analyzed.Value;
             }
         }
+        else if (!PrintWithoutAi && request.Photo is not null)
+        {
+            // Only the photo changes. Print maps made from the old one stop counting, as they name the photo they came from.
+            var photo = await ReadAllAsync(request.Photo.Content, cancellationToken);
+            replacementKey = MockupRules.ReplacementImageKey(template.Id, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+            var uploaded = await UploadPhotoAsync(request.Photo, photo, replacementKey, cancellationToken);
+            template.BaseImageUrl = uploaded.Url;
+            outputWidth = uploaded.WidthPx;
+            outputHeight = uploaded.HeightPx;
+        }
 
-        if (!FitsWithin(position, outputWidth, outputHeight))
+        if (PrintWithoutAi && !FitsWithin(position, outputWidth, outputHeight))
             return await RefuseAsync(MockupErrors.InvalidPrintArea());
 
         if (prepared is not null && await StoreHelpersAsync(template, prepared, cancellationToken) is { } storeError)
@@ -327,7 +408,10 @@ public sealed class ModelPhotoService(
 
         template.Name = request.Name.Trim();
         template.ProductType = request.ProductType;
-        template.PrintAreaConfig = PrintAreaConfig(request, position);
+        if (PrintWithoutAi)
+            template.PrintAreaConfig = PrintAreaConfig(request, position);
+        else if (request.Photo is not null)
+            template.PrintAreaConfig = ChestPrintArea(outputWidth, outputHeight);
         if (request.Attributes is not null)
             ModelPeople.Apply(template, request.Attributes);
         template.OutputWidthPx = outputWidth;
@@ -388,6 +472,10 @@ public sealed class ModelPhotoService(
 
     private static string PrintAreaConfig(SaveModelPhotoRequestDto request, MockupPosition position) =>
         QuadOf(request) is { } quad ? MockupRules.SerializePrintQuad(quad) : MockupRules.SerializePrintArea(position, request.AutoPlacement);
+
+    // What a photo saved without print maps keeps as its print area, for when they are made: nothing reads it until then.
+    private static string ChestPrintArea(int width, int height) =>
+        MockupRules.SerializePrintArea(ModelPhotoGenerationService.ChestArea(width, height), automatic: true);
 
     // A tote bag is found as the bag the person carries; any other product as the top they wear.
     private static GarmentSearch SearchOf(SaveModelPhotoRequestDto request) =>

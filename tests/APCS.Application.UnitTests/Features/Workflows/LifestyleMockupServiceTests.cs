@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 [TestClass]
 public sealed class LifestyleMockupServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private static readonly byte[] Png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6j8AAAAASUVORK5CYII=");
     private static readonly byte[] Garment = [1, 2, 3];
     private static readonly byte[] Artwork = [4, 5, 6];
@@ -250,6 +252,118 @@ public sealed class LifestyleMockupServiceTests
         fixture.AssetRows.Should().ContainSingle(x => x.Role == "Lifestyle").Which.ApprovalStatus.Should().Be("pending");
         usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.Provider == "ideogram" && r.CostUsd == 0.04m), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
         gemini.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ---- Faster: inputs read side by side, the result stored from Ideogram's link ----
+
+    private const string ResultLink = "https://ideogram.ai/api/images/ephemeral/dressed.png?exp=1";
+
+    private MockupTemplate LibraryModel()
+    {
+        var model = new MockupTemplate
+        {
+            Id = Guid.NewGuid(), Name = "Ava", ProductType = "tshirt", BaseImageUrl = "https://cdn/ava.jpg", PrintAreaConfig = "{}",
+            IsActive = true, Kind = MockupRules.ModelKind, UserId = null
+        };
+        modelPhotos.Add(model);
+        maps.Setup(x => x.DownloadAsync("https://cdn/ava.jpg", It.IsAny<CancellationToken>())).ReturnsAsync(Png);
+        return model;
+    }
+
+    private Mock<IImageLinkProvider> ComposesALink()
+    {
+        var linked = provider.As<IImageLinkProvider>();
+        linked.Setup(x => x.ComposeLinkAsync("plain-key", It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Linked(ResultLink, "ideogram-4-5", 0.03m));
+        return linked;
+    }
+
+    [TestMethod]
+    public async Task GenerateFromModelPhotoAsync_StoresTheResultFromItsLink_AndRecordsHowLongItTook()
+    {
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var model = LibraryModel();
+        ComposesALink();
+        fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(ResultLink, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string _, string key, CancellationToken _) => new StoredMockup(key, "8", new string('c', 64), 1024, 1536));
+        var service = Service();
+
+        var result = await service.GenerateFromModelPhotoAsync(product.Id, hero.Id, model.Id, TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        var stored = fixture.AssetRows.Single(x => x.Role == "Lifestyle");
+        (stored.StorageVersion, stored.MockupWidthPx).Should().Be(("8", 1024));
+        stored.GenerationTimeSeconds.Should().NotBeNull();
+        fixture.Storage.Verify(x => x.UploadMockupAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
+        usage.Verify(x => x.AddAsync(It.Is<ApiUsageRecord>(r => r.ModelName == "ideogram-4-5" && r.LatencyMs != null), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateFromModelPhotoAsync_WhenStorageCannotFetchTheLink_SendsTheFileInstead()
+    {
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var model = LibraryModel();
+        var linked = ComposesALink();
+        fixture.Storage.Setup(x => x.UploadMockupFromUrlAsync(ResultLink, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Cloudinary could not fetch it."));
+        linked.Setup(x => x.DownloadLinkAsync(It.Is<ImageGenerationResult>(r => r.ImageUrl == ResultLink), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4-5", 0.03m));
+        var service = Service();
+
+        var result = await service.GenerateFromModelPhotoAsync(product.Id, hero.Id, model.Id, TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        fixture.Storage.Verify(x => x.UploadMockupAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GenerateFromModelPhotoAsync_ReadsThePhotoAndTheMockupAtTheSameTime()
+    {
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var model = LibraryModel();
+        var photoStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var mockupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wait = TimeSpan.FromSeconds(10);
+        maps.Setup(x => x.DownloadAsync("https://cdn/ava.jpg", It.IsAny<CancellationToken>()))
+            .Returns(async (string _, CancellationToken token) =>
+            {
+                photoStarted.TrySetResult();
+                await mockupStarted.Task.WaitAsync(wait, token);
+                return Png;
+            });
+        provider.Setup(x => x.ComposeAsync("plain-key", It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ImageGenerationResult.Success(Png, "image/png", "ideogram-4-5", 0.03m));
+        var service = Service();
+        fixture.Storage.Setup(x => x.ReadImageAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string _, string? _, CancellationToken token) =>
+            {
+                mockupStarted.TrySetResult();
+                await photoStarted.Task.WaitAsync(wait, token);
+                return Garment;
+            });
+
+        var result = await service.GenerateFromModelPhotoAsync(product.Id, hero.Id, model.Id, TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+    }
+
+    [TestMethod]
+    public async Task GenerateFromModelPhotoAsync_AModelPhotoThatCannotBeRead_SaysSoAndCallsNoProvider()
+    {
+        var product = fixture.AddProduct();
+        var hero = fixture.AddAsset(product);
+        var model = LibraryModel();
+        maps.Setup(x => x.DownloadAsync("https://cdn/ava.jpg", It.IsAny<CancellationToken>())).ThrowsAsync(new HttpRequestException("gone"));
+        var service = Service();
+
+        var result = await service.GenerateFromModelPhotoAsync(product.Id, hero.Id, model.Id, TestContext.CancellationToken);
+
+        result.Error.Message.Should().Be("Could not read the model photo. Try again.");
+        provider.Verify(x => x.ComposeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<ImageReference>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private static readonly Dictionary<string, PlanFeatureValue> PlatformKeysPlan = new()

@@ -24,7 +24,7 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
     ILogger<MediaStreamDispatcher> logger, WorkflowActivitySignal? activity = null) : BackgroundService
 {
 
-    private sealed record Outbox(Guid EventId, Guid JobId, long Version, string Kind, int Attempts, Guid Token);
+    private sealed record Outbox(Guid EventId, Guid JobId, long Version, string Kind, int Attempts, Guid Token, DateTime AvailableAt);
     private static readonly Meter Meter = new("APCS.MediaQueue", "1.0.0");
     private static readonly Counter<long> Published = Meter.CreateCounter<long>("media_queue_published");
     private static readonly Counter<long> PublishFailures = Meter.CreateCounter<long>("media_queue_publish_failures");
@@ -62,6 +62,7 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
                     await command.ExecuteNonQueryAsync(stoppingToken);
                 using var redis = await ConnectionMultiplexer.ConnectAsync(redisConfig);
                 failures = 0;
+                await LogClockDifferenceAsync(listener, stoppingToken);
                 var nextRecovery = DateTime.MinValue;
                 while (!stoppingToken.IsCancellationRequested)
                 {
@@ -121,14 +122,15 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
             ) UPDATE public.media_job_outbox o SET claim_token = @token,
               claim_until = (now() AT TIME ZONE 'UTC') + interval '2 minutes', attempts = attempts + 1
               FROM candidate c WHERE o.event_id = c.event_id
-              RETURNING o.event_id, o.job_id, o.queue_version, o.kind, o.attempts
+              RETURNING o.event_id, o.job_id, o.queue_version, o.kind, o.attempts, o.available_at
             """;
         var events = new List<Outbox>();
         await using (var command = new NpgsqlCommand(sql, connection))
         {
             command.Parameters.AddWithValue("token", token);
             await using var reader = await command.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct)) events.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetInt64(2), reader.GetString(3), reader.GetInt32(4), token));
+            while (await reader.ReadAsync(ct)) events.Add(new(reader.GetGuid(0), reader.GetGuid(1), reader.GetInt64(2), reader.GetString(3), reader.GetInt32(4), token,
+                DateTime.SpecifyKind(reader.GetDateTime(5), DateTimeKind.Utc)));
         }
         foreach (var item in events)
         {
@@ -140,6 +142,9 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
                 done.Parameters.AddWithValue("id", item.EventId); done.Parameters.AddWithValue("token", item.Token);
                 await done.ExecuteNonQueryAsync(ct);
                 Published.Add(1);
+                // Measured on this server's clock, as available_at was written: a database clock behind it delays the event by the difference.
+                logger.LogInformation("Media job {JobId} ({Kind}) sent to the queue {Seconds:0.0} s after it was queued.",
+                    item.JobId, item.Kind, (DateTime.UtcNow - item.AvailableAt).TotalSeconds);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -155,6 +160,23 @@ public sealed class MediaStreamDispatcher(IServiceScopeFactory scopes, IConfigur
             }
         }
         return events.Count;
+    }
+
+    /// <summary>
+    /// An event is sent once the database's clock reaches the job's available_at, which this server's clock wrote. A server
+    /// clock ahead of the database's holds every job back by the difference, so it is said when the connection opens.
+    /// </summary>
+    private async Task LogClockDifferenceAsync(NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand("SELECT now() AT TIME ZONE 'UTC'", connection);
+        var before = DateTime.UtcNow;
+        var database = DateTime.SpecifyKind((DateTime)(await command.ExecuteScalarAsync(ct))!, DateTimeKind.Utc);
+        var server = before + (DateTime.UtcNow - before) / 2;
+        var ahead = (server - database).TotalSeconds;
+        if (ahead > 1)
+            logger.LogWarning("This server's clock is {Seconds:0.0} s ahead of the database's: each media job waits about that long before it is sent to the worker.", ahead);
+        else
+            logger.LogInformation("Server and database clocks differ by {Seconds:0.0} s.", ahead);
     }
 
     /// <summary>

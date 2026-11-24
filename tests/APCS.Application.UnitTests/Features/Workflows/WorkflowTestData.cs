@@ -71,7 +71,9 @@ internal sealed class WorkflowTestData
 
     /// <param name="clipPhase">When given, the runtime holds new AI render jobs in generating_clips while the API makes their scenes.</param>
     /// <param name="moderation">When given, the run service checks the seller's text of new video settings with it.</param>
-    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null, APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
+    /// <param name="deferredRender">When given, Generate Video ends once the scenes are ready and the final video is rendered later, on demand.</param>
+    public WorkflowTestData(AiClipPhaseSettings? clipPhase = null, APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null,
+        DeferredRenderSettings? deferredRender = null, APCS.Application.Features.Entitlements.IPlanEntitlementService? runtimeEntitlements = null)
     {
         Workflows = Repository(WorkflowRows, x => x.Id);
         Runs = Repository(RunRows, x => x.Id);
@@ -100,7 +102,7 @@ internal sealed class WorkflowTestData
             {
                 var job = JobRows.SingleOrDefault(x => x.Id == id);
                 if (job is not { Status: "leased" } || job.LeaseToken != token || job.LeaseExpiresAt <= now ||
-                    RunRows.SingleOrDefault(x => x.Id == job.WorkflowRunId) is not { Status: "running" } run)
+                    RunRows.SingleOrDefault(x => x.Id == job.WorkflowRunId) is not { } run || !MediaJobRunRules.Works(job.Kind, run.Status))
                     return null;
                 var (previousStage, previousProgress) = (job.Stage, job.Progress);
                 job.Progress = Math.Max(job.Progress, progress); job.Stage = stage; job.HeartbeatAt = now; job.LeaseExpiresAt = until;
@@ -119,7 +121,9 @@ internal sealed class WorkflowTestData
         current.SetupGet(x => x.UserId).Returns(Owner);
         Runtime = new(Nodes.Object, Products.Object, Assets.Object, Videos.Object, Scenes.Object, Templates.Object,
             Jobs.Object, Exports.Object, Items.Object, new(), ListingContent.Object, Time, Runs.Object,
-            clipPhase: clipPhase is null ? null : Microsoft.Extensions.Options.Options.Create(clipPhase));
+            clipPhase: clipPhase is null ? null : Microsoft.Extensions.Options.Options.Create(clipPhase),
+            deferredRender: deferredRender is null ? null : Microsoft.Extensions.Options.Options.Create(deferredRender),
+            entitlements: runtimeEntitlements);
         WorkflowService = new(current.Object, Workflows.Object, State.Object, Unit.Object, new(), Time);
         RunService = new(current.Object, Workflows.Object, Runs.Object, Nodes.Object, Products.Object, Videos.Object,
             Jobs.Object, State.Object, Unit.Object, new(Capabilities, new()), Runtime, new(), Capabilities, Quotes.Object, Time, TestEntitlements.AllowAll(),
@@ -128,7 +132,7 @@ internal sealed class WorkflowTestData
         MediaService = new(Jobs.Object, Nodes.Object, Assets.Object, Videos.Object, Scenes.Object, Exports.Object,
             Items.Object, State.Object, Unit.Object, Storage.Object, Runtime, Time, localExports: LocalExports.Object);
         MockupService = new(current.Object, Products.Object, Assets.Object, State.Object, Unit.Object, Storage.Object, new(), new(), Time);
-        ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Nodes.Object, Jobs.Object, Storage.Object, Time);
+        ArtifactService = new(current.Object, Runs.Object, Videos.Object, Scenes.Object, Exports.Object, Nodes.Object, Jobs.Object, Storage.Object, Time, mockups: Assets.Object);
         foreach (var version in new[] { 1, 2 })
         foreach (var code in new[] { "product_showcase", "design_detail", "variant_showcase" })
             TemplateRows.Add(new() { Id = Guid.NewGuid(), Code = code, Name = code, Type = "product_showcase",

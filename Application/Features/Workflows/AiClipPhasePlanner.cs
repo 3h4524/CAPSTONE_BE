@@ -49,9 +49,7 @@ public static class AiClipPhasePlanner
                     case "polling":
                         inFlight++;
                         inFlightByUser[job.UserId] = inFlightByUser.GetValueOrDefault(job.UserId) + 1;
-                        // The provider takes minutes, so a scene is not asked about before it has had time to finish.
-                        if (scene.SubmittedAt is not { } submitted || now - submitted >= settings.FirstPollDelay)
-                            polls.Add(new(job.JobId, scene.SceneOrder, AiClipAction.Poll));
+                        if (DueForPoll(scene, now, settings)) polls.Add(new(job.JobId, scene.SceneOrder, AiClipAction.Poll));
                         break;
                     case "pending" when scene.NextAttemptAt is not { } next || next <= now:
                         waiting.Add((job, scene));
@@ -61,6 +59,18 @@ public static class AiClipPhasePlanner
         }
 
         return new(settlements, [.. stores, .. polls, .. Submissions(waiting, inFlight, inFlightByUser, settings)]);
+    }
+
+    /// <summary>Whether a scene the provider is making is asked about in this pass.</summary>
+    private static bool DueForPoll(AiShotJobState scene, DateTime now, AiClipPhaseSettings settings)
+    {
+        // The provider called back to say it finished: asked at once, since the call itself is not trusted.
+        if (scene.AnnouncedAt is not null) return true;
+        if (scene.SubmittedAt is not { } submitted) return true;
+        // The provider calls back when it is done: asking now and then only catches a call that never came.
+        if (scene.Callback) return now - (scene.PolledAt ?? submitted) >= settings.CallbackPollInterval;
+        // The provider takes minutes, so a scene is not asked about before it has had time to finish.
+        return now - submitted >= settings.FirstPollDelay;
     }
 
     /// <summary>Why the job cannot go on, or null.</summary>

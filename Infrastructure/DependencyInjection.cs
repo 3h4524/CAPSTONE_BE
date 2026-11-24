@@ -122,6 +122,9 @@ public static class DependencyInjection
         // lifestyle mock-ups Ideogram (precise edit) and AI Studio frames Gemini.
         services.AddScoped<IImageGenerationProvider, GeminiImageProvider>();
         services.AddScoped<IImageGenerationProvider, IdeogramImageProvider>();
+        // One per process: the webhook call for an image wakes the request on this server that waits for it.
+        services.AddSingleton<IdeogramReadySignals>();
+        services.AddSingleton<IImageReadySignals>(provider => provider.GetRequiredService<IdeogramReadySignals>());
         services.AddHttpClient("Veo", client => client.Timeout = TimeSpan.FromMinutes(3))
             .RedactLoggedHeaders(new[] { "x-goog-api-key" })
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -311,11 +314,20 @@ public static class DependencyInjection
         // The API makes the AI scenes of render jobs before the media worker gets them; off, the worker makes them itself.
         services.AddOptions<APCS.Application.Features.Workflows.AiClipPhaseSettings>()
             .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiClipPhaseSettings.SectionName));
+        // MiniMax calls back when an AI scene finishes; off (no public URL or secret), the scenes are only asked about.
+        services.AddOptions<APCS.Application.Features.Workflows.AiVideoCallbackSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.AiVideoCallbackSettings.SectionName));
+        services.AddOptions<APCS.Application.Features.Workflows.DeferredRenderSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.Workflows.DeferredRenderSettings.SectionName));
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.AiClipPhaseWorker>();
+        services.AddOptions<APCS.Application.Features.BatchMockups.ModelPhotoSettings>()
+            .Bind(configuration.GetSection(APCS.Application.Features.BatchMockups.ModelPhotoSettings.SectionName));
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.WorkflowRunFailureSweeper>();
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupPlannerQueue, APCS.Infrastructure.BackgroundServices.RunGroupPlannerQueue>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupPlannerWorker>();
         services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IRunGroupStartQueue, APCS.Infrastructure.BackgroundServices.RunGroupStartQueue>();
+        // A run group's mock-ups and model photos are made side by side, each in a scope of its own acting as the owner.
+        services.AddSingleton<APCS.Application.Abstractions.BackgroundJobs.IOwnerScopes, APCS.Infrastructure.BackgroundServices.OwnerScopes>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.RunGroupStartWorker>();
         services.AddHostedService<APCS.Infrastructure.BackgroundServices.MarketInsightScheduleWorker>();
         services.AddSingleton<APCS.Infrastructure.BackgroundServices.WorkflowPublishQueueChannel>();
@@ -405,6 +417,7 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddSingleton<IGarmentSegmenter, BiRefNetGarmentSegmenter>();
         services.AddSingleton<IClothesSegmenter, SegFormerClothesSegmenter>();
+        services.AddScoped<IGarmentLocator, SegFormerGarmentLocator>();
         services.AddHostedService<SegmentationModelInstaller>();
         services.AddHttpClient(SegmentationModelInstaller.HttpClientName, client => client.Timeout = Timeout.InfiniteTimeSpan);
         services.AddSingleton<IMockupMapGenerator, ImageSharpMockupMapGenerator>();

@@ -275,12 +275,23 @@ public sealed class WorkflowCanvasPatchSimulatorTests
     }
 
     [TestMethod]
-    public void Simulate_UpdateConfig_OnAStepWithoutSettings_IsRejected()
+    public void Simulate_UpdateConfig_OnExportZip_RejectsAnUnknownSettingAndNamesTheValidOnes()
     {
         var canvas = PipelineCanvas(("e", "export-zip"));
 
         simulator.Simulate(canvas, [Op("update_config", nodeId: "e", configJson: """{"x":1}""")], Allowed)
-            .Errors.Should().ContainSingle().Which.Should().Contain("no settings");
+            .Errors.Should().ContainSingle().Which.Should().Contain("'x' is not a setting").And.Contain("includeFinalVideo");
+    }
+
+    [TestMethod]
+    public void Simulate_UpdateConfig_OnExportZip_AcceptsTheFinalVideoSwitch()
+    {
+        var canvas = PipelineCanvas(("e", "export-zip"));
+
+        var result = simulator.Simulate(canvas, [Op("update_config", nodeId: "e", configJson: """{"includeFinalVideo":false}""")], Allowed);
+
+        result.Errors.Should().BeEmpty();
+        result.Result.Nodes.Single().Config.GetProperty("includeFinalVideo").GetBoolean().Should().BeFalse();
     }
 
     [TestMethod]

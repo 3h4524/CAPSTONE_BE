@@ -41,6 +41,7 @@ public sealed class PostgresFixture : IAsyncDisposable
 
     private readonly PostgreSqlContainer? _postgres;
     private readonly RedisContainer? _redis;
+    private readonly SemaphoreSlim _resetGate = new(1, 1);
     private Respawner? _respawner;
     private NpgsqlConnection? _respawnConnection;
 
@@ -142,12 +143,27 @@ public sealed class PostgresFixture : IAsyncDisposable
             return;
         }
 
-        await _respawner.ResetAsync(_respawnConnection).ConfigureAwait(false);
+        await _resetGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _respawner.ResetAsync(_respawnConnection).ConfigureAwait(false);
+        }
+        catch (PostgresException ex) when (ex.SqlState == "40P01")
+        {
+            await Task.Delay(100).ConfigureAwait(false);
+            await _respawner.ResetAsync(_respawnConnection).ConfigureAwait(false);
+        }
+        finally
+        {
+            _resetGate.Release();
+        }
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        _resetGate.Dispose();
+
         if (_respawnConnection is not null)
         {
             await _respawnConnection.DisposeAsync().ConfigureAwait(false);

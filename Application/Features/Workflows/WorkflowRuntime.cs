@@ -5,6 +5,7 @@ using APCS.Application.Features.ListingContent.Dtos;
 using APCS.Application.Features.ListingStreams;
 using APCS.Common.Models;
 using APCS.Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace APCS.Application.Features.Workflows;
 
@@ -17,8 +18,147 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     IRepository<DesignImage>? designImages = null,
     Abstractions.BackgroundJobs.IWorkflowPublishQueue? publishQueue = null,
     IRepository<MockupTemplate>? mockupTemplates = null,
-    Microsoft.Extensions.Options.IOptions<AiClipPhaseSettings>? clipPhase = null)
+    Microsoft.Extensions.Options.IOptions<AiClipPhaseSettings>? clipPhase = null,
+    Microsoft.Extensions.Options.IOptions<DeferredRenderSettings>? deferredRender = null,
+    Features.Entitlements.IPlanEntitlementService? entitlements = null,
+    ILogger<WorkflowRuntime>? logger = null,
+    Abstractions.Storage.IGarmentLocator? garmentLocator = null)
 {
+    /// <summary>Generate Video ends once the scenes are ready, and the final video is rendered later, when a step needs it.</summary>
+    public bool RendersOnDemand => deferredRender?.Value.Enabled == true;
+
+    /// <summary>
+    /// Stage of a Generate Video step whose AI scene prompts are being written (image analysis and rewriting, retrieved
+    /// lessons) outside any transaction, before its clips are sent (<see cref="BeginGroupRunAsync"/>).
+    /// </summary>
+    public const string PreparingPromptsStage = "Preparing AI prompts";
+
+    /// <summary>Stage of a listing step being written outside any transaction, after the video has gone ahead.</summary>
+    public const string WritingListingStage = "Writing listing";
+
+    /// <summary>
+    /// The first, short part of planning a batch's child run, in the planner's transaction with the run locked and
+    /// running. What takes long is only marked here, so the run shows as working at once and nothing waits on Gemini
+    /// with a row locked: the AI scene prompts (<see cref="PreparePromptsAsync"/>) and, for a run with a video, its
+    /// listing (<see cref="WriteListingAsync"/>), which then comes after the clips have been sent. A run with neither
+    /// advances here as it always did. A run whose earlier attempt stopped half way (the API restarted) picks up the
+    /// work that was left.
+    /// </summary>
+    public async Task<(bool PreparesPrompts, bool WritesListing)> BeginGroupRunAsync(WorkflowRun run, CancellationToken ct)
+    {
+        var checkpoints = await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct);
+        var generate = checkpoints.SingleOrDefault(x => x.NodeType == "generate-video");
+        var listing = checkpoints.SingleOrDefault(x => x.NodeType == "generate-listing");
+        var now = time.GetUtcNow().UtcDateTime;
+        var stillPreparing = generate is { Status: "running", Stage: PreparingPromptsStage };
+        var stillWriting = listing is { Status: "running", Stage: WritingListingStage };
+        if (stillPreparing || stillWriting)
+        {
+            // Touched, so another planner does not take it up again while this one works.
+            if (stillPreparing) generate!.UpdatedAt = now;
+            if (stillWriting) listing!.UpdatedAt = now;
+            return (stillPreparing, stillWriting);
+        }
+
+        // The listing goes on Etsy and Printify, never in the video, so a run with a video sends its clips first.
+        var writesListing = generate is not null && listing is { Status: "pending" };
+        if (writesListing)
+        {
+            listing!.Status = "running"; listing.Stage = WritingListingStage; listing.Progress = 10;
+            listing.ErrorMessage = null; listing.UpdatedAt = now;
+        }
+        var preparesPrompts = generate is { Status: "pending" } && NeedsPromptPreparation(generate)
+            && checkpoints.Where(x => x.NodeType is "product-input" or "apply-mockup" or "approval-gate").All(x => x.Status == "succeeded");
+        if (!preparesPrompts)
+        {
+            await AdvanceAsync(run, ct);
+            return (false, writesListing);
+        }
+        generate!.Status = "running"; generate.Stage = PreparingPromptsStage; generate.Progress = 2;
+        generate.ErrorMessage = null; generate.UpdatedAt = now;
+        // Push to Printify does not wait for the video; it does wait for a listing being written (StartPrintify).
+        StartPrintify(checkpoints);
+        return (true, writesListing);
+    }
+
+    /// <summary>
+    /// Writes the AI scene prompts of a run's video, with no transaction open: the slow part of planning, which reads
+    /// and asks Gemini but changes nothing. Null when the step is no longer waiting for it.
+    /// </summary>
+    public async Task<Result<Storyboard>?> PreparePromptsAsync(WorkflowRun run, CancellationToken ct)
+    {
+        var generate = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).SingleOrDefault();
+        if (generate is not { Status: "running", Stage: PreparingPromptsStage }) return null;
+        return await PlanAsync(run, WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot), ct);
+    }
+
+    /// <summary>
+    /// Keeps the prompts written by <see cref="PreparePromptsAsync"/> on the step, where planning finds them without
+    /// asking Gemini again, and goes on with the run: its clips are sent. With the run locked and running.
+    /// </summary>
+    public async Task FinishPromptsAsync(WorkflowRun run, Result<Storyboard> plan, CancellationToken ct)
+    {
+        var generate = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).SingleOrDefault();
+        if (generate is not { Status: "running", Stage: PreparingPromptsStage }) return;
+        generate.Stage = null; generate.Progress = 0; generate.UpdatedAt = time.GetUtcNow().UtcDateTime;
+        if (plan.IsFailure)
+        {
+            // As planning inside the run would have ended: the seller changes the scenes and goes on.
+            generate.Status = "waiting_for_input"; run.Status = "waiting_for_input";
+            generate.ErrorMessage = plan.Error.Message; run.ErrorMessage = plan.Error.Message;
+            return;
+        }
+        var config = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+        if (config.Mode == "ai_shot")
+            generate.OutputSnapshot = WorkflowJson.Write(new AiShotPromptSnapshot(WorkflowJson.Hash(WorkflowJson.Write(config)), plan.Value));
+        generate.Status = "pending";
+        await AdvanceAsync(run, ct);
+    }
+
+    /// <summary>
+    /// Writes the listing of a run whose video has gone ahead, with no transaction open (the listing service keeps
+    /// what it writes itself). Null when the step is no longer waiting for it.
+    /// </summary>
+    public async Task<Result<ListingContentResponseDto>?> WriteListingAsync(WorkflowRun run, CancellationToken ct)
+    {
+        var listing = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-listing", ct)).SingleOrDefault();
+        if (listing is not { Status: "running", Stage: WritingListingStage }) return null;
+        return await listingContent.GetOrGenerateAsync(run.ProductId, ct);
+    }
+
+    /// <summary>
+    /// Records the listing written by <see cref="WriteListingAsync"/> and lets the steps that waited for it go on
+    /// (Push to Printify, Publish to Etsy, Export ZIP). With the run locked.
+    /// </summary>
+    public async Task FinishListingAsync(WorkflowRun run, Result<ListingContentResponseDto> result, CancellationToken ct)
+    {
+        var listing = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-listing", ct)).SingleOrDefault();
+        if (listing is not { Status: "running", Stage: WritingListingStage }) return;
+        Record(listing, result);
+        if (run.Status == "running") await AdvanceAsync(run, ct);
+    }
+
+    /// <summary>Whether the step's AI scene prompts still have to be written: AI scenes with no prompts kept for these settings.</summary>
+    private static bool NeedsPromptPreparation(WorkflowNodeRun generate)
+    {
+        var config = WorkflowJson.Read<GenerateVideoConfig>(generate.InputSnapshot);
+        if (config.Mode != "ai_shot" || config.AiScenes is not { Count: > 0 } scenes || scenes.All(scene => scene.Mode == "standard"))
+            return false;
+        try
+        {
+            var snapshot = WorkflowJson.Read<AiShotPromptSnapshot>(generate.OutputSnapshot);
+            return !string.Equals(snapshot?.ConfigFingerprint, WorkflowJson.Hash(WorkflowJson.Write(config)), StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>A listing being written beside the video: the steps that publish or package it wait for it.</summary>
+    private static bool ListingBeingWritten(IReadOnlyList<WorkflowNodeRun> checkpoints) =>
+        checkpoints.Any(x => x.NodeType == "generate-listing" && x is { Status: "running", Stage: WritingListingStage });
+
     public async Task<Result<Storyboard>> PlanAsync(WorkflowRun run, GenerateVideoConfig config, CancellationToken ct)
     {
         var definition = WorkflowJson.Read<WorkflowDefinition>(run.DefinitionSnapshot);
@@ -51,7 +191,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         var experienceMap = experiences is null
             ? null
             : await experiences.RetrieveForScenesAsync(run.UserId, product, config, ct);
-        var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap);
+        var garments = await AiOpeningCrop.LocateGarmentsAsync(garmentLocator, product, config, approved, ct);
+        var planned = planner.Plan(product, approved, config, aiTemplates, experienceMap, garments);
         if (planned.IsFailure) return planned;
         var prepared = promptPreparation is null
             ? planned.Value
@@ -86,7 +227,8 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                 if (type == "approval-gate") StartPrintify(checkpoints);
                 continue;
             }
-            if (node.Status is "running" or "failed" or "cancelled") return;
+            // A step waiting for the final video is looked at again each time the run advances: the render finishing is what lets it go on.
+            if ((node.Status == "running" && !DeferredRender.IsWaiting(node)) || node.Status is "failed" or "cancelled") return;
             node.UpdatedAt = time.GetUtcNow().UtcDateTime;
             switch (type)
             {
@@ -126,9 +268,12 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     video.Status = "queued";
                     foreach (var scene in reuse ? Array.Empty<ScenePlan>() : board.Scenes) await scenes.AddAsync(new() { Id = Guid.NewGuid(), PromoVideoId = video.Id, MockupImageId = scene.MockupId,
                         SceneOrder = scene.SceneOrder + 1, DurationSeconds = scene.DurationFrames / 30m, GenerationStrategy = scene.GenerationStrategy, SourceRevision = scene.SourceRevision,
-                        SourceHash = scene.SourceHash, SceneConfig = WorkflowJson.Write(scene), Warnings = WorkflowJson.Write(scene.Warnings), TransitionEffect = scene.Transition,
+                        SourceHash = scene.SourceHash, SceneConfig = WorkflowJson.Write(scene), Warnings = WorkflowJson.Write(scene.Warnings), TransitionEffect = SceneTransitionColumn.For(scene.Transition),
                         TextOverlayContent = scene.Text, CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
                     node.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id)); node.Status = "running"; node.Stage = "Planning"; node.Progress = 5;
+                    // The video's scenes are all there: photos always are, AI clips once stored. Only then can the render wait for a step
+                    // to need it; a video whose clips the media worker still has to make is rendered as before.
+                    var scenesReady = true;
                     if (board.Mode == "ai_shot")
                     {
                         AiShotJobState[] retained = [];
@@ -163,11 +308,15 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         // With the clip phase on, the API makes the scenes that are not stored yet and the media worker gets the job
                         // once they all are, so it only renders. Without it the worker makes them itself.
                         var makeClipsHere = clipPhase?.Value.Enabled == true && states.Any(state => state.Status != "stored");
+                        scenesReady = states.All(state => state.Status == "stored");
                         await EnqueueAsync(run, node, "render", new AiRenderJobPayload(video.Id, board, states), ct,
-                            makeClipsHere ? AiClipPhase.JobStatus : "queued");
+                            makeClipsHere ? AiClipPhase.JobStatus : RendersOnDemand && scenesReady ? DeferredRender.JobStatus : "queued");
                         if (makeClipsHere) { node.Stage = AiClipPhase.Stage; node.Progress = AiClipPhase.StartProgress; }
                     }
-                    else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct);
+                    else await EnqueueAsync(run, node, "render", new RenderJobPayload(video.Id, board), ct,
+                        RendersOnDemand ? DeferredRender.JobStatus : "queued");
+                    // The scenes are all there: with the render deferred the video is ready to be shown now, and the step ends.
+                    if (RendersOnDemand && scenesReady) { MarkReady(node, video); break; }
                     return;
                 case "review-video":
                     node.OutputSnapshot = checkpoints.Single(x => x.NodeType == "generate-video").OutputSnapshot;
@@ -177,10 +326,14 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                         VideoAutoApproval.Approve(candidate, run.UserId, time.GetUtcNow().UtcDateTime))
                     {
                         node.Status = "succeeded";
+                        // If the plan refuses the render now, the step that needs the file asks again and fails with the reason.
+                        if (candidate.Status == DeferredRender.VideoReady && VideoRenderDemand.Requires(checkpoints)) await RequestFinalRenderAsync(run, candidate, ct);
                         break;
                     }
                     node.Status = "waiting_for_review"; run.Status = "waiting_for_review"; return;
                 case "export-zip":
+                    // The package carries the listing: one still being written is waited for (FinishListingAsync goes on).
+                    if (ListingBeingWritten(checkpoints)) return;
                     // A batch exports only after every video has finished and passed review. The planner
                     // resumes pending exports after the last review commits (also after a server restart).
                     if (run.RunGroupId is Guid groupId)
@@ -198,6 +351,14 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     // its mock-ups, designs, listing and guide.
                     var approvedVideo = reviewedVideo.ApprovalStatus == "approved" ? reviewedVideo : null;
                     if (approvedVideo is null && reviewedVideo.ApprovalStatus != "rejected") { node.Status = "failed"; run.Status = "failed"; run.ErrorMessage = "Export requires the exact approved video."; return; }
+                    // The package needs the final video file: it is made now, in the background, if nobody asked for it earlier.
+                    if (approvedVideo is not null && VideoRenderDemand.ExportNeedsFinalVideo(node) && approvedVideo.Status != DeferredRender.VideoCompleted)
+                    {
+                        await WaitForFinalRenderAsync(run, node, approvedVideo, ct);
+                        return;
+                    }
+                    // Export ZIP always carries the video of every scene; the final video only when its option is on (the gate above made sure the file exists).
+                    var includeFinal = approvedVideo is not null && VideoRenderDemand.ExportNeedsFinalVideo(node);
                     var videoScenes = approvedVideo is null ? []
                         : (await scenes.FindAsync(x => x.PromoVideoId == approvedVideo.Id, ct)).OrderBy(x => x.SceneOrder).ToArray();
                     var exportProduct = await products.GetByIdAsync(run.ProductId, ct);
@@ -243,12 +404,15 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                                 sceneSnapshot = sourceElement.Deserialize<VideoExportSourceSnapshot>(WorkflowJson.Options);
                         }
                         catch (Exception exception) when (exception is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentNullException) { }
+                        // A video that was never rendered has no record of its scene sources yet: they are read from its mock-ups and stored clips.
+                        if (sceneSnapshot is null && exportStoryboard is not null)
+                            sceneSnapshot = await PlannedSceneSourcesAsync(run, approvedVideo, exportStoryboard, ct);
                     }
                     object manifest = approvedVideo is null
                         ? new { schemaVersion = 1, productId = run.ProductId, videoId = (Guid?)null, scenes = Array.Empty<object>() }
                         : new { schemaVersion = 1, productId = run.ProductId, videoId = approvedVideo.Id, version = approvedVideo.VersionNumber,
                             mode = approvedVideo.Mode, fingerprint = approvedVideo.Fingerprint, approvedRevision = approvedVideo.ReviewRevision,
-                            video = "video.mp4", thumbnail = "thumbnail.png", scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
+                            video = includeFinal ? "video.mp4" : null, thumbnail = includeFinal ? "thumbnail.png" : null, scenes = videoScenes.Select(s => new { order = s.SceneOrder, mockupId = s.MockupImageId,
                                 sourceRevision = s.SourceRevision, sourceHash = s.SourceHash, generationStrategy = s.GenerationStrategy, source = $"mockups/{s.MockupImageId}.png" }) };
                     var package = new ExportPackage { Id = Guid.NewGuid(), UserId = run.UserId, WorkflowRunId = run.Id, Type = "zip_package",
                         Name = approvedVideo is null ? "Product package without video" : "Approved video package", Status = "preparing",
@@ -258,11 +422,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
                     await exportItems.AddAsync(new() { Id = Guid.NewGuid(), ExportPackageId = package.Id, ProductId = run.ProductId, PromoVideoId = approvedVideo?.Id,
                         IncludePromoVideo = approvedVideo is not null, IncludeMockupImages = approvedMockups.Length > 0, IncludeDesignImages = approvedDesigns.Length > 0,
                         IncludeListingContent = exportListing is not null, ItemStatus = "pending", CreatedAt = time.GetUtcNow().UtcDateTime }, cancellationToken: ct);
-                    var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, approvedVideo, exportListing is not null);
+                    var guide = EtsyGuide(run, exportProduct, approvedMockups, approvedDesigns, includeFinal ? approvedVideo : null, exportListing is not null);
                     node.OutputSnapshot = WorkflowJson.Write(new { exportId = package.Id }); node.Status = "running";
                     node.Stage = "Exporting"; node.Progress = 0;
-                    await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo?.Id, approvedVideo?.StorageKey, approvedVideo?.StorageVersion,
-                        approvedVideo?.ThumbnailStorageKey, approvedVideo?.ThumbnailStorageVersion, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
+                    await EnqueueAsync(run, node, "export_zip", new ExportJobPayload(package.Id, approvedVideo?.Id, includeFinal ? approvedVideo?.StorageKey : null, includeFinal ? approvedVideo?.StorageVersion : null,
+                        includeFinal ? approvedVideo?.ThumbnailStorageKey : null, includeFinal ? approvedVideo?.ThumbnailStorageVersion : null, JsonSerializer.Deserialize<JsonElement>(package.Manifest),
                         exportProduct?.Name, exportProduct?.ProductType, approvedMockups, approvedDesigns, exportListing, exportStoryboard, sceneSnapshot, guide), ct); return;
             }
         }
@@ -272,7 +436,16 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         {
             var node = checkpoints.SingleOrDefault(x => x.NodeType == type);
             if (node is null || node.Status == "succeeded") continue;
-            if (node.Status is "running" or "failed" or "cancelled") return;
+            if ((node.Status == "running" && !DeferredRender.IsWaiting(node)) || node.Status is "failed" or "cancelled") return;
+            // The listing is what goes on Etsy: one still being written is waited for (FinishListingAsync goes on).
+            if (ListingBeingWritten(checkpoints)) return;
+            // Publish to Etsy attaches the video, so it waits for the final video to be rendered, and asks for it if nobody did.
+            if (type == "publish-etsy" && VideoRenderDemand.EtsyNeedsVideo(node) &&
+                await ApprovedVideoWithoutFileAsync(checkpoints, ct) is { } unrendered)
+            {
+                await WaitForFinalRenderAsync(run, node, unrendered, ct);
+                return;
+            }
             StartPublish(node);
             return;
         }
@@ -299,8 +472,10 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
     /// </summary>
     private void StartPrintify(IReadOnlyList<WorkflowNodeRun> checkpoints)
     {
+        // Printify takes the listing's title and description: one being written is waited for (FinishListingAsync starts it).
         if (checkpoints.SingleOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep) is { Status: "pending" } printify
-            && checkpoints.SingleOrDefault(x => x.NodeType == "approval-gate") is { Status: "succeeded" })
+            && checkpoints.SingleOrDefault(x => x.NodeType == "approval-gate") is { Status: "succeeded" }
+            && !ListingBeingWritten(checkpoints))
             StartPublish(printify);
     }
 
@@ -336,7 +511,11 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
             input.Status = "succeeded";
             input.Progress = 100;
         }
-        var result = await listingContent.GetOrGenerateAsync(run.ProductId, ct, listingStream?.For(run.ProductId));
+        Record(listing, await listingContent.GetOrGenerateAsync(run.ProductId, ct, listingStream?.For(run.ProductId)));
+    }
+
+    private void Record(WorkflowNodeRun listing, Result<ListingContentResponseDto> result)
+    {
         listing.UpdatedAt = time.GetUtcNow().UtcDateTime;
         if (result.IsFailure)
         {
@@ -534,6 +713,142 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         return node.ToJsonString(WorkflowJson.Options);
     }
 
+    /// <summary>The video the seller approved at Review Video when its file has not been rendered yet; null when there is nothing to wait for.</summary>
+    private async Task<PromoVideo?> ApprovedVideoWithoutFileAsync(IReadOnlyList<WorkflowNodeRun> checkpoints, CancellationToken ct)
+    {
+        var review = checkpoints.SingleOrDefault(x => x.NodeType == "review-video");
+        if (review is not { Status: "succeeded" }) return null;
+        VideoPointer pointer;
+        try { pointer = WorkflowJson.Read<VideoPointer>(review.OutputSnapshot); }
+        catch (JsonException) { return null; }
+        var video = await videos.GetByIdAsync(pointer.VideoId, ct);
+        return video is { ApprovalStatus: "approved" } && video.Status != DeferredRender.VideoCompleted ? video : null;
+    }
+
+    /// <summary>
+    /// The final render failed for good. The video goes back to being ready to show (it is still approved, and the render is asked
+    /// for again when a step needs it), and a step that was waiting for the file fails with the reason, to be retried there.
+    /// </summary>
+    private async Task FailFinalRenderAsync(WorkflowRun run, WorkflowNodeRun generate, string message, CancellationToken ct)
+    {
+        var now = time.GetUtcNow().UtcDateTime;
+        try
+        {
+            var video = await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(generate.OutputSnapshot).VideoId, ct);
+            if (video is { Status: DeferredRender.VideoRendering }) { video.Status = DeferredRender.VideoReady; video.UpdatedAt = now; }
+        }
+        catch (JsonException) { /* A generate step without a video pointer has nothing to put back. */ }
+        var waiting = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id, ct)).FirstOrDefault(DeferredRender.IsWaiting);
+        if (waiting is null) return;
+        waiting.Status = "failed"; waiting.ErrorMessage = message; waiting.UpdatedAt = now;
+        run.Status = "failed"; run.ErrorMessage = message; run.Revision++;
+    }
+
+    /// <summary>The mock-ups and AI clips the scenes of a video that was never rendered are made from; null when one of them is gone.</summary>
+    private async Task<VideoExportSourceSnapshot?> PlannedSceneSourcesAsync(WorkflowRun run, PromoVideo video, Storyboard board, CancellationToken ct)
+    {
+        var mockups = new Dictionary<Guid, MockupImage>();
+        foreach (var id in board.Scenes.Select(scene => scene.MockupId).Distinct())
+        {
+            var mockup = await assets.GetByIdAsync(id, ct);
+            if (mockup is null) return null;
+            mockups[id] = mockup;
+        }
+        AiRenderJobPayload? aiPayload = null;
+        if (board.Mode == "ai_shot")
+        {
+            var generate = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).SingleOrDefault();
+            var job = generate is null ? null : (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id && x.Kind == "render", ct)).SingleOrDefault();
+            if (job is null) return null;
+            try { aiPayload = WorkflowJson.Read<AiRenderJobPayload>(job.Payload); }
+            catch (JsonException) { return null; }
+            if (aiPayload.VideoId != video.Id) return null;
+        }
+        return VideoExportSources.Build(video.Id, board, aiPayload, mockups);
+    }
+
+    /// <summary>With the render deferred: the video's scenes are all available, so Generate Video is done and the video is ready to be shown.</summary>
+    private void MarkReady(WorkflowNodeRun node, PromoVideo video)
+    {
+        var now = time.GetUtcNow().UtcDateTime;
+        video.Status = DeferredRender.VideoReady; video.UpdatedAt = now;
+        node.Status = "succeeded"; node.Progress = 100; node.Stage = null; node.ErrorMessage = null; node.UpdatedAt = now;
+    }
+
+    /// <summary>The API has just stored the last AI clip of a video whose final render is deferred: Generate Video ends here.</summary>
+    public async Task FinishGenerateWithClipsAsync(WorkflowRun run, WorkflowNodeRun generate, CancellationToken ct)
+    {
+        PromoVideo? video = null;
+        try { video = await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(generate.OutputSnapshot).VideoId, ct); }
+        catch (JsonException) { /* The step points at no video. */ }
+        if (video is null)
+        {
+            await FailAsync(run, generate.Id, "The video this step was making could not be found. Generate the video again.", ct);
+            return;
+        }
+        MarkReady(generate, video);
+    }
+
+    /// <summary>
+    /// Queues the render of the final video, once, for a video whose scenes are ready: the job that waited for this is handed to the
+    /// media worker. Safe to call again: a render already queued or running is left alone, and one that failed or was cancelled is
+    /// queued afresh. False when there is nothing to render (the job is gone or belongs to another version of the video).
+    /// </summary>
+    public async Task<Result> RequestFinalRenderAsync(WorkflowRun run, PromoVideo video, CancellationToken ct)
+    {
+        var unavailable = Result.Failure(Error.Conflict("FinalRenderUnavailable",
+            "The final video cannot be made: its scenes are no longer available. Generate the video again."));
+        if (video.Status == DeferredRender.VideoCompleted) return Result.Success();
+        var generate = (await nodes.FindAsync(x => x.WorkflowRunId == run.Id && x.NodeType == "generate-video", ct)).SingleOrDefault();
+        if (generate is null) return unavailable;
+        var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == generate.Id && x.Kind == "render", ct)).SingleOrDefault();
+        if (job is null) return unavailable;
+        try { if (WorkflowJson.Read<RenderJobPayload>(job.Payload).VideoId != video.Id) return unavailable; }
+        catch (JsonException) { return unavailable; }
+        var now = time.GetUtcNow().UtcDateTime;
+        switch (job.Status)
+        {
+            case DeferredRender.JobStatus or "failed" or "cancelled":
+                // A ready video is not counted against the plan: it is when its file is made, so the plan is asked now.
+                var allowed = await CheckPlanForRenderAsync(run.UserId, video, ct);
+                if (allowed.IsFailure) return allowed;
+                job.Status = "queued"; job.Attempt = 0; job.Progress = 0; job.Stage = null; job.LeaseToken = null; job.LeaseExpiresAt = null;
+                job.ErrorMessage = null; job.AvailableAt = now; job.UpdatedAt = now;
+                video.Status = DeferredRender.VideoRendering; video.UpdatedAt = now;
+                return Result.Success();
+            case "queued" or "leased":
+                if (video.Status != DeferredRender.VideoRendering) { video.Status = DeferredRender.VideoRendering; video.UpdatedAt = now; }
+                return Result.Success();
+            default:
+                return unavailable;
+        }
+    }
+
+    /// <summary>Standard videos count towards the plan's video allowance and daily cap once their file is made; AI videos have their own feature check.</summary>
+    private async Task<Result> CheckPlanForRenderAsync(Guid userId, PromoVideo video, CancellationToken ct)
+    {
+        if (entitlements is null || video.Mode != "standard") return Result.Success();
+        var allowance = await entitlements.RequireAllowanceAsync(userId, Features.Entitlements.UsageAllowances.Videos, 1, ct);
+        if (allowance.IsFailure) return allowance;
+        return await entitlements.RequireDailyCapacityAsync(userId, Features.Entitlements.PlanFeatures.DailyVideoCap, 1, ct);
+    }
+
+    /// <summary>Puts a step that needs the final video to wait for it: running, with the render asked for.</summary>
+    private async Task WaitForFinalRenderAsync(WorkflowRun run, WorkflowNodeRun node, PromoVideo video, CancellationToken ct)
+    {
+        var now = time.GetUtcNow().UtcDateTime;
+        var requested = await RequestFinalRenderAsync(run, video, ct);
+        if (requested.IsFailure)
+        {
+            node.Status = "failed"; node.ErrorMessage = requested.Error.Message;
+            run.Status = "failed"; run.ErrorMessage = node.ErrorMessage; run.Revision++; node.UpdatedAt = now;
+            return;
+        }
+        node.Status = "running"; node.Stage = DeferredRender.WaitStage; node.ErrorMessage = null; node.UpdatedAt = now;
+        node.Progress = video.Status == DeferredRender.VideoRendering ? Math.Max(node.Progress, 0) : 0;
+        node.OutputSnapshot = WorkflowJson.Write(new AwaitingRenderState(true, video.Id));
+    }
+
     private async Task EnqueueAsync<T>(WorkflowRun run, WorkflowNodeRun node, string kind, T payload, CancellationToken ct, string status = "queued")
     {
         var job = (await jobs.FindAsync(x => x.WorkflowNodeRunId == node.Id && x.Kind == kind, ct)).SingleOrDefault();
@@ -545,10 +860,17 @@ public sealed class WorkflowRuntime(IRepository<WorkflowNodeRun> nodes, IReposit
         job.Kind = kind; job.Payload = WorkflowJson.Write(payload); job.Status = status; job.Attempt = 0; job.Progress = 0; job.LeaseToken = null;
         job.LeaseExpiresAt = null; job.ErrorMessage = null; job.AvailableAt = time.GetUtcNow().UtcDateTime; job.UpdatedAt = job.AvailableAt;
         if (status == AiClipPhase.JobStatus) { job.Stage = AiClipPhase.Stage; job.Progress = AiClipPhase.StartProgress; }
+        logger?.LogInformation("Media job {JobId} ({Kind}) queued for run {RunId} as {Status}.", job.Id, kind, run.Id, status);
     }
     public async Task FailAsync(WorkflowRun run, Guid nodeId, string message, CancellationToken ct)
     {
         var node = (await nodes.GetByIdAsync(nodeId, ct))!;
+        // The final render of a video whose Generate Video step already ended: that step stays done, and the step waiting for the file fails.
+        if (node.NodeType == "generate-video" && node.Status == "succeeded")
+        {
+            await FailFinalRenderAsync(run, node, message, ct);
+            return;
+        }
         node.Status = "failed"; node.ErrorMessage = message; run.Status = "failed"; run.ErrorMessage = message; run.Revision++;
         if (node.NodeType == "generate-video") { var v = await videos.GetByIdAsync(WorkflowJson.Read<VideoPointer>(node.OutputSnapshot).VideoId, ct); if (v != null) v.Status = "failed"; }
     }

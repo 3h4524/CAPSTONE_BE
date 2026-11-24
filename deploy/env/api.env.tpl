@@ -69,6 +69,8 @@ Etsy__OAuthRedirectUri=https://${APP_DOMAIN}/api/etsy/oauth/callback
 Translation__ApiKey=${TRANSLATION_API_KEY}
 Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 
+TestReports__IngestApiKey=${TEST_REPORTS_INGEST_KEY}
+
 # The platform Ideogram and MiniMax keys are kept by an Admin at /admin/system-api-keys (in the database), not here.
 
 # The API makes the AI scenes of a render job before the media worker gets it (docs/VIDEO_WORKFLOWS.md, "AI scenes made by the API").
@@ -76,6 +78,33 @@ Printify__CatalogToken=${PRINTIFY_CATALOG_TOKEN}
 AiVideo__ClipPhase__Enabled=true
 AiVideo__ClipPhase__MaxInFlight=3
 AiVideo__ClipPhase__MaxInFlightPerUser=2
+
+# MiniMax calls back at https://${APP_DOMAIN}/api/webhooks/minimax/... when an AI scene finishes, so its clip is fetched at once.
+# The URL of each scene is signed (HMAC over "ai-scene:<job>:<scene>", so it never doubles as a token) with the JWT signing key,
+# which is already long and random; rotating it voids the URLs of scenes being made, which are then found by the status check.
+# With either value empty the scenes are only asked about, every 10 s after the first 30 s. With callbacks on, a scene is asked
+# about every CallbackPollIntervalSeconds only, in case a call never came.
+AiVideo__Callback__BaseUrl=https://${APP_DOMAIN}
+AiVideo__Callback__Secret=${JWT_SIGNING_KEY}
+# AiVideo__ClipPhase__CallbackPollIntervalSeconds=60
+
+# Ideogram calls https://${APP_DOMAIN}/api/webhooks/ideogram when an image is ready, so the API asks for it at once instead of
+# at its next poll (every 2 s). The call only wakes the waiting request; the image is still read from Ideogram with the key.
+# Polling goes on regardless, in case a call never comes. Empty (as on localhost), images are only polled.
+Ideogram__WebhookBaseUrl=https://${APP_DOMAIN}
+
+# Before an AI scene is sent to MiniMax, Gemini describes its opening frame and rewrites the scene's prompt from that (two calls
+# for each scene, which is most of the time Generate Video stays at 2-15%). On by default. Set it to false to send the prompt the
+# template builds instead, which is faster but not grounded in the actual image.
+VideoPromptPreparation__Enabled=false
+
+# Generate Video ends once the video's scenes are ready, and the final video is rendered in the background only when a step needs
+# the file (Publish to Etsy with a video, or Export ZIP with its final-video option). On by default, and it needs the AI clip phase
+# above. Set it to false to render inside Generate Video again, as before.
+Video__DeferredRender__Enabled=true
+
+# Putting a mock-up on a model photo without AI. Off, a model photo is only stored and is dressed with AI.
+ModelPhotos__PrintWithoutAi=false
 
 DesignTextCheck__Enabled=false
 VideoQuality__Enabled=false

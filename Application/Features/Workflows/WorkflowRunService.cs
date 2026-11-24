@@ -192,8 +192,8 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             if (run.Status is "completed" or "cancelled") return Result.Failure<RunResponse>(Error.Conflict("RunFinished", "Run is already finished."));
             run.Status = "cancelled"; run.CompletedAt = time.GetUtcNow().UtcDateTime;
             foreach (var n in checkpoints.Where(x => x.Status != "succeeded")) n.Status = "cancelled";
-            foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus), ct)) { job.Status = "cancelled"; job.LeaseToken = null; }
-            await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct);
+            foreach (var job in await jobs.FindAsync(x => x.WorkflowRunId == id && (x.Status == "queued" || x.Status == "leased" || x.Status == AiClipPhase.JobStatus || x.Status == DeferredRender.JobStatus), ct)) { job.Status = "cancelled"; job.LeaseToken = null; }
+            await WorkflowRunStops.EndUnfinishedVideosAsync(videos, run.Id, ct, checkpoints.Any(x => x.NodeType == "generate-video" && x.Status == "succeeded"));
         }
         else if (request.Action == "resume")
         {
@@ -235,12 +235,16 @@ public sealed class WorkflowRunService(ICurrentUser user, IRepository<Workflow> 
             var review = checkpoints.Single(x => x.NodeType == "review-video");
             var expected = WorkflowJson.Read<VideoPointer>(review.OutputSnapshot);
             var video = request.VideoId.HasValue ? await videos.GetByIdAsync(request.VideoId.Value, ct) : null;
-            if (video == null || video.Id != expected.VideoId || video.WorkflowRunId != id || video.ReviewRevision != request.ReviewRevision || video.Status != "completed")
+            if (video == null || video.Id != expected.VideoId || video.WorkflowRunId != id || video.ReviewRevision != request.ReviewRevision || !DeferredRender.CanBeReviewed(video))
                 return Result.Failure<RunResponse>(Stale());
             video.ApprovalStatus = request.Action == "approve_video" ? "approved" : "rejected";
             video.ReviewRevision++; video.ApprovedBy = request.Action == "approve_video" ? user.UserId : null;
             video.ApprovedAt = request.Action == "approve_video" ? time.GetUtcNow().UtcDateTime : null;
             review.OutputSnapshot = WorkflowJson.Write(new VideoPointer(video.Id));
+            // A video that has no file yet is rendered in the background as soon as it is approved, when a step needs the file, so that it is
+            // usually done by the time the run gets there (in a batch: before Continue).
+            if (request.Action == "approve_video" && video.Status == DeferredRender.VideoReady && VideoRenderDemand.Requires(checkpoints))
+                await runtime.RequestFinalRenderAsync(run, video, ct);
             // In a batch the seller decides on every video, then Continue goes on with them all at once
             // (WorkflowRunGroupService.ContinueReviewAsync): until then a decision can be changed. A single run goes on
             // as soon as its video is approved.

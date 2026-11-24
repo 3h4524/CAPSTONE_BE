@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.TestReports;
 [TestClass]
 public sealed class TestReportServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     private const string ReportJson = """
     {
       "config": {},
@@ -201,7 +203,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunWhileItGoesAndCountsWhatItFound()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", ReportJson, "feat/fe-test-reports", "abc1234"));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -225,7 +227,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_KeepsTheRunAsBrokenWhenTheSuiteWroteNoReport()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(1, "boom", null, null, null));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -244,7 +246,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_RefusesToStartASecondRunWhileOneGoes()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(async () =>
             {
                 await Task.Delay(50);
@@ -265,7 +267,7 @@ public sealed class TestReportServiceTests
     [TestMethod]
     public async Task StartRunAsync_StartsTheSuiteWithoutHandingOverSellerCredentials()
     {
-        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TestReportRunnerResult(0, string.Empty, ReportJson, null, null));
         _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -274,7 +276,25 @@ public sealed class TestReportServiceTests
         await WaitForTheRunToFinish();
 
         _runner.Verify(
-            runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            runner => runner.RunAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartRunAsync_PassesExecutionModeToRunner()
+    {
+        _runner.Setup(runner => runner.RunAsync(It.IsAny<string>(), "headed", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TestReportRunnerResult(0, string.Empty, ReportJson, null, null));
+        _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var started = await _sut.StartRunAsync("admin@apcs.test", "headed", TestContext.CancellationToken);
+
+        started.IsSuccess.Should().BeTrue();
+        await WaitForTheRunToFinish();
+
+        _runner.Verify(
+            runner => runner.RunAsync(started.Value.RunId, "headed", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -299,6 +319,55 @@ public sealed class TestReportServiceTests
 
         result.IsSuccess.Should().BeTrue();
         _store.Verify(store => store.DeleteRunAsync("run-1", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task IngestRunAsync_WithValidReport_ParsesAndSavesRun()
+    {
+        _store.Setup(store => store.SaveRunAsync(It.IsAny<TestReportRunDto>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(ReportJson);
+        var request = new TestReportIngestDto
+        {
+            RunId = "run-ci-123",
+            Branch = "main",
+            CommitSha = "abcdef1",
+            TriggeredBy = "GitHub Actions",
+            Report = doc.RootElement,
+        };
+
+        var result = await _sut.IngestRunAsync(request, TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RunId.Should().Be("run-ci-123");
+        result.Value.Status.Should().Be("passed");
+        result.Value.TotalTests.Should().Be(1);
+        result.Value.PassedTests.Should().Be(1);
+        result.Value.Branch.Should().Be("main");
+        result.Value.CommitSha.Should().Be("abcdef1");
+        result.Value.TriggeredBy.Should().Be("GitHub Actions");
+
+        _store.Verify(
+            store => store.SaveRunAsync(
+                It.Is<TestReportRunDto>(r => r.RunId == "run-ci-123" && r.Status == "passed"),
+                It.IsNotNull<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [TestMethod]
+    public async Task IngestRunAsync_WithEmptyReport_ReturnsValidationFailure()
+    {
+        var request = new TestReportIngestDto
+        {
+            Report = default,
+        };
+
+        var result = await _sut.IngestRunAsync(request, TestContext.CancellationToken);
+
+        result.IsFailure.Should().BeTrue();
+        result.Error.Type.Should().Be(ErrorType.Validation);
     }
 
     private static async Task WaitForTheRunToFinish()

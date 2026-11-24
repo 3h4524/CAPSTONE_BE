@@ -86,6 +86,8 @@ public sealed class WorkflowPublishService(
             || !Works(snapshot.NodeType, snapshot.RunStatus))
             return null;
 
+        // The step is waiting for the final video to be rendered: the run starts it once the file exists.
+        if (IsWaitingForRender(snapshot.OutputSnapshot)) return null;
         var current = ReadState(snapshot.OutputSnapshot);
         Outcome outcome;
         try
@@ -212,7 +214,7 @@ public sealed class WorkflowPublishService(
                 matchWarnings = matched.Warnings;
             }
             else if (config.BlueprintId is not > 0)
-                return Outcome.Fail("Push to Printify: the approved mock-ups use your own templates, so the Printify product cannot be read from them. "
+                return Outcome.Fail("Push to Printify: none of the approved mock-ups uses a Printify template, so the Printify product cannot be read from them. "
                     + "Choose the product, provider, colors and sizes on Push to Printify, then retry this step.");
         }
         if (config.Problem() is { } problem)
@@ -343,6 +345,12 @@ public sealed class WorkflowPublishService(
         var listing = result.Value;
         return Outcome.Done(new PublishNodeState("done", EtsyListingId: listing.ListingId, EtsyUrl: listing.EditUrl,
             MediaAttached: listing.ImagesUploaded + (listing.VideoUploaded ? 1 : 0) + listing.FilesUploaded, Warnings: listing.Warnings));
+    }
+
+    private static bool IsWaitingForRender(string json)
+    {
+        try { return WorkflowJson.Read<AwaitingRenderState>(json).AwaitingRender; }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     private static PublishNodeState ReadState(string json)

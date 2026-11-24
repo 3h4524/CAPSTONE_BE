@@ -11,10 +11,17 @@ public static class WorkflowRunStops
     /// counted against the plan, and going on with unchanged settings makes it again under the same version, keeping the
     /// AI clips already stored for it.
     /// </summary>
-    public static async Task EndUnfinishedVideosAsync(IRepository<PromoVideo> videos, Guid runId, CancellationToken ct)
+    /// <param name="generateEnded">
+    /// Generate Video had finished before the stop. A video that is ready to be shown was finished by it, and one whose final
+    /// render was under way goes back to that: the render is cancelled with the run and asked for again when the run goes on.
+    /// </param>
+    public static async Task EndUnfinishedVideosAsync(IRepository<PromoVideo> videos, Guid runId, CancellationToken ct, bool generateEnded = false)
     {
         foreach (var video in await videos.FindAsync(x => x.WorkflowRunId == runId && x.Status != "completed" && x.Status != "failed", ct))
-            video.Status = "failed";
+        {
+            if (video.Status == DeferredRender.VideoReady) continue;
+            video.Status = video.Status == DeferredRender.VideoRendering && generateEnded ? DeferredRender.VideoReady : "failed";
+        }
     }
 
     /// <summary>

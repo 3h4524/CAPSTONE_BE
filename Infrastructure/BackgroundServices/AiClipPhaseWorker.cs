@@ -14,9 +14,10 @@ namespace APCS.Infrastructure.BackgroundServices;
 /// <remarks>
 /// Everything a pass decides is read from the database, so a restart loses nothing: scenes already submitted keep their
 /// provider operation and are asked about again. While jobs wait it looks every
-/// <see cref="AiClipPhaseSettings.PollIntervalSeconds"/>; with none it stops querying and waits for
-/// <see cref="WorkflowActivitySignal.ClipPhase"/>, so a serverless database can scale to zero. It runs whether or not the phase is
-/// enabled, to finish the jobs that were already waiting when it was turned off.
+/// <see cref="AiClipPhaseSettings.PollIntervalSeconds"/>, or at once when <see cref="WorkflowActivitySignal.ClipPhase"/> is raised
+/// (a job was saved: the provider called back about a scene, or a job was queued); with none it stops querying and waits for that
+/// signal, so a serverless database can scale to zero. It runs whether or not the phase is enabled, to finish the jobs that were
+/// already waiting when it was turned off.
 /// </remarks>
 public sealed class AiClipPhaseWorker(IServiceScopeFactory scopes, IOptions<AiClipPhaseSettings> options,
     WorkflowActivitySignal activity, ILogger<AiClipPhaseWorker> logger) : BackgroundService
@@ -43,8 +44,9 @@ public sealed class AiClipPhaseWorker(IServiceScopeFactory scopes, IOptions<AiCl
 
             try
             {
-                if (hasJobs) await Task.Delay(options.Value.PollInterval, stoppingToken);
-                else await activity.ClipPhase.WaitAsync(seen, WorkflowActivitySignal.IdleSafetyCheck, stoppingToken);
+                // A job saved meanwhile (a callback saying a scene finished, a new job) starts the next pass at once; otherwise
+                // the jobs still waiting are looked at again after the interval.
+                await activity.ClipPhase.WaitAsync(seen, hasJobs ? options.Value.PollInterval : WorkflowActivitySignal.IdleSafetyCheck, stoppingToken);
             }
             catch (OperationCanceledException)
             {

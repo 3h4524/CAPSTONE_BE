@@ -18,6 +18,8 @@ namespace APCS.Application.UnitTests.Features.BatchMockups;
 [TestClass]
 public sealed class MockupTemplateServiceTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task ListAsync_WhenProductTypeGiven_ReturnsOnlyMatchingActive()
     {
@@ -2302,6 +2304,103 @@ public sealed class MockupTemplateServiceTests
             TemplateColors: new Dictionary<Guid, IReadOnlyList<string>> { [teeId] = ["#232424", "#252a3f"] }));
         offered.IsSuccess.Should().BeTrue();
         offered.Value.TemplateColors![teeId].Should().Equal("#232424", "#252A3F");
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_APrintPosition_IsKeptOnTheJob_AndLeavesTheSharedTemplateAlone()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var teeId = Guid.NewGuid();
+        var batch = new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "completed", Config = "{}" };
+        var batches = MockBatches(batch);
+        batches.Setup(r => r.UpdateAsync(It.IsAny<BatchJob>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        var shared = MakeTemplate(teeId, "tshirt");
+        shared.UserId = null;
+        shared.IsSystemTemplate = true;
+        shared.PrintAreaConfig = "{\"x\":500,\"y\":500,\"width\":400,\"height\":400}";
+        var before = shared.PrintAreaConfig;
+        var templates = TemplateRepository(shared);
+        var placement = new MockupTemplatePlacementDto(600, 700, 300, 300, 10);
+
+        var result = await CreateService(userId, templates: templates, batches: batches, rows: MockRows())
+            .ApplyAsync(batchId, new ApplyMockupTemplatesRequestDto([teeId],
+                TemplatePlacements: new Dictionary<Guid, MockupTemplatePlacementDto> { [teeId] = placement }), cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.TemplatePlacements![teeId].Should().Be(placement);
+        MockupRules.ReadTemplatePlacements(batch.Config)[teeId].Should().Be(placement);
+        shared.PrintAreaConfig.Should().Be(before);
+        templates.Verify(r => r.UpdateAsync(It.IsAny<MockupTemplate>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ApplyAsync_PrintifyTemplate_KeepsThePrintPositionInsideItsPrintArea()
+    {
+        var userId = Guid.NewGuid();
+        var batchId = Guid.NewGuid();
+        var teeId = Guid.NewGuid();
+        var batch = new BatchJob { Id = batchId, UserId = userId, Name = "B", Status = "completed", Config = "{}" };
+        var batches = MockBatches(batch);
+        batches.Setup(r => r.UpdateAsync(It.IsAny<BatchJob>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+        MockupTemplateService Service() => CreateService(userId, templates: TemplateRepository(PrintifyTemplate(teeId)), batches: batches, rows: MockRows());
+        ApplyMockupTemplatesRequestDto At(int x, int y) => new([teeId],
+            TemplatePlacements: new Dictionary<Guid, MockupTemplatePlacementDto> { [teeId] = new(x, y, 200, 200) });
+
+        // Printify's print area is (500, 500) 400 x 400.
+        (await Service().ApplyAsync(batchId, At(800, 800), cancellationToken: TestContext.CancellationToken)).IsFailure.Should().BeTrue();
+        batch.Config.Should().NotContain(MockupRules.TemplatePlacementsConfigKey);
+
+        (await Service().ApplyAsync(batchId, At(550, 550), cancellationToken: TestContext.CancellationToken)).IsSuccess.Should().BeTrue();
+    }
+
+    [TestMethod]
+    public async Task GenerateAllAsync_TheJobsPrintPosition_PlacesTheDesign()
+    {
+        var userId = Guid.NewGuid();
+        var batchJobId = Guid.NewGuid();
+        var templateId = Guid.NewGuid();
+        var (row, product, image) = MakeProductRow(userId, batchJobId, "tshirt");
+        var batches = MockBatches(new BatchJob
+        {
+            Id = batchJobId, UserId = userId, Name = "B", Status = "completed",
+            Config = $"{{\"mockupTemplateIds\":[\"{templateId:D}\"],\"mockupTemplatePlacements\":{{\"{templateId:D}\":{{\"x\":100,\"y\":200,\"width\":300,\"height\":400,\"rotation\":0}}}}}}",
+        });
+        var positions = new List<MockupPosition>();
+        var compositor = new Mock<IMockupCompositor>();
+        compositor.Setup(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()))
+            .Returns<string, string, MockupPosition, MockupLayers?>((_, _, position, _) => { positions.Add(position); return $"https://cdn/{Guid.NewGuid():N}.jpg"; });
+
+        var result = await CreateService(userId, templates: TemplateRepository(RecolorableTemplate(templateId)), batches: batches,
+                rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image), mockupImages: MockRepo<MockupImage>(), compositor: compositor)
+            .GenerateAllAsync(batchJobId, cancellationToken: TestContext.CancellationToken);
+
+        result.IsSuccess.Should().BeTrue();
+        positions.Should().ContainSingle().Which.Should().Be(new MockupPosition(100, 200, 300, 400));
+        result.Value.TemplatePlacements![templateId].Should().Be(new MockupTemplatePlacementDto(100, 200, 300, 400));
+    }
+
+    [TestMethod]
+    public async Task SaveOverrideAsync_TheBackOfAPrintifyTemplate_KeepsTheDesignInsideItsPrintArea()
+    {
+        var userId = Guid.NewGuid();
+        var (job, row, product, image, templateId) = CompletedTeeJob(userId);
+        var backId = Guid.NewGuid();
+        var front = PrintifyTemplate(templateId);
+        front.PrintAreaConfig = $$$"""{"x":500,"y":500,"width":400,"height":400,"views":{"back":"{{{backId}}}"}}""";
+        var back = RecolorableTemplate(backId);
+        back.PrintAreaConfig = $$"""{"x":500,"y":500,"width":400,"height":400,"view":"back","mainTemplateId":"{{templateId}}"}""";
+        var slot = MockupRules.SlotKey(image.Id, backId, null);
+        MockupTemplateService Service() => CreateService(userId, templates: TemplateRepository(front, back),
+            batches: MockBatches(job), rows: MockRows(row), products: MockProducts(product), designImages: MockDesignImages(image),
+            mockupImages: MockRepo<MockupImage>(), compositor: ColorAwareCompositor());
+
+        var past = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(800, 800, 200, 200))), cancellationToken: TestContext.CancellationToken);
+        past.Error.Message.Should().Contain("Printify print area");
+        job.Config.Should().NotContain("mockupOverrides");
+
+        var inside = await Service().SaveOverrideAsync(job.Id, new(slot, new(backId, null, null, new(550, 600, 200, 150))), cancellationToken: TestContext.CancellationToken);
+        inside.IsSuccess.Should().BeTrue();
     }
 
     [TestMethod]

@@ -9,8 +9,13 @@ namespace APCS.Infrastructure.BackgroundServices;
 
 /// <summary>
 /// Plans the child runs of confirmed run groups, a few at a time, each in a fresh scope that acts as the run's
-/// owner. Woken when a group is confirmed; also looks every minute, which finds the runs a restart left queued.
+/// owner. Woken when a group is confirmed; also looks every minute, which finds the runs a restart left queued or
+/// half planned (<see cref="RunGroupPlanner.StalledAfter"/>).
 /// </summary>
+/// <remarks>
+/// A run is taken and marked in one short transaction (<see cref="IRunGroupPlanner.ClaimNextAsync"/>), so it shows as
+/// working at once; its AI scene prompts, then its listing, are written after that with nothing locked.
+/// </remarks>
 public sealed class RunGroupPlannerWorker(IServiceScopeFactory scopes, IRunGroupPlannerQueue queue,
     ILogger<RunGroupPlannerWorker> logger) : BackgroundService
 {
@@ -29,9 +34,18 @@ public sealed class RunGroupPlannerWorker(IServiceScopeFactory scopes, IRunGroup
             var advanced = false;
             try
             {
-                using var scope = scopes.CreateScope();
-                var acting = scope.ServiceProvider.GetRequiredService<ActingUserContext>();
-                advanced = await scope.ServiceProvider.GetRequiredService<IRunGroupPlanner>().AdvanceNextAsync(acting.ActAs, stoppingToken);
+                // Each part in a scope of its own: the slow parts run with no transaction open, and the short transaction
+                // that ends each one must read the run afresh, not the copy an earlier part left in its context.
+                GroupRunClaim? claim;
+                using (var scope = scopes.CreateScope())
+                    claim = await scope.ServiceProvider.GetRequiredService<IRunGroupPlanner>()
+                        .ClaimNextAsync(scope.ServiceProvider.GetRequiredService<ActingUserContext>().ActAs, stoppingToken);
+                advanced = claim is not null;
+                // The clips first: the video is what takes longest, and the listing is not part of it.
+                if (claim is { PreparesPrompts: true })
+                    await InScopeAsync((planner, actAs) => planner.PreparePromptsAsync(claim, actAs, stoppingToken));
+                if (claim is { WritesListing: true })
+                    await InScopeAsync((planner, actAs) => planner.WriteListingAsync(claim, actAs, stoppingToken));
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -52,6 +66,13 @@ public sealed class RunGroupPlannerWorker(IServiceScopeFactory scopes, IRunGroup
             try { await queue.WaitAsync(LookEvery, stoppingToken); }
             catch (OperationCanceledException) { break; }
         }
+    }
+
+    private async Task InScopeAsync(Func<IRunGroupPlanner, Action<Guid>, Task> part)
+    {
+        using var scope = scopes.CreateScope();
+        await part(scope.ServiceProvider.GetRequiredService<IRunGroupPlanner>(),
+            scope.ServiceProvider.GetRequiredService<ActingUserContext>().ActAs);
     }
 
     private async Task FailAsync(Guid runId, CancellationToken stoppingToken)

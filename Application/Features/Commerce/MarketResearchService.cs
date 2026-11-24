@@ -94,6 +94,12 @@ public sealed class MarketResearchService(
             : (await opportunities.FindAsync(x => linkedIds.Contains(x.Id), cancellationToken)).ToDictionary(x => x.Id);
         var touched = new HashSet<Guid>();
 
+        // An opportunity this run opened still waits for its insert, which carries any later change to it. UpdateAsync
+        // would turn that insert into an update of a row that is not there yet.
+        var opened = new HashSet<Guid>();
+        Task UpdateUnlessOpenedAsync(MarketOpportunity item) =>
+            opened.Contains(item.Id) ? Task.CompletedTask : opportunities.UpdateAsync(item, cancellationToken: cancellationToken);
+
         // One snapshot per listing, query and UTC day: a second collection the same day (another worker on the shared
         // database, a manual run, a retried batch) refreshes that day's figures instead of counting the listing twice.
         var dayStart = observedAt.Date;
@@ -193,7 +199,7 @@ public sealed class MarketResearchService(
                 return;
             var joined = opportunityById[concept.OpportunityId];
             MarkObserved(joined, observedAt);
-            await opportunities.UpdateAsync(joined, cancellationToken: cancellationToken);
+            await UpdateUnlessOpenedAsync(joined);
             await AddEvidenceAsync(joined.Id, snapshotId, null);
             touched.Add(joined.Id);
         }
@@ -323,6 +329,7 @@ public sealed class MarketResearchService(
                     UpdatedAt = observedAt
                 };
                 await opportunities.AddAsync(opportunity, cancellationToken: cancellationToken);
+                opened.Add(opportunity.Id);
                 opportunityById[opportunity.Id] = opportunity;
                 ConceptsOf(niche).Add(new MarketConceptMatcher.Concept(opportunity.Id, opportunity.Title, listingTags));
             }
@@ -333,7 +340,7 @@ public sealed class MarketResearchService(
                 if (opportunity.LastObservedAt < dayStart)
                     opportunity.MarketOpportunityScore = MarketOpportunityLifecycle.BlendScore(opportunity.MarketOpportunityScore, score);
                 MarkObserved(opportunity, observedAt);
-                await opportunities.UpdateAsync(opportunity, cancellationToken: cancellationToken);
+                await UpdateUnlessOpenedAsync(opportunity);
             }
             touched.Add(opportunity.Id);
             await BackKnownOpportunitiesAsync(listing.ExternalListingId, snapshot.Id, opportunity.Id);

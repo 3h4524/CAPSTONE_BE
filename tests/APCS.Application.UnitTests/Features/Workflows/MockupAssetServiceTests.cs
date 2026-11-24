@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using APCS.Application.Abstractions.Storage;
 using APCS.Application.Features.Workflows;
+using APCS.Domain.Entities;
 using FluentAssertions;
 using Moq;
 
@@ -192,6 +193,107 @@ public sealed class MockupAssetServiceTests
         asset.ApprovedRevision.Should().Be(approve ? 3L : null);
         asset.ApprovedBy.Should().Be(approve ? WorkflowTestData.Owner : null);
         asset.ApprovedAt.Should().Be(approve ? WorkflowTestData.Now.UtcDateTime : null);
+    }
+
+    private static MockupImage Composite(WorkflowTestData fixture, Product product, string design)
+    {
+        var asset = fixture.AddAsset(product);
+        asset.SourceType = "generated";
+        asset.ArtworkGroupKey = design;
+        asset.DesignImageId = Guid.NewGuid();
+        asset.MockupTemplateId = Guid.NewGuid();
+        asset.ApprovalStatus = "pending";
+        asset.ApprovedRevision = null;
+        return asset;
+    }
+
+    [TestMethod]
+    public async Task ReviewDesignAsync_ApprovesEveryColorAndSideAtOnce_AndLeavesAiPhotosAndOtherDesignsAlone()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var front = Composite(fixture, product, "design-1");
+        var back = Composite(fixture, product, "design-1");
+        var other = Composite(fixture, product, "design-2");
+        var lifestyle = fixture.AddAsset(product, "Lifestyle");
+        lifestyle.ArtworkGroupKey = "design-1";
+        lifestyle.ApprovalStatus = "pending";
+
+        var result = await fixture.MockupService.ReviewDesignAsync(product.Id, new("design-1", true), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        front.ApprovalStatus.Should().Be("approved");
+        back.ApprovalStatus.Should().Be("approved");
+        back.ApprovedRevision.Should().Be(3);
+        back.ApprovedBy.Should().Be(WorkflowTestData.Owner);
+        other.ApprovalStatus.Should().Be("pending");
+        lifestyle.ApprovalStatus.Should().Be("pending");
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task ReviewDesignAsync_AColorLeftOut_IsRejectedWithEverySide_AndTheRestApproved()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var whiteFront = Composite(fixture, product, "design-1");
+        var blackFront = Composite(fixture, product, "design-1");
+        var blackBack = Composite(fixture, product, "design-1");
+        blackBack.ApprovalStatus = "approved";
+        blackBack.ApprovedRevision = 3;
+
+        var result = await fixture.MockupService.ReviewDesignAsync(product.Id, new("design-1", true, [blackFront.Id, blackBack.Id]), default);
+
+        result.IsSuccess.Should().BeTrue(result.IsFailure ? result.Error.Message : null);
+        whiteFront.ApprovalStatus.Should().Be("approved");
+        blackFront.ApprovalStatus.Should().Be("rejected");
+        blackBack.ApprovalStatus.Should().Be("rejected");
+        blackBack.ApprovedRevision.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ReviewDesignAsync_EveryColorLeftOut_IsRefused()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var front = Composite(fixture, product, "design-1");
+
+        var result = await fixture.MockupService.ReviewDesignAsync(product.Id, new("design-1", true, [front.Id]), default);
+
+        result.Error.Message.Should().Contain("at least one color");
+        front.ApprovalStatus.Should().Be("pending");
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [TestMethod]
+    public async Task ReviewDesignAsync_Reject_RejectsTheWholeDesign()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var front = Composite(fixture, product, "design-1");
+        front.ApprovalStatus = "approved";
+        front.ApprovedRevision = 3;
+        var back = Composite(fixture, product, "design-1");
+
+        await fixture.MockupService.ReviewDesignAsync(product.Id, new("design-1", false), default);
+
+        front.ApprovalStatus.Should().Be("rejected");
+        front.ApprovedRevision.Should().BeNull();
+        back.ApprovalStatus.Should().Be("rejected");
+    }
+
+    [TestMethod]
+    public async Task ReviewDesignAsync_ForeignProduct_ChangesNothing()
+    {
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct(); product.UserId = Guid.NewGuid();
+        var front = Composite(fixture, product, "design-1");
+
+        var result = await fixture.MockupService.ReviewDesignAsync(product.Id, new("design-1", true), default);
+
+        result.Error.Code.Should().Be("MockupNotFound");
+        front.ApprovalStatus.Should().Be("pending");
+        fixture.Unit.Verify(x => x.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

@@ -150,6 +150,38 @@ public sealed class WorkflowRuntimeTests
     }
 
     [TestMethod]
+    [DataRow("fade", "fade")]
+    [DataRow("swipe", "slide")]
+    [DataRow("flash", "fade")]
+    [DataRow("whip_pan", "slide")]
+    [DataRow("blur", "fade")]
+    public async Task AdvanceAsync_SceneWithATransitionTheColumnHasNoWordFor_IsSavedWithTheNearestWord(string transition, string saved)
+    {
+        // chk_scene_transition refuses "flash", "swipe", "whip_pan" and "blur": the scene must still be saved, with its own
+        // transition kept in its configuration, which is what the render reads.
+        var fixture = new WorkflowTestData();
+        var product = fixture.AddProduct();
+        var first = fixture.AddAsset(product);
+        var second = fixture.AddAsset(product);
+        var run = fixture.AddRun(product);
+        foreach (var node in fixture.NodeRows.Where(x => x.NodeType is "product-input" or "apply-mockup" or "approval-gate")) node.Status = "succeeded";
+        fixture.NodeRows.Single(x => x.NodeType == "generate-video").InputSnapshot = WorkflowJson.Write(new GenerateVideoConfig(Mode: "standard", DurationSeconds: 10,
+            AiScenes:
+            [
+                new(MockupId: first.Id, Mode: "standard", DurationSeconds: 5, StandardMotionPreset: "zoom"),
+                new(MockupId: second.Id, Mode: "standard", DurationSeconds: 5, StandardMotionPreset: "pan", TransitionIn: transition)
+            ]));
+
+        await fixture.Runtime.AdvanceAsync(run, default);
+
+        var scenes = fixture.SceneRows.OrderBy(x => x.SceneOrder).ToArray();
+        scenes.Should().HaveCount(2);
+        scenes[1].TransitionEffect.Should().Be(saved);
+        scenes.Should().OnlyContain(x => x.TransitionEffect == null || SceneTransitionColumn.Allowed.Contains(x.TransitionEffect));
+        WorkflowJson.Read<ScenePlan>(scenes[1].SceneConfig).Transition.Should().Be(transition, "the render reads the scene's own transition");
+    }
+
+    [TestMethod]
     public async Task AdvanceAsync_ListingFailsInAVideoRun_LeavesItOnItsStepAndKeepsTheVideoGoing()
     {
         var fixture = new WorkflowTestData();

@@ -2,6 +2,7 @@ using System.Text.Json;
 using APCS.Application.Abstractions.Authentication;
 using APCS.Application.Abstractions.Persistence;
 using APCS.Application.Abstractions.Storage;
+using APCS.Application.Features.BatchMockups;
 using APCS.Application.Features.BatchMockups.Common;
 using APCS.Application.Features.BatchMockups.Dtos.Response;
 using APCS.Application.Features.Workflows;
@@ -9,6 +10,7 @@ using APCS.Common.Models;
 using APCS.Domain.Entities;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using MockQueryable.Moq;
 using Moq;
 
@@ -28,6 +30,7 @@ public sealed class ModelPhotoMockupServiceTests
     private readonly List<BatchJob> _batches = [];
     private readonly Mock<IMockupCompositor> _compositor = new();
     private readonly Mock<IMockupMapService> _maps = new();
+    private readonly ModelPhotoSettings _settings = new() { PrintWithoutAi = true };
     private readonly ModelPhotoMockupService _service;
 
     public ModelPhotoMockupServiceTests()
@@ -47,7 +50,24 @@ public sealed class ModelPhotoMockupServiceTests
         _service = new(current.Object, _fixture.Products.Object, _fixture.Assets.Object, Repository(_templates, x => x.Id).Object,
             Repository(_designs, x => x.Id).Object, Repository(_rows, x => x.Id).Object, Repository(_batches, x => x.Id).Object,
             _compositor.Object, _maps.Object, _fixture.Storage.Object, _fixture.MockupService, _fixture.Unit.Object, _fixture.Time,
-            NullLogger<ModelPhotoMockupService>.Instance);
+            NullLogger<ModelPhotoMockupService>.Instance, Options.Create(_settings));
+    }
+
+    [TestMethod]
+    public async Task GenerateAndPreview_WhileTurnedOff_AreRefusedAndMakeNothing()
+    {
+        _settings.PrintWithoutAi = false;
+        var (product, _, _, garment) = Mockup("#1F2A44");
+        var model = AddModelPhoto();
+        _compositor.Invocations.Clear();
+
+        var generated = await _service.GenerateAsync(product.Id, new(garment.Id, model.Id), default);
+        var previewed = await _service.PreviewAsync(product.Id, new(garment.Id, model.Id), default);
+
+        generated.Error.Code.Should().Be("BatchMockups.PrintWithoutAiOff");
+        previewed.Error.Code.Should().Be("BatchMockups.PrintWithoutAiOff");
+        _compositor.Verify(x => x.BuildCompositeUrl(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<MockupPosition>(), It.IsAny<MockupLayers?>()), Times.Never);
+        _fixture.Storage.Verify(x => x.UploadMockupFromUrlAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]

@@ -25,8 +25,16 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
         int durationSeconds, bool people, CancellationToken ct) =>
         StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, null, ct);
 
+    public Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
+        int durationSeconds, bool people, Region? sourceCrop, CancellationToken ct) =>
+        StartAsync(apiKey, sourceImageUrl, prompt, aspectRatio, durationSeconds, people, sourceCrop, null, ct);
+
+    /// <param name="callbackUrl">
+    /// MiniMax first sends it a <c>challenge</c> to echo back within three seconds, then posts the task's state each time it
+    /// changes, in the shape of the task query. Null asks for no calls: the task is then followed by asking about it only.
+    /// </param>
     public async Task<string> StartAsync(string apiKey, string sourceImageUrl, string prompt, string aspectRatio,
-        int durationSeconds, bool people, Region? sourceCrop, CancellationToken ct)
+        int durationSeconds, bool people, Region? sourceCrop, string? callbackUrl, CancellationToken ct)
     {
         byte[] firstFrame;
         try
@@ -46,10 +54,10 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
 
         using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl + "/v2/video_generation");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-        request.Content = JsonContent.Create(new
+        var payload = new Dictionary<string, object>
         {
-            model = ModelName,
-            content = new object[]
+            ["model"] = ModelName,
+            ["content"] = new object[]
             {
                 new { type = "text", text = prompt },
                 new
@@ -59,12 +67,14 @@ public sealed class MiniMaxVideoProvider(IHttpClientFactory clients, ILogger<Min
                     role = "first_frame"
                 }
             },
-            resolution = AiVideoModel.Resolution,
-            duration = durationSeconds,
+            ["resolution"] = AiVideoModel.Resolution,
+            ["duration"] = durationSeconds,
             // H3 derives image-to-video ratio from the prepared first frame, which is already cut to `aspectRatio`;
             // Lite cannot derive it and is told.
-            ratio = lite ? aspectRatio : "adaptive"
-        });
+            ["ratio"] = lite ? aspectRatio : "adaptive"
+        };
+        if (!string.IsNullOrWhiteSpace(callbackUrl)) payload["callback_url"] = callbackUrl;
+        request.Content = JsonContent.Create(payload);
 
         HttpResponseMessage sent;
         try

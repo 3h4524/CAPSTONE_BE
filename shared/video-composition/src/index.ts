@@ -28,9 +28,9 @@ const stable = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 
 export const getSceneFrame = (scene: StandardVideoScene, frame: number) => {
   const progress = clamp(frame / Math.max(1, scene.durationFrames - 1));
-  const crop = Object.fromEntries((["x", "y", "width", "height"] as const).map(key =>
-    [key, stable(mix(scene.crop[key], scene.endCrop[key], progress))]
-  )) as VideoRegion;
+  const crop = Object.fromEntries(([
+    "x", "y", "width", "height",
+  ] as const).map(key => [key, stable(mix(scene.crop[key], scene.endCrop[key], progress))])) as VideoRegion;
   return {
     crop,
     opacity: 1,
@@ -46,7 +46,9 @@ export const getTransitionFrameStyle = (transition: VideoTransition, frame: numb
   if (transition === "fade") return { opacity: side === "incoming" ? progress : 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: 0 };
   if (transition === "swipe") return { opacity: 1, transform: "none", clipPath: side === "incoming" ? `inset(0 ${(1 - progress) * 100}% 0 0)` : "none", filter: "none", flashOpacity: 0 };
   if (transition === "zoom") return { opacity: side === "incoming" ? .35 + .65 * progress : 1, transform: `scale(${side === "incoming" ? .9 + .1 * progress : 1 + .08 * progress})`, clipPath: "none", filter: "none", flashOpacity: 0 };
-  if (transition === "flash") return { opacity: 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: Math.sin(progress * Math.PI) * .82 };
+  // Flash peaks on the scene boundary, then drops away quickly. A sine curve peaks halfway
+  // through the incoming clip, which makes the flash look delayed after the new scene is visible.
+  if (transition === "flash") return { opacity: 1, transform: "none", clipPath: "none", filter: "none", flashOpacity: Math.pow(1 - progress, 2.4) * .88 };
   if (transition === "whip_pan") return { opacity: 1, transform: `translateX(${side === "incoming" ? (1 - progress) * 100 : -progress * 12}%)`, clipPath: "none", filter: `blur(${(side === "incoming" ? 1 - progress : progress) * 7}px)`, flashOpacity: 0 };
   return { opacity: side === "incoming" ? progress : 1, transform: "none", clipPath: "none", filter: side === "incoming" ? `blur(${(1 - progress) * 14}px)` : "none", flashOpacity: 0 };
 };
@@ -55,8 +57,10 @@ export const getShotImageGeometry = (scene: StandardVideoScene, _source: Standar
   output: StandardVideoOutput = { width: 1080, height: 2160 }): ShotImageGeometry => {
   const { crop, containScale } = getSceneFrame(scene, frame);
   if (scene.motion === "contain_gentle") return { mode: "contain", scale: containScale };
-  // Keep the worker in lockstep with the editor and browser storyboard: the normalized crop is
-  // the output viewport and therefore maps directly to the output canvas.
+  // A crop is a normalized viewport, not an image-size hint. Map that viewport directly onto the
+  // output canvas so this renderer has the exact same framing as the keyframe/timeline editor.
+  // Deriving one uniform scale from the source dimensions made portrait keyframes drift or show
+  // the wrong part of the image whenever their pixel aspect did not exactly equal the output.
   const width = output.width / crop.width;
   const height = output.height / crop.height;
   return {

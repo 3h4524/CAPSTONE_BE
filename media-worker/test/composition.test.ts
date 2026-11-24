@@ -86,7 +86,10 @@ test("transition frame styles cover every effect and None/cut add no effect", ()
     }
   }
   assert.match(getTransitionFrameStyle("swipe", 0, 12, "incoming").clipPath, /100%/);
-  assert.ok(getTransitionFrameStyle("flash", 6, 12, "incoming").flashOpacity > .8);
+  // The flash peaks on the scene boundary and is gone before the overlap ends: the same curve the browser preview plays.
+  assert.ok(Math.abs(getTransitionFrameStyle("flash", 0, 12, "incoming").flashOpacity - .88) < 1e-9);
+  assert.ok(getTransitionFrameStyle("flash", 6, 12, "incoming").flashOpacity < .2);
+  assert.equal(getTransitionFrameStyle("flash", 11, 12, "incoming").flashOpacity, 0);
   assert.equal(getTransitionFrameStyle("whip_pan", 0, 12, "incoming").transform, "translateX(100%)");
   assert.equal(getTransitionFrameStyle("blur", 0, 12, "incoming").filter, "blur(14px)");
 });

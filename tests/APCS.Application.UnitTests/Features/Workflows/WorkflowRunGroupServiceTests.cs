@@ -16,6 +16,10 @@ namespace APCS.Application.UnitTests.Features.Workflows;
 [TestClass]
 public sealed class WorkflowRunGroupServiceTests
 {
+    private static readonly TimeSpan Soon = TimeSpan.FromSeconds(10);
+
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task StartAsync_StandardScenes_WaitsForTheDesignsToBeChosen()
     {
@@ -353,9 +357,10 @@ public sealed class WorkflowRunGroupServiceTests
     {
         var data = new RunGroupTestData();
         var group = await data.StartAsync();
-        var pack = data.AiConfig() with { Template = "product_on_model_pack" };
+        // The legacy single-shot settings (no scene list) name one product's image.
+        var legacy = data.AiConfig() with { AiScenes = null };
 
-        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), pack), default);
+        var result = await data.Service.UpdateConfigAsync(group.Id, new(1, data.Preview.Id, data.PreviewDesign.Id.ToString(), legacy), default);
 
         result.IsFailure.Should().BeTrue();
         data.GroupRows.Single().TargetOverrides.Should().Be("{}");
@@ -523,16 +528,189 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_ManualApprovalWithoutAPerson_WaitsForTheSellerWithoutTheBackground()
+    public async Task StartAsync_ManualApprovalWithoutAPerson_StoresTheMockupsInTheBackgroundAndWaitsForTheSeller()
     {
         var data = new RunGroupTestData(previewApproved: false, background: true);
         var workflow = data.AddWorkflow(data.AiConfig());
 
-        var group = (await data.Service.StartAsync(workflow.Id, new(4, "manual"), default)).Value;
+        var group = (await data.Service.StartAsync(workflow.Id, new(4, "manual"), TestContext.CancellationToken)).Value;
 
+        // Storing the mock-ups takes Cloudinary seconds for each, so Run answers at once and they appear as they are stored.
         group.Status.Should().Be("waiting_for_targets");
-        group.Preparing.Should().BeFalse();
-        data.StartQueue!.Requests.Should().BeEmpty();
+        group.Preparing.Should().BeTrue();
+        data.StartQueue!.Requests.Should().ContainSingle().Which.AutoApprove.Should().BeFalse();
+        data.Imports.Verify(x => x.ImportAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        await data.Service.PrepareAsync(group.Id, autoApprove: false, TestContext.CancellationToken);
+
+        data.Imports.Verify(x => x.ImportAsync(data.Preview.Id, It.IsAny<CancellationToken>()), Times.Once);
+        data.GroupRows.Single().Status.Should().Be("waiting_for_targets");
+        data.Base.RunRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task PrepareAsync_InOneScope_StoresTheMockupsBeforeMakingTheModelPhotos()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.AddSystemModel();
+        var steps = new List<string>();
+        data.Imports.Setup(x => x.ImportAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => steps.Add("store")).ReturnsAsync(Result.Success(new ImportGeneratedMockupsResponse(0, 0, [])));
+        data.Lifestyle.Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid productId, Guid garmentId, Guid _, CancellationToken _) => { steps.Add("photo"); return data.MakePhoto(productId, garmentId); });
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "one-scope"), TestContext.CancellationToken)).Value;
+
+        await data.Service.PrepareAsync(group.Id, autoApprove: false, TestContext.CancellationToken);
+
+        // Without a scope for each piece, nothing may share this scope's database context, so they take turns.
+        steps.Should().Equal("store", "photo");
+    }
+
+    [TestMethod]
+    public async Task PrepareAsync_WithScopes_StoresTheMockupsWhileTheModelPhotosAreMade()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true, scopes: true);
+        data.AddSystemModel();
+        data.QuotesCost(3.20m);
+        var storing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dressing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Each waits for the other to have started: taking turns would time out instead of finishing.
+        data.Imports.Setup(x => x.ImportAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid _, CancellationToken token) =>
+            {
+                storing.TrySetResult();
+                await dressing.Task.WaitAsync(Soon, token);
+                return Result.Success(new ImportGeneratedMockupsResponse(0, 0, []));
+            });
+        data.Lifestyle.Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid productId, Guid garmentId, Guid _, CancellationToken token) =>
+            {
+                dressing.TrySetResult();
+                await storing.Task.WaitAsync(Soon, token);
+                return data.MakePhoto(productId, garmentId);
+            });
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig(), gateMode: "auto").Id, new(4, "side-by-side"),
+            TestContext.CancellationToken)).Value;
+
+        await data.Service.PrepareAsync(group.Id, autoApprove: true, TestContext.CancellationToken).WaitAsync(Soon * 2, TestContext.CancellationToken);
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+        // Approving and starting the videos is done last, in a scope of its own, as the owner: storing, the photo, then that.
+        data.Scopes!.ActedAs.Should().HaveCount(3).And.OnlyContain(x => x == WorkflowTestData.Owner);
+        data.GroupRows.Single().Status.Should().Be("running");
+        data.Base.RunRows.Should().ContainSingle();
+    }
+
+    [TestMethod]
+    public async Task PrepareAsync_WithScopes_MakesTheModelPhotosOfSeveralDesignsAtTheSameTime()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true, scopes: true);
+        data.AddSystemModel();
+        foreach (var name in new[] { "Kids Tee", "Vintage Tee" }) data.AddDesign(data.AddProduct(name), 0, approved: false);
+        var gate = new object();
+        var running = 0;
+        var peak = 0;
+        var allIn = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        data.Lifestyle.Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid productId, Guid garmentId, Guid _, CancellationToken token) =>
+            {
+                lock (gate) { peak = Math.Max(peak, ++running); if (running == 3) allIn.TrySetResult(); }
+                await allIn.Task.WaitAsync(Soon, token);
+                lock (gate) running--;
+                return data.MakePhoto(productId, garmentId);
+            });
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "three-designs"), TestContext.CancellationToken)).Value;
+
+        await data.Service.PrepareAsync(group.Id, autoApprove: false, TestContext.CancellationToken).WaitAsync(Soon * 2, TestContext.CancellationToken);
+
+        // One design after another made the seller wait about 30 s for each; now the three are made together.
+        peak.Should().Be(3);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Exactly(3));
+        data.GroupRows.Single().ErrorMessage.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task PrepareAsync_WithScopes_DesignWhoseMockupsAreNotStoredYet_IsDressedFromItsCompositeLink()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true, scopes: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var (_, kidsMockups) = data.AddDesign(data.AddProduct("Kids Tee"), 0, approved: false);
+        foreach (var mockup in kidsMockups)
+        {
+            mockup.ContentHash = null;
+            mockup.MockupImageUrl = $"https://res.cloudinary.com/demo/image/upload/l_design/{mockup.Id:N}.png";
+        }
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "unstored"), TestContext.CancellationToken)).Value;
+
+        await data.Service.PrepareAsync(group.Id, autoApprove: false, TestContext.CancellationToken);
+
+        // Its photo does not wait for the mock-ups to be stored: the composite link is worn.
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(kidsMockups[0].ProductId, kidsMockups[0].Id, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+        data.Imports.Verify(x => x.ImportAsync(kidsMockups[0].ProductId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ManualApprovalWhileTheModelPhotosAreMade_ShowsThemPendingThenReadyOneByOne()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig());
+
+        var started = (await data.Service.StartAsync(workflow.Id, new(4, "manual-photos"), default)).Value;
+
+        // The mock-ups are there to review at once; the design's card stands in for the photo that is still being made.
+        started.Preparing.Should().BeTrue();
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Pending);
+        started.Targets[0].MockupCount.Should().Be(2);
+
+        await data.Service.PrepareAsync(started.Id, autoApprove: false, default);
+
+        var made = (await data.Service.GetAsync(started.Id, default)).Value;
+        made.Preparing.Should().BeFalse();
+        made.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Ready);
+        made.Targets[0].MockupCount.Should().Be(3);
+        made.Status.Should().Be("waiting_for_targets");
+        // Told when the photo was made, so the card is swapped without waiting for the rest of the run.
+        data.Notifier.Verify(x => x.GroupChangedAsync(started.Id, It.IsAny<CancellationToken>()), Times.AtLeast(2));
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ModelPhotoNothingIsMaking_IsMissingSoContinueTriesAgain()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.AddSystemModel();
+        data.Lifestyle
+            .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<MockupResponse>(Error.Failure("Ideogram.Busy", "Ideogram is busy.")));
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "busy-photo"), default)).Value;
+
+        started.Preparing.Should().BeFalse();
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Missing);
+    }
+
+    [TestMethod]
+    public async Task GetAsync_ScenesWithoutAPerson_HaveNoModelPhotoToWaitFor()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "no-person"), default)).Value;
+
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().BeNull();
+    }
+
+    [TestMethod]
+    public async Task ConfirmAsync_WhileTheBackgroundIsMakingTheModelPhotos_DoesNotAskTheImageProviderAgain()
+    {
+        var data = new RunGroupTestData(background: true);
+        data.AddSystemModel();
+        data.ModelPhotosSucceed();
+        var started = (await data.Service.StartAsync(data.AddWorkflow(data.PersonConfig()).Id, new(4, "double"), default)).Value;
+
+        await data.Service.ConfirmAsync(started.Id, new(started.Revision), default);
+
+        // A second attempt for a photo the worker is making would be paid twice.
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [TestMethod]
@@ -591,6 +769,130 @@ public sealed class WorkflowRunGroupServiceTests
         run.Status.Should().Be("running");
         data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
         (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeFalse();
+    }
+
+    private static WorkflowNodeRun Step(RunGroupTestData data, WorkflowRun run, string type) =>
+        data.Base.NodeRows.Single(x => x.WorkflowRunId == run.Id && x.NodeType == type);
+
+    private static WorkflowNodeRun AddPrintifyStep(RunGroupTestData data, WorkflowRun run)
+    {
+        var step = new WorkflowNodeRun { Id = Guid.NewGuid(), WorkflowRunId = run.Id, NodeId = "printify", NodeType = "publish-printify",
+            Status = "pending", Attempt = 1, InputSnapshot = "{}", OutputSnapshot = "{}", CreatedAt = WorkflowTestData.Now.UtcDateTime,
+            UpdatedAt = WorkflowTestData.Now.UtcDateTime };
+        data.Base.NodeRows.Add(step);
+        return step;
+    }
+
+    /// <summary>A confirmed group with AI scenes: one child run, queued for the planner.</summary>
+    private static async Task<(RunGroupTestData Data, WorkflowRun Run)> QueuedAiRunAsync()
+    {
+        var data = new RunGroupTestData();
+        data.QuotesCost(3.20m);
+        var group = (await data.Service.StartAsync(data.AddWorkflow(data.AiConfig()).Id, new(4, "ai"), default)).Value;
+        (await data.Service.ConfirmAsync(group.Id, new(group.Revision), default)).IsSuccess.Should().BeTrue();
+        return (data, data.Base.RunRows.Single());
+    }
+
+    [TestMethod]
+    public async Task PlannerClaimNextAsync_AiScenes_ShowsTheVideoWorkingAtOnceAndLeavesThePromptsForLater()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var printify = AddPrintifyStep(data, run);
+
+        var claim = await data.GroupPlanner.ClaimNextAsync(_ => { }, default);
+
+        claim.Should().Be(new GroupRunClaim(run.Id, WorkflowTestData.Owner, PreparesPrompts: true, WritesListing: false));
+        // No longer grey on the canvas: the run and its video step are working, while nothing has asked Gemini yet.
+        run.Status.Should().Be("running");
+        var generate = Step(data, run, "generate-video");
+        (generate.Status, generate.Stage).Should().Be(("running", WorkflowRuntime.PreparingPromptsStage));
+        data.Base.JobRows.Should().NotContain(job => job.WorkflowRunId == run.Id);
+        // Push to Printify does not wait for the video.
+        printify.Status.Should().Be("running");
+        (await data.GroupPlanner.ClaimNextAsync(_ => { }, default)).Should().BeNull("a run being prepared is not taken twice");
+    }
+
+    [TestMethod]
+    public async Task PlannerPreparePromptsAsync_PromptsWritten_KeepsThemAndSendsTheClips()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+
+        await data.GroupPlanner.PreparePromptsAsync(claim, _ => { }, default);
+
+        data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
+        var generate = Step(data, run, "generate-video");
+        generate.Stage.Should().NotBe(WorkflowRuntime.PreparingPromptsStage);
+        WorkflowJson.Read<VideoPointer>(generate.OutputSnapshot).VideoId.Should().NotBeEmpty();
+        run.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task PlannerPreparePromptsAsync_RunCancelledMeanwhile_SendsNothing()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+        run.Status = "cancelled";
+
+        await data.GroupPlanner.PreparePromptsAsync(claim, _ => { }, default);
+
+        data.Base.JobRows.Should().NotContain(job => job.WorkflowRunId == run.Id);
+        run.Status.Should().Be("cancelled");
+    }
+
+    [TestMethod]
+    public async Task PlannerClaimNextAsync_StandardScenes_QueuesTheRenderAtOnceAsBefore()
+    {
+        var data = new RunGroupTestData();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+
+        var claim = await data.GroupPlanner.ClaimNextAsync(_ => { }, default);
+
+        claim!.PreparesPrompts.Should().BeFalse();
+        data.Base.JobRows.Should().ContainSingle(job => job.Kind == "render");
+    }
+
+    [TestMethod]
+    public async Task PlannerWriteListingAsync_RunWithAVideo_SendsTheVideoFirstAndHoldsPrintifyUntilTheListingIsWritten()
+    {
+        var data = new RunGroupTestData();
+        data.Base.ListingSucceeds();
+        var group = await data.StartAsync();
+        await data.Service.ConfirmAsync(group.Id, new(1), default);
+        var run = data.Base.RunRows.Single();
+        var listing = data.Base.AddListingStep(run);
+        var printify = AddPrintifyStep(data, run);
+
+        var claim = (await data.GroupPlanner.ClaimNextAsync(_ => { }, default))!;
+
+        // The video went ahead; the listing waits its turn, and so does Printify, which takes its title and description.
+        claim.WritesListing.Should().BeTrue();
+        data.Base.JobRows.Should().ContainSingle(job => job.Kind == "render");
+        (listing.Status, listing.Stage).Should().Be(("running", WorkflowRuntime.WritingListingStage));
+        printify.Status.Should().Be("pending");
+        data.Base.ListingContent.Verify(x => x.GetOrGenerateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>(),
+            It.IsAny<APCS.Application.Features.ListingContent.Common.IListingGenerationObserver?>()), Times.Never);
+
+        Guid? actingAs = null;
+        await data.GroupPlanner.WriteListingAsync(claim, owner => actingAs = owner, default);
+
+        actingAs.Should().Be(WorkflowTestData.Owner);
+        listing.Status.Should().Be("succeeded");
+        printify.Status.Should().Be("running");
+    }
+
+    [TestMethod]
+    public async Task PlannerAdvanceNextAsync_AiScenesAndAListing_DoesEveryPartInOneGo()
+    {
+        var (data, run) = await QueuedAiRunAsync();
+        data.Base.ListingSucceeds();
+        data.Base.AddListingStep(run);
+
+        (await data.GroupPlanner.AdvanceNextAsync(_ => { }, default)).Should().BeTrue();
+
+        data.Base.JobRows.Should().ContainSingle(job => job.WorkflowRunId == run.Id && job.Kind == "render");
+        Step(data, run, "generate-listing").Status.Should().Be("succeeded");
     }
 
     [TestMethod]
@@ -839,7 +1141,8 @@ public sealed class WorkflowRunGroupServiceTests
         var data = new RunGroupTestData();
         var workflow = data.AddWorkflow(data.SharedConfig() with
         {
-            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = data.SharedConfig() with { Template = "product_on_model_pack" } }
+            // The legacy single-shot AI settings (no scene list) name one product's image.
+            ProductConfigs = new Dictionary<Guid, GenerateVideoConfig> { [data.Preview.Id] = data.SharedConfig() with { Mode = "ai_shot", AiScenes = null } }
         });
 
         var result = await data.Service.StartAsync(workflow.Id, new(4, "pack"), default);
@@ -1038,6 +1341,21 @@ public sealed class WorkflowRunGroupServiceTests
         public ValueTask<RunGroupStartRequest> DequeueAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
+    /// <summary>Hands every piece of work the same services, as a fresh scope of the real container would, and keeps who it acted as.</summary>
+    internal sealed class FakeOwnerScopes : IOwnerScopes, IServiceProvider
+    {
+        public Dictionary<Type, object> Services { get; } = [];
+        public System.Collections.Concurrent.ConcurrentQueue<Guid> ActedAs { get; } = new();
+
+        public async Task<T> RunAsync<T>(Guid userId, Func<IServiceProvider, Task<T>> work)
+        {
+            ActedAs.Enqueue(userId);
+            return await work(this);
+        }
+
+        public object? GetService(Type serviceType) => Services.GetValueOrDefault(serviceType);
+    }
+
     private sealed class RunGroupTestData
     {
         public WorkflowTestData Base { get; } = new();
@@ -1049,6 +1367,10 @@ public sealed class WorkflowRunGroupServiceTests
         public Mock<IRunGroupPlannerQueue> Planner { get; } = new();
         public Mock<IWorkflowRunNotifier> Notifier { get; } = new();
         public Mock<ILifestyleMockupService> Lifestyle { get; } = new();
+        public Mock<IGeneratedMockupSourceService> Imports { get; } = new();
+
+        /// <summary>The scopes the background uses to store the mock-ups and make the model photos side by side; null takes turns in one.</summary>
+        public FakeOwnerScopes? Scopes { get; }
         public List<MockupTemplate> TemplateRows { get; } = [];
         public WorkflowRunGroupService Service { get; }
         public RunGroupPlanner GroupPlanner { get; }
@@ -1064,8 +1386,10 @@ public sealed class WorkflowRunGroupServiceTests
         public FakeStartQueue? StartQueue { get; }
 
         public RunGroupTestData(bool previewApproved = true, bool background = false,
-            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null)
+            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null, bool scopes = false)
         {
+            Scopes = scopes ? new FakeOwnerScopes() : null;
+            StartQueue = background ? new FakeStartQueue() : null;
             var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
             Base.State.Setup(x => x.LockRunGroupAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((Guid id, CancellationToken _) => GroupRows.SingleOrDefault(x => x.Id == id));
@@ -1083,7 +1407,14 @@ public sealed class WorkflowRunGroupServiceTests
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new WorkflowGraphValidator(Base.Capabilities, new()), resolver,
                 Entitlements, Base.Storage.Object, Base.Time, Planner.Object, Notifier.Object, quotes: Base.Quotes.Object,
                 lifestyle: Lifestyle.Object, mockupTemplates: WorkflowTestData.Repository(TemplateRows, x => x.Id).Object,
-                startQueue: StartQueue = background ? new FakeStartQueue() : null, videos: Base.Videos.Object, moderation: moderation);
+                startQueue: StartQueue, videos: Base.Videos.Object, moderation: moderation,
+                generatedMockups: Imports.Object, ownerScopes: Scopes);
+            if (Scopes is not null)
+            {
+                Scopes.Services[typeof(IGeneratedMockupSourceService)] = Imports.Object;
+                Scopes.Services[typeof(ILifestyleMockupService)] = Lifestyle.Object;
+                Scopes.Services[typeof(IWorkflowRunGroupService)] = Service;
+            }
             GroupPlanner = new(Base.State.Object, Base.Unit.Object, Base.Runtime, Base.Time);
             RunService = new(user.Object, Base.Workflows.Object, Base.Runs.Object, Base.Nodes.Object, Base.Products.Object, Base.Videos.Object,
                 Base.Jobs.Object, Base.State.Object, Base.Unit.Object, new(Base.Capabilities, new()), Base.Runtime, new(), Base.Capabilities,
@@ -1161,7 +1492,14 @@ public sealed class WorkflowRunGroupServiceTests
         /// <summary>Ideogram's model photo is stored as a Lifestyle image of the design, waiting for review, as the real service does.</summary>
         public void ModelPhotosSucceed() => Lifestyle
             .Setup(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid productId, Guid garmentId, Guid modelId, CancellationToken _) =>
+            .ReturnsAsync((Guid productId, Guid garmentId, Guid _, CancellationToken _) => MakePhoto(productId, garmentId));
+
+        private readonly object photoRows = new();
+
+        /// <summary>The model photo Ideogram makes from the garment, stored as the real service stores it (photos may be made at the same time).</summary>
+        public Result<MockupResponse> MakePhoto(Guid productId, Guid garmentId)
+        {
+            lock (photoRows)
             {
                 var garment = Base.AssetRows.Single(x => x.Id == garmentId);
                 var photo = new MockupImage
@@ -1175,7 +1513,8 @@ public sealed class WorkflowRunGroupServiceTests
                 Base.AssetRows.Add(photo);
                 return Result.Success(new MockupResponse(photo.Id, productId, photo.SourceType, photo.Role, photo.ArtworkGroupKey, photo.VariantKey,
                     1, "pending", null, 1080, 1920, new MockupRegions(), "https://cdn.test/photo.png", []));
-            });
+            }
+        }
 
         public async Task<RunGroupResponse> StartAsync(string gateMode = "manual")
         {
