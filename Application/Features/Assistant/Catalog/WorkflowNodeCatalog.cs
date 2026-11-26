@@ -102,7 +102,7 @@ public static class WorkflowNodeCatalog
         ]),
         new("generate-listing", "Listing content", "Writes the SEO title, 13 tags and description for each product.", null,
         [
-            new("model", "select", "Language model", [new("gpt-4o", "GPT-4o"), new("gemini", "Gemini")]),
+            new("model", "select", "Language model", [new("gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite"), new("gemini-3.5-flash", "Gemini 3.5 Flash")]),
             new("tone", "select", "Tone", [new("friendly", "Friendly"), new("professional", "Professional"), new("playful", "Playful")]),
             new("includeSeoScore", "switch", "SEO score")
         ]),
