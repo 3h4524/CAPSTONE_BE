@@ -7,7 +7,10 @@ namespace APCS.Application.Features.Workflows;
 /// other mock-ups. A product type without a choice gets none (unless its video has a scene with a person, which takes the
 /// system's model photo, <see cref="PersonModelPhotos"/>).
 /// </summary>
-/// <param name="ModelPhotos">The model photo (a mock-up template of the 'model' kind) per APCS product type, e.g. <c>tshirt</c>.</param>
+/// <param name="ModelPhotos">
+/// The model photo (a mock-up template of the 'model' kind) per group of product types: <c>apparel</c> for t-shirts and
+/// hoodies, the product type itself otherwise (e.g. <c>tote_bag</c>).
+/// </param>
 public sealed record MockupModelPhotoConfig(IReadOnlyDictionary<string, Guid>? ModelPhotos)
 {
     /// <summary>Product types one workflow can choose a model photo for at most.</summary>
@@ -18,11 +21,23 @@ public sealed record MockupModelPhotoConfig(IReadOnlyDictionary<string, Guid>? M
     [System.Text.Json.Serialization.JsonIgnore]
     public bool HasChoices => ModelPhotos is { Count: > 0 };
 
-    /// <summary>The model photo chosen for <paramref name="productType"/>, or null when there is none.</summary>
-    public Guid? For(string? productType) =>
-        productType is null || ModelPhotos is null ? null
-        : ModelPhotos.Where(pair => string.Equals(pair.Key, productType, StringComparison.OrdinalIgnoreCase) && pair.Value != Guid.Empty)
-            .Select(pair => (Guid?)pair.Value).FirstOrDefault();
+    /// <summary>
+    /// The model photo chosen for <paramref name="productType"/>, or null when there is none. A t-shirt and a hoodie share
+    /// one choice, kept under <c>apparel</c> (<see cref="BatchMockups.Common.MockupRules.ModelCategoryOf"/>); a workflow saved
+    /// before kept it under the type itself, which is still read, after the shared one.
+    /// </summary>
+    public Guid? For(string? productType)
+    {
+        if (productType is null || ModelPhotos is null) return null;
+        var category = BatchMockups.Common.MockupRules.ModelCategoryOf(productType);
+        return ModelPhotos
+            .Where(pair => pair.Value != Guid.Empty && BatchMockups.Common.MockupRules.ModelCategoryOf(pair.Key) == category)
+            .OrderBy(pair => string.Equals(pair.Key, category, StringComparison.OrdinalIgnoreCase) ? 0
+                : string.Equals(pair.Key, productType, StringComparison.OrdinalIgnoreCase) ? 1 : 2)
+            .ThenBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => (Guid?)pair.Value)
+            .FirstOrDefault();
+    }
 
     /// <summary>Why the choice cannot be saved, or null when it can.</summary>
     public string? Problem() =>

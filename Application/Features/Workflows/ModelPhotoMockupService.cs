@@ -131,7 +131,7 @@ public sealed class ModelPhotoMockupService(ICurrentUser user, IRepository<Produ
             && item.Kind == MockupRules.ModelKind && (item.UserId == null || item.UserId == userId), ct);
         if (model is null)
             return Result.Failure<Composed>(MockupErrors.ModelPhotoNotFound());
-        if (!string.Equals(model.ProductType, product.ProductType, StringComparison.OrdinalIgnoreCase))
+        if (!MockupRules.ModelFits(model.ProductType, product.ProductType))
             return Result.Failure<Composed>(MockupErrors.TemplateNotForProduct(model.Name));
         if (!MockupRules.HasCurrentMaps(model) || !model.AllowRecolor || MockupRules.ParsePrintArea(model.PrintAreaConfig) is not { } modelArea)
             return Result.Failure<Composed>(MockupErrors.TemplateNotUsable(model.Name));

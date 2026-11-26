@@ -39,13 +39,15 @@ public static class PersonModelPhotos
         .ToArray();
 
     /// <summary>
-    /// The system's model photo for a product type: from the shared library, one person before a group, then by name
-    /// so the same one is chosen every time.
+    /// The system's model photo for a product type: from the shared library, of the same group (a t-shirt and a hoodie
+    /// share apparel models, <see cref="MockupRules.ModelFits"/>), one of the product's own type first, one person before
+    /// a group, then by name so the same one is chosen every time.
     /// </summary>
     public static MockupTemplate? DefaultModel(IEnumerable<MockupTemplate> models, string productType) => models
         .Where(model => model.UserId == null && model.IsActive == true && model.Kind == MockupRules.ModelKind
-            && string.Equals(model.ProductType, productType, StringComparison.OrdinalIgnoreCase))
-        .OrderBy(model => model.People == ModelPeople.Group ? 1 : 0)
+            && MockupRules.ModelFits(model.ProductType, productType))
+        .OrderBy(model => string.Equals(model.ProductType, productType, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+        .ThenBy(model => model.People == ModelPeople.Group ? 1 : 0)
         .ThenBy(model => model.Name, StringComparer.OrdinalIgnoreCase)
         .ThenBy(model => model.Id)
         .FirstOrDefault();

@@ -280,6 +280,8 @@ public sealed class PersonModelPhotosTests
         var mia = Model("Mia");
 
         PersonModelPhotos.DefaultModel([group, mine, hoodie, zoe, mia], "TSHIRT").Should().Be(mia);
-        PersonModelPhotos.DefaultModel([hoodie], "tshirt").Should().BeNull();
+        // A t-shirt and a hoodie share apparel models: one of the other top stands in when the product's own has none.
+        PersonModelPhotos.DefaultModel([hoodie], "tshirt").Should().Be(hoodie);
+        PersonModelPhotos.DefaultModel([hoodie], "tote_bag").Should().BeNull();
     }
 }

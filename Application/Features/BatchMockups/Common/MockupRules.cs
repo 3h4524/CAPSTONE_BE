@@ -712,6 +712,33 @@ public static class MockupRules
 
     public static bool IsModelPhoto(MockupTemplate template) => template.Kind == ModelKind;
 
+    /// <summary>The group of model photos a t-shirt and a hoodie share: a person in either top can wear the other.</summary>
+    public const string ApparelCategory = "apparel";
+
+    /// <summary>The product types whose model photos stand in for one another (<see cref="ApparelCategory"/>).</summary>
+    public static readonly IReadOnlyList<string> ApparelTypes = ["tshirt", "hoodie"];
+
+    /// <summary>The group a model photo of this product type belongs to: apparel for a top, the type itself otherwise.</summary>
+    public static string ModelCategoryOf(string? productType)
+    {
+        var type = productType?.Trim().ToLowerInvariant() ?? "";
+        return ApparelTypes.Contains(type) ? ApparelCategory : type;
+    }
+
+    /// <summary>
+    /// The product types whose model photos a product of this type can use: every apparel type for a top (or for
+    /// <see cref="ApparelCategory"/> itself), the type itself otherwise. Lower case, for a query.
+    /// </summary>
+    public static IReadOnlyList<string> ModelTypesFor(string? productType)
+    {
+        var type = productType?.Trim().ToLowerInvariant() ?? "";
+        return type == ApparelCategory || ApparelTypes.Contains(type) ? ApparelTypes : [type];
+    }
+
+    /// <summary>Whether a model photo made for <paramref name="modelProductType"/> can dress a product of <paramref name="productType"/>.</summary>
+    public static bool ModelFits(string? modelProductType, string? productType) =>
+        ModelCategoryOf(modelProductType) == ModelCategoryOf(productType);
+
     /// <summary>
     /// Why the garment selected on a model photo can't be used, or <see langword="null"/> when it can. It is
     /// always recolored, so it must be light.

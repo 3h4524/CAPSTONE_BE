@@ -406,7 +406,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             model ??= PersonModelPhotos.DefaultModel(models, target.Product.ProductType);
             if (model is null)
             {
-                problems.Add($"{Label(target)}: there is no system model photo for {target.Product.ProductType} to put the design on.");
+                problems.Add($"{Label(target)}: there is no system model photo for {MockupRules.ModelCategoryOf(target.Product.ProductType)} to put the design on.");
                 continue;
             }
             // A stored mock-up when the design has one: storing drops a composite that is already stored, so its link is

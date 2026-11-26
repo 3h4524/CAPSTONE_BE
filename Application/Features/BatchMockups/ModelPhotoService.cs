@@ -76,11 +76,12 @@ public sealed class ModelPhotoService(
         if (currentUser.TryGetUserId() is not Guid userId)
             return Result.Failure<IReadOnlyList<MockupTemplateResponseDto>>(MockupErrors.Unauthenticated("view"));
 
-        var normalizedType = productType?.Trim().ToLowerInvariant();
+        // A t-shirt and a hoodie share their model photos (apparel): either can dress the other.
+        var types = string.IsNullOrWhiteSpace(productType) ? null : MockupRules.ModelTypesFor(productType).ToList();
         var items = await Matching(templates.Query(), filter)
             .Where(template => template.IsActive == true && template.Kind == MockupRules.ModelKind
                 && (template.UserId == null || template.UserId == userId)
-                && (string.IsNullOrEmpty(normalizedType) || template.ProductType.ToLower() == normalizedType))
+                && (types == null || types.Contains(template.ProductType.ToLower())))
             .OrderBy(template => template.Name)
             .ToListAsync(cancellationToken);
 
