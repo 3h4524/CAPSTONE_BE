@@ -61,6 +61,52 @@ public sealed class RunCostEstimateServiceTests
         return workflow;
     }
 
+    /// <summary>A workflow designing one variant per product, with these model photos chosen on Apply mock-up and an optional video.</summary>
+    private Workflow AddModelPhotoWorkflow(IReadOnlyDictionary<string, Guid> modelPhotos, GenerateVideoConfig? video)
+    {
+        WorkflowNode Node(string type, object config) => new(type, type, type, new(0, 0), JsonSerializer.SerializeToElement(config, WorkflowJson.Options));
+        WorkflowNode[] nodes =
+        [
+            Node("product-input", new ProductInputConfig(_batch, Guid.Empty)),
+            Node("design-image", new { imageProvider = "gemini", variants = 1 }),
+            Node("apply-mockup", new MockupModelPhotoConfig(modelPhotos)),
+            .. video is null ? Array.Empty<WorkflowNode>() : [Node("generate-video", video)],
+        ];
+        var workflow = new Workflow { Id = Guid.NewGuid(), UserId = Owner, Name = "w", Definition = WorkflowJson.Write(new WorkflowDefinition(2, nodes, [])) };
+        _workflows.Add(workflow);
+        return workflow;
+    }
+
+    [TestMethod]
+    public async Task EstimateAsync_ModelPhotoChosenOnApplyMockup_CountsOnePerDesignOfThatProductType()
+    {
+        AddProduct("Tee A");
+        AddProduct("Tee B");
+        var mug = AddProduct("Mug");
+        mug.ProductType = "mug";
+        // The video shows no person: only the choice on Apply mock-up asks for model photos, and only for t-shirts.
+        var workflow = AddModelPhotoWorkflow(new Dictionary<string, Guid> { ["tshirt"] = Guid.NewGuid() },
+            new GenerateVideoConfig(Mode: "standard", AiScenes: [Scene("standard")]));
+
+        var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
+
+        estimate.Items.Single(x => x.Kind == "model_photos").Should().BeEquivalentTo(new { Quantity = 2, EstimatedCostUsd = 2 * 0.04m });
+        estimate.Items.Single(x => x.Kind == "model_photos").Detail.Should().Contain("chosen in Apply mock-up");
+    }
+
+    [TestMethod]
+    public async Task EstimateAsync_ModelPhotoChosenWithoutAVideo_IsStillPriced()
+    {
+        AddProduct("Tee A");
+        var workflow = AddModelPhotoWorkflow(new Dictionary<string, Guid> { ["tshirt"] = Guid.NewGuid() }, video: null);
+
+        var estimate = (await Service().EstimateAsync(workflow.Id, default)).Value;
+
+        estimate.Items.Single(x => x.Kind == "model_photos").Quantity.Should().Be(1);
+        estimate.Items.Should().NotContain(x => x.Kind == "ai_video");
+        estimate.AiVideoBudgetUsd.Should().Be(0);
+    }
+
     [TestMethod]
     public async Task EstimateAsync_ListsDesignImagesAndEachProductsAiClips()
     {

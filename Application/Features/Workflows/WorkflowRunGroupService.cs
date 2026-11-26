@@ -134,6 +134,13 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             var videoCheck = await VideoPlanChecks.CheckAsync(entitlements, userId, config, 1, ct);
             if (videoCheck.IsFailure) return Result.Failure<RunGroupResponse>(videoCheck.Error);
         }
+        var chosenPhotos = MockupModelPhotoConfig.From(definition);
+        if (chosenPhotos.HasChoices)
+        {
+            // Checked before anything is paid for, rather than design by design once the mock-ups exist.
+            var photoCheck = await CheckChosenModelPhotosAsync(userId, chosenPhotos, ct);
+            if (photoCheck is not null) return Result.Failure<RunGroupResponse>(photoCheck);
+        }
 
         var now = time.GetUtcNow().UtcDateTime;
         var group = new WorkflowRunGroup
@@ -152,7 +159,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
         // it waits for a second confirmation. Storing the mock-ups takes Cloudinary seconds for each, a model photo takes
         // seconds at Ideogram and starting the videos plans each design's storyboard, so all of it is done in the
         // background and Run answers at once; the mock-ups appear at Mockup Approval as they are stored.
-        var needsPhotos = config is not null && NeedsModelPhotos(config);
+        var needsPhotos = chosenPhotos.HasChoices || (config is not null && NeedsModelPhotos(config));
         if (startQueue is not null)
         {
             startQueue.Enqueue(new(group.Id, userId, auto));
@@ -167,6 +174,22 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
 
     private static bool NeedsModelPhotos(GenerateVideoConfig config) =>
         PersonModelPhotos.Needs(config) || config.ProductConfigs?.Values.Any(PersonModelPhotos.Needs) == true;
+
+    /// <summary>
+    /// Why the model photos chosen on Apply mock-up cannot be made, or null when they can: the plan has to include AI
+    /// lifestyle images, and each photo has to be a model photo the seller can still use (the shared library's or their own).
+    /// </summary>
+    private async Task<Error?> CheckChosenModelPhotosAsync(Guid userId, MockupModelPhotoConfig chosen, CancellationToken ct)
+    {
+        var planCheck = await entitlements.RequireFeatureAsync(userId, PlanFeatures.LifestyleMockup, ct);
+        if (planCheck.IsFailure) return planCheck.Error;
+        if (mockupTemplates is null) return null;
+        var ids = chosen.ModelPhotos!.Values.Distinct().ToArray();
+        var usable = (await mockupTemplates.FindAsync(x => ids.Contains(x.Id) && x.Kind == MockupRules.ModelKind && x.IsActive == true
+            && (x.UserId == null || x.UserId == userId), ct)).Select(x => x.Id).ToHashSet();
+        return ids.All(usable.Contains) ? null
+            : Error.Validation("A model photo chosen in Apply mock-up is no longer available. Choose another one there.");
+    }
 
     /// <summary>The Generate Video settings of a definition, or null for a workflow without a video.</summary>
     private static GenerateVideoConfig? VideoConfigOf(WorkflowDefinition definition) =>
@@ -309,11 +332,12 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     }
 
     /// <summary>
-    /// Makes the model photo of every design whose scenes show a person and that has none (<see cref="PersonModelPhotos"/>):
-    /// Ideogram dresses the system's model photo for the product type in the design's main mock-up, as an AI lifestyle
-    /// image is made at Apply mock-up. A design whose scenes need no person, or that has a model photo already, is left
-    /// alone. Returns how many were made (they wait for review) and, for each design whose photo could not be made (no
-    /// system model, no mock-up, Ideogram failing), why: the next Continue tries those again.
+    /// Makes the model photo of every design given one on Apply mock-up (<see cref="MockupModelPhotoConfig"/>) or whose
+    /// scenes show a person (<see cref="PersonModelPhotos"/>), and that has none: Ideogram dresses the chosen model photo
+    /// (else the system's one for the product type) in the design's main mock-up, as an AI lifestyle image is made at
+    /// Apply mock-up. Any other design, or one that has a model photo already, is left alone. Returns how many were made
+    /// (they wait for review) and, for each design whose photo could not be made (no system model, no mock-up, Ideogram
+    /// failing), why: the next Continue tries those again.
     /// </summary>
     private async Task<(int Made, IReadOnlyList<string> Problems)> MakeModelPhotosAsync(WorkflowRunGroup group, CancellationToken ct)
     {
@@ -346,26 +370,41 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
     private static string PhotoProblem(PlannedPhoto photo, Error error) => $"{photo.DesignName}: its model photo could not be made. {error.Message}";
 
     /// <summary>
-    /// The model photos the group's designs still need (scenes with a person, no photo yet), and why the others cannot
-    /// have one. <paramref name="includeUnstored"/> also takes a design whose mock-ups are composited but not stored yet:
-    /// its photo is made from the composite link, while the mock-ups are being stored.
+    /// The model photos the group's designs still need, and why the others cannot have one. A design needs one when Apply
+    /// mock-up chose a model photo for its product type (that photo is dressed) or when its scenes show a person (the
+    /// system's model photo is dressed, unless one was chosen); a design that has one already needs none.
+    /// <paramref name="includeUnstored"/> also takes a design whose mock-ups are composited but not stored yet: its photo is
+    /// made from the composite link, while the mock-ups are being stored.
     /// </summary>
     private async Task<ModelPhotoPlan> PlanModelPhotosAsync(WorkflowRunGroup group, bool includeUnstored, CancellationToken ct)
     {
         if (lifestyle is null || mockupTemplates is null) return ModelPhotoPlan.None;
-        if ((await SharedConfigAsync(group, ct)).Config is not { } shared) return ModelPhotoPlan.None;
+        var (definition, shared) = await SharedConfigAsync(group, ct);
+        var chosen = MockupModelPhotoConfig.From(definition);
+        if (shared is null && !chosen.HasChoices) return ModelPhotoPlan.None;
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
+        bool ShowsPerson(Target target) =>
+            shared is not null && PersonModelPhotos.Needs(ConfigFor(shared, overrides.GetValueOrDefault(target.Key), target.Product.Id));
         var needing = (await TargetsAsync(group, includeUnstored, ct))
-            .Where(target => PersonModelPhotos.Needs(ConfigFor(shared, overrides.GetValueOrDefault(target.Key), target.Product.Id)) && !PersonModelPhotos.Has(target.Mockups))
+            .Where(target => (chosen.For(target.Product.ProductType) is not null || ShowsPerson(target)) && !PersonModelPhotos.Has(target.Mockups))
             .ToArray();
         if (needing.Length == 0) return ModelPhotoPlan.None;
 
-        var models = await mockupTemplates.FindAsync(x => x.UserId == null && x.Kind == MockupRules.ModelKind && x.IsActive == true, ct);
+        // The shared library and the seller's own: a photo chosen on Apply mock-up may be either.
+        var models = await mockupTemplates.FindAsync(x => (x.UserId == null || x.UserId == group.UserId) && x.Kind == MockupRules.ModelKind
+            && x.IsActive == true, ct);
         var photos = new List<PlannedPhoto>();
         var problems = new List<string>();
         foreach (var target in needing)
         {
-            if (PersonModelPhotos.DefaultModel(models, target.Product.ProductType) is not { } model)
+            var model = chosen.For(target.Product.ProductType) is Guid chosenId ? models.FirstOrDefault(x => x.Id == chosenId) : null;
+            if (model is null && chosen.For(target.Product.ProductType) is not null)
+            {
+                problems.Add($"{Label(target)}: the model photo chosen in Apply mock-up is no longer available.");
+                if (!ShowsPerson(target)) continue;
+            }
+            model ??= PersonModelPhotos.DefaultModel(models, target.Product.ProductType);
+            if (model is null)
             {
                 problems.Add($"{Label(target)}: there is no system model photo for {target.Product.ProductType} to put the design on.");
                 continue;
@@ -938,6 +977,7 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             : VideoConfigOf(WorkflowJson.Read<WorkflowDefinition>(group.DefinitionSnapshot));
         var overrides = RunTargetConfigResolver.ReadOverrides(group.TargetOverrides);
         var preparing = waiting && group.ErrorMessage is null && startQueue?.IsPending(group.Id) == true;
+        var chosenPhotos = waiting ? MockupModelPhotoConfig.From(WorkflowJson.Read<WorkflowDefinition>(group.DefinitionSnapshot)) : MockupModelPhotoConfig.None;
 
         var rows = new List<RunGroupTargetResponse>(targets.Count);
         foreach (var target in targets)
@@ -962,8 +1002,10 @@ public sealed class WorkflowRunGroupService(ICurrentUser user, IRepository<Workf
             var childSteps = child is null ? [] : stepsByRun.GetValueOrDefault(child.Id) ?? [];
             var current = child is null ? null : CurrentStep(childSteps);
             var printifyStep = childSteps.FirstOrDefault(x => x.NodeType == WorkflowCapabilityRegistry.PrintifyStep);
-            // Only a design whose scenes show a person has a model photo to wait for; the others never show a placeholder.
-            var modelPhoto = waiting && config is not null && PersonModelPhotos.Needs(ConfigFor(config, picked, target.Product.Id))
+            // Only a design given a model photo on Apply mock-up, or whose scenes show a person, has one to wait for; the
+            // others never show a placeholder.
+            var modelPhoto = waiting && (chosenPhotos.For(target.Product.ProductType) is not null
+                    || (config is not null && PersonModelPhotos.Needs(ConfigFor(config, picked, target.Product.Id))))
                 ? PersonModelPhotos.Has(target.Mockups) ? ModelPhotoStates.Ready : preparing ? ModelPhotoStates.Pending : ModelPhotoStates.Missing
                 : null;
             rows.Add(new(target.Key, target.Product.Id, target.Product.Name, target.Product.ProductType, target.ArtworkGroupKey,

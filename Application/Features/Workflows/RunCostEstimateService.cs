@@ -11,7 +11,7 @@ namespace APCS.Application.Features.Workflows;
 /// <param name="Kind">"design_images", "ai_video" (one line per product) or "model_photos".</param>
 /// <param name="Label">What the line is about: the step, or the product for an AI video.</param>
 /// <param name="Detail">How the amount is made up, as the seller reads it.</param>
-/// <param name="EstimatedCostUsd">Zero for work that is not billed (model photos are composited without AI).</param>
+/// <param name="EstimatedCostUsd">What the provider is expected to bill for the line.</param>
 public sealed record RunCostItem(string Kind, string Label, string Detail, int Quantity, decimal EstimatedCostUsd);
 
 /// <summary>What one Run of the saved workflow is expected to cost, before anything is made.</summary>
@@ -73,10 +73,12 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
                     toDesign * variants, toDesign * variants * provider.EstimatedCostPerImageUsd));
         }
 
-        if (definition.Nodes.SingleOrDefault(x => x.Type == "generate-video") is { } videoNode)
+        var shared = definition.Nodes.SingleOrDefault(x => x.Type == "generate-video") is { } videoNode
+            ? WorkflowJson.Config<GenerateVideoConfig>(videoNode) : null;
+        var chosenPhotos = ChosenModelPhotos(definition);
+        if (shared is not null || chosenPhotos.HasChoices)
         {
-            var shared = WorkflowJson.Config<GenerateVideoConfig>(videoNode);
-            var withPerson = 0;
+            var withPhoto = 0;
             // A design made before this Run that already has its model photo gets no second one, so it is not billed again.
             var photographed = mockups is null || ids.Length == 0 ? new HashSet<string>()
                 : (await mockups.FindAsync(x => ids.Contains(x.ProductId) && x.Role == ModelPhotoMockupService.Role, ct))
@@ -87,25 +89,28 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
             foreach (var product in batch)
             {
                 // A product given settings of its own before the run renders every design with them.
-                var config = shared.ForProduct(product.Id);
-                var (clips, seconds, perVideo) = AiCostPerVideo(config);
+                var config = shared?.ForProduct(product.Id);
                 // A product designed in this run gets every variant; one designed before keeps its approved design,
                 // else every design not rejected.
-                var videos = designsOf.TryGetValue(product.Id, out var own)
+                var made = designsOf.TryGetValue(product.Id, out var own)
                     ? own.Any(x => x.ApprovalStatus == "approved") ? 1 : own.Length
                     : Math.Max(variants, 1);
-                if (clips > 0)
-                    items.Add(new("ai_video", product.Name, $"{videos} video{Plural(videos)} × {clips} AI clip{Plural(clips)} ({seconds:0.#} s)",
-                        videos * clips, videos * perVideo));
-                if (PersonModelPhotos.Needs(config))
-                    withPerson += own is null ? videos
+                if (config is not null && AiCostPerVideo(config) is { Clips: > 0 } ai)
+                    items.Add(new("ai_video", product.Name, $"{made} video{Plural(made)} × {ai.Clips} AI clip{Plural(ai.Clips)} ({ai.Seconds:0.#} s)",
+                        made * ai.Clips, made * ai.CostUsd));
+                // One model photo per design: the one chosen on Apply mock-up for the product type, else the system's for
+                // scenes with a person.
+                if (chosenPhotos.For(product.ProductType) is not null || (config is not null && PersonModelPhotos.Needs(config)))
+                    withPhoto += own is null ? made
                         : (own.Any(x => x.ApprovalStatus == "approved") ? own.Where(x => x.ApprovalStatus == "approved") : own)
                             .Count(design => !photographed.Contains(design.Id.ToString()));
             }
             var ideogram = imageProviders.FirstOrDefault(x => x.Provider == ImageGenerationProviders.Ideogram);
-            if (withPerson > 0 && ideogram is not null)
-                items.Add(new("model_photos", "Model photos", "One per design for its scenes with a person: Ideogram puts the design on a system model",
-                    withPerson, withPerson * ideogram.EstimatedCostPerImageUsd));
+            if (withPhoto > 0 && ideogram is not null)
+                items.Add(new("model_photos", "Model photos", chosenPhotos.HasChoices
+                        ? "One per design: Ideogram puts the design on the model photo chosen in Apply mock-up"
+                        : "One per design for its scenes with a person: Ideogram puts the design on a system model",
+                    withPhoto, withPhoto * ideogram.EstimatedCostPerImageUsd));
         }
 
         var aiBudget = items.Where(x => x.Kind == "ai_video").Sum(x => x.EstimatedCostUsd);
@@ -125,6 +130,19 @@ public sealed class RunCostEstimateService(ICurrentUser user, IRepository<Workfl
         return config.Mode == "ai_shot"
             ? (1, config.DurationSeconds, config.DurationSeconds * PricePerSecond(config.AiVideoModelKey))
             : (0, 0m, 0m);
+    }
+
+    // A workflow saved with a model photo choice the run would refuse is priced without it: the run says what is wrong.
+    private static MockupModelPhotoConfig ChosenModelPhotos(WorkflowDefinition definition)
+    {
+        try
+        {
+            return MockupModelPhotoConfig.From(definition);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return MockupModelPhotoConfig.None;
+        }
     }
 
     private static decimal PricePerSecond(string? modelKey) =>

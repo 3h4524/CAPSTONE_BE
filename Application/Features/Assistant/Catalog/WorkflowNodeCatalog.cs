@@ -82,7 +82,7 @@ public static class WorkflowNodeCatalog
         new("apply-mockup", "Apply mock-up", "Places approved designs onto mockup templates.", Order("apply-mockup"),
         [
             new("mockupTemplateIds", "id-list", "Mockup templates", Source: "mockup-templates",
-                Note: "Use list_mockup_templates for ids. Colors per template are set in the UI.")
+                Note: "Use list_mockup_templates for ids. Colors per template and model photos (AI, paid) are set in the UI.")
         ]),
         new("approval-gate", "Mockup Approval", "Reviews each mockup before rendering.", Order("approval-gate"),
         [

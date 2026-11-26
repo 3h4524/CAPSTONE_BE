@@ -700,6 +700,136 @@ public sealed class WorkflowRunGroupServiceTests
     }
 
     [TestMethod]
+    public async Task StartAsync_ModelPhotoChosenOnApplyMockup_DressesItInEachDesignOnce()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var mine = data.AddOwnModel();
+        data.ModelPhotosSucceed();
+        var other = data.AddProduct("Birth Month Blooms");
+        var (_, otherMockups) = data.AddDesign(other, 1, approved: false);
+        // The video shows no person: the photos are made because Apply mock-up asks for them.
+        var workflow = data.AddWorkflow();
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = mine.Id });
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "chosen-photo"), default);
+
+        started.IsSuccess.Should().BeTrue(started.IsFailure ? started.Error.Message : null);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, mine.Id, It.IsAny<CancellationToken>()), Times.Once);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(other.Id, otherMockups[0].Id, mine.Id, It.IsAny<CancellationToken>()), Times.Once);
+        started.Value.Targets.Should().HaveCount(2).And.OnlyContain(x => x.ModelPhoto == ModelPhotoStates.Ready);
+        started.Value.Notice.Should().BeNull();
+
+        // Continue finds every design photographed: nothing is paid for twice.
+        await data.Service.ConfirmAsync(started.Value.Id, new(1), default);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ModelPhotoChosenForAnotherProductType_LeavesTheDesignWithoutOne()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var mine = data.AddOwnModel();
+        data.ModelPhotosSucceed();
+        var mug = data.AddProduct("Mug");
+        mug.ProductType = "mug";
+        data.AddDesign(mug, 1, approved: false);
+        var workflow = data.AddWorkflow();
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = mine.Id });
+
+        var started = (await data.Service.StartAsync(workflow.Id, new(4, "tshirt-only"), default)).Value;
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(mug.Id, It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        started.Targets.Single(x => x.ProductId == mug.Id).ModelPhoto.Should().BeNull();
+        started.Targets.Single(x => x.ProductId == data.Preview.Id).ModelPhoto.Should().Be(ModelPhotoStates.Ready);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ModelPhotoChosenWithoutAVideo_IsMadeForTheMockupApproval()
+    {
+        var data = new RunGroupTestData(previewApproved: false, background: true);
+        var mine = data.AddOwnModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow();
+        workflow.Definition = WorkflowJson.Write(WorkflowTestData.PublishWithoutVideoDefinition(data.Preview));
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = mine.Id });
+
+        var started = (await data.Service.StartAsync(workflow.Id, new(4, "no-video-photo"), default)).Value;
+        started.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Pending);
+
+        await data.Service.PrepareAsync(started.Id, autoApprove: false, default);
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, data.PreviewMockups[0].Id, mine.Id, It.IsAny<CancellationToken>()), Times.Once);
+        (await data.Service.GetAsync(started.Id, default)).Value.Targets.Should().ContainSingle().Which.ModelPhoto.Should().Be(ModelPhotoStates.Ready);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ScenesWithAPersonAndAChosenModelPhoto_DressesTheChosenOne()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        data.AddSystemModel();
+        var mine = data.AddOwnModel();
+        data.ModelPhotosSucceed();
+        var workflow = data.AddWorkflow(data.PersonConfig());
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = mine.Id });
+
+        (await data.Service.StartAsync(workflow.Id, new(4, "person-chosen"), default)).IsSuccess.Should().BeTrue();
+
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(data.Preview.Id, It.IsAny<Guid>(), mine.Id, It.IsAny<CancellationToken>()), Times.Once);
+        data.Lifestyle.Verify(x => x.GenerateForVideoAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ModelPhotoChosenOnAPlanWithoutLifestyleImages_IsRefusedBeforeAnythingStarts()
+    {
+        var data = new RunGroupTestData(previewApproved: false, entitlements: TestEntitlements.Plan());
+        var mine = data.AddOwnModel();
+        var workflow = data.AddWorkflow();
+        workflow.Definition = WorkflowJson.Write(WorkflowTestData.PublishWithoutVideoDefinition(data.Preview));
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = mine.Id });
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "locked"), default);
+
+        started.IsFailure.Should().BeTrue();
+        data.GroupRows.Should().BeEmpty();
+        data.Lifestyle.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ChosenModelPhotoNoLongerAvailable_IsRefusedBeforeAnythingStarts()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var gone = data.AddOwnModel();
+        gone.IsActive = false;
+        var someoneElses = data.AddSystemModel("Theirs");
+        someoneElses.UserId = Guid.NewGuid();
+        var workflow = data.AddWorkflow();
+
+        foreach (var id in new[] { gone.Id, someoneElses.Id })
+        {
+            RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = id });
+            var started = await data.Service.StartAsync(workflow.Id, new(4, $"gone-{id}"), default);
+
+            started.IsFailure.Should().BeTrue();
+            started.Error.Message.Should().Contain("no longer available");
+        }
+        data.GroupRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task StartAsync_ModelPhotoChoiceWithoutAPhoto_IsInvalid()
+    {
+        var data = new RunGroupTestData(previewApproved: false);
+        var workflow = data.AddWorkflow();
+        RunGroupTestData.ChooseModelPhotos(workflow, new Dictionary<string, Guid> { ["tshirt"] = Guid.Empty });
+
+        var started = await data.Service.StartAsync(workflow.Id, new(4, "empty-choice"), default);
+
+        started.IsFailure.Should().BeTrue();
+        started.Error.Type.Should().Be(ErrorType.Validation);
+        data.GroupRows.Should().BeEmpty();
+    }
+
+    [TestMethod]
     public async Task ConfirmAsync_WhileTheBackgroundIsMakingTheModelPhotos_DoesNotAskTheImageProviderAgain()
     {
         var data = new RunGroupTestData(background: true);
@@ -1363,7 +1493,7 @@ public sealed class WorkflowRunGroupServiceTests
         public List<BatchJob> BatchJobRows { get; } = [];
         public List<BatchJobProduct> JobProductRows { get; } = [];
         public List<DesignImage> DesignRows { get; } = [];
-        public TestEntitlements Entitlements { get; } = TestEntitlements.AllowAll();
+        public TestEntitlements Entitlements { get; }
         public Mock<IRunGroupPlannerQueue> Planner { get; } = new();
         public Mock<IWorkflowRunNotifier> Notifier { get; } = new();
         public Mock<ILifestyleMockupService> Lifestyle { get; } = new();
@@ -1386,8 +1516,10 @@ public sealed class WorkflowRunGroupServiceTests
         public FakeStartQueue? StartQueue { get; }
 
         public RunGroupTestData(bool previewApproved = true, bool background = false,
-            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null, bool scopes = false)
+            APCS.Application.Abstractions.Moderation.IContentModerationService? moderation = null, bool scopes = false,
+            TestEntitlements? entitlements = null)
         {
+            Entitlements = entitlements ?? TestEntitlements.AllowAll();
             Scopes = scopes ? new FakeOwnerScopes() : null;
             StartQueue = background ? new FakeStartQueue() : null;
             var groups = WorkflowTestData.Repository(GroupRows, x => x.Id);
@@ -1487,6 +1619,26 @@ public sealed class WorkflowRunGroupServiceTests
             };
             TemplateRows.Add(model);
             return model;
+        }
+
+        /// <summary>A model photo of the seller's own for t-shirts.</summary>
+        public MockupTemplate AddOwnModel(string name = "Mia")
+        {
+            var model = AddSystemModel(name);
+            model.UserId = WorkflowTestData.Owner;
+            return model;
+        }
+
+        /// <summary>Chooses these model photos on the workflow's Apply mock-up node, by product type.</summary>
+        public static void ChooseModelPhotos(Workflow workflow, IReadOnlyDictionary<string, Guid> modelPhotos)
+        {
+            var definition = WorkflowJson.Read<WorkflowDefinition>(workflow.Definition);
+            workflow.Definition = WorkflowJson.Write(definition with
+            {
+                Nodes = definition.Nodes.Select(node => node.Type == "apply-mockup"
+                    ? node with { Config = JsonSerializer.SerializeToElement(new MockupModelPhotoConfig(modelPhotos), WorkflowJson.Options) }
+                    : node).ToArray()
+            });
         }
 
         /// <summary>Ideogram's model photo is stored as a Lifestyle image of the design, waiting for review, as the real service does.</summary>

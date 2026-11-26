@@ -83,6 +83,7 @@ public sealed class WorkflowGraphValidator(WorkflowCapabilityRegistry registry, 
                 if (input.BatchId == Guid.Empty || input.ProductId == Guid.Empty) return Error.Validation("Select a batch and one product.");
             }
             else if (BatchIdOf(definition) == Guid.Empty) return Error.Validation("Select a batch in Product Input.");
+            if (MockupModelPhotoConfig.From(definition).Problem() is { } modelPhotoProblem) return Error.Validation(modelPhotoProblem);
             if (hasVideo)
             {
                 var config = WorkflowJson.Config<GenerateVideoConfig>(definition.Nodes.Single(x => x.Type == "generate-video"));
